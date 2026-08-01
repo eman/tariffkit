@@ -27,7 +27,7 @@ work without configuration.
 
 Timestamps without a UTC offset are assumed Pacific, since that is what the
 tariff is anchored to. Supplying offsets is better: a naive timestamp on the
-autumn DST transition is genuinely ambiguous.
+autumn DST transition is ambiguous without one.
 
 Override detection when needed:
 
