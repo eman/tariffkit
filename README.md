@@ -98,7 +98,7 @@ base_services_charge_tier = 3
   plus your ACC Plus adder. Values past your nine-year lock are still returned
   but flagged `locked=False`; PG&E publishes them for illustration only.
 
-### Known quirks in PG&E's published data
+### Edge cases in PG&E's published data
 
 Found by round-tripping the vendored matrices against all 1.75 million source
 rows. The library handles each; they are documented because they are surprising.
