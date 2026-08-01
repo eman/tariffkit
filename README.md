@@ -49,6 +49,7 @@ Nothing here touches the network at runtime.
 | [MQTT](docs/mqtt.md) | Publishing, with Home Assistant discovery |
 | [REST API](docs/web.md) | HTTP service |
 | [Home Assistant](docs/home-assistant.md) | Custom component and automations |
+| [Maintaining rate data](docs/data.md) | Regenerating export rates, updating the retail tariff and CCA cards |
 
 ## Install
 
@@ -156,22 +157,17 @@ python tools/regen_data.py --download --check    # exit 1 if upstream moved
 A weekly CI job runs `--check`, so a rate change surfaces as a failing build
 rather than as silent drift. Export files are updated by **October 1** of any
 year the CPUC adopts a new Avoided Cost Calculator; retail rates change more
-often, via advice letters (three times in the first half of 2026 alone).
+often, via advice letters (three times in the first half of 2026 alone) — that
+path is manual rather than scripted. See
+[docs/data.md](docs/data.md) for how to regenerate export rates and how to
+update the hand-transcribed retail tariff, ACC Plus adder, and CCA rate cards.
 
 ## Data sources
 
-| Data | Source |
-|---|---|
-| Export rates (NBT) | [`PGE-Solar-Billing-Plan-Export-Rates.zip`](https://www.pge.com/assets/pge/docs/vanities/PGE-Solar-Billing-Plan-Export-Rates.zip), linked from `pge.com/eecvalues` |
-| E-ELEC retail rates | [Schedule E-ELEC tariff sheet](https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-ELEC.pdf) |
-| ACC Plus adder | PG&E Schedule NBT |
-| Holiday calendar | Extracted from the `DayStart == 8` rows of the export files |
-
-OpenEI's URDB is deliberately **not** used. Its `sell` field is a scalar per
-period and cannot represent a 576-value export matrix, and its E-ELEC record
-misfiles the October–December weekday peak hours as summer off-peak, which
-yields wrong winter peak prices.
+See [docs/data.md](docs/data.md#data-sources) for the source of every vendored
+table and why OpenEI's URDB is deliberately not used.
 
 ## License
 
 MIT
+
