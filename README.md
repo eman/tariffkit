@@ -3,7 +3,7 @@
 Real-time and forecast electricity **import** and **export** prices for PG&E's
 **E-ELEC** rate plan under **NEM 3.0 / the Net Billing Tariff (NBT)**.
 
-Under NBT your export credit is not a time-of-use schedule — it is an hourly
+Under NBT your export credit is not a time-of-use schedule: it is an hourly
 Avoided Cost Calculator value that swings from about $0.06/kWh at midday to
 about $1.19/kWh on an August evening. Knowing what a kWh is worth right now, and
 what it will be worth over the next two days, is the input to every useful
@@ -27,7 +27,7 @@ for hour in curve.best_export_hours(3):
 ## Why it works offline
 
 PG&E publishes 20 years of hourly export rates per vintage, as CPUC Resolution
-E-5301 requires — roughly 40 MB of CSV per vintage. But that file is a lossless
+E-5301 requires (roughly 40 MB of CSV per vintage). But that file is a lossless
 expansion of a 576-cell matrix per year (12 months × 2 day types × 24 hours) per
 component. `nem-rates` collapses it at build time, verifying losslessness cell by
 cell, so the entire five-vintage dataset ships inside the wheel at **268 KiB**
@@ -91,7 +91,7 @@ base_services_charge_tier = 3
 
 - **Import price** is the marginal per-kWh cost: generation + distribution for
   the season and period, plus the flat riders. The AB 205 Base Services Charge
-  is a fixed $/day amount and is deliberately *excluded* — folding it into a
+  is a fixed $/day amount and is deliberately *excluded*: folding it into a
   $/kWh figure would corrupt any marginal dispatch decision. Read it separately
   via `engine.daily_fixed_charge()`.
 - **Export credit** is the generation component plus the delivery component,
@@ -120,7 +120,7 @@ rows. The library handles each; they are documented because they are surprising.
 
 If a Community Choice Aggregator supplies your generation, PG&E still delivers,
 and under NEM 3.0 you receive **only the delivery component** of the export
-credit from PG&E — generation compensation comes from the CCA.
+credit from PG&E; generation compensation comes from the CCA.
 
 An MCE rate card is vendored (generation by season/period, the Cost Relief
 Credit, Deep Green premium, and the 10% Solar Bonus Credit):
@@ -135,7 +135,7 @@ pcia_rate = 0.03476                # $/kWh, from your bill
 franchise_fee_surcharge = 0.00042  # $/kWh, from your bill
 ```
 
-For other CCAs, supply `generation_rates` directly — see
+For other CCAs, supply `generation_rates` directly; see
 [docs/configuration.md](docs/configuration.md). Until generation rates and a
 franchise fee are configured, CCA mode returns delivery-only prices flagged
 `complete = False` rather than quietly understating your rates.
@@ -157,8 +157,8 @@ python tools/regen_data.py --download --check    # exit 1 if upstream moved
 A weekly CI job runs `--check`, so a rate change surfaces as a failing build
 rather than as silent drift. Export files are updated by **October 1** of any
 year the CPUC adopts a new Avoided Cost Calculator; retail rates change more
-often, via advice letters (three times in the first half of 2026 alone) — that
-path is manual rather than scripted. See
+often, via advice letters (three times in the first half of 2026 alone), and
+that path is manual rather than scripted. See
 [docs/data.md](docs/data.md) for how to regenerate export rates and how to
 update the hand-transcribed retail tariff, ACC Plus adder, and CCA rate cards.
 

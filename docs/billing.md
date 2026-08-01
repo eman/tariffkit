@@ -1,6 +1,6 @@
 # Bill calculator
 
-Prices a billing cycle from interval meter data. Pure and dependency-free —
+Prices a billing cycle from interval meter data. Pure and dependency-free:
 readings in, decomposed charges out. It does not know or care where the readings
 came from.
 
@@ -21,7 +21,7 @@ start,imported,exported
 2026-07-02T09:00:00-07:00,0,2.6
 ```
 
-A signed `net` column works too — positive means import. Interval length is
+A signed `net` column works too, with positive meaning import. Interval length is
 inferred from the closest pair of timestamps, so 15-minute and hourly data both
 work without configuration.
 
@@ -71,7 +71,7 @@ without slicing it first.
 
 ## Reading the output
 
-`buckets` mirror how a statement prints — one line per season and TOU period,
+`buckets` mirror how a statement prints: one line per season and TOU period,
 with an effective `$/kWh`:
 
 ```
@@ -87,7 +87,7 @@ by line. Charges are positive and credits negative, so everything sums directly
 into `total`.
 
 `effective_import_rate` is the blended rate actually paid across the cycle. It
-is **not** a marginal rate — do not dispatch on it. Use
+is **not** a marginal rate; do not dispatch on it. Use
 `RateEngine.price_at()` for that.
 
 ## Data quality
@@ -109,7 +109,7 @@ if not bill.complete:
 
 Pass `check=False` to skip, or `--no-check` on the CLI.
 
-`bill.complete` also goes false when any priced hour was itself incomplete —
+`bill.complete` also goes false when any priced hour was itself incomplete,
 for example CCA export credits, which are currently unverified.
 
 ## Netting
@@ -133,8 +133,8 @@ direction separately, so it never changes what the bill totals.
 
 Single-cycle charges only. It does **not** model export-credit balances:
 month-to-month carryover, the annual true-up, Net Surplus Compensation, or the
-credit reversal at cash-out. Those are stateful across a program year — MCE runs
-April to March — and need a ledger built on top of this.
+credit reversal at cash-out. Those are stateful across a program year (MCE runs
+April to March) and need a ledger built on top of this.
 
 Two more known limits:
 

@@ -2,7 +2,7 @@
 
 Publishes the current price at each hour boundary, retained, with Home
 Assistant MQTT Discovery so sensors create themselves. **No custom component
-needed for this path** — if you already run an MQTT broker, this is the least
+needed for this path**: if you already run an MQTT broker, this is the least
 moving parts.
 
 ## Setup
@@ -11,7 +11,7 @@ moving parts.
 pip install 'nem-rates[mqtt]'
 ```
 
-Confirm your config first — the publisher inherits it:
+Confirm your config first; the publisher inherits it:
 
 ```bash
 nem-rates info
@@ -35,8 +35,8 @@ nem-rates mqtt --broker 192.168.1.100
 | `--tls` | off | |
 | `--topic-prefix` | `nem_rates` | |
 | `--forecast-hours` | 48 | Hours in the forecast payload |
-| `--no-discovery` | — | Skip the Home Assistant discovery config |
-| `--once` | — | Publish once and exit (good for cron) |
+| `--no-discovery` | n/a | Skip the Home Assistant discovery config |
+| `--once` | n/a | Publish once and exit (good for cron) |
 
 It sleeps until the next hour boundary rather than polling, so it costs
 essentially nothing to leave running.
@@ -79,7 +79,7 @@ as a flat hourly list for planners like EMHASS:
 ```
 
 Prices are reported as plain measurements with a `USD/kWh` unit, **not**
-`device_class: monetary` — Home Assistant rejects a monetary sensor whose unit
+`device_class: monetary`. Home Assistant rejects a monetary sensor whose unit
 is not a bare currency code.
 
 ## Run as a service
@@ -137,7 +137,7 @@ must match `--discovery-prefix` (default `homeassistant`).
 **Sensors show "unavailable".** The publisher is not running, or its last will
 fired. Check `systemctl status nem-rates-mqtt`.
 
-**Prices look wrong.** Run `nem-rates info` as the *service* user — a config
+**Prices look wrong.** Run `nem-rates info` as the *service* user; a config
 file in your own home directory is not visible to a systemd unit running as
 someone else. This is the most common cause of a service reporting bundled PG&E
 rates when you are on a CCA.

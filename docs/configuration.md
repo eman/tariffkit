@@ -1,6 +1,6 @@
 # Configuration
 
-Every entry point — library, CLI, MQTT, web, Home Assistant — prices from the
+Every entry point (library, CLI, MQTT, web, Home Assistant) prices from the
 same `Config` object. Get this right once and all of them agree.
 
 ## Where settings come from
@@ -109,7 +109,7 @@ the answer and are not:
   per-kWh line. Delivery is the sum of the two.
 - **PCIA** and **Franchise Fee Surcharge** print a dollar amount with no rate.
   Divide by the billed kWh to get $/kWh, and note the basis is not stated on
-  the bill — treat the result as derived.
+  the bill; treat the result as derived.
 
 Marginal cost of an imported kWh is the sum of every per-kWh line across both
 bills. The Base Services Charge is $/day and is deliberately excluded.

@@ -11,7 +11,7 @@ nem-rates serve                        # 127.0.0.1:8000
 nem-rates serve --host 0.0.0.0 --port 8080
 ```
 
-Every response is pure computation over vendored data — no upstream to call, no
+Every response is pure computation over vendored data: no upstream to call, no
 rate limit, nothing to cache-invalidate. Interactive docs at `/docs`.
 
 ## Endpoints
@@ -51,11 +51,11 @@ the vendored data returns 404.
 
 Check the flags before acting on a price:
 
-- `complete: false` — CCA generation rates are unconfigured; this is
+- `complete: false`: CCA generation rates are unconfigured; this is
   delivery-only and understates the real figure.
-- `locked: false` — past your nine-year rate lock; PG&E publishes these for
+- `locked: false`: past your nine-year rate lock; PG&E publishes these for
   illustration only.
-- `exact: false` — far-future year where PG&E's own hour labels drift.
+- `exact: false`: far-future year where PG&E's own hour labels drift.
 
 ## Custom config
 
@@ -111,7 +111,7 @@ docker run -p 8000:8000 \
   nem-rates
 ```
 
-The config file must be mounted — `NEM_RATES_*` variables cannot express CCA
+The config file must be mounted: `NEM_RATES_*` variables cannot express CCA
 settings, so `-e NEM_RATES_SUPPLIER=cca` alone will fail to start.
 
 ## Security

@@ -9,7 +9,7 @@ Two ways in. Pick one.
 | Setup | one CLI command | copy files, restart, UI config flow |
 | Config | your config file | HA's UI |
 
-If you already run an MQTT broker, **use the MQTT path** — see
+If you already run an MQTT broker, **use the MQTT path**; see
 [mqtt.md](mqtt.md). It is fewer moving parts and does not need HA restarts. The
 custom component is the better fit if you would rather keep everything inside
 Home Assistant and configure it in the UI.
@@ -52,8 +52,8 @@ Build the wheel with `uv build` from the repo root; it lands in `dist/`.
 ## Configuration
 
 The config flow asks for supplier, interconnection year, PTO date, ACC Plus
-segment, CARE/FERA discount, Base Services Charge tier, forecast hours, and —
-for CCA service — CCA name, PCIA vintage, franchise fee surcharge, and export
+segment, CARE/FERA discount, Base Services Charge tier, forecast hours, and,
+for CCA service, CCA name, PCIA vintage, franchise fee surcharge, and export
 generation rate. Values are validated against the library before the entry is
 created, so a bad combination is rejected in the form rather than at runtime.
 
@@ -79,7 +79,7 @@ default because it is a fixed daily amount, not a marginal price, and mixing it
 into energy dashboards produces nonsense.
 
 **Entity IDs are assigned by Home Assistant**, derived from the device name and
-the sensor name — typically `sensor.pg_e_rates_import_price`. Confirm the actual
+the sensor name, typically `sensor.pg_e_rates_import_price`. Confirm the actual
 IDs under **Settings → Devices & Services → PG&E Rates → entities** before
 writing automations against them, and rename there if you want something
 shorter. The examples below use `sensor.pg_e_rates_*`; substitute whatever your
@@ -132,7 +132,7 @@ template:
 
 ## Troubleshooting
 
-**Integration will not load.** Almost always the missing `nem-rates` library —
+**Integration will not load.** Almost always the missing `nem-rates` library;
 see the dependency note above. Check **Settings → System → Logs**.
 
 **Prices look like bundled PG&E when you are on a CCA.** Reconfigure the
@@ -141,9 +141,9 @@ against your bill using the method in
 [configuration.md](configuration.md#verifying-against-a-bill).
 
 **Export price looks far too low.** Expected on CCA service: PG&E pays you only
-the delivery component. Check the `complete` attribute — `false` means CCA
+the delivery component. Check the `complete` attribute: `false` means CCA
 generation compensation is not configured and the figure understates reality.
 
 **Sensors stop updating.** The coordinator recomputes every minute from local
-data; there is no network call to fail. A stall means the integration errored —
+data; there is no network call to fail. A stall means the integration errored;
 check the logs.

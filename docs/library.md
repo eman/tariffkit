@@ -22,7 +22,7 @@ point.spread  # export - import; positive favours exporting
 ```
 
 Every public API takes **timezone-aware** datetimes. Naive ones raise rather
-than being guessed at — a silent eight-hour error is worse than a traceback.
+than being guessed at: a silent eight-hour error is worse than a traceback.
 
 ```python
 from datetime import datetime
@@ -93,7 +93,7 @@ bill; exclude it when deciding what to do with the next kWh.
 `import_price.total` is what an additional imported kWh costs. For a solar
 customer that only applies in hours where you are **net importing**. In an hour
 where you are exporting, consuming one more kWh costs you the export credit you
-forgo — `export_price.total` — which can be several times smaller. Pick the
+forgo (`export_price.total`), which can be several times smaller. Pick the
 right side based on your live production and load.
 
 ## Provenance
