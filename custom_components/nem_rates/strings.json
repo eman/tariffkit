@@ -1,0 +1,91 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "PG&E NEM 3.0 Rates",
+        "description": "Prices come from rate data bundled with the integration; nothing is fetched at runtime. {detail}",
+        "data": {
+          "supplier": "Generation supplier",
+          "interconnection_year": "Interconnection application year",
+          "pto_date": "Permission-To-Operate date",
+          "acc_plus_segment": "ACC Plus segment",
+          "discount": "CARE / FERA discount",
+          "base_services_charge_tier": "Base Services Charge income tier",
+          "cca_name": "CCA name",
+          "cca_pcia_vintage": "CCA PCIA vintage year",
+          "cca_franchise_fee_surcharge": "Franchise fee surcharge ($/kWh)",
+          "cca_export_generation_rate": "CCA export generation rate ($/kWh)",
+          "forecast_hours": "Forecast hours"
+        },
+        "data_description": {
+          "interconnection_year": "Selects your NBT vintage and ACC Plus rate.",
+          "pto_date": "Starts your nine-year rate lock.",
+          "base_services_charge_tier": "1 = CARE-eligible, 2 = FERA, 3 = standard.",
+          "cca_franchise_fee_surcharge": "Only for CCA or Direct Access customers. Not published on the E-ELEC sheet, so it must come from your provider.",
+          "cca_export_generation_rate": "Under NEM 3.0 PG&E pays CCA customers the delivery component only; generation compensation comes from your CCA."
+        }
+      }
+    },
+    "error": {
+      "invalid_config": "Invalid configuration: {detail}"
+    },
+    "abort": {
+      "already_configured": "This service agreement is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "PG&E NEM 3.0 Rates",
+        "description": "{detail}",
+        "data": {
+          "supplier": "Generation supplier",
+          "interconnection_year": "Interconnection application year",
+          "pto_date": "Permission-To-Operate date",
+          "acc_plus_segment": "ACC Plus segment",
+          "discount": "CARE / FERA discount",
+          "base_services_charge_tier": "Base Services Charge income tier",
+          "cca_name": "CCA name",
+          "cca_pcia_vintage": "CCA PCIA vintage year",
+          "cca_franchise_fee_surcharge": "Franchise fee surcharge ($/kWh)",
+          "cca_export_generation_rate": "CCA export generation rate ($/kWh)",
+          "forecast_hours": "Forecast hours"
+        }
+      }
+    },
+    "error": {
+      "invalid_config": "Invalid configuration: {detail}"
+    }
+  },
+  "selector": {
+    "supplier": {
+      "options": {
+        "bundled": "PG&E bundled",
+        "cca": "Community Choice Aggregator"
+      }
+    },
+    "acc_plus_segment": {
+      "options": {
+        "residential": "Residential",
+        "residential_low_income": "Residential low income (CARE/FERA)",
+        "none": "Not eligible"
+      }
+    },
+    "discount": {
+      "options": {
+        "none": "None",
+        "care": "CARE",
+        "fera": "FERA"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "import_price": { "name": "Import Price" },
+      "export_price": { "name": "Export Price" },
+      "spread": { "name": "Export Spread" },
+      "tou_period": { "name": "TOU Period" },
+      "daily_fixed_charge": { "name": "Base Services Charge" }
+    }
+  }
+}

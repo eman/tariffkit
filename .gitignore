@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.env
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Upstream source archives fetched by tools/regen_data.py — large, not vendored.
+# The normalized outputs under src/nem_rates/data/ ARE committed.
+/.cache/
+*.zip
+!tests/fixtures/*.zip
+
+.DS_Store

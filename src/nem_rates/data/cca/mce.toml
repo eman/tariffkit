@@ -1,0 +1,68 @@
+# MCE (Marin Clean Energy) residential generation rates.
+#
+# Source: MCE Light Green Residential Rates, effective April 1, 2026
+#   https://mcecleanenergy.org/wp-content/uploads/2025/09/MCE-website-rate-table_RES_as-of-4.1.26.pdf
+# Solar Billing Plan tariff (effective 2023-12-01, rev. 2024-12-04):
+#   https://mcecleanenergy.org/wp-content/uploads/2024/12/MCE-Solar-Billing-Plan-Tariff_120424.pdf
+#
+# MCE calls the schedule "ELEC - Residential Time-of-Use for Qualified Electric
+# Technologies"; it pairs with PG&E's E-ELEC delivery service and appears on
+# bills as "SBP EELEC" for Solar Billing Plan customers.
+#
+# NOTE: every one of these six values is currently IDENTICAL to PG&E's bundled
+# generation component. That is not an error and not an alias -- MCE prices this
+# schedule at parity today. They are vendored separately because nothing
+# guarantees that continues, and a future divergence must not go unnoticed.
+# tests/test_mce.py asserts the parity so it fails loudly if MCE moves.
+
+schema = 1
+provider = "MCE"
+name = "Marin Clean Energy"
+utility = "PGE"
+tariff = "E-ELEC"
+effective = "2026-04-01"
+currency = "USD/kWh"
+source_url = "https://mcecleanenergy.org/compare-rates-and-options/"
+
+# TOU periods and season boundaries match PG&E's E-ELEC sheet exactly:
+# peak 4-9pm every day, part-peak 3-4pm and 9pm-midnight, summer Jun 1 - Sep 30.
+
+[generation.summer]
+peak = 0.26299
+part_peak = 0.16388
+off_peak = 0.11878
+
+[generation.winter]
+peak = 0.10086
+part_peak = 0.08089
+off_peak = 0.06754
+
+# Applied to all generation kWh. Explicitly time-limited -- the rate card says
+# "Runs through December 31, 2026" -- so it is dated rather than folded into the
+# rates above, and stops applying on its own afterwards.
+[cost_relief_credit]
+rate = -0.00620
+through = "2026-12-31"
+
+# Deep Green (100% renewable) costs the Light Green rate plus this adder.
+[options]
+light_green = 0.0
+deep_green = 0.0125
+
+[export]
+# "All customers will also receive a Solar Bonus Credit which provides an
+# additional 10% of the base export credit." -- SBP tariff section 1.
+solar_bonus_fraction = 0.10
+
+# CARE/FERA customers only, on all exports, additional to the above.
+care_fera_bonus_rate = 0.05
+care_fera_bonus_through = "2028-12-31"
+
+# MCE does not publish a machine-readable Energy Export Credit matrix; the
+# tariff says only that exports are credited at "the applicable Energy Export
+# Credit Value, which reflects the value of power to the grid at any given
+# time". Whether that equals the CPUC Avoided Cost Calculator generation
+# component (PG&E's USCA-XXPG series) is UNVERIFIED. Until confirmed, treat the
+# generation half of an MCE export credit as an estimate.
+export_credit_basis = "assumed_acc_generation"
+export_credit_verified = false

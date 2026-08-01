@@ -1,0 +1,56 @@
+{
+  "archive_sha256": "9b554698025ed0cdaea0d48ab1ed1a58834f30d4af4e2cad2b879349626356d3",
+  "source_url": "https://www.pge.com/assets/pge/docs/vanities/PGE-Solar-Billing-Plan-Export-Rates.zip",
+  "vintages": {
+    "NBT00": {
+      "exact_through": 2035,
+      "file": "export/pge/nbt00.json.gz",
+      "member": "PG&E NBT EEC Values Floating Vintage.csv",
+      "member_sha256": "6e93d289a54c0d0f253bdaa2c7560555047cf91db85dc1810cc9ec1e9a003f6d",
+      "years": [
+        2025,
+        2044
+      ]
+    },
+    "NBT23": {
+      "exact_through": 2043,
+      "file": "export/pge/nbt23.json.gz",
+      "member": "PG&E NBT EEC Values 2023 Vintage.csv",
+      "member_sha256": "d1d26b9ba0f7e89ed2b494c1b3b0ba49c3a3a23aa705af4d5ef0f90015136a14",
+      "years": [
+        2024,
+        2043
+      ]
+    },
+    "NBT24": {
+      "exact_through": 2043,
+      "file": "export/pge/nbt24.json.gz",
+      "member": "PG&E NBT EEC Values 2024 Vintage.csv",
+      "member_sha256": "e5740de7b9e19d05d59ac06640544de4fdf8aa74b8f9b87fd061b9de7efa4b16",
+      "years": [
+        2024,
+        2043
+      ]
+    },
+    "NBT25": {
+      "exact_through": 2035,
+      "file": "export/pge/nbt25.json.gz",
+      "member": "PG&E NBT EEC Values 2025 Vintage.csv",
+      "member_sha256": "5886394c72b435d899083a5ed86f8f33a3344909057bf395ad607b57559dfb85",
+      "years": [
+        2025,
+        2044
+      ]
+    },
+    "NBT26": {
+      "exact_through": 2036,
+      "file": "export/pge/nbt26.json.gz",
+      "member": "PG&E NBT EEC Values 2026 Vintage.csv",
+      "member_sha256": "a288b8124939b0a87ba8f56ef01973d9dae75d9974288ee260585d737d617fa3",
+      "years": [
+        2026,
+        2045
+      ]
+    }
+  }
+}

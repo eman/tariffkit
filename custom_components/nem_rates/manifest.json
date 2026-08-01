@@ -1,0 +1,12 @@
+{
+  "domain": "nem_rates",
+  "name": "PG&E NEM 3.0 Rates",
+  "codeowners": ["@emansl"],
+  "config_flow": true,
+  "documentation": "https://github.com/emansl/nem-rates",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/emansl/nem-rates/issues",
+  "requirements": ["nem-rates>=0.1.0"],
+  "version": "0.1.0"
+}
