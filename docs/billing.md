@@ -34,9 +34,14 @@ Override detection when needed:
 ```python
 from nem_rates.billing import CsvLayout, read_csv
 
-readings = read_csv("meter.csv", CsvLayout(
-    start="Interval Start", imported="Consumption (kWh)", exported="Surplus (kWh)",
-))
+readings = read_csv(
+    "meter.csv",
+    CsvLayout(
+        start="Interval Start",
+        imported="Consumption (kWh)",
+        exported="Surplus (kWh)",
+    ),
+)
 ```
 
 ## Library use
@@ -52,11 +57,11 @@ bill = engine.compute(
     BillingPeriod(date(2026, 7, 2), date(2026, 7, 28)),
 )
 
-bill.total              # charges + credits + fixed
-bill.energy_charges     # positive
-bill.export_credits     # negative
-bill.fixed_charges      # Base Services Charge over the cycle's days
-bill.buckets            # per season/TOU period, mirroring printed bill lines
+bill.total  # charges + credits + fixed
+bill.energy_charges  # positive
+bill.export_credits  # negative
+bill.fixed_charges  # Base Services Charge over the cycle's days
+bill.buckets  # per season/TOU period, mirroring printed bill lines
 bill.import_components  # {'distribution': 43.27, 'cca_generation': 42.74, ...}
 ```
 
