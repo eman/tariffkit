@@ -3,6 +3,17 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- PCIA vintage 2011 for E-ELEC CCA customers. It is **bill-derived, not
+  transcribed from the tariff sheet**: PG&E bills a rounded dollar total, so two
+  statements naming the vintage were intersected to bracket the rate to
+  [0.034707, 0.034957] and the midpoint vendored. Marked as such in the data
+  file, and `tests/test_eelec.py` pins it inside that bracket so replacing it
+  with the published figure is a visible change. Previously `pcia_vintage = 2011`
+  raised `ConfigError`.
+
 ## [0.1.0] - 2026-07-28
 
 Initial release.

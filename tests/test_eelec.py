@@ -182,3 +182,21 @@ class TestCca:
         config = self._config(name="MCE", pcia_vintage=2015)
         with pytest.raises(ConfigError, match="no PCIA rate vendored"):
             EelecTariff(config).price_at(pt(2026, 7, 15, 17))
+
+    def test_2011_vintage_is_bill_derived_and_within_its_bracket(self) -> None:
+        """The 2011 rate is inferred from bills, not read off the tariff sheet.
+
+        PG&E bills a rounded dollar total, so each statement only brackets the
+        rate. Two independent periods from the same account, both naming the 2011
+        vintage, intersect to a 0.00025 wide window. This pins the vendored value
+        inside it, so replacing it with the published figure later is a visible
+        change rather than a silent one.
+        """
+        config = self._config(name="MCE", pcia_vintage=2011)
+        rate = EelecTariff(config).price_at(pt(2026, 7, 15, 17)).components["pcia"]
+
+        july = (0.815 / 23.589, 0.825 / 23.589)
+        august = (1.385 / 39.906, 1.395 / 39.906)
+        low, high = max(july[0], august[0]), min(july[1], august[1])
+        assert low < rate < high
+        assert rate == pytest.approx((low + high) / 2, abs=5e-6)

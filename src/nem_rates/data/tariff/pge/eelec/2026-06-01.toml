@@ -84,11 +84,21 @@ bundled_pcia = -0.01011
 drop_components = ["generation", "bundled_pcia"]
 
 # Vintaged PCIA a CCA/DA customer pays instead of the bundled PCIA, keyed by the
-# year their generation service began. Partial: only the vintages verified
-# against the tariff sheet are listed. An unlisted vintage raises rather than
-# silently interpolating.
+# year their generation service began. Partial: an unlisted vintage raises rather
+# than silently interpolating.
+#
+# Every entry is transcribed from the tariff sheet EXCEPT where marked
+# "bill-derived" -- those are inferred from billed dollar amounts and carry that
+# rounding. Replace a bill-derived entry with the published figure when you have
+# it; do not assume the two agree to the fifth decimal.
 [cca.pcia_vintages]
 2009 = 0.02973
+# Bill-derived, NOT tariff-verified. PG&E bills a rounded dollar total, so each
+# statement only brackets the rate; two independent periods narrow it:
+#   2026-07 statement  $0.82 / 23.589 kWh -> [0.034550, 0.034974]
+#   2026-08 statement  $1.39 / 39.906 kWh -> [0.034707, 0.034957]
+# Intersection [0.034707, 0.034957]; midpoint below, so worst case ~0.00013/kWh.
+2011 = 0.03483
 2021 = 0.05264
 2022 = 0.05272
 2023 = 0.05380
