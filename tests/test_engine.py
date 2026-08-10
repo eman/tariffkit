@@ -9,7 +9,15 @@ import pytest
 from nem_rates import Config, RateEngine, Supplier
 from nem_rates.config import CcaConfig
 from nem_rates.errors import ConfigError, OutOfRangeError
-from nem_rates.timeutil import PACIFIC, DayType, day_type, export_hour, holidays, is_holiday
+from nem_rates.timeutil import (
+    PACIFIC,
+    DayType,
+    day_type,
+    export_hour,
+    holidays,
+    is_holiday,
+    next_hour,
+)
 
 
 def pt(year: int, month: int, day: int, hour: int) -> datetime:
@@ -101,6 +109,49 @@ class TestDaylightSaving:
         assert [p.start.hour for p in curve].count(1) == 2
         assert curve[-1].start.day == 1
         assert curve[-1].start.hour == 23
+
+    @pytest.mark.parametrize(
+        ("start", "hours"),
+        [(pt(2026, 11, 1, 0), 25), (pt(2027, 3, 14, 0), 23)],
+        ids=["fall-back", "spring-forward"],
+    )
+    def test_every_point_spans_exactly_one_real_hour(
+        self, engine: RateEngine, start: datetime, hours: int
+    ) -> None:
+        """``end`` must be an hour of absolute time, not of wall clock.
+
+        Computed by wall clock, the fall-back day's first 01:00 ran to 02:00 PST --
+        two real hours, overlapping the second 01:00 entirely. Consumers that read
+        the explicit start/end pairs (Predbat) need them contiguous and disjoint.
+        """
+        curve = engine.forecast(hours=hours, start=start)
+        for point in curve:
+            span = point.end.astimezone(UTC) - point.start.astimezone(UTC)
+            assert span == timedelta(hours=1), f"{point.start.isoformat()} spans {span}"
+
+        instants = [p.start.astimezone(UTC) for p in curve]
+        assert len(set(instants)) == len(instants)
+        for earlier, later in zip(curve.points, curve.points[1:], strict=False):
+            assert earlier.end.astimezone(UTC) == later.start.astimezone(UTC)
+
+    def test_next_hour_advances_one_real_hour(self) -> None:
+        """The MQTT publisher sleeps until this.
+
+        Computed by wall clock, the first 01:00 PDT advanced to 02:00 PST -- two
+        hours -- so an hourly publisher skipped the second 01:00 entirely and
+        left its retained topics an hour stale.
+        """
+        first = datetime(2026, 11, 1, 1, tzinfo=PACIFIC, fold=0)
+        second = next_hour(first)
+        assert second.astimezone(UTC) - first.astimezone(UTC) == timedelta(hours=1)
+        assert (second.hour, second.utcoffset()) == (1, timedelta(hours=-8))
+        # ...and from the repeated hour it finally moves on to 02:00.
+        assert next_hour(second).hour == 2
+
+    @pytest.mark.parametrize("hour", [0, 5, 12, 23])
+    def test_next_hour_is_an_hour_away_on_ordinary_days(self, hour: int) -> None:
+        moment = pt(2026, 7, 15, hour)
+        assert next_hour(moment).astimezone(UTC) - moment.astimezone(UTC) == timedelta(hours=1)
 
     def test_repeated_hour_is_priced_as_hour_two(self) -> None:
         """PG&E gives the second 01:00 the HS2 label, so it must price as 2am."""

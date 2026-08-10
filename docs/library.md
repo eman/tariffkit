@@ -50,7 +50,50 @@ for point in curve:
 ```
 
 DST is handled by stepping in absolute time: the spring-forward day yields 23
-distinct hours and the fall-back day 25.
+distinct hours and the fall-back day 25. Every point spans exactly one hour of
+absolute time, so `end` is contiguous with the next `start` across both
+transitions.
+
+## Interoperability
+
+`nem_rates.interop` renders a curve into the shapes other energy management
+systems already read, so neither Home Assistant nor a template layer has to do
+the reshaping.
+
+```python
+from nem_rates.interop import forecast_lists, predbat_payload, resample
+from nem_rates.timeutil import now_pacific
+
+resample(curve, 30)  # tuple[PricePoint, ...] on 30-minute boundaries
+
+forecast_lists(curve, since=now_pacific())
+# {'load_cost_forecast': [0.55214, 0.55214, ...],
+#  'prod_price_forecast': [...],
+#  'prediction_horizon': 95}              EMHASS runtime parameters, dollars
+
+predbat_payload(engine)
+# {'import': {'raw_today': [{'start': ..., 'end': ..., 'value': 55.214}, ...],
+#             'raw_tomorrow': [...]},
+#  'export': {...}}                       Predbat entity attributes, cents
+```
+
+Three things to know:
+
+- **Predbat values are cents, EMHASS values are dollars.** Predbat assumes pence
+  per kWh and several of its thresholds are tuned to that magnitude.
+- **`predbat_payload` takes an engine, not a curve**, because Predbat's
+  `raw_today` means a calendar day. It builds its own curve anchored to local
+  midnight; handing it a forecast starting at the current hour would leave the
+  morning missing.
+- **EMHASS lists are positional**, matched to its slots by index rather than by
+  timestamp, so pass `since` to drop already-elapsed slots. Both default to
+  30-minute resolution, which is the `optimization_time_step` EMHASS ships with.
+  `forecast_payload` gives the same data keyed by timestamp, for consumers that
+  accept a mapping.
+
+Resampling repeats each hourly price across its sub-slots rather than
+interpolating. That is exact, not an approximation: the tariff assigns one rate
+to the whole clock hour, and no finer data exists upstream.
 
 ## Check the flags
 

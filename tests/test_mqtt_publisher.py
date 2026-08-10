@@ -100,6 +100,52 @@ def test_attributes_carry_the_component_breakdown(publisher: MqttPublisher) -> N
     assert payload["locked"] is True
 
 
+def test_attributes_carry_the_predbat_rate_lists(publisher: MqttPublisher) -> None:
+    publisher.publish_now(datetime(2026, 9, 15, 19, tzinfo=PACIFIC))
+    payload = json.loads(client_of(publisher).topics()["nem_rates/import_price/attributes"])
+
+    assert len(payload["raw_today"]) == 48  # a full calendar day, not from 19:00
+    assert len(payload["raw_tomorrow"]) == 48
+    assert set(payload["raw_today"][0]) == {"start", "end", "value"}
+    assert payload["raw_today"][0]["start"].endswith("T00:00:00-07:00")
+
+
+def test_predbat_values_are_cents(publisher: MqttPublisher) -> None:
+    """Predbat assumes pence, so dollars would be off by 100x against its defaults."""
+    publisher.publish_now(datetime(2026, 9, 15, 19, tzinfo=PACIFIC))
+    payload = json.loads(client_of(publisher).topics()["nem_rates/export_price/attributes"])
+
+    at_seven_pm = [e for e in payload["raw_today"] if e["start"].endswith("T19:00:00-07:00")]
+    assert at_seven_pm[0]["value"] == 60.385  # the state topic publishes 0.60385
+
+
+def test_attributes_carry_the_emhass_series(publisher: MqttPublisher) -> None:
+    publisher.publish_now(datetime(2026, 9, 15, 19, tzinfo=PACIFIC))
+    topics = client_of(publisher).topics()
+    imports = json.loads(topics["nem_rates/import_price/attributes"])
+    exports = json.loads(topics["nem_rates/export_price/attributes"])
+
+    assert "load_cost_forecast" in imports and "prod_price_forecast" not in imports
+    assert "prod_price_forecast" in exports and "load_cost_forecast" not in exports
+    # Bare lists, not timestamped maps: EMHASS reads them positionally.
+    assert isinstance(imports["load_cost_forecast"], list)
+    # Dollars, unlike the Predbat lists alongside them.
+    assert imports["load_cost_forecast"][0] == 0.55214
+    assert exports["prod_price_forecast"][0] == 0.60385
+    # 48 hours at EMHASS's 30-minute default, and the horizon travels with them.
+    assert imports["prediction_horizon"] == len(imports["load_cost_forecast"]) == 96
+
+
+def test_emhass_series_aligns_to_an_off_hour_publish(publisher: MqttPublisher) -> None:
+    """`--once` from cron lands at an arbitrary minute, not on the hour."""
+    publisher.publish_now(datetime(2026, 9, 15, 19, 45, tzinfo=PACIFIC))
+    payload = json.loads(client_of(publisher).topics()["nem_rates/import_price/attributes"])
+
+    # The 19:00-19:30 slot has already elapsed, so the list starts at 19:30.
+    assert payload["prediction_horizon"] == 95
+    assert len(payload["load_cost_forecast"]) == 95
+
+
 def test_forecast_attribute_is_a_flat_hourly_list(publisher: MqttPublisher) -> None:
     """Planners such as EMHASS consume this shape directly."""
     publisher.publish_now(datetime(2026, 9, 15, 12, tzinfo=PACIFIC))
