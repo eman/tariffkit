@@ -162,14 +162,23 @@ class TestExport:
         assert RateEngine(config()).price_at(at(19, month=9)).export_price.complete is True
 
     def test_export_components_reproduce_the_reconciled_cycle_rates(self) -> None:
-        """Guards the numbers that reconciliation actually pinned.
+        """Pins the absolute values the reconciliation rests on.
 
-        A change to the ACC generation lookup or the bonus fractions would move
-        these and silently invalidate the verification above.
+        ``export_credit_verified = true`` is only honest while these hold. They
+        are asserted absolutely, not against each other: checking that the solar
+        bonus is 10% of whatever ``cca_generation`` happens to be would still pass
+        if the ACC generation lookup drifted, silently invalidating the flag.
         """
         price = RateEngine(config()).price_at(at(19, month=9)).export_price
-        assert set(price.components) >= {"cca_generation", "delivery", "acc_plus"}
+        assert price.components["cca_generation"] == pytest.approx(0.59312)
+        assert price.components["delivery"] == pytest.approx(0.00193)
         assert price.components["acc_plus"] == pytest.approx(0.00880)
+        assert price.components["cca_solar_bonus"] == pytest.approx(0.059312)
+        assert price.total == pytest.approx(0.663162)
+
+    def test_solar_bonus_tracks_the_generation_credit(self) -> None:
+        """The 10% relationship, separately from the absolute values above."""
+        price = RateEngine(config()).price_at(at(19, month=9)).export_price
         assert price.components["cca_solar_bonus"] == pytest.approx(
             price.components["cca_generation"] * 0.10
         )

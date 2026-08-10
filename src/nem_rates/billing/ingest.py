@@ -43,9 +43,10 @@ START_CANDIDATES = (
 IMPORT_CANDIDATES = ("imported", "import", "import_kwh", "delivered", "consumption", "usage", "kwh")
 EXPORT_CANDIDATES = ("exported", "export", "export_kwh", "received", "surplus", "production")
 NET_CANDIDATES = ("net", "net_kwh", "net_usage")
-#: Split date/time pairs, as PG&E's interval export uses. Tried only when no
-#: single timestamp column is found, since one column may legitimately be named
-#: "date" and still hold a full ISO timestamp.
+#: Split date/time pairs, as PG&E's interval export uses. A matching pair takes
+#: precedence over a single timestamp column, because PG&E's time column is named
+#: "START TIME" and would otherwise be mistaken for a whole timestamp. A date
+#: column with no time column beside it falls back to being read as one.
 DATE_CANDIDATES = ("date", "usage_date", "read_date", "interval_date")
 TIME_CANDIDATES = ("start_time", "time", "interval_start_time", "hour")
 
@@ -68,7 +69,8 @@ class CsvLayout:
     """
 
     start: str | None = None
-    #: Split date/time pair, used only when there is no single ``start`` column.
+    #: Split date/time pair. Setting both takes precedence over ``start``; set
+    #: neither and a pair is still auto-detected ahead of a single column.
     date: str | None = None
     time: str | None = None
     imported: str | None = None
