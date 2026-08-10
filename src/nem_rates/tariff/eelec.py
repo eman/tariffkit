@@ -150,8 +150,24 @@ class EelecTariff:
                     )
                 components["pcia"] = float(table[key])
 
+            # Same precedence as the PCIA above: an explicit rate wins, then the
+            # vendored Schedule E-FFS table, which is vintaged off the same year.
             if cca.franchise_fee_surcharge is not None:
                 components["franchise_fee_surcharge"] = cca.franchise_fee_surcharge
+            elif cca.pcia_vintage is not None:
+                ffs_table = snapshot.raw["cca"]["franchise_fee_vintages"]
+                key = str(cca.pcia_vintage)
+                if key not in ffs_table:
+                    # Reaching here means the two vintaged tables disagree, since
+                    # the PCIA lookup above already accepted this year. That is a
+                    # vendoring bug, not a gap in the user's config, so it raises
+                    # rather than degrading to complete=False -- which means
+                    # something quite different and much larger.
+                    raise ConfigError(
+                        f"vintage {cca.pcia_vintage} has a PCIA rate but no franchise fee "
+                        f"surcharge; vendored franchise fee vintages: {sorted(ffs_table)}"
+                    )
+                components["franchise_fee_surcharge"] = float(ffs_table[key])
             else:
                 complete = False
 

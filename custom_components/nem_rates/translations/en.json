@@ -21,7 +21,7 @@
           "interconnection_year": "Selects your NBT vintage and ACC Plus rate.",
           "pto_date": "Starts your nine-year rate lock.",
           "base_services_charge_tier": "1 = CARE-eligible, 2 = FERA, 3 = standard.",
-          "cca_franchise_fee_surcharge": "Only for CCA or Direct Access customers. Not published on the E-ELEC sheet, so it must come from your provider.",
+          "cca_franchise_fee_surcharge": "Optional. Leave blank to use the vendored Schedule E-FFS rate for your PCIA vintage; set it only to override.",
           "cca_export_generation_rate": "Under NEM 3.0 PG&E pays CCA customers the delivery component only; generation compensation comes from your CCA."
         }
       }

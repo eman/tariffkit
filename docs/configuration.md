@@ -32,8 +32,7 @@ base_services_charge_tier = 3      # 1 = CARE, 2 = FERA, 3 = standard
 name = "MCE"
 rate_card = "mce"                  # vendored; see below
 option = "light_green"             # or "deep_green" (+$0.0125/kWh)
-pcia_rate = 0.03476                # $/kWh, from your bill
-franchise_fee_surcharge = 0.00042  # $/kWh, from your bill
+pcia_vintage = 2011                # the year your bill names; see below
 ```
 
 Bundled PG&E service needs no config file at all.
@@ -52,6 +51,22 @@ Bundled PG&E service needs no config file at all.
 
 `[cca]` keys: `name`, `rate_card`, `option`, `pcia_rate`, `pcia_vintage`,
 `franchise_fee_surcharge`, `generation_rates`, `export_generation_rate`.
+
+### PCIA and the franchise fee surcharge
+
+Set **`pcia_vintage`** and both are handled. They are vintaged off the same
+year, and the published tables for 2009–2026 are vendored: the PCIA from
+Schedule E-ELEC Sheet 5, the franchise fee from Schedule E-FFS.
+
+Your bill names the vintage. Look for a line like *"2011 Vintaged Power Charge
+Indifference Adjustment"* under the Solar Billing Plan or electric delivery
+detail.
+
+`pcia_rate` and `franchise_fee_surcharge` still exist and still take precedence,
+for a vintage that is not vendored (the sheet's "Pre-2009" bucket, or a year
+newer than the vendored sheet). Prefer the vintage: a rate reverse-engineered
+from a billed dollar amount inherits that amount's rounding, which on a small
+bill can be several percent.
 
 ## Environment variables
 
@@ -80,8 +95,7 @@ For any other CCA, supply rates directly:
 ```toml
 [cca]
 name = "Ava Community Energy"
-franchise_fee_surcharge = 0.00042
-pcia_rate = 0.03476
+pcia_vintage = 2011                # covers the franchise fee surcharge too
 
 [cca.generation_rates.summer]
 peak = 0.26299
@@ -96,7 +110,8 @@ off_peak = 0.06754
 
 Until generation rates and a franchise fee are supplied, CCA mode returns
 delivery-only prices flagged `complete = False` rather than a plausible-looking
-wrong total. Check that flag before acting on a price.
+wrong total. Check that flag before acting on a price. Setting `pcia_vintage`
+satisfies the franchise fee half on its own.
 
 ## Reading your bill
 

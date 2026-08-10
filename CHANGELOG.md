@@ -3,6 +3,26 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- The complete PCIA vintage table, 2009 through 2026, from Schedule E-ELEC
+  Sheet 5. Eleven vintages were missing (2010 and 2012–2020), so
+  `pcia_vintage = 2011` — the vintage named on a real MCE statement — raised
+  `ConfigError` and the only way through was a hand-derived `pcia_rate`.
+- The Schedule E-FFS franchise fee surcharge table, 2009 through 2026,
+  residential. It is vintaged off the same year as the PCIA, so **setting
+  `pcia_vintage` now resolves both** and a CCA price reaches `complete = True`
+  without any hand-entered rates. The tariff data previously recorded that this
+  surcharge was "not published and must not be guessed"; it is published, in a
+  separate schedule.
+
+### Notes
+- Both tables were reconciled against two statements for a 2011-vintage MCE
+  account: $0.03492 × 23.589 kWh = $0.82 and × 39.906 kWh = $1.39;
+  $0.00060 × 23.589 = $0.01 and × 39.906 = $0.02, all four as billed. With them,
+  a full CCA import price reproduces that account's bill exactly rather than to
+  the $0.00015/kWh that hand-derived rates achieved.
 ## [0.2.0] - 2026-08-09
 
 ### Added
