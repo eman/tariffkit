@@ -85,6 +85,8 @@ When an advice letter or rate card update changes one of these tables:
 |---|---|
 | Export rates (NBT) | [`PGE-Solar-Billing-Plan-Export-Rates.zip`](https://www.pge.com/assets/pge/docs/vanities/PGE-Solar-Billing-Plan-Export-Rates.zip), linked from `pge.com/eecvalues` |
 | E-ELEC retail rates | [Schedule E-ELEC tariff sheet](https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-ELEC.pdf) |
+| PCIA vintages | Schedule E-ELEC, Sheet 5 ("Vintage Power Charge Indifference Adjustment") |
+| Franchise fee vintages | [Schedule E-FFS](https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-FFS.pdf), residential row |
 | ACC Plus adder | PG&E Schedule NBT |
 | Holiday calendar | Extracted from the `DayStart == 8` rows of the export files |
 | MCE generation rates | [MCE residential rate table](https://mcecleanenergy.org/compare-rates-and-options/) |

@@ -178,25 +178,72 @@ class TestCca:
         assert price.components["pcia"] == pytest.approx(0.05066)
         assert price.components["franchise_fee_surcharge"] == pytest.approx(0.0009)
 
-    def test_unknown_pcia_vintage_raises_rather_than_interpolating(self) -> None:
-        config = self._config(name="MCE", pcia_vintage=2015)
+    @pytest.mark.parametrize("vintage", [2008, 2027])
+    def test_unknown_pcia_vintage_raises_rather_than_interpolating(self, vintage: int) -> None:
+        """The sheet publishes 2009 through 2026 and nothing either side.
+
+        2008 falls in the sheet's "Pre-2009" bucket, which is deliberately not
+        vendored; 2027 does not exist yet. Both must raise rather than being
+        extrapolated off the nearest year.
+        """
+        config = self._config(name="MCE", pcia_vintage=vintage)
         with pytest.raises(ConfigError, match="no PCIA rate vendored"):
             EelecTariff(config).price_at(pt(2026, 7, 15, 17))
 
-    def test_2011_vintage_is_bill_derived_and_within_its_bracket(self) -> None:
-        """The 2011 rate is inferred from bills, not read off the tariff sheet.
+    @pytest.mark.parametrize(
+        ("vintage", "pcia", "ffs"),
+        [
+            (2009, 0.02973, 0.00064),
+            (2011, 0.03492, 0.00060),
+            (2020, 0.03632, 0.00059),
+            (2021, 0.05264, 0.00048),
+            (2026, -0.01011, 0.00093),
+        ],
+    )
+    def test_vintage_tables_match_the_published_sheets(
+        self, vintage: int, pcia: float, ffs: float
+    ) -> None:
+        """Spot checks across both vintaged tables.
 
-        PG&E bills a rounded dollar total, so each statement only brackets the
-        rate. Two independent periods from the same account, both naming the 2011
-        vintage, intersect to a 0.00025 wide window. This pins the vendored value
-        inside it, so replacing it with the published figure later is a visible
-        change rather than a silent one.
+        PCIA from E-ELEC Sheet 5 (Advice 7846-E); franchise fee from Schedule
+        E-FFS residential (Advice 7797-E). 2021 is included because that is where
+        the PCIA jumps and the franchise fee drops, and 2026 because it is the
+        only negative PCIA.
         """
-        config = self._config(name="MCE", pcia_vintage=2011)
-        rate = EelecTariff(config).price_at(pt(2026, 7, 15, 17)).components["pcia"]
+        price = EelecTariff(self._config(name="MCE", pcia_vintage=vintage)).price_at(
+            pt(2026, 7, 15, 17)
+        )
+        assert price.components["pcia"] == pytest.approx(pcia)
+        assert price.components["franchise_fee_surcharge"] == pytest.approx(ffs)
 
-        july = (0.815 / 23.589, 0.825 / 23.589)
-        august = (1.385 / 39.906, 1.395 / 39.906)
-        low, high = max(july[0], august[0]), min(july[1], august[1])
-        assert low < rate < high
-        assert rate == pytest.approx((low + high) / 2, abs=5e-6)
+    def test_franchise_fee_resolves_from_the_vintage_without_extra_config(self) -> None:
+        """It is vintaged off the same year as the PCIA, so one setting covers both."""
+        config = self._config(
+            name="MCE", pcia_vintage=2011, generation_rates={"summer": {"peak": 0.21}}
+        )
+        price = EelecTariff(config).price_at(pt(2026, 7, 15, 17))
+        assert price.components["franchise_fee_surcharge"] == pytest.approx(0.00060)
+        assert price.complete is True
+
+    def test_explicit_franchise_fee_still_wins_over_the_table(self) -> None:
+        config = self._config(name="MCE", pcia_vintage=2011, franchise_fee_surcharge=0.00042)
+        price = EelecTariff(config).price_at(pt(2026, 7, 15, 17))
+        assert price.components["franchise_fee_surcharge"] == pytest.approx(0.00042)
+
+    @pytest.mark.parametrize(
+        ("kwh", "pcia_billed", "ffs_billed"), [(23.589, 0.82, 0.01), (39.906, 1.39, 0.02)]
+    )
+    def test_published_rates_reproduce_billed_dollars(
+        self, kwh: float, pcia_billed: float, ffs_billed: float
+    ) -> None:
+        """Reconciled against two real statements for a 2011-vintage MCE account.
+
+        Checked rate -> dollars rather than dollars -> rate: the billed amounts
+        are rounded to the cent, so they cannot pin a five-decimal rate, but an
+        exact rate must still reproduce them.
+        """
+        price = EelecTariff(self._config(name="MCE", pcia_vintage=2011)).price_at(
+            pt(2026, 7, 15, 17)
+        )
+        assert round(price.components["pcia"] * kwh, 2) == pcia_billed
+        assert round(price.components["franchise_fee_surcharge"] * kwh, 2) == ffs_billed

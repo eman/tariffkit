@@ -150,8 +150,16 @@ class EelecTariff:
                     )
                 components["pcia"] = float(table[key])
 
+            # Same precedence as the PCIA above: an explicit rate wins, then the
+            # vendored Schedule E-FFS table, which is vintaged off the same year.
             if cca.franchise_fee_surcharge is not None:
                 components["franchise_fee_surcharge"] = cca.franchise_fee_surcharge
+            elif cca.pcia_vintage is not None:
+                ffs = snapshot.raw["cca"]["franchise_fee_vintages"].get(str(cca.pcia_vintage))
+                if ffs is None:
+                    complete = False
+                else:
+                    components["franchise_fee_surcharge"] = float(ffs)
             else:
                 complete = False
 

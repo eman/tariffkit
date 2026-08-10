@@ -76,35 +76,69 @@ bundled_pcia = -0.01011
 # Riders a Community Choice Aggregation or Direct Access customer does not pay,
 # because PG&E is not supplying their generation.
 #
-# NOT INCLUDED, because they are not published on this tariff sheet and must not
-# be guessed: the Schedule E-FFS franchise fee surcharge, and the CCA's own
-# generation rate card. Set both via CcaConfig if you take CCA service; until
-# you do, CCA mode reports delivery-only prices and flags them as incomplete.
+# NOT INCLUDED, because it is not published by PG&E at all: the CCA's own
+# generation rate card. Set it via CcaConfig if you take CCA service; until you
+# do, CCA mode reports delivery-only prices and flags them as incomplete.
 [cca]
 drop_components = ["generation", "bundled_pcia"]
 
 # Vintaged PCIA a CCA/DA customer pays instead of the bundled PCIA, keyed by the
-# year their generation service began. Partial: an unlisted vintage raises rather
-# than silently interpolating.
+# year their generation service began. An unlisted vintage raises rather than
+# silently interpolating.
 #
-# Every entry is transcribed from the tariff sheet EXCEPT where marked
-# "bill-derived" -- those are inferred from billed dollar amounts and carry that
-# rounding. Replace a bill-derived entry with the published figure when you have
-# it; do not assume the two agree to the fifth decimal.
+# Complete: all 18 vintages from the "Vintage Power Charge Indifference
+# Adjustment (per kWh)" table on Sheet 5 (Cal. P.U.C. Sheet 61120-E, Advice
+# 7846-E, effective 2026-03-01). Sheets revise independently, so this table
+# carries an earlier advice letter than the energy rates above; it is the one in
+# force. Parenthesised values on the sheet are negative.
 [cca.pcia_vintages]
 2009 = 0.02973
-# Bill-derived, NOT tariff-verified. PG&E bills a rounded dollar total, so each
-# statement only brackets the rate; two independent periods narrow it:
-#   2026-07 statement  $0.82 / 23.589 kWh -> [0.034550, 0.034974]
-#   2026-08 statement  $1.39 / 39.906 kWh -> [0.034707, 0.034957]
-# Intersection [0.034707, 0.034957]; midpoint below, so worst case ~0.00013/kWh.
-2011 = 0.03483
+2010 = 0.03366
+2011 = 0.03492
+2012 = 0.03676
+2013 = 0.03708
+2014 = 0.03686
+2015 = 0.03680
+2016 = 0.03687
+2017 = 0.03661
+2018 = 0.03679
+2019 = 0.03725
+2020 = 0.03632
 2021 = 0.05264
 2022 = 0.05272
 2023 = 0.05380
 2024 = 0.05066
 2025 = -0.01011
 2026 = -0.01011
+
+# Schedule E-FFS franchise fee surcharge, which a CCA/DA customer pays and a
+# bundled customer does not. Vintaged off the same year as the PCIA above, so it
+# is keyed identically and resolves without extra configuration.
+#
+# Source: Schedule E-FFS, "DA/CCA Franchise Fee Surcharge Rate per kWh",
+# Advice 7797-E, effective 2026-01-01. Residential row only -- E-ELEC is a
+# residential schedule, and the sheet prices each customer class separately.
+# The sheet also lists a Pre-2009 vintage ($0.00086); it is omitted because the
+# PCIA table has no pre-2009 entry, so such a customer cannot be priced anyway.
+[cca.franchise_fee_vintages]
+2009 = 0.00064
+2010 = 0.00061
+2011 = 0.00060
+2012 = 0.00059
+2013 = 0.00059
+2014 = 0.00059
+2015 = 0.00059
+2016 = 0.00059
+2017 = 0.00059
+2018 = 0.00059
+2019 = 0.00059
+2020 = 0.00059
+2021 = 0.00048
+2022 = 0.00048
+2023 = 0.00047
+2024 = 0.00049
+2025 = 0.00093
+2026 = 0.00093
 
 # AB 205 income-graduated fixed charge, billed per day. This is deliberately
 # NOT folded into the per-kWh price: it does not vary with consumption and
