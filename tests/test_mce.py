@@ -150,7 +150,26 @@ class TestExport:
         price = RateEngine(config()).price_at(at(19, month=9)).export_price
         assert price.components["acc_plus"] == pytest.approx(0.00880)
 
-    def test_export_stays_flagged_until_mce_publishes_its_credit(self) -> None:
-        """MCE's export credit basis is unverified, so it is not sold as exact."""
-        assert load_rate_card("mce").export_credit_verified is False
-        assert RateEngine(config()).price_at(at(19, month=9)).export_price.complete is False
+    def test_export_credit_basis_is_reconciled_against_a_real_cycle(self) -> None:
+        """MCE still does not publish its credit matrix, but it has been measured.
+
+        Priced against 2,784 quarter-hourly meter intervals for the
+        2026-06-30..2026-07-28 cycle, every export component matched that cycle's
+        statement within 0.3% -- inside the rounding of the bill's own displayed
+        dollars. So exports are no longer flagged as an estimate.
+        """
+        assert load_rate_card("mce").export_credit_verified is True
+        assert RateEngine(config()).price_at(at(19, month=9)).export_price.complete is True
+
+    def test_export_components_reproduce_the_reconciled_cycle_rates(self) -> None:
+        """Guards the numbers that reconciliation actually pinned.
+
+        A change to the ACC generation lookup or the bonus fractions would move
+        these and silently invalidate the verification above.
+        """
+        price = RateEngine(config()).price_at(at(19, month=9)).export_price
+        assert set(price.components) >= {"cca_generation", "delivery", "acc_plus"}
+        assert price.components["acc_plus"] == pytest.approx(0.00880)
+        assert price.components["cca_solar_bonus"] == pytest.approx(
+            price.components["cca_generation"] * 0.10
+        )

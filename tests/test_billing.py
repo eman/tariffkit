@@ -275,6 +275,55 @@ class TestCsvIngest:
                 CsvLayout(imported="nope"),
             )
 
+    def test_reads_pge_interval_export_verbatim(self) -> None:
+        """PG&E's own export, which needs three things at once.
+
+        An account preamble before the header, a timestamp split across DATE and
+        START TIME, and unit-suffixed column names. Shaped exactly as downloaded
+        from My Account, values shortened.
+        """
+        csv_text = (
+            "\n"
+            "Name,JANE DOE\n"
+            'Address,"1 MAIN ST, SAN RAFAEL CA 94903"\n'
+            "Account Number,0000000000\n"
+            "Service,0000000000\n"
+            "\n"
+            "TYPE,DATE,START TIME,END TIME,IMPORT (kWh),EXPORT (kWh),"
+            "TOTAL IMPORT COST,TOTAL EXPORT CREDIT (=A+B+C),NOTES\n"
+            "Electric usage,2026-07-06,12:00,12:14,0.00,0.31,$0.00,$0.02\n"
+            "Electric usage,2026-07-06,12:15,12:29,0.12,0.00,$0.04,$0.00\n"
+            "Electric usage,2026-07-06,12:30,12:44,0.00,0.28,$0.00,$0.02\n"
+        )
+        readings = read_csv(io.StringIO(csv_text))
+        assert len(readings) == 3
+        assert [r.imported for r in readings] == [0.0, 0.12, 0.0]
+        assert [r.exported for r in readings] == [0.31, 0.0, 0.28]
+        assert readings[0].duration == timedelta(minutes=15)
+        assert readings[0].start.hour == 12
+        assert readings[0].start.utcoffset() is not None
+
+    def test_preamble_without_a_recognisable_header_still_names_real_columns(self) -> None:
+        """The error must describe the file, not the preamble it gave up on."""
+        with pytest.raises(DataError, match="no timestamp column"):
+            read_csv(io.StringIO("Name,JANE DOE\n\nfoo,bar\n1,2\n"))
+
+    def test_unit_suffixed_column_names_are_matched(self) -> None:
+        csv_text = "start,IMPORT (kWh),EXPORT (kWh)\n2026-07-06T02:00:00-07:00,1.5,0.5\n"
+        reading = read_csv(io.StringIO(csv_text))[0]
+        assert reading.imported == pytest.approx(1.5)
+        assert reading.exported == pytest.approx(0.5)
+
+    def test_a_lone_date_column_holding_a_full_timestamp_still_works(self) -> None:
+        """Only pair date with time when both are present; date alone may be ISO."""
+        csv_text = "date,imported\n2026-07-06T02:00:00-07:00,1.5\n"
+        assert read_csv(io.StringIO(csv_text))[0].start.hour == 2
+
+    def test_split_date_time_columns_can_be_configured(self) -> None:
+        csv_text = "day,clock,imported\n2026-07-06,02:00,1.5\n"
+        reading = read_csv(io.StringIO(csv_text), CsvLayout(date="day", time="clock"))[0]
+        assert (reading.start.hour, reading.start.day) == (2, 6)
+
     def test_round_trips_into_a_bill(self) -> None:
         csv_text = "start,imported,exported\n" + "".join(
             f"2026-07-06T{h:02d}:00:00-07:00,1.0,0\n" for h in range(24)

@@ -62,7 +62,20 @@ care_fera_bonus_through = "2028-12-31"
 # tariff says only that exports are credited at "the applicable Energy Export
 # Credit Value, which reflects the value of power to the grid at any given
 # time". Whether that equals the CPUC Avoided Cost Calculator generation
-# component (PG&E's USCA-XXPG series) is UNVERIFIED. Until confirmed, treat the
-# generation half of an MCE export credit as an estimate.
-export_credit_basis = "assumed_acc_generation"
-export_credit_verified = false
+# component (PG&E's USCA-XXPG series) was long unverified.
+#
+# It is now measured. Priced against 2,784 quarter-hourly meter intervals for the
+# 2026-06-30..2026-07-28 cycle and compared with the statement for that cycle,
+# every export component lands within 0.3% -- inside the rounding of the bill's
+# own displayed dollars:
+#
+#   MCE generation EEC   library $9.618   billed $9.63   -0.1%
+#   PG&E delivery EEC            $6.236          $6.25   -0.2%
+#   ACC Plus bonus               $1.705          $1.71   -0.3%
+#   MCE 10% solar bonus          $0.962          $0.96   +0.2%
+#
+# One summer cycle on one account, so the seasonal spread is untested; the claim
+# it supports is structural (MCE credits exports at the ACC generation component)
+# and 193 kWh spread across all three TOU periods is a fair test of that.
+export_credit_basis = "acc_generation"
+export_credit_verified = true

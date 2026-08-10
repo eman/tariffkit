@@ -8,6 +8,7 @@ dumps, inverter logs), so they are configurable rather than guessed.
 from __future__ import annotations
 
 import csv
+import re
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, tzinfo
@@ -42,6 +43,21 @@ START_CANDIDATES = (
 IMPORT_CANDIDATES = ("imported", "import", "import_kwh", "delivered", "consumption", "usage", "kwh")
 EXPORT_CANDIDATES = ("exported", "export", "export_kwh", "received", "surplus", "production")
 NET_CANDIDATES = ("net", "net_kwh", "net_usage")
+#: Split date/time pairs, as PG&E's interval export uses. Tried only when no
+#: single timestamp column is found, since one column may legitimately be named
+#: "date" and still hold a full ISO timestamp.
+DATE_CANDIDATES = ("date", "usage_date", "read_date", "interval_date")
+TIME_CANDIDATES = ("start_time", "time", "interval_start_time", "hour")
+
+
+def _normalize(name: str) -> str:
+    """Fold case, punctuation, and units so header spellings converge.
+
+    ``"IMPORT (kWh)"`` and ``"import_kwh"`` are the same column; so are
+    ``"START TIME"`` and ``"start_time"``. Matching on the raw string means every
+    new export format needs its own candidate entry.
+    """
+    return re.sub(r"[^0-9a-z]+", "_", name.strip().lower()).strip("_")
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +68,9 @@ class CsvLayout:
     """
 
     start: str | None = None
+    #: Split date/time pair, used only when there is no single ``start`` column.
+    date: str | None = None
+    time: str | None = None
     imported: str | None = None
     exported: str | None = None
     #: Signed column, positive meaning import. Alternative to imported/exported.
@@ -67,11 +86,32 @@ def _pick(header: list[str], configured: str | None, candidates: tuple[str, ...]
         if configured not in header:
             raise DataError(f"column {configured!r} not in header: {header}")
         return configured
-    lowered = {name.strip().lower(): name for name in header}
+    normalized = {_normalize(name): name for name in header if name}
     for candidate in candidates:
-        if candidate in lowered:
-            return lowered[candidate]
+        if candidate in normalized:
+            return normalized[candidate]
     return None
+
+
+def _skip_preamble(handle: IO[str]) -> Iterator[str]:
+    """Yield lines from the real header row onward.
+
+    PG&E's interval export opens with account metadata (name, address, account
+    and service numbers) and a blank line before the column header, so feeding
+    the file straight to ``DictReader`` picks up ``"Name,EMMANUEL ..."`` as the
+    header. Scan for the first row carrying a recognisable timestamp column
+    instead of assuming a fixed offset, since the preamble's length is not
+    documented and has changed before.
+    """
+    wanted = set(START_CANDIDATES) | set(DATE_CANDIDATES)
+    lines = handle.read().splitlines()
+    for index, row in enumerate(csv.reader(lines)):
+        if any(_normalize(cell) in wanted for cell in row):
+            yield from lines[index:]
+            return
+    # No recognisable header: hand back the file unchanged so the existing
+    # "no timestamp column" error names the columns actually present.
+    yield from lines
 
 
 def _parse_timestamp(raw: str, assume_tz: tzinfo) -> datetime:
@@ -111,15 +151,26 @@ def read_csv(
 
 
 def _read(handle: IO[str], layout: CsvLayout) -> Iterator[IntervalReading]:
-    reader = csv.DictReader(handle)
+    reader = csv.DictReader(_skip_preamble(handle))
     header = reader.fieldnames
     if not header:
         raise DataError("CSV has no header row")
     header = list(header)
 
+    date_col = _pick(header, layout.date, DATE_CANDIDATES)
+    time_col = _pick(header, layout.time, TIME_CANDIDATES)
     start_col = _pick(header, layout.start, START_CANDIDATES)
-    if start_col is None:
-        raise DataError(f"no timestamp column found in {header}; set CsvLayout(start=...)")
+
+    # A split date/time pair wins over a single column, because PG&E names its
+    # time column "START TIME" -- which looks like a full timestamp column but
+    # holds "00:15". Falling back to a lone date column keeps files that put a
+    # complete ISO value under "date" working.
+    paired = date_col is not None and time_col is not None and date_col != time_col
+    if not paired:
+        start_col = start_col or date_col
+        date_col = time_col = None
+        if start_col is None:
+            raise DataError(f"no timestamp column found in {header}; set CsvLayout(start=...)")
 
     import_col = _pick(header, layout.imported, IMPORT_CANDIDATES)
     export_col = _pick(header, layout.exported, EXPORT_CANDIDATES)
@@ -133,9 +184,17 @@ def _read(handle: IO[str], layout: CsvLayout) -> Iterator[IntervalReading]:
 
     rows: list[_Row] = []
     for row in reader:
-        if not (row.get(start_col) or "").strip():
-            continue
-        start = _parse_timestamp(row[start_col], layout.assume_tz)
+        if date_col is not None and time_col is not None:
+            day = (row.get(date_col) or "").strip()
+            clock = (row.get(time_col) or "").strip()
+            if not day or not clock:
+                continue
+            start = _parse_timestamp(f"{day}T{clock}", layout.assume_tz)
+        else:
+            assert start_col is not None
+            if not (row.get(start_col) or "").strip():
+                continue
+            start = _parse_timestamp(row[start_col], layout.assume_tz)
         if net_col is not None and import_col is None and export_col is None:
             rows.append(_Row(start, None, None, _parse_float(row.get(net_col))))
         else:
