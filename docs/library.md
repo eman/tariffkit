@@ -61,7 +61,8 @@ systems already read, so neither Home Assistant nor a template layer has to do
 the reshaping.
 
 ```python
-from nem_rates.interop import forecast_payload, predbat_payload, resample
+from nem_rates.interop import forecast_lists, predbat_payload, resample
+from nem_rates.timeutil import now_pacific
 
 resample(curve, 30)  # tuple[PricePoint, ...] on 30-minute boundaries
 

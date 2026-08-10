@@ -101,7 +101,8 @@ class MqttPublisher:
         log.info("published Home Assistant discovery config")
 
     def publish_now(self, moment: datetime | None = None) -> PricePoint:
-        point = self.engine.price_at(moment) if moment else self.engine.price_now()
+        now = moment or now_pacific()
+        point = self.engine.price_at(now)
         curve = self.engine.forecast(self.settings.forecast_hours, start=point.start)
 
         self._publish("import_price", f"{point.import_price.total:.5f}")
@@ -112,8 +113,11 @@ class MqttPublisher:
         # Component breakdown plus the payloads other energy systems read, so the
         # broker path is as interoperable as the custom component. raw_today and
         # raw_tomorrow are cents (Predbat assumes pence); everything else dollars.
-        emhass = forecast_lists(curve, since=point.start)
-        predbat = predbat_payload(self.engine, point.start)
+        # Trim against the real moment, not the hour floor: `--once` from cron
+        # can land at any minute, and EMHASS's positional lists must start at the
+        # 30-minute slot it is actually in.
+        emhass = forecast_lists(curve, since=now)
+        predbat = predbat_payload(self.engine, now)
         self._publish(
             "import_price/attributes",
             {

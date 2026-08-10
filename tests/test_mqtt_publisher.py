@@ -136,6 +136,16 @@ def test_attributes_carry_the_emhass_series(publisher: MqttPublisher) -> None:
     assert imports["prediction_horizon"] == len(imports["load_cost_forecast"]) == 96
 
 
+def test_emhass_series_aligns_to_an_off_hour_publish(publisher: MqttPublisher) -> None:
+    """`--once` from cron lands at an arbitrary minute, not on the hour."""
+    publisher.publish_now(datetime(2026, 9, 15, 19, 45, tzinfo=PACIFIC))
+    payload = json.loads(client_of(publisher).topics()["nem_rates/import_price/attributes"])
+
+    # The 19:00-19:30 slot has already elapsed, so the list starts at 19:30.
+    assert payload["prediction_horizon"] == 95
+    assert len(payload["load_cost_forecast"]) == 95
+
+
 def test_forecast_attribute_is_a_flat_hourly_list(publisher: MqttPublisher) -> None:
     """Planners such as EMHASS consume this shape directly."""
     publisher.publish_now(datetime(2026, 9, 15, 12, tzinfo=PACIFIC))
