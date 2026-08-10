@@ -190,6 +190,17 @@ class TestCca:
         with pytest.raises(ConfigError, match="no PCIA rate vendored"):
             EelecTariff(config).price_at(pt(2026, 7, 15, 17))
 
+    def test_both_vintaged_tables_cover_the_same_years(self) -> None:
+        """Keeps the ConfigError in the franchise fee branch unreachable.
+
+        The two tables come from different schedules that revise independently,
+        so it would be easy to extend one and forget the other. Setting
+        pcia_vintage is documented as resolving both; this is what makes that
+        true rather than true-for-now.
+        """
+        cca = load_snapshot("PGE", "E-ELEC", date(2026, 6, 1)).raw["cca"]
+        assert set(cca["pcia_vintages"]) == set(cca["franchise_fee_vintages"])
+
     @pytest.mark.parametrize(
         ("vintage", "pcia", "ffs"),
         [
