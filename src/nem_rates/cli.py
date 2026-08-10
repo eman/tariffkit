@@ -71,7 +71,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _format_point(point: PricePoint) -> str:
     lines = [
-        f"{point.start:%Y-%m-%d %H:%M %Z} - {point.end:%H:%M}",
+        # %Z on both ends: across the fall-back transition the two sides carry
+        # different offsets, and "01:00 PDT - 01:00" reads as a zero-length hour.
+        f"{point.start:%Y-%m-%d %H:%M %Z} - {point.end:%H:%M %Z}",
         f"  import  {point.import_price.total:>9.5f} $/kWh"
         f"   ({point.import_price.season}/{point.import_price.period})",
         f"  export  {point.export_price.total:>9.5f} $/kWh"

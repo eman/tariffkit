@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from homeassistant.components.sensor import (
+    SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
     SensorStateClass,
@@ -17,9 +18,21 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import ATTR_FORECAST, DOMAIN
+from nem_rates import TouPeriod
+
+from .const import (
+    ATTR_FORECAST,
+    ATTR_HORIZON,
+    ATTR_LOAD_COST,
+    ATTR_PROD_PRICE,
+    ATTR_RAW_TODAY,
+    ATTR_RAW_TOMORROW,
+    DOMAIN,
+)
 from .coordinator import NemRatesCoordinator
 
+#: Ends in "/kWh", which is the whole of what Home Assistant's Energy dashboard
+#: requires of a price entity -- it checks neither device_class nor currency.
 UNIT = "USD/kWh"
 
 
@@ -32,9 +45,27 @@ class NemRatesSensorDescription(SensorEntityDescription):
 
 
 def _price_attrs(key: str) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """Component breakdown, plus the payloads other energy systems read.
+
+    Note the scale mismatch: ``raw_today``/``raw_tomorrow`` are cents while the
+    state and the EMHASS series are dollars. That is deliberate -- Predbat is a
+    UK tool whose thresholds assume pence, and it reads only these attributes,
+    never the state.
+    """
+    # Explicit rather than "import if ... else export": a typo'd key would
+    # otherwise silently attach the export payloads to the wrong sensor.
+    direction = {"import_price": "import", "export_price": "export"}[key]
+    emhass_key = ATTR_LOAD_COST if direction == "import" else ATTR_PROD_PRICE
+
     def extract(data: dict[str, Any]) -> dict[str, Any]:
         price = getattr(data["point"], key)
-        return {**price.to_dict(), ATTR_FORECAST: data["forecast"]}
+        return {
+            **price.to_dict(),
+            ATTR_FORECAST: data["forecast"],
+            emhass_key: data["emhass"][emhass_key],
+            ATTR_HORIZON: data["emhass"][ATTR_HORIZON],
+            **data["predbat"][direction],
+        }
 
     return extract
 
@@ -43,7 +74,6 @@ SENSORS: tuple[NemRatesSensorDescription, ...] = (
     NemRatesSensorDescription(
         key="import_price",
         translation_key="import_price",
-        name="Import Price",
         native_unit_of_measurement=UNIT,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=5,
@@ -54,7 +84,6 @@ SENSORS: tuple[NemRatesSensorDescription, ...] = (
     NemRatesSensorDescription(
         key="export_price",
         translation_key="export_price",
-        name="Export Price",
         native_unit_of_measurement=UNIT,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=5,
@@ -65,7 +94,6 @@ SENSORS: tuple[NemRatesSensorDescription, ...] = (
     NemRatesSensorDescription(
         key="spread",
         translation_key="spread",
-        name="Export Spread",
         native_unit_of_measurement=UNIT,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=5,
@@ -79,7 +107,10 @@ SENSORS: tuple[NemRatesSensorDescription, ...] = (
     NemRatesSensorDescription(
         key="tou_period",
         translation_key="tou_period",
-        name="TOU Period",
+        # A fixed set of string states, which is what ENUM is for. No
+        # state_class: these are labels, not a series to run statistics over.
+        device_class=SensorDeviceClass.ENUM,
+        options=[str(period) for period in TouPeriod],
         icon="mdi:clock-outline",
         value_fn=lambda data: str(data["point"].import_price.period),
         attrs_fn=lambda data: {"season": str(data["point"].import_price.season)},
@@ -87,7 +118,6 @@ SENSORS: tuple[NemRatesSensorDescription, ...] = (
     NemRatesSensorDescription(
         key="daily_fixed_charge",
         translation_key="daily_fixed_charge",
-        name="Base Services Charge",
         native_unit_of_measurement="USD/d",
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=5,
@@ -110,6 +140,25 @@ async def async_setup_entry(
 class NemRatesSensor(CoordinatorEntity[NemRatesCoordinator], SensorEntity):
     entity_description: NemRatesSensorDescription
     _attr_has_entity_name = True
+    # The recorder writes every attribute on every state change, and the
+    # coordinator ticks each minute. These are large, wholly derivable, and
+    # useless as history -- a forecast recorded hourly is just noise.
+    #
+    # Home Assistant folds this across the MRO in Entity.__init_subclass__, so it
+    # has to be a class attribute: setting it per-description or in __init__ does
+    # nothing. Listing an attribute an entity does not have is harmless.
+    _unrecorded_attributes = frozenset(
+        {
+            ATTR_FORECAST,
+            ATTR_LOAD_COST,
+            ATTR_PROD_PRICE,
+            ATTR_RAW_TODAY,
+            ATTR_RAW_TOMORROW,
+            "components",
+        }
+        # ATTR_HORIZON stays recorded: it is a single small int, and seeing the
+        # horizon change over time is genuinely useful when debugging EMHASS.
+    )
 
     def __init__(
         self,

@@ -8,7 +8,7 @@ downstream.
 from __future__ import annotations
 
 import tomllib
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from functools import lru_cache
 from zoneinfo import ZoneInfo
@@ -50,10 +50,13 @@ def hour_floor(moment: datetime) -> datetime:
 def next_hour(moment: datetime) -> datetime:
     """The start of the next hour.
 
-    Uses absolute-time arithmetic so it stays correct across DST transitions:
-    on the fall-back day 01:00 PDT + 1h is 01:00 PST, a real distinct hour.
+    Steps in absolute time so it stays correct across DST transitions: on the
+    fall-back day 01:00 PDT + 1h is 01:00 PST, a real distinct hour. Adding to
+    the zoned value instead would skip straight to 02:00, two hours later, and
+    an hourly publisher driven off that would never emit the second 01:00.
     """
-    return hour_floor(moment) + timedelta(hours=1)
+    floor = hour_floor(moment)
+    return (floor.astimezone(UTC) + timedelta(hours=1)).astimezone(floor.tzinfo)
 
 
 @lru_cache(maxsize=1)
