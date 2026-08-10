@@ -8,7 +8,7 @@ from .config import Config
 from .export.nbt import NbtExportRates
 from .models import PriceCurve, PricePoint
 from .tariff.eelec import EelecTariff
-from .timeutil import hour_floor, now_pacific, to_pacific
+from .timeutil import PACIFIC, hour_floor, now_pacific, to_pacific
 
 
 class RateEngine:
@@ -27,9 +27,14 @@ class RateEngine:
     def price_at(self, moment: datetime) -> PricePoint:
         """Prices for the clock hour containing ``moment``."""
         pacific = hour_floor(to_pacific(moment))
+        # Step in UTC for the same reason ``forecast`` does. Adding an hour to
+        # the zoned start does wall-clock arithmetic, so on the fall-back day
+        # the first 01:00 lands on 02:00 PST -- two real hours later, fully
+        # overlapping the second 01:00.
+        end = (pacific.astimezone(UTC) + timedelta(hours=1)).astimezone(PACIFIC)
         return PricePoint(
             start=pacific,
-            end=pacific + timedelta(hours=1),
+            end=end,
             import_price=self.tariff.price_at(pacific),
             export_price=self.export_rates.price_at(pacific),
         )
