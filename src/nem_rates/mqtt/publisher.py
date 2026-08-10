@@ -13,6 +13,7 @@ from types import FrameType
 from typing import Any
 
 from ..engine import RateEngine
+from ..interop import forecast_lists, predbat_payload
 from ..models import PricePoint
 from ..timeutil import next_hour, now_pacific
 from .discovery import discovery_payloads
@@ -108,8 +109,29 @@ class MqttPublisher:
         self._publish("spread", f"{point.spread:.5f}")
         self._publish("tou_period", str(point.import_price.period))
 
-        self._publish("import_price/attributes", point.import_price.to_dict())
-        self._publish("export_price/attributes", point.export_price.to_dict())
+        # Component breakdown plus the payloads other energy systems read, so the
+        # broker path is as interoperable as the custom component. raw_today and
+        # raw_tomorrow are cents (Predbat assumes pence); everything else dollars.
+        emhass = forecast_lists(curve, since=point.start)
+        predbat = predbat_payload(self.engine, point.start)
+        self._publish(
+            "import_price/attributes",
+            {
+                **point.import_price.to_dict(),
+                "load_cost_forecast": emhass["load_cost_forecast"],
+                "prediction_horizon": emhass["prediction_horizon"],
+                **predbat["import"],
+            },
+        )
+        self._publish(
+            "export_price/attributes",
+            {
+                **point.export_price.to_dict(),
+                "prod_price_forecast": emhass["prod_price_forecast"],
+                "prediction_horizon": emhass["prediction_horizon"],
+                **predbat["export"],
+            },
+        )
         self._publish(
             "spread/attributes",
             {

@@ -12,6 +12,8 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from nem_rates import CcaConfig, Config, RateEngine, Supplier
 from nem_rates.errors import NemRatesError
+from nem_rates.interop import forecast_lists, predbat_payload
+from nem_rates.timeutil import now_pacific
 
 from .const import (
     CONF_ACC_PLUS_SEGMENT,
@@ -65,6 +67,8 @@ class NemRatesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.entry = entry
         self.engine = RateEngine(config_from_entry({**entry.data, **entry.options}))
+        self._predbat_day: date | None = None
+        self._predbat: dict[str, Any] = {}
         self.forecast_hours = (
             entry.options.get(CONF_FORECAST_HOURS)
             or entry.data.get(CONF_FORECAST_HOURS)
@@ -85,6 +89,19 @@ class NemRatesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except NemRatesError as err:
             raise UpdateFailed(str(err)) from err
 
+    def _predbat_for(self, moment: datetime) -> dict[str, Any]:
+        """Predbat's two calendar days, rebuilt only when the local date rolls.
+
+        It is anchored to midnight rather than to ``point.start``, so it cannot
+        reuse the forecast curve below. Recomputing it every minute would be
+        wasted work -- the payload is identical until midnight.
+        """
+        day = moment.date()
+        if day != self._predbat_day:
+            self._predbat = predbat_payload(self.engine, moment)
+            self._predbat_day = day
+        return self._predbat
+
     def _compute(self) -> dict[str, Any]:
         point = self.engine.price_now()
         curve = self.engine.forecast(self.forecast_hours, start=point.start)
@@ -100,6 +117,10 @@ class NemRatesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 }
                 for p in curve
             ],
+            # Bare lists, trimmed to the slot EMHASS is currently in -- they are
+            # positional against its timeline, not timestamped.
+            "emhass": forecast_lists(curve, since=now_pacific()),
+            "predbat": self._predbat_for(point.start),
             "info": self.engine.describe(),
             "daily_fixed_charge": self.engine.daily_fixed_charge(),
         }
