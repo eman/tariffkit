@@ -71,7 +71,7 @@ Change anything later via **Configure** on the integration; it reloads in place.
 | Import Price | USD/kWh |
 | Export Price | USD/kWh |
 | Export Spread | USD/kWh (export − import) |
-| TOU Period | `peak` / `part_peak` / `off_peak` |
+| TOU Period | enum: `peak` / `part_peak` / `off_peak` |
 | Base Services Charge | USD/day (disabled by default) |
 
 All under one **PG&E Rates** device. The Base Services Charge is disabled by
@@ -97,6 +97,110 @@ plus the forecast:
 {{ state_attr('sensor.pg_e_rates_export_price', 'components') }}
 {{ state_attr('sensor.pg_e_rates_export_spread', 'forecast') }}
 ```
+
+They also carry the payloads that other energy systems read directly; see
+[Energy dashboard](#energy-dashboard), [EMHASS](#emhass), and
+[Predbat](#predbat) below.
+
+> The forecast, EMHASS, and Predbat attributes are excluded from the recorder
+> (`_unrecorded_attributes`), so they will not appear in history or the logbook.
+> That is deliberate: the coordinator recomputes every minute, and writing a
+> 48-hour curve to the database 1,440 times a day would bloat it for no gain.
+> The current state of every sensor is recorded as normal.
+
+## Energy dashboard
+
+The price sensors work as-is. Home Assistant's price-entity validation requires
+only a numeric state and a unit ending in `/kWh`, `/MWh`, or `/Wh` — it checks
+neither `device_class` nor `state_class`, and does not compare the currency
+against your instance's. `USD/kWh` qualifies.
+
+**Settings → Dashboards → Energy → Electricity grid:**
+
+| Field | Entity |
+|---|---|
+| Grid consumption → "Use an entity with current price" | `sensor.pg_e_rates_import_price` |
+| Return to grid → "Use an entity with current price" | `sensor.pg_e_rates_export_price` |
+
+Both directions accept a price entity, so export compensation tracks the real
+NBT credit hour by hour rather than a flat assumed rate.
+
+The Base Services Charge stays out of this on purpose — it is a fixed daily
+amount, not a marginal price, and the Energy dashboard multiplies price by kWh.
+Add it as a separate fixed cost if you want it in a bill total.
+
+## EMHASS
+
+The import and export sensors expose EMHASS's two cost parameters directly, as
+bare lists of dollars per kWh at 30-minute resolution — matching the
+`optimization_time_step: 30` that EMHASS ships with.
+
+```yaml
+rest_command:
+  emhass_mpc:
+    url: "http://localhost:5000/action/naive-mpc-optim"
+    method: POST
+    content_type: "application/json"
+    payload: >
+      {
+        "prediction_horizon": {{ state_attr('sensor.pg_e_rates_import_price', 'prediction_horizon') }},
+        "load_cost_forecast": {{ state_attr('sensor.pg_e_rates_import_price', 'load_cost_forecast') | tojson }},
+        "prod_price_forecast": {{ state_attr('sensor.pg_e_rates_export_price', 'prod_price_forecast') | tojson }},
+        "pv_power_forecast": {{ state_attr('sensor.your_solar_forecast', 'watts') | tojson }}
+      }
+```
+
+The two series are split across the two sensors rather than bundled into one
+`runtimeparams` blob because you need to merge your own PV and load forecasts
+into the same call.
+
+**These lists are positional, not timestamped.** EMHASS matches value *n* to its
+own slot *n*, so the first value has to be the slot EMHASS is currently in. The
+integration handles this by dropping already-elapsed slots on every refresh —
+at 10:45 the list starts at 10:30, not 10:00. `prediction_horizon` shrinks to
+match, which is why it is published alongside and why the call should use it
+rather than a hardcoded number.
+
+If you have changed `optimization_time_step` from its default, the resolution
+here will not match and EMHASS will misread the horizon.
+
+The span is your configured **forecast hours** (default 48), so 96 half-hour
+values less whatever has elapsed in the current hour.
+
+## Predbat
+
+Point Predbat at the price sensors. It reads the `raw_today` / `raw_tomorrow`
+attributes and ignores the state:
+
+```yaml
+# apps.yaml
+metric_octopus_import: 'sensor.pg_e_rates_import_price'
+metric_octopus_export: 'sensor.pg_e_rates_export_price'
+```
+
+Entries are 30-minute slots aligned to `:00` and `:30`, matching Predbat's
+default `plan_interval_minutes: 30`. Both days are always complete: the lists are
+anchored to local midnight, not to the current hour, so Predbat never has to
+backfill a partial day by copying the previous one.
+
+> **Rates are published in cents, and Predbat will label them `p`.** Predbat is a
+> UK tool: it assumes pence per kWh, and several of its thresholds and defaults
+> are tuned to that magnitude. Publishing dollars would leave every one of them
+> off by 100x. The optimisation is correct — only the currency symbol lies.
+
+**Your Home Assistant instance must be set to `America/Los_Angeles`.** These
+lists are anchored to the Pacific calendar day, because that is what PG&E's
+tariff day means. Predbat derives its slot indices from Home Assistant's local
+midnight, so on an instance left at UTC the first several hours of `raw_today`
+land in Predbat's yesterday and the whole plan shifts by the offset. Check
+**Settings → System → General → Time zone**.
+
+Worth eyeballing Predbat's plan on the two DST days, since it indexes slots by
+minutes from midnight. The autumn transition has 50 half-hour slots and the
+spring one 46, and on the autumn day two pairs share a wall clock (01:00 and
+01:30 occur at both `-07:00` and `-08:00`). The entries carry explicit offsets
+and are distinct instants, but a consumer that keys purely on wall-clock time
+will see one of each pair mask the other.
 
 ## Automation examples
 

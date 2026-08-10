@@ -48,8 +48,21 @@ Nothing here touches the network at runtime.
 | [Bill calculator](docs/billing.md) | Computing a cycle from interval meter data |
 | [MQTT](docs/mqtt.md) | Publishing, with Home Assistant discovery |
 | [REST API](docs/web.md) | HTTP service |
-| [Home Assistant](docs/home-assistant.md) | Custom component and automations |
+| [Home Assistant](docs/home-assistant.md) | Custom component, Energy dashboard, EMHASS, Predbat |
 | [Maintaining rate data](docs/data.md) | Regenerating export rates, updating the retail tariff and CCA cards |
+
+## Works with
+
+Prices are published in the shapes these already read, via either the custom
+component or the MQTT publisher — no template plumbing on your side.
+
+| | How |
+|---|---|
+| **Home Assistant Energy dashboard** | Import and export price entities, for grid consumption and return-to-grid compensation |
+| **EMHASS** | `load_cost_forecast` / `prod_price_forecast` attributes, timestamped and in dollars |
+| **Predbat** | `raw_today` / `raw_tomorrow` attributes, 30-minute slots in cents |
+
+See [docs/home-assistant.md](docs/home-assistant.md) for setup of each.
 
 ## Install
 
