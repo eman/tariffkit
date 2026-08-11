@@ -164,7 +164,7 @@ def _print_bill(bill: Any) -> None:
     for warning in bill.warnings:
         print(f"\n  warning: {warning}")
     if not bill.complete:
-        print("  note: some inputs were incomplete or unverified; treat as an estimate")
+        print("  note: some prices were incomplete or inexact; treat the total as an estimate")
 
 
 def main(argv: list[str] | None = None) -> int:

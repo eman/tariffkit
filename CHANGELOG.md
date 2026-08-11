@@ -25,6 +25,13 @@ All notable changes to this project are documented here. This project follows
   is located by scanning for the header rather than assuming a fixed offset.
 
 ### Changed
+- `Bill.complete` is now purely a statement about the rates, as its own docstring
+  always claimed. Coverage problems travel in `Bill.warnings` alone rather than
+  also clearing `complete`. Conflating them meant a bill that reconciles against
+  a real statement to 0.2% still described itself as an estimate, because the
+  meter data contained a few intervals reporting in both directions. Callers
+  wanting "trust this total" should check both, and `docs/billing.md` now spells
+  out which question each answers.
 - MCE exports are no longer flagged as an estimate. `export_credit_basis` is now
   `acc_generation` with `export_credit_verified = true`, so an MCE export price
   reports `complete = True`. MCE still does not publish its credit matrix, but

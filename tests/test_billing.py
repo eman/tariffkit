@@ -146,8 +146,16 @@ class TestStatementReconciliation:
             bill.energy_charges + bill.export_credits + bill.fixed_charges
         )
 
-    def test_flagged_incomplete_because_mce_export_credit_is_unverified(self, bill) -> None:  # type: ignore[no-untyped-def]
-        assert bill.complete is False
+    def test_pricing_confidence_is_separate_from_coverage(self, bill) -> None:  # type: ignore[no-untyped-def]
+        """These readings price cleanly but cover the period sparsely.
+
+        Four representative readings stand in for 27 days, so coverage warnings
+        are expected while every rate applied is fully known. Folding the two
+        together used to make a bill that reconciles against a real statement
+        still describe itself as an estimate.
+        """
+        assert bill.complete is True
+        assert bill.warnings
 
     def test_serializes(self, bill) -> None:  # type: ignore[no-untyped-def]
         payload = bill.to_dict()
@@ -189,12 +197,28 @@ class TestCoverageChecks:
         period = BillingPeriod(date(2026, 7, 6), date(2026, 7, 6))
         assert any("both import and export" in w for w in check_coverage(readings, period))
 
-    def test_gappy_data_clears_the_complete_flag(self) -> None:
-        """A bill over a lossy series must not look like a light-usage month."""
+    def test_gappy_data_warns_without_impugning_the_prices(self) -> None:
+        """A bill over a lossy series must not look like a light-usage month.
+
+        The gap surfaces as a warning. It does not clear ``complete``, which is
+        a claim about the rates rather than the readings.
+        """
         readings = [r for r in self._full_day() if r.start.hour != 5]
         bill = engine().compute(readings, BillingPeriod(date(2026, 7, 6), date(2026, 7, 6)))
+        assert any("gap" in w for w in bill.warnings)
+        assert bill.complete is True
+
+    def test_unverified_prices_clear_complete_even_with_perfect_coverage(self) -> None:
+        """The other half of the split, so neither signal can absorb the other.
+
+        A CCA with no generation rate card prices delivery only, which is a real
+        pricing gap, over a day of readings with nothing wrong in them.
+        """
+        bare = Config(supplier=Supplier.CCA, cca=CcaConfig(name="Unknown CCA"))
+        period = BillingPeriod(date(2026, 7, 6), date(2026, 7, 6))
+        bill = BillEngine(RateEngine(bare)).compute(self._full_day(), period)
         assert bill.complete is False
-        assert bill.warnings
+        assert bill.warnings == ()
 
     def test_checks_can_be_skipped(self) -> None:
         bill = engine().compute(self._full_day(), PERIOD, check=False)
