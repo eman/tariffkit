@@ -24,6 +24,14 @@ All notable changes to this project are documented here. This project follows
   punctuation, `CsvLayout` gained `date`/`time` for split pairs, and the preamble
   is located by scanning for the header rather than assuming a fixed offset.
 
+### Fixed
+- Naive timestamps on the autumn DST transition are now disambiguated on ingest.
+  01:00 occurs twice and `zoneinfo` resolves both to `fold=0`, so an hour of
+  readings priced as PG&E's HS1 instead of HS2 and coverage reported the file as
+  overlapping itself. Meter exports are chronological, so a row whose instant
+  does not advance, and which advances once `fold=1` is applied, belongs to the
+  second pass. Rows carrying an explicit offset are unaffected.
+
 ### Changed
 - `Bill.complete` is now purely a statement about the rates, as its own docstring
   always claimed. Coverage problems travel in `Bill.warnings` alone rather than

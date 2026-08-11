@@ -11,7 +11,7 @@ The statement is PG&E delivery + MCE generation on SBP EELEC, 27 days:
 from __future__ import annotations
 
 import io
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -29,7 +29,7 @@ from nem_rates.billing import (
 )
 from nem_rates.config import CcaConfig
 from nem_rates.errors import DataError
-from nem_rates.timeutil import PACIFIC
+from nem_rates.timeutil import PACIFIC, export_hour
 
 BILLED_KWH = 23.589
 PERIOD = BillingPeriod(date(2026, 7, 2), date(2026, 7, 28))  # 27 days
@@ -342,6 +342,39 @@ class TestCsvIngest:
         """Only pair date with time when both are present; date alone may be ISO."""
         csv_text = "date,imported\n2026-07-06T02:00:00-07:00,1.5\n"
         assert read_csv(io.StringIO(csv_text))[0].start.hour == 2
+
+    def test_repeated_hour_on_the_fall_back_day_is_disambiguated(self) -> None:
+        """Naive split timestamps are ambiguous on the autumn transition.
+
+        01:00 happens twice and zoneinfo resolves both to fold=0, so without this
+        the second pass prices as PG&E's HS1 instead of HS2 and coverage reports
+        the file as overlapping itself.
+        """
+        csv_text = (
+            "DATE,START TIME,IMPORT (kWh)\n"
+            "2026-11-01,01:00,1\n"
+            "2026-11-01,01:30,1\n"
+            "2026-11-01,01:00,1\n"
+            "2026-11-01,01:30,1\n"
+        )
+        readings = read_csv(io.StringIO(csv_text))
+        assert [r.start.fold for r in readings] == [0, 0, 1, 1]
+        assert [export_hour(r.start) for r in readings] == [1, 1, 2, 2]
+        instants = [r.start.astimezone(UTC) for r in readings]
+        assert instants == sorted(instants)
+        assert len(set(instants)) == 4
+
+    def test_spring_forward_and_ordinary_days_are_left_alone(self) -> None:
+        csv_text = "DATE,START TIME,IMPORT (kWh)\n2027-03-14,01:30,1\n2027-03-14,03:00,1\n"
+        assert [r.start.fold for r in read_csv(io.StringIO(csv_text))] == [0, 0]
+        plain = "start,imported\n2026-07-15T01:00:00-07:00,1\n2026-07-15T02:00:00-07:00,1\n"
+        assert [r.start.fold for r in read_csv(io.StringIO(plain))] == [0, 0]
+
+    def test_preamble_skipping_honours_a_configured_column_name(self) -> None:
+        """Otherwise the two features do not compose: a custom layout plus a preamble."""
+        csv_text = "Name,JANE DOE\n\nwhen,imported\n2026-07-06T02:00:00-07:00,1.5\n"
+        reading = read_csv(io.StringIO(csv_text), CsvLayout(start="when"))[0]
+        assert reading.imported == pytest.approx(1.5)
 
     def test_split_date_time_columns_can_be_configured(self) -> None:
         csv_text = "day,clock,imported\n2026-07-06,02:00,1.5\n"

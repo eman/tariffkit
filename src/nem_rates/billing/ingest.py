@@ -11,7 +11,7 @@ import csv
 import re
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta, tzinfo
+from datetime import UTC, datetime, timedelta, tzinfo
 from itertools import pairwise
 from pathlib import Path
 from typing import IO, NamedTuple
@@ -95,7 +95,7 @@ def _pick(header: list[str], configured: str | None, candidates: tuple[str, ...]
     return None
 
 
-def _skip_preamble(handle: IO[str]) -> Iterator[str]:
+def _skip_preamble(handle: IO[str], layout: CsvLayout) -> Iterator[str]:
     """Yield lines from the real header row onward.
 
     PG&E's interval export opens with account metadata (name, address, account
@@ -104,8 +104,13 @@ def _skip_preamble(handle: IO[str]) -> Iterator[str]:
     header. Scan for the first row carrying a recognisable timestamp column
     instead of assuming a fixed offset, since the preamble's length is not
     documented and has changed before.
+
+    Configured column names count as recognisable too, so a preamble does not
+    stop ``CsvLayout(start="when")`` from working on a file whose header this
+    module would not otherwise know.
     """
     wanted = set(START_CANDIDATES) | set(DATE_CANDIDATES)
+    wanted |= {_normalize(name) for name in (layout.start, layout.date) if name}
     lines = handle.read().splitlines()
     for index, row in enumerate(csv.reader(lines)):
         if any(_normalize(cell) in wanted for cell in row):
@@ -153,7 +158,7 @@ def read_csv(
 
 
 def _read(handle: IO[str], layout: CsvLayout) -> Iterator[IntervalReading]:
-    reader = csv.DictReader(_skip_preamble(handle))
+    reader = csv.DictReader(_skip_preamble(handle, layout))
     header = reader.fieldnames
     if not header:
         raise DataError("CSV has no header row")
@@ -212,6 +217,7 @@ def _read(handle: IO[str], layout: CsvLayout) -> Iterator[IntervalReading]:
     if not rows:
         raise DataError("CSV contained no data rows")
 
+    rows = _resolve_repeated_hour(rows)
     duration = layout.duration or _infer_duration([r.start for r in rows])
 
     for start, imported, exported, net in rows:
@@ -221,6 +227,33 @@ def _read(handle: IO[str], layout: CsvLayout) -> Iterator[IntervalReading]:
             yield IntervalReading(
                 start, imported=imported or 0.0, exported=exported or 0.0, duration=duration
             )
+
+
+def _resolve_repeated_hour(rows: list[_Row]) -> list[_Row]:
+    """Mark the second pass through a repeated local hour as ``fold=1``.
+
+    A naive timestamp on the autumn transition is genuinely ambiguous: 01:00
+    happens twice. ``zoneinfo`` resolves both to ``fold=0``, the earlier PDT
+    hour, so an hour of readings prices at the wrong export rate -- PG&E labels
+    the repeat HS2 -- and coverage reports the file as overlapping itself.
+
+    Meter exports are chronological, which supplies the missing bit: if a row's
+    instant does not advance, and setting ``fold=1`` makes it advance, then it
+    belongs to the second pass. Rows carrying an explicit offset are already
+    unambiguous, and for them ``fold`` does not move the instant, so this is a
+    no-op rather than a special case.
+    """
+    resolved: list[_Row] = []
+    previous: datetime | None = None
+    for row in rows:
+        start = row.start
+        if previous is not None and start.astimezone(UTC) <= previous.astimezone(UTC):
+            shifted = start.replace(fold=1)
+            if shifted.astimezone(UTC) > previous.astimezone(UTC):
+                start = shifted
+        resolved.append(row._replace(start=start))
+        previous = start
+    return resolved
 
 
 def _infer_duration(timestamps: Sequence[datetime]) -> timedelta:

@@ -161,20 +161,36 @@ class TestExport:
         assert load_rate_card("mce").export_credit_verified is True
         assert RateEngine(config()).price_at(at(19, month=9)).export_price.complete is True
 
-    def test_export_components_reproduce_the_reconciled_cycle_rates(self) -> None:
+    @pytest.mark.parametrize(
+        ("hour", "delivery", "generation", "total"),
+        [
+            (19, 0.35038, 0.10708, 0.476968),  # peak
+            (15, 0.00119, 0.05522, 0.070732),  # part-peak
+            (12, 0.00077, 0.05686, 0.072116),  # off-peak
+        ],
+    )
+    def test_export_components_reproduce_the_reconciled_cycle_rates(
+        self, hour: int, delivery: float, generation: float, total: float
+    ) -> None:
         """Pins the absolute values the reconciliation rests on.
 
-        ``export_credit_verified = true`` is only honest while these hold. They
-        are asserted absolutely, not against each other: checking that the solar
-        bonus is 10% of whatever ``cca_generation`` happens to be would still pass
-        if the ACC generation lookup drifted, silently invalidating the flag.
+        Sampled inside the reconciled cycle (2026-06-30..2026-07-28) and across
+        all three TOU periods. Both NBT matrices are indexed by month, so pinning
+        some other month would leave every cell that produced the evidence free
+        to drift while this stayed green.
+
+        Asserted absolutely rather than against each other: checking that the
+        solar bonus is 10% of whatever ``cca_generation`` happens to be would
+        still pass if the ACC generation lookup moved, silently invalidating
+        ``export_credit_verified``.
         """
-        price = RateEngine(config()).price_at(at(19, month=9)).export_price
-        assert price.components["cca_generation"] == pytest.approx(0.59312)
-        assert price.components["delivery"] == pytest.approx(0.00193)
-        assert price.components["acc_plus"] == pytest.approx(0.00880)
-        assert price.components["cca_solar_bonus"] == pytest.approx(0.059312)
-        assert price.total == pytest.approx(0.663162)
+        price = RateEngine(config()).price_at(datetime(2026, 7, 15, hour, tzinfo=PACIFIC))
+        components = price.export_price.components
+        assert components["delivery"] == pytest.approx(delivery)
+        assert components["cca_generation"] == pytest.approx(generation)
+        assert components["acc_plus"] == pytest.approx(0.00880)
+        assert components["cca_solar_bonus"] == pytest.approx(generation * 0.10)
+        assert price.export_price.total == pytest.approx(total)
 
     def test_solar_bonus_tracks_the_generation_credit(self) -> None:
         """The 10% relationship, separately from the absolute values above."""
