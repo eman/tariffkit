@@ -19,23 +19,56 @@ schema = 1
 provider = "MCE"
 name = "Marin Clean Energy"
 utility = "PGE"
-tariff = "E-ELEC"
+#: MCE prices each PG&E schedule separately, so a rate card is keyed by schedule
+#: rather than tied to one. Slugs match the tariff data directories.
+schedules = ["E-ELEC", "E-TOU-C", "EV2-A"]
 effective = "2026-04-01"
 currency = "USD/kWh"
 source_url = "https://mcecleanenergy.org/compare-rates-and-options/"
 
-# TOU periods and season boundaries match PG&E's E-ELEC sheet exactly:
-# peak 4-9pm every day, part-peak 3-4pm and 9pm-midnight, summer Jun 1 - Sep 30.
+# TOU periods and season boundaries follow each PG&E schedule exactly, including
+# E-TOU-C having no part-peak at all.
+#
+# Every rate below is IDENTICAL to PG&E's generation component for the same
+# schedule, season and period. That is not an alias and not an error -- MCE
+# prices at parity today. They are vendored separately because nothing
+# guarantees that continues, and tests/test_mce.py asserts the parity so a
+# divergence fails loudly rather than going unnoticed.
+#
+# Keyed by schedule because the rates differ substantially between them: MCE
+# winter off-peak is 0.06754 on ELEC and 0.11042 on ETOUC. Applying one
+# schedule's card to another understates or overstates generation by ~2x, so an
+# uncovered schedule raises rather than falling back.
 
-[generation.summer]
+[generation.eelec.summer]
 peak = 0.26299
 part_peak = 0.16388
 off_peak = 0.11878
 
-[generation.winter]
+[generation.eelec.winter]
 peak = 0.10086
 part_peak = 0.08089
 off_peak = 0.06754
+
+# ETOUC/EMTOUC on MCE's table. No part-peak, matching PG&E's E-TOU-C.
+[generation.etouc.summer]
+peak = 0.20782
+off_peak = 0.10482
+
+[generation.etouc.winter]
+peak = 0.13710
+off_peak = 0.11042
+
+# EV2 on MCE's table, for PG&E's EV2-A.
+[generation.ev2a.summer]
+peak = 0.18830
+part_peak = 0.14359
+off_peak = 0.10245
+
+[generation.ev2a.winter]
+peak = 0.13143
+part_peak = 0.11894
+off_peak = 0.09546
 
 # Applied to all generation kWh. Explicitly time-limited -- the rate card says
 # "Runs through December 31, 2026" -- so it is dated rather than folded into the

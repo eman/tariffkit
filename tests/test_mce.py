@@ -13,6 +13,7 @@ import pytest
 from nem_rates import Config, RateEngine, Supplier
 from nem_rates.cca import load_rate_card
 from nem_rates.config import CcaConfig
+from nem_rates.errors import DataError
 from nem_rates.tariff.retail import RetailTariff, load_snapshot
 from nem_rates.timeutil import PACIFIC
 
@@ -63,31 +64,52 @@ def test_cost_relief_credit_expires_at_the_end_of_2026() -> None:
     )
 
 
-def test_mce_generation_is_at_parity_with_pge_today() -> None:
+@pytest.mark.parametrize("schedule", ["E-ELEC", "E-TOU-C", "EV2-A"])
+def test_mce_generation_is_at_parity_with_pge_today(schedule: str) -> None:
     """Parity is real but not guaranteed -- fail loudly if MCE diverges.
 
     If this breaks, MCE has repriced and mce.toml needs regenerating; it is not
-    a bug in the engine.
+    a bug in the engine. Checked per schedule, since MCE prices each separately.
     """
     card = load_rate_card("mce")
-    snapshot = load_snapshot("PGE", "E-ELEC", date(2026, 6, 1))
-    for season in ("summer", "winter"):
-        for period in ("peak", "part_peak", "off_peak"):
-            assert card.generation(season, period) == pytest.approx(
-                snapshot.raw["energy"][season][period]["generation"]
-            ), f"MCE has diverged from PG&E at {season}/{period}"
+    snapshot = load_snapshot("PGE", schedule, date(2026, 6, 1))
+    for season, periods in snapshot.raw["energy"].items():
+        for period, components in periods.items():
+            assert card.generation(schedule, season, period) == pytest.approx(
+                components["generation"]
+            ), f"MCE has diverged from PG&E at {schedule} {season}/{period}"
+
+
+def test_rate_card_covers_each_schedule_separately() -> None:
+    """Borrowing one schedule's card for another is a ~2x error, not a rounding."""
+    card = load_rate_card("mce")
+    eelec = card.generation("E-ELEC", "winter", "off_peak")
+    etouc = card.generation("E-TOU-C", "winter", "off_peak")
+    assert eelec == pytest.approx(0.06754)
+    assert etouc == pytest.approx(0.11042)
+    assert etouc / eelec > 1.5
+
+
+def test_uncovered_schedule_raises_rather_than_falling_back() -> None:
+    with pytest.raises(DataError, match="no generation rates for schedule"):
+        load_rate_card("mce").generation("E-TOU-D", "winter", "off_peak")
+
+
+def test_etouc_has_no_part_peak_on_the_rate_card_either() -> None:
+    with pytest.raises(DataError, match="no E-TOU-C generation rate"):
+        load_rate_card("mce").generation("E-TOU-C", "winter", "part_peak")
 
 
 def test_deep_green_costs_a_penny_and_a_quarter_more() -> None:
     card = load_rate_card("mce")
-    light = card.generation("summer", "off_peak", "light_green")
-    deep = card.generation("summer", "off_peak", "deep_green")
+    light = card.generation("E-ELEC", "summer", "off_peak", "light_green")
+    deep = card.generation("E-ELEC", "summer", "off_peak", "deep_green")
     assert deep - light == pytest.approx(0.0125)
 
 
 def test_unknown_product_option_raises() -> None:
     with pytest.raises(Exception, match="unknown product option"):
-        load_rate_card("mce").generation("summer", "peak", "medium_green")
+        load_rate_card("mce").generation("E-ELEC", "summer", "peak", "medium_green")
 
 
 class TestBillReconciliation:

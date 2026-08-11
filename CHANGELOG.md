@@ -45,6 +45,13 @@ All notable changes to this project are documented here. This project follows
   second pass. Rows carrying an explicit offset are unaffected.
 
 ### Changed
+- **CCA rate cards are keyed by PG&E schedule.** A CCA prices each schedule
+  separately and the rates differ substantially — MCE winter off-peak is 0.06754
+  on E-ELEC against 0.11042 on E-TOU-C — so the card previously applied E-ELEC's
+  rates to any schedule, understating an E-TOU-C customer's generation by nearly
+  half. `CcaRateCard.generation` now takes the schedule and raises for one the
+  card does not cover, rather than falling back. `mce.toml` vendors E-ELEC,
+  E-TOU-C and EV2-A, each verified at parity with PG&E's generation component.
 - `EelecTariff` is now `RetailTariff`, in `nem_rates.tariff.retail`. It was
   already schedule-agnostic — everything that varies lives in the vendored
   snapshot — so the name had stopped being true. Not part of the top-level

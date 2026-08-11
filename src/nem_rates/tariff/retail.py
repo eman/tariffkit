@@ -214,7 +214,9 @@ class RetailTariff:
                 components["cca_generation"] = float(rates[str(period)])
             elif cca.rate_card is not None:
                 card = load_rate_card(cca.rate_card)
-                components["cca_generation"] = card.generation(str(season), str(period), cca.option)
+                components["cca_generation"] = card.generation(
+                    self.config.tariff, str(season), str(period), cca.option
+                )
                 credit = card.cost_relief_credit(moment.date())
                 if credit:
                     components["cca_cost_relief_credit"] = credit
