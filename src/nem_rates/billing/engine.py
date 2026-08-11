@@ -90,6 +90,9 @@ class BillEngine:
                 _add_scaled(export_components, export_price.components, -reading.exported)
 
         fixed_components = self._fixed_charges(period)
+        credit = self._baseline_credit(in_period, period)
+        if credit:
+            import_components["baseline_credit"] = credit
 
         return Bill(
             period=period,
@@ -107,6 +110,39 @@ class BillEngine:
             # estimate. Callers wanting "trust this total" should check both.
             complete=complete,
         )
+
+    def _baseline_credit(self, readings: Sequence[IntervalReading], period: BillingPeriod) -> float:
+        """Credit on imports falling within the cycle's baseline allowance.
+
+        Only schedules with a baseline produce one, and only when a territory is
+        configured. It lands here rather than in the marginal price because
+        eligibility depends on cumulative usage over the cycle, which
+        ``price_at`` cannot see.
+
+        The allowance is a daily quantity that changes at the season boundary, so
+        it accumulates day by day rather than being multiplied by the cycle
+        length. The credit is identical in every TOU period, so how PG&E
+        allocates baseline usage across periods moves the printed lines but not
+        this total.
+        """
+        tariff = self.rates.tariff
+        rate = tariff.price_at(
+            datetime(period.start.year, period.start.month, period.start.day, 12, tzinfo=PACIFIC)
+        ).baseline_credit
+        if not rate:
+            return 0.0
+
+        allowance = 0.0
+        for offset in range(period.days):
+            day = period.start + timedelta(days=offset)
+            allowance += tariff.baseline_allowance(
+                datetime(day.year, day.month, day.day, 12, tzinfo=PACIFIC)
+            )
+        if not allowance:
+            return 0.0
+
+        imported = sum(r.imported for r in readings)
+        return -min(imported, allowance) * rate
 
     def _fixed_charges(self, period: BillingPeriod) -> dict[str, float]:
         """Charges billed per day rather than per kWh.

@@ -57,10 +57,16 @@ When an advice letter or rate card update changes one of these tables:
 
 1. **Add a new dated file rather than editing the current one**, e.g. a new
    `src/nem_rates/data/tariff/pge/eelec/2027-01-01.toml` with the new
-   `effective` date and `advice_letter`. `EelecTariff` / `load_snapshot`
+   `effective` date and `advice_letter`. `RetailTariff` / `load_snapshot`
    always resolve to the latest snapshot whose `effective` date is on or
    before the moment being priced, so old snapshots, and old bills, keep
    resolving to the rate that was actually in force at the time.
+
+   Adding a whole **schedule** works the same way: a new directory named for
+   the tariff with `-` stripped (`E-TOU-C` → `etouc`) needs no code change.
+   Omit `[periods].part_peak` if the schedule has none, and omit `[discounts]`
+   if the sheet does not publish CARE/FERA percentages — a requested discount
+   then raises rather than borrowing another schedule's figure.
 2. Transcribe each unbundled component from the tariff sheet, then fill in
    `[totals]` from the sheet's own published totals.
    `tests/test_eelec.py::test_components_sum_to_published_total` asserts the
@@ -85,6 +91,8 @@ When an advice letter or rate card update changes one of these tables:
 |---|---|
 | Export rates (NBT) | [`PGE-Solar-Billing-Plan-Export-Rates.zip`](https://www.pge.com/assets/pge/docs/vanities/PGE-Solar-Billing-Plan-Export-Rates.zip), linked from `pge.com/eecvalues` |
 | E-ELEC retail rates | [Schedule E-ELEC tariff sheet](https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-ELEC.pdf) |
+| E-TOU-C retail rates and baseline quantities | [Schedule E-TOU-C tariff sheet](https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-TOU-C.pdf) |
+| EV2-A retail rates | [Schedule EV2 tariff sheet](https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_EV2%20(Sch).pdf) |
 | PCIA vintages | Schedule E-ELEC, Sheet 5 ("Vintage Power Charge Indifference Adjustment") |
 | Franchise fee vintages | [Schedule E-FFS](https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-FFS.pdf), residential row |
 | ACC Plus adder | PG&E Schedule NBT |

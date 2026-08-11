@@ -13,7 +13,7 @@ import pytest
 from nem_rates import Config, RateEngine, Supplier
 from nem_rates.cca import load_rate_card
 from nem_rates.config import CcaConfig
-from nem_rates.tariff.eelec import EelecTariff, load_snapshot
+from nem_rates.tariff.retail import RetailTariff, load_snapshot
 from nem_rates.timeutil import PACIFIC
 
 # Derived from the billed dollar amounts over the period's 23.589 kWh.
@@ -42,12 +42,12 @@ def at(hour: int, month: int = 7) -> datetime:
     [(12, 0.11878), (17, 0.26299), (15, 0.16388)],  # off-peak, peak, part-peak
 )
 def test_generation_matches_the_billed_rate(hour: int, billed_rate: float) -> None:
-    price = EelecTariff(config()).price_at(at(hour))
+    price = RetailTariff(config()).price_at(at(hour))
     assert price.components["cca_generation"] == pytest.approx(billed_rate)
 
 
 def test_cost_relief_credit_matches_the_bill() -> None:
-    price = EelecTariff(config()).price_at(at(12))
+    price = RetailTariff(config()).price_at(at(12))
     assert price.components["cca_cost_relief_credit"] == pytest.approx(-0.00620)
 
 
@@ -59,7 +59,7 @@ def test_cost_relief_credit_expires_at_the_end_of_2026() -> None:
 
     assert (
         "cca_cost_relief_credit"
-        not in EelecTariff(config()).price_at(datetime(2027, 7, 29, 12, tzinfo=PACIFIC)).components
+        not in RetailTariff(config()).price_at(datetime(2027, 7, 29, 12, tzinfo=PACIFIC)).components
     )
 
 
@@ -95,17 +95,17 @@ class TestBillReconciliation:
 
     def test_base_services_charge(self) -> None:
         # Billed as 27 days @ $0.79343 = $21.42.
-        charge = EelecTariff(config()).daily_fixed_charge(at(12))
+        charge = RetailTariff(config()).daily_fixed_charge(at(12))
         assert charge == pytest.approx(0.79343)
         assert round(27 * charge, 2) == 21.42
 
     def test_energy_produced_line_is_generation_plus_bundled_pcia(self) -> None:
         """PG&E prints its own generation, then credits it back in full."""
-        bundled = EelecTariff(Config()).price_at(at(12)).components
+        bundled = RetailTariff(Config()).price_at(at(12)).components
         assert bundled["generation"] + bundled["bundled_pcia"] == pytest.approx(0.10867)
 
     def test_delivery_splits_into_energy_delivered_plus_non_bypassable(self) -> None:
-        components = EelecTariff(config()).price_at(at(12)).components
+        components = RetailTariff(config()).price_at(at(12)).components
         delivery = sum(
             v
             for k, v in components.items()
@@ -122,19 +122,19 @@ class TestBillReconciliation:
 
     def test_pcia_is_positive_unlike_the_bundled_credit(self) -> None:
         """The bundled PCIA is a credit; a CCA customer's vintage PCIA is a charge."""
-        components = EelecTariff(config()).price_at(at(12)).components
+        components = RetailTariff(config()).price_at(at(12)).components
         assert components["pcia"] == pytest.approx(0.03476, abs=1e-5)
         assert "bundled_pcia" not in components
 
     def test_total_import_price(self) -> None:
-        price = EelecTariff(config()).price_at(at(12))
+        price = RetailTariff(config()).price_at(at(12))
         assert price.total == pytest.approx(0.37267, abs=1e-5)
         assert price.complete is True
 
     def test_cca_costs_more_than_bundled_on_import(self) -> None:
         """Driven by the vintage PCIA, which bundled service does not pay."""
-        cca = EelecTariff(config()).price_at(at(12)).total
-        bundled = EelecTariff(Config()).price_at(at(12)).total
+        cca = RetailTariff(config()).price_at(at(12)).total
+        bundled = RetailTariff(Config()).price_at(at(12)).total
         assert cca - bundled == pytest.approx(0.03909, abs=1e-5)
 
 

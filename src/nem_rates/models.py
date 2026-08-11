@@ -40,6 +40,14 @@ class ImportPrice:
     #: card rather than PG&E's tariff. Where that card is unconfigured, ``total``
     #: covers delivery only and ``complete`` is False.
     complete: bool = True
+    #: Per-kWh credit available on usage within the cycle's baseline allowance,
+    #: on schedules that have one (E-TOU-C). ``total`` is the over-baseline
+    #: price, so subtract this for a kWh still inside the allowance.
+    #:
+    #: It is reported rather than applied because eligibility depends on
+    #: cumulative usage, which a marginal price cannot know. The billing engine
+    #: sees a whole cycle and applies it; 0.0 on schedules without a baseline.
+    baseline_credit: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -48,6 +56,7 @@ class ImportPrice:
             "period": str(self.period),
             "components": dict(self.components),
             "complete": self.complete,
+            "baseline_credit": self.baseline_credit,
         }
 
 

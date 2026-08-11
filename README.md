@@ -1,7 +1,10 @@
 # nem-rates
 
-Real-time and forecast electricity **import** and **export** prices for PG&E's
-**E-ELEC** rate plan under **NEM 3.0 / the Net Billing Tariff (NBT)**.
+Real-time and forecast electricity **import** and **export** prices for PG&E
+residential rate plans under **NEM 3.0 / the Net Billing Tariff (NBT)**.
+
+Three schedules are vendored: **E-ELEC** (Electric Home), **E-TOU-C**
+(Time-of-Use, peak 4–9 p.m. every day), and **EV2-A** (Home Charging).
 
 Under NBT your export credit is not a time-of-use schedule: it is an hourly
 Avoided Cost Calculator value that swings from about $0.06/kWh at midday to
@@ -33,7 +36,7 @@ component. `nem-rates` collapses it at build time, verifying losslessness cell b
 cell, so the entire five-vintage dataset ships inside the wheel at **268 KiB**
 and every lookup is a few list indexes.
 
-The retail side is similar: E-ELEC's period boundaries are identical every day
+The retail side is similar: these schedules' period boundaries are identical every day
 of the week including holidays and do not shift by season, so an import price is
 fully determined by `(season, hour)`.
 
@@ -126,8 +129,12 @@ rows. The library handles each; they are documented because they are surprising.
   exact, and those years are already published as illustrative only.
 - **Vintages disagree about holidays** in those same late years, so the holiday
   calendar used for a lookup is the one embedded in that vintage's own file.
-- **Only the June 2026 E-ELEC sheet is vendored.** Earlier timestamps raise
-  rather than silently back-dating current rates onto an older billing period.
+- **Only the June 2026 tariff sheets are vendored**, for each of the three
+  schedules. Earlier timestamps raise rather than silently back-dating current
+  rates onto an older billing period.
+- **E-TOU-C's baseline credit is not in the marginal price.** It applies to the
+  first N kWh of a cycle, which is a quantity rather than a time, so `price_at`
+  reports it as `baseline_credit` and the billing engine applies it.
 
 ### CCA customers
 

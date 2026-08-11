@@ -1,9 +1,19 @@
-"""PG&E Schedule E-ELEC import pricing.
+"""PG&E residential retail import pricing.
 
-E-ELEC is simpler than most residential TOU schedules: the period boundaries are
-identical every day of the week including holidays, they do not shift by season,
-and there is no baseline allowance or tier structure. So a price is fully
-determined by (season, hour).
+Schedule-agnostic: everything that differs between schedules lives in the
+vendored snapshot, so adding one is a data change. Currently vendored are
+E-ELEC, E-TOU-C, and EV2-A.
+
+They share a shape that keeps pricing cheap: period boundaries are identical
+every day of the week including holidays, and do not shift by season. So a
+price is determined by (season, hour) alone.
+
+The one exception is E-TOU-C's baseline credit, which applies to the first N
+kWh of a cycle. That is a quantity rather than a time, so no marginal price can
+express it. ``price_at`` returns the over-baseline price -- the right answer for
+a dispatch decision, since an allowance is normally spent early in the cycle --
+and reports the available credit as ``ImportPrice.baseline_credit`` for the
+billing engine, which sees a whole cycle, to apply.
 """
 
 from __future__ import annotations
@@ -72,8 +82,8 @@ def load_snapshot(utility: str, tariff: str, on: date) -> TariffSnapshot:
     return applicable[-1]
 
 
-class EelecTariff:
-    """Prices a kWh of grid import under E-ELEC."""
+class RetailTariff:
+    """Prices a kWh of grid import under the configured schedule."""
 
     def __init__(self, config: Config) -> None:
         self.config = config
@@ -99,7 +109,9 @@ class EelecTariff:
         for start, end in periods["peak"]:
             if start <= hour < end:
                 return TouPeriod.PEAK
-        for start, end in periods["part_peak"]:
+        # Absent rather than empty on a schedule with no part-peak, which is how
+        # E-TOU-C is written: peak or off-peak, nothing between.
+        for start, end in periods.get("part_peak", []):
             if start <= hour < end:
                 return TouPeriod.PART_PEAK
         return TouPeriod.OFF_PEAK
@@ -116,7 +128,33 @@ class EelecTariff:
             period=period,
             components={k: round(v, 6) for k, v in components.items()},
             complete=complete,
+            baseline_credit=float(snapshot.raw.get("baseline", {}).get("credit", 0.0)),
         )
+
+    def baseline_allowance(self, moment: datetime) -> float:
+        """Baseline kWh allowed for the day containing ``moment``.
+
+        Zero on a schedule without a baseline, and zero when no territory is
+        configured -- the quantities vary several-fold between territories, so
+        guessing one would be worse than reporting no allowance.
+        """
+        snapshot = self.snapshot_for(moment)
+        quantities = snapshot.raw.get("baseline", {}).get("quantities")
+        if not quantities or self.config.baseline_territory is None:
+            return 0.0
+        table = quantities.get(self.config.baseline_code)
+        if table is None:
+            raise ConfigError(
+                f"unknown baseline_code {self.config.baseline_code!r}; "
+                f"vendored: {sorted(quantities)}"
+            )
+        territory = table.get(self.config.baseline_territory.upper())
+        if territory is None:
+            raise ConfigError(
+                f"no baseline quantity for territory "
+                f"{self.config.baseline_territory!r}; vendored: {sorted(table)}"
+            )
+        return float(territory[str(self.season(moment, snapshot))])
 
     def _components(
         self,
@@ -190,7 +228,14 @@ class EelecTariff:
         total = sum(components.values())
         if self.config.discount == "none":
             return total
-        discounts = snapshot.raw["discounts"]
+        discounts = snapshot.raw.get("discounts")
+        if not discounts or self.config.discount not in discounts:
+            # The percentage is schedule-specific and not every sheet prints it.
+            # Better to refuse than to borrow another schedule's figure.
+            raise ConfigError(
+                f"{snapshot.raw['tariff']} does not vendor a {self.config.discount.upper()} "
+                "discount; it is not published on that schedule's tariff sheet"
+            )
         rate = float(discounts[self.config.discount])
         if self.config.discount == "care":
             # The Wildfire Fund Charge is not levied on CARE sales at all, so it

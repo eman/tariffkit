@@ -41,6 +41,7 @@ Bundled PG&E service needs no config file at all.
 
 | Key | Values | Notes |
 |---|---|---|
+| `tariff` | `E-ELEC`, `E-TOU-C`, `EV2-A` | Defaults to `E-ELEC` |
 | `supplier` | `bundled`, `cca` | `cca` requires a `[cca]` table |
 | `interconnection_year` | 2023–2026 | Picks the NBT vintage and ACC Plus rate |
 | `pto_date` | ISO date | Starts the nine-year rate lock |
@@ -48,6 +49,8 @@ Bundled PG&E service needs no config file at all.
 | `acc_plus_segment` | `residential`, `residential_low_income`, `none` | |
 | `discount` | `none`, `care`, `fera` | Requires `acc_plus_segment = "residential_low_income"` |
 | `base_services_charge_tier` | 1, 2, 3 | $/day, reported separately from $/kWh |
+| `baseline_territory` | `P`…`Z` | E-TOU-C only; your bill names it |
+| `baseline_code` | `basic`, `all_electric` | PG&E's Code B / Code H |
 
 `[cca]` keys: `name`, `rate_card`, `option`, `pcia_rate`, `pcia_vintage`,
 `franchise_fee_surcharge`, `generation_rates`, `export_generation_rate`.
@@ -67,6 +70,51 @@ for a vintage that is not vendored (the sheet's "Pre-2009" bucket, or a year
 newer than the vendored sheet). Prefer the vintage: a rate reverse-engineered
 from a billed dollar amount inherits that amount's rounding, which on a small
 bill can be several percent.
+
+## Rate schedules
+
+Three residential schedules are vendored. Adding another is a data change, not a
+code change: drop a dated snapshot under
+`src/nem_rates/data/tariff/pge/<slug>/`.
+
+| Schedule | Periods | Baseline |
+|---|---|---|
+| `E-ELEC` | peak 4–9pm, part-peak 3–4pm and 9pm–12am, off-peak otherwise | no |
+| `EV2-A` | same shape as E-ELEC, different rates | no |
+| `E-TOU-C` | peak 4–9pm, **no part-peak** — off-peak otherwise | yes |
+
+All three apply the same periods every day of the week, holidays included, and
+share the June–September summer season.
+
+### The E-TOU-C baseline credit
+
+E-TOU-C credits $0.08140/kWh on usage within a baseline allowance. That is a
+*quantity*, not a time, so no marginal price can express it:
+
+```python
+price = engine.price_at(moment).import_price
+price.total  # the over-baseline price
+price.baseline_credit  # 0.08140; subtract for a kWh still inside the allowance
+```
+
+`price_at` deliberately returns the over-baseline price, which is the right
+answer for a dispatch decision — an allowance is normally spent early in the
+cycle, so the next kWh is over it. The billing engine sees a whole cycle and
+applies the credit itself, as a `baseline_credit` line:
+
+```toml
+tariff = "E-TOU-C"
+baseline_territory = "X"      # your bill: "Baseline Territory X"
+baseline_code = "basic"       # or "all_electric" if space heating is electric
+```
+
+The allowance is a daily quantity that changes at the season boundary, so it
+accumulates day by day rather than being multiplied by the cycle length —
+territory P all-electric is 15.2 kWh/day in summer against 26.0 in winter.
+
+**Without `baseline_territory` there is no credit line at all.** The quantities
+vary several-fold between territories, so guessing one would be worse than
+reporting none.
 
 ## Environment variables
 
@@ -134,9 +182,9 @@ bills. The Base Services Charge is $/day and is deliberately excluded.
 ```python
 from datetime import datetime
 from nem_rates import Config, PACIFIC
-from nem_rates.tariff.eelec import EelecTariff
+from nem_rates.tariff.retail import RetailTariff
 
-tariff = EelecTariff(Config.load())
+tariff = RetailTariff(Config.load())
 for label, hour, kwh in [("off_peak", 12, 22.903), ("peak", 17, 0.458)]:
     rate = tariff.price_at(datetime(2026, 7, 29, hour, tzinfo=PACIFIC)).total
     print(f"{label}: {kwh} kWh @ ${rate:.5f} = ${kwh * rate:.2f}")

@@ -14,6 +14,8 @@ from .models import Supplier
 
 AccPlusSegment = Literal["residential", "residential_low_income", "none"]
 Discount = Literal["none", "care", "fera"]
+#: PG&E's Code B (basic) and Code H (all-electric) baseline quantity columns.
+BaselineCode = Literal["basic", "all_electric"]
 
 #: Interconnection-application year -> NBT vintage. Systems that do not qualify
 #: for a nine-year lock use the floating vintage, NBT00.
@@ -84,6 +86,15 @@ class Config:
     acc_plus_segment: AccPlusSegment = "residential"
     discount: Discount = "none"
     base_services_charge_tier: Literal[1, 2, 3] = 3
+
+    #: Baseline territory letter, printed on the bill as e.g. "Baseline
+    #: Territory X". Only schedules with a baseline allowance use it -- E-TOU-C
+    #: among those vendored -- and only when computing a whole bill.
+    baseline_territory: str | None = None
+    #: "basic" for a gas-heated home, "all_electric" where space heating is
+    #: electric. PG&E prints this as Code B or Code H; the bill's "Heat Source"
+    #: line says which.
+    baseline_code: BaselineCode = "basic"
 
     cca: CcaConfig | None = None
 
