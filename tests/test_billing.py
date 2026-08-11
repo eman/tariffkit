@@ -163,6 +163,28 @@ class TestStatementReconciliation:
         assert payload["imported_kwh"] == pytest.approx(23.589)
 
 
+class TestPeriodElapsed:
+    """days x 24h is not the real span of a cycle containing a DST transition."""
+
+    @pytest.mark.parametrize(
+        ("start", "end", "days", "hours"),
+        [
+            (date(2026, 6, 30), date(2026, 7, 28), 29, 29 * 24),
+            (date(2025, 10, 29), date(2025, 11, 30), 33, 33 * 24 + 1),  # fall back
+            (date(2026, 3, 3), date(2026, 3, 31), 29, 29 * 24 - 1),  # spring forward
+        ],
+        ids=["ordinary", "fall back", "spring forward"],
+    )
+    def test_elapsed_counts_real_hours(self, start: date, end: date, days: int, hours: int) -> None:
+        period = BillingPeriod(start, end)
+        assert period.days == days
+        assert period.elapsed == timedelta(hours=hours)
+
+    def test_days_still_counts_calendar_days(self) -> None:
+        """The Base Services Charge is billed per calendar day, not per 24 hours."""
+        assert BillingPeriod(date(2025, 10, 29), date(2025, 11, 30)).days == 33
+
+
 class TestCoverageChecks:
     def _full_day(self) -> list[IntervalReading]:
         return [IntervalReading(pt(6, h), imported=1.0) for h in range(24)]

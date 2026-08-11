@@ -35,7 +35,10 @@ def check_coverage(readings: Sequence[IntervalReading], period: BillingPeriod) -
     ordered = sorted(readings, key=lambda r: to_pacific(r.start))
 
     covered = sum((r.duration for r in ordered), timedelta())
-    expected = timedelta(days=period.days)
+    # Real elapsed time, not days x 24: a cycle spanning a DST transition is an
+    # hour longer or shorter, and on the autumn one that difference hides an
+    # hour of genuinely missing data.
+    expected = period.elapsed
     shortfall = expected - covered
     if shortfall > expected * COVERAGE_TOLERANCE:
         yield (

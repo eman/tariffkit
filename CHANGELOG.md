@@ -64,6 +64,11 @@ All notable changes to this project are documented here. This project follows
 - `TOU Period` now declares `device_class: enum` with its three options.
 
 ### Fixed
+- `BillingPeriod.elapsed` reports the cycle's real span, and coverage now
+  compares against it. `days` times 24 hours is an hour out either way on a cycle
+  containing a DST transition, and on the autumn one it errs toward hiding a
+  short series -- the same direction as the gap bug below. `days` still counts
+  calendar days, which is what the Base Services Charge is billed on.
 - Coverage checking measured real time as clock time, so both DST transitions
   were wrong and in opposite directions. On the autumn day an hour missing from
   the data was hidden: 01:45 plus fifteen minutes reads as 02:00 while the clock
