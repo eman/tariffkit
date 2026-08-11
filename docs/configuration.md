@@ -116,6 +116,36 @@ territory P all-electric is 15.2 kWh/day in summer against 26.0 in winter.
 vary several-fold between territories, so guessing one would be worse than
 reporting none.
 
+## Home Assistant
+
+Only needed for `nem-rates bill --source ha`. Entity ids are configuration and
+live in the config file; the access token is not and does not.
+
+```toml
+[home_assistant]
+host = "https://homeassistant.example:8123"
+import_entity = "sensor.eagle_100_energy_delivered"
+export_entity = "sensor.eagle_100_energy_received"
+```
+
+Both entities default to the Rainforest Eagle-100 pair above, so a `[home_assistant]`
+section is only needed to point elsewhere. Note the defaults are the
+**monotonic-filtered** entities — the similarly named
+`sensor.eagle_100_total_energy_delivered` is the raw device feed and drops to
+zero several times a day when the meter session restarts.
+
+Credentials come from `.env` in the working directory, or the environment:
+
+```bash
+HA_HOST = "https://homeassistant.example:8123"
+HA_TOKEN = "<long-lived access token>"
+```
+
+Resolution order, later winning: the config file, then `.env`, then real
+environment variables, then `--ha-import-entity` / `--ha-export-entity`.
+`HA_TOKEN` is deliberately never read from the config file, which is not
+gitignored.
+
 ## Environment variables
 
 `NEM_RATES_SUPPLIER`, `NEM_RATES_VINTAGE`, `NEM_RATES_INTERCONNECTION_YEAR`,

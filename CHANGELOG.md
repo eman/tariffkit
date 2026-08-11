@@ -6,6 +6,25 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **`nem-rates bill --source ha`** reads interval data straight from Home
+  Assistant, so a cycle can be billed without downloading anything. It pulls
+  long-term statistics rather than state history, which is the only place a whole
+  cycle survives — history is purged on the recorder's schedule, typically ten
+  days. Entity ids come from a `[home_assistant]` config section (defaulting to
+  the Rainforest Eagle-100 pair) and credentials from `.env` or the environment;
+  the token is never read from the config file. Needs the new `ha` extra, since
+  statistics are WebSocket-only; `nem_rates.billing` stays stdlib-only and the
+  source lives in `nem_rates.sources`.
+- The source asks for both statistics resolutions and prefers five-minute
+  wherever it still exists, falling back to hourly. That is not just tidiness:
+  import and export are metered separately, so a slot carrying both directions
+  is real rather than un-netted gross data, and it happened in 42% of active
+  hours against 12% of five-minute slots on one real week.
+- Statistics points implying more than 100 kW are discarded with a warning. When
+  recording is interrupted the running sum restarts and the first point after the
+  break reports the whole accumulated total as its change — 543.663 kWh inside
+  one five-minute slot on a real instance. Discarding leaves a hole the coverage
+  check reports, rather than a plausible-looking invention.
 - **Export credit ledger** (`nem_rates.billing.ledger`), the stateful layer above
   the pure per-cycle engine: credits earned but not spent bank and offset later
   charges. `apply_credits` handles one cycle, `run_ledger` folds a run.
