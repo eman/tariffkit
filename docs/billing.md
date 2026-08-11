@@ -142,12 +142,47 @@ IntervalReading.from_gross(start, consumption_kwh=1.0, production_kwh=4.0)
 `hourly()` collapses sub-hourly readings for grouping while summing each
 direction separately, so it never changes what the bill totals.
 
+## Carrying credits between cycles
+
+`BillEngine` prices one cycle. Credits earned but not spent bank and offset later
+charges, which is stateful, so it lives in a ledger on top:
+
+```python
+from nem_rates.billing import CreditBalances, apply_credits, run_ledger
+
+entry = apply_credits(bill, CreditBalances(generation=4.93))
+entry.applied.total  # spent this cycle
+entry.closing.total  # carried forward
+entry.cash_due  # what is actually owed
+
+run_ledger(bills, opening)  # fold a run of cycles, carrying the bank
+```
+
+Credits are **not fungible**, and the statement states the rule: Energy Produced
+credits offset only Energy Produced charges, Energy Delivered credits only
+Energy Delivered charges, and the bonus credit offsets anything not
+non-bypassable. So a balance is three buckets, and scoped buckets are spent
+before the bonus — otherwise the flexible credit is burnt on charges a scoped one
+could have covered, stranding the scoped credit.
+
+Two things to know:
+
+- **One bank at a time.** A CCA customer has two, kept separately by PG&E and by
+  the CCA. A `Bill` merges both providers, so applying the ledger straight to one
+  is an approximation. Feed one provider's charges and credits for an exact
+  answer.
+- **The charge scoping is only partly reconciled**, which `LedgerEntry.complete`
+  reports as `False`. Which components bank into which bucket is confirmed, and
+  so is unspent credit carrying forward. Where the boundary of an "Energy
+  Delivered charge" falls is not: confirming it needs a cycle whose credits
+  exceed the charges they may offset, so the cap binds.
+
 ## What this does not do
 
-Single-cycle charges only. It does **not** model export-credit balances:
-month-to-month carryover, the annual true-up, Net Surplus Compensation, or the
-credit reversal at cash-out. Those are stateful across a program year (MCE runs
-April to March) and need a ledger built on top of this.
+It does **not** model the annual true-up, Net Surplus Compensation, or the credit
+reversal at cash-out. Those need a published NSC rate and the expiry rules for
+unspent credit, neither vendored, and neither checkable against a statement until
+a true-up cycle exists. MCE's program year runs April to March.
 
 Two more known limits:
 

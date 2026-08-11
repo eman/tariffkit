@@ -6,6 +6,19 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **Export credit ledger** (`nem_rates.billing.ledger`), the stateful layer above
+  the pure per-cycle engine: credits earned but not spent bank and offset later
+  charges. `apply_credits` handles one cycle, `run_ledger` folds a run.
+  A balance is three buckets rather than a number, because credits are not
+  fungible — the statement's own rule is that Energy Produced credits offset only
+  Energy Produced charges, Energy Delivered only Energy Delivered, and the bonus
+  credit anything not non-bypassable. Scoped buckets are spent before the bonus,
+  so the flexible credit is not burnt on charges a scoped one could cover.
+  Reconciled against both credit banks on the 2026-08-04 statement: PG&E's spends
+  everything it earns ($7.96 in, $7.96 out), and MCE's earns more than it can
+  spend ($4.93 + $11.33 − $3.63 = $12.63), which exercises the cap in both
+  directions. `LedgerEntry.complete` reports `False` while the charge scoping is
+  only partly reconciled.
 - **Two more rate schedules: E-TOU-C** (Time-of-Use, peak 4–9 p.m. every day)
   and **EV2-A** (Home Charging). Both transcribed from their June 2026 tariff
   sheets, with all ten new rate cells verified against the published totals.
