@@ -94,6 +94,13 @@ class BillingPeriod:
     def contains(self, moment: datetime) -> bool:
         return self.start <= to_pacific(moment).date() <= self.end
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "start": self.start.isoformat(),
+            "end": self.end.isoformat(),
+            "days": self.days,
+        }
+
     @classmethod
     def from_readings(cls, readings: Sequence[IntervalReading]) -> BillingPeriod:
         """Infer the cycle from the data's own span."""
@@ -200,11 +207,7 @@ class Bill:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "period": {
-                "start": self.period.start.isoformat(),
-                "end": self.period.end.isoformat(),
-                "days": self.period.days,
-            },
+            "period": self.period.to_dict(),
             "imported_kwh": round(self.imported_kwh, 4),
             "exported_kwh": round(self.exported_kwh, 4),
             "buckets": [b.to_dict() for b in self.buckets],
