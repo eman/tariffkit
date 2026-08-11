@@ -211,8 +211,10 @@ def credits_earned(bill: Bill) -> CreditBalances:
     )
 
 
-def charges_by_bucket(bill: Bill) -> tuple[dict[CreditBucket, float], float]:
-    """``({bucket: offsettable charges}, non-offsettable charges)``.
+def charges_by_bucket(
+    bill: Bill,
+) -> tuple[dict[CreditBucket, float], float, dict[CreditBucket, float]]:
+    """``({bucket: offsettable charges}, non-offsettable charges, {bucket: unspent})``.
 
     A component that nets out negative -- ``cca_cost_relief_credit``, or the
     recovery bond credit -- reduces its bucket rather than creating charge to
@@ -238,13 +240,18 @@ def charges_by_bucket(bill: Bill) -> tuple[dict[CreditBucket, float], float]:
         if bucket is not None:
             offsettable[bucket] -= abs(value)
 
-    # A bucket can only go negative if its credits outweigh its charges, in
-    # which case there is nothing there to offset.
+    # An in-cycle offset can wipe out its bucket's charges but no more. The
+    # excess must not leak into non_offsettable: those are the non-bypassable
+    # charges, the ones nothing is allowed to reduce, and a generation-scoped
+    # offset reaching them would be exactly backwards. It banks instead, which
+    # is the rule the statement gives for any credit it cannot spend --
+    # "saved to help offset future bill charges".
+    unspent: dict[CreditBucket, float] = dict.fromkeys(CreditBucket, 0.0)
     for bucket, value in offsettable.items():
         if value < 0.0:
-            non_offsettable += value
+            unspent[bucket] = -value
             offsettable[bucket] = 0.0
-    return offsettable, non_offsettable
+    return offsettable, non_offsettable, unspent
 
 
 def apply_credits(bill: Bill, opening: CreditBalances | None = None) -> LedgerEntry:
@@ -256,14 +263,20 @@ def apply_credits(bill: Bill, opening: CreditBalances | None = None) -> LedgerEn
     one could have covered, and strand the scoped credit.
     """
     opening = opening or CreditBalances()
+    offsettable, non_offsettable, unspent = charges_by_bucket(bill)
+
+    # An in-cycle offset larger than the charges it was meant to cover banks the
+    # remainder rather than being lost or turned into cash owed.
     earned = credits_earned(bill)
+    for bucket, value in unspent.items():
+        if value:
+            earned = earned.with_bucket(bucket, earned[bucket] + value)
+
     available = CreditBalances(
         generation=opening.generation + earned.generation,
         delivery=opening.delivery + earned.delivery,
         bonus=opening.bonus + earned.bonus,
     )
-
-    offsettable, non_offsettable = charges_by_bucket(bill)
     applied = CreditBalances()
     remaining = dict(offsettable)
 

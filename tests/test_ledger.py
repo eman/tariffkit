@@ -81,7 +81,7 @@ class TestPgeBank:
 
     def test_non_bypassable_charges_are_not_offsettable(self) -> None:
         """Not even by the bonus credit -- that is what non-bypassable means."""
-        _, non_offsettable = charges_by_bucket(pge_bill())
+        _, non_offsettable, _ = charges_by_bucket(pge_bill())
         # PPP + wildfire fund + CTC, plus PCIA, franchise fee and the fixed charge.
         assert non_offsettable == pytest.approx(0.24 + 0.23 + 0.01 + 1.39 + 0.02 + 23.01)
 
@@ -108,7 +108,7 @@ class TestMceBank:
         earned and applied figures catch it.
         """
         assert credits_earned(mce_bill()).total == pytest.approx(11.33)
-        offsettable, _ = charges_by_bucket(mce_bill())
+        offsettable, _, _ = charges_by_bucket(mce_bill())
         assert offsettable[CreditBucket.GENERATION] == pytest.approx(3.63)
 
     def test_unspent_credit_is_available_next_cycle(self) -> None:
@@ -120,6 +120,38 @@ class TestMceBank:
         assert second.applied.generation == pytest.approx(5.00)
         assert second.cash_due == pytest.approx(0.0)
         assert second.closing.total == pytest.approx(12.63 - 5.00)
+
+
+class TestInCycleOffsetOverrun:
+    """An in-cycle offset larger than the charges it was meant to cover."""
+
+    def bill(self) -> Bill:
+        # Solar bonus 0.96 against only 0.20 of generation charge.
+        return Bill(
+            period=PERIOD,
+            import_components={"cca_generation": 0.20, "public_purpose_programs": 0.50},
+            export_components={"cca_solar_bonus": -0.96},
+        )
+
+    def test_it_cannot_reduce_non_bypassable_charges(self) -> None:
+        """The excess must not leak into charges nothing is allowed to reduce.
+
+        A generation-scoped offset reaching the non-bypassable charges would be
+        exactly backwards -- non-bypassable is what those charges are.
+        """
+        _, non_offsettable, _ = charges_by_bucket(self.bill())
+        assert non_offsettable == pytest.approx(0.50)
+
+    def test_the_excess_banks_rather_than_becoming_cash_owed(self) -> None:
+        """The statement's rule for any credit it cannot spend: saved for later."""
+        entry = apply_credits(self.bill())
+        assert entry.earned.generation == pytest.approx(0.76)  # 0.96 less the 0.20 it covered
+        assert entry.closing.generation == pytest.approx(0.76)
+
+    def test_cash_due_is_the_non_bypassable_charge(self) -> None:
+        entry = apply_credits(self.bill())
+        assert entry.cash_due == pytest.approx(0.50)
+        assert entry.cash_due > 0
 
 
 class TestScoping:
