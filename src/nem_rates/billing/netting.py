@@ -2,8 +2,11 @@
 
 A bill computed over a lossy interval series is silently wrong -- it simply
 looks like a month with less usage. So coverage problems are surfaced as
-warnings on the bill and clear its ``complete`` flag, rather than being papered
-over by interpolation.
+warnings on the bill rather than being papered over by interpolation.
+
+They do not clear ``Bill.complete``, which is a claim about the rates rather
+than the readings: a bill can reconcile against a real statement and still carry
+coverage warnings. Callers wanting "trust this total" check both.
 """
 
 from __future__ import annotations

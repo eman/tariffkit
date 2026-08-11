@@ -327,9 +327,16 @@ class TestCsvIngest:
         assert readings[0].start.hour == 12
         assert readings[0].start.utcoffset() is not None
 
-    def test_preamble_without_a_recognisable_header_still_names_real_columns(self) -> None:
-        """The error must describe the file, not the preamble it gave up on."""
-        with pytest.raises(DataError, match="no timestamp column"):
+    def test_unrecognisable_header_raises_rather_than_guessing(self) -> None:
+        """With nothing recognisable anywhere, the file is passed through as-is.
+
+        The error then names the first row, which for a file with a preamble is
+        the preamble rather than the real columns. That is the honest outcome:
+        picking a header row by guesswork would mis-parse silently instead. The
+        fix for such a file is to name the column via ``CsvLayout``, which the
+        preamble scan does honour.
+        """
+        with pytest.raises(DataError, match=r"no timestamp column found in \['Name', 'JANE DOE'\]"):
             read_csv(io.StringIO("Name,JANE DOE\n\nfoo,bar\n1,2\n"))
 
     def test_unit_suffixed_column_names_are_matched(self) -> None:

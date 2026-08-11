@@ -116,8 +116,11 @@ def _skip_preamble(handle: IO[str], layout: CsvLayout) -> Iterator[str]:
         if any(_normalize(cell) in wanted for cell in row):
             yield from lines[index:]
             return
-    # No recognisable header: hand back the file unchanged so the existing
-    # "no timestamp column" error names the columns actually present.
+    # No recognisable header anywhere. Hand back the file unchanged rather than
+    # guessing which row was meant: the caller gets the "no timestamp column"
+    # error naming whatever the first row held, which for a file with a preamble
+    # is the preamble. Nothing here can do better without inventing a rule for
+    # where the header starts, and a wrong guess would mis-parse silently.
     yield from lines
 
 
