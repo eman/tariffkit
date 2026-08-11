@@ -16,8 +16,18 @@
 schema = 1
 utility = "PGE"
 tariff = "EV2-A"
-effective = "2026-06-01"
+effective = "2026-03-01"
 advice_letter = "7921-E"
+# Effective-date note. The sheet these rates come from carries Advice 7921-E,
+# effective 2026-06-01, but the winter rates on it were carried forward
+# unchanged: the 2026-04-01..04-29 statement bills peak / part-peak / off-peak at
+# exactly 0.41099 / 0.39428 / 0.22558, with the Base Services Charge that began
+# 2026-03-01. So this snapshot is dated from that restructure rather than from
+# the advice letter.
+#
+# The summer rates are the ones 7921-E actually set, and dating the snapshot
+# earlier cannot misapply them: the summer season starts June 1, so no timestamp
+# before the advice letter's own effective date can reach them.
 source_url = "https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_EV2%20(Sch).pdf"
 currency = "USD/kWh"
 

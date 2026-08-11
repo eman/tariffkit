@@ -45,6 +45,12 @@ All notable changes to this project are documented here. This project follows
   second pass. Rows carrying an explicit offset are unaffected.
 
 ### Changed
+- The EV2-A snapshot is dated from the 2026-03-01 Base Services Charge
+  restructure rather than from its advice letter. The rates come from a sheet
+  carrying Advice 7921-E effective 2026-06-01, but a 2026-04-01..04-29 statement
+  bills them exactly, so dating the snapshot from the letter made that whole
+  cycle unpriceable. Back-dating cannot misapply the summer rates the letter did
+  set, since the summer season starts June 1.
 - **CCA rate cards are keyed by PG&E schedule.** A CCA prices each schedule
   separately and the rates differ substantially — MCE winter off-peak is 0.06754
   on E-ELEC against 0.11042 on E-TOU-C — so the card previously applied E-ELEC's
@@ -77,6 +83,14 @@ All notable changes to this project are documented here. This project follows
   untested; the claim it supports is structural.
 
 ### Notes
+- **EV2-A is reconciled against a real statement**, the first for any schedule
+  other than E-ELEC and the first winter cycle on any of them. All three delivery
+  rates, all three MCE generation rates, the cost relief credit, the Base
+  Services Charge, and every flat rider on the statement's own breakdown page
+  reproduce exactly; energy charges, MCE net charges and the fixed charge all
+  land within a cent. `tests/test_ev2a.py` pins it.
+- The vendored E-ELEC and E-TOU-C **winter** rates still have no statement behind
+  them. They first apply in October 2026.
 - Both tables were reconciled against two statements for a 2011-vintage MCE
   account: $0.03492 × 23.589 kWh = $0.82 and × 39.906 kWh = $1.39;
   $0.00060 × 23.589 = $0.01 and × 39.906 = $0.02, all four as billed. With them,
