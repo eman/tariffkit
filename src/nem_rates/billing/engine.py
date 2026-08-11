@@ -100,7 +100,12 @@ class BillEngine:
             export_components=export_components,
             fixed_components=fixed_components,
             warnings=tuple(warnings),
-            complete=complete and not warnings,
+            # Pricing confidence only. Coverage problems travel separately in
+            # `warnings`: they say the meter data is patchy, not that the rates
+            # applied to it are uncertain, and folding them together made a bill
+            # that reconciles to a statement still describe itself as an
+            # estimate. Callers wanting "trust this total" should check both.
+            complete=complete,
         )
 
     def _fixed_charges(self, period: BillingPeriod) -> dict[str, float]:

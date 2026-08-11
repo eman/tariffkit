@@ -17,6 +17,38 @@ All notable changes to this project are documented here. This project follows
   surcharge was "not published and must not be guessed"; it is published, in a
   separate schedule.
 
+- `read_csv` reads PG&E's interval export as downloaded. It previously failed on
+  three things at once: the account preamble before the header row, a timestamp
+  split across `DATE` and `START TIME` rather than one ISO column, and
+  unit-suffixed names like `IMPORT (kWh)`. Header matching now folds case and
+  punctuation, `CsvLayout` gained `date`/`time` for split pairs, and the preamble
+  is located by scanning for the header rather than assuming a fixed offset.
+
+### Fixed
+- Naive timestamps on the autumn DST transition are now disambiguated on ingest.
+  01:00 occurs twice and `zoneinfo` resolves both to `fold=0`, so an hour of
+  readings priced as PG&E's HS1 instead of HS2 and coverage reported the file as
+  overlapping itself. Meter exports are chronological, so a row whose instant
+  does not advance, and which advances once `fold=1` is applied, belongs to the
+  second pass. Rows carrying an explicit offset are unaffected.
+
+### Changed
+- `Bill.complete` is now purely a statement about the rates, as its own docstring
+  always claimed. Coverage problems travel in `Bill.warnings` alone rather than
+  also clearing `complete`. Conflating them meant a bill that reconciles against
+  a real statement to 0.2% still described itself as an estimate, because the
+  meter data contained a few intervals reporting in both directions. Callers
+  wanting "trust this total" should check both, and `docs/billing.md` now spells
+  out which question each answers.
+- MCE exports are no longer flagged as an estimate. `export_credit_basis` is now
+  `acc_generation` with `export_credit_verified = true`, so an MCE export price
+  reports `complete = True`. MCE still does not publish its credit matrix, but
+  pricing 2,784 quarter-hourly meter intervals against the matching statement put
+  every export component within 0.3%: generation credit −0.1%, delivery −0.2%,
+  ACC Plus −0.3%, solar bonus +0.2% — inside the rounding of the bill's own
+  displayed dollars. One summer cycle on one account, so the seasonal spread is
+  untested; the claim it supports is structural.
+
 ### Notes
 - Both tables were reconciled against two statements for a 2011-vintage MCE
   account: $0.03492 × 23.589 kWh = $0.82 and × 39.906 kWh = $1.39;

@@ -136,10 +136,12 @@ class NbtExportRates:
             if cca.export_generation_rate is not None:
                 components["cca_generation"] = cca.export_generation_rate
             elif cca.rate_card is not None:
-                # The CCA pays the generation half. MCE's tariff says only that
-                # exports earn "the applicable Energy Export Credit Value";
-                # whether that equals the ACC generation component the IOUs use
-                # is unverified, so this is an estimate and stays flagged.
+                # The CCA pays the generation half. Their tariffs tend to say
+                # only that exports earn "the applicable Energy Export Credit
+                # Value", so whether that equals the ACC generation component
+                # used here is a per-provider question. The rate card answers it
+                # via export_credit_verified, which drives `complete` below;
+                # MCE's is reconciled against a real cycle, others are estimates.
                 from ..cca import load_rate_card
 
                 card = load_rate_card(cca.rate_card)

@@ -11,7 +11,7 @@ The statement is PG&E delivery + MCE generation on SBP EELEC, 27 days:
 from __future__ import annotations
 
 import io
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -29,7 +29,7 @@ from nem_rates.billing import (
 )
 from nem_rates.config import CcaConfig
 from nem_rates.errors import DataError
-from nem_rates.timeutil import PACIFIC
+from nem_rates.timeutil import PACIFIC, export_hour
 
 BILLED_KWH = 23.589
 PERIOD = BillingPeriod(date(2026, 7, 2), date(2026, 7, 28))  # 27 days
@@ -146,8 +146,16 @@ class TestStatementReconciliation:
             bill.energy_charges + bill.export_credits + bill.fixed_charges
         )
 
-    def test_flagged_incomplete_because_mce_export_credit_is_unverified(self, bill) -> None:  # type: ignore[no-untyped-def]
-        assert bill.complete is False
+    def test_pricing_confidence_is_separate_from_coverage(self, bill) -> None:  # type: ignore[no-untyped-def]
+        """These readings price cleanly but cover the period sparsely.
+
+        Four representative readings stand in for 27 days, so coverage warnings
+        are expected while every rate applied is fully known. Folding the two
+        together used to make a bill that reconciles against a real statement
+        still describe itself as an estimate.
+        """
+        assert bill.complete is True
+        assert bill.warnings
 
     def test_serializes(self, bill) -> None:  # type: ignore[no-untyped-def]
         payload = bill.to_dict()
@@ -189,12 +197,28 @@ class TestCoverageChecks:
         period = BillingPeriod(date(2026, 7, 6), date(2026, 7, 6))
         assert any("both import and export" in w for w in check_coverage(readings, period))
 
-    def test_gappy_data_clears_the_complete_flag(self) -> None:
-        """A bill over a lossy series must not look like a light-usage month."""
+    def test_gappy_data_warns_without_impugning_the_prices(self) -> None:
+        """A bill over a lossy series must not look like a light-usage month.
+
+        The gap surfaces as a warning. It does not clear ``complete``, which is
+        a claim about the rates rather than the readings.
+        """
         readings = [r for r in self._full_day() if r.start.hour != 5]
         bill = engine().compute(readings, BillingPeriod(date(2026, 7, 6), date(2026, 7, 6)))
+        assert any("gap" in w for w in bill.warnings)
+        assert bill.complete is True
+
+    def test_unverified_prices_clear_complete_even_with_perfect_coverage(self) -> None:
+        """The other half of the split, so neither signal can absorb the other.
+
+        A CCA with no generation rate card prices delivery only, which is a real
+        pricing gap, over a day of readings with nothing wrong in them.
+        """
+        bare = Config(supplier=Supplier.CCA, cca=CcaConfig(name="Unknown CCA"))
+        period = BillingPeriod(date(2026, 7, 6), date(2026, 7, 6))
+        bill = BillEngine(RateEngine(bare)).compute(self._full_day(), period)
         assert bill.complete is False
-        assert bill.warnings
+        assert bill.warnings == ()
 
     def test_checks_can_be_skipped(self) -> None:
         bill = engine().compute(self._full_day(), PERIOD, check=False)
@@ -274,6 +298,95 @@ class TestCsvIngest:
                 io.StringIO("start,imported\n2026-07-06T02:00:00-07:00,1\n"),
                 CsvLayout(imported="nope"),
             )
+
+    def test_reads_pge_interval_export_verbatim(self) -> None:
+        """PG&E's own export, which needs three things at once.
+
+        An account preamble before the header, a timestamp split across DATE and
+        START TIME, and unit-suffixed column names. Shaped exactly as downloaded
+        from My Account, values shortened.
+        """
+        csv_text = (
+            "\n"
+            "Name,JANE DOE\n"
+            'Address,"1 MAIN ST, SAN RAFAEL CA 94903"\n'
+            "Account Number,0000000000\n"
+            "Service,0000000000\n"
+            "\n"
+            "TYPE,DATE,START TIME,END TIME,IMPORT (kWh),EXPORT (kWh),"
+            "TOTAL IMPORT COST,TOTAL EXPORT CREDIT (=A+B+C),NOTES\n"
+            "Electric usage,2026-07-06,12:00,12:14,0.00,0.31,$0.00,$0.02\n"
+            "Electric usage,2026-07-06,12:15,12:29,0.12,0.00,$0.04,$0.00\n"
+            "Electric usage,2026-07-06,12:30,12:44,0.00,0.28,$0.00,$0.02\n"
+        )
+        readings = read_csv(io.StringIO(csv_text))
+        assert len(readings) == 3
+        assert [r.imported for r in readings] == [0.0, 0.12, 0.0]
+        assert [r.exported for r in readings] == [0.31, 0.0, 0.28]
+        assert readings[0].duration == timedelta(minutes=15)
+        assert readings[0].start.hour == 12
+        assert readings[0].start.utcoffset() is not None
+
+    def test_unrecognisable_header_raises_rather_than_guessing(self) -> None:
+        """With nothing recognisable anywhere, the file is passed through as-is.
+
+        The error then names the first row, which for a file with a preamble is
+        the preamble rather than the real columns. That is the honest outcome:
+        picking a header row by guesswork would mis-parse silently instead. The
+        fix for such a file is to name the column via ``CsvLayout``, which the
+        preamble scan does honour.
+        """
+        with pytest.raises(DataError, match=r"no timestamp column found in \['Name', 'JANE DOE'\]"):
+            read_csv(io.StringIO("Name,JANE DOE\n\nfoo,bar\n1,2\n"))
+
+    def test_unit_suffixed_column_names_are_matched(self) -> None:
+        csv_text = "start,IMPORT (kWh),EXPORT (kWh)\n2026-07-06T02:00:00-07:00,1.5,0.5\n"
+        reading = read_csv(io.StringIO(csv_text))[0]
+        assert reading.imported == pytest.approx(1.5)
+        assert reading.exported == pytest.approx(0.5)
+
+    def test_a_lone_date_column_holding_a_full_timestamp_still_works(self) -> None:
+        """Only pair date with time when both are present; date alone may be ISO."""
+        csv_text = "date,imported\n2026-07-06T02:00:00-07:00,1.5\n"
+        assert read_csv(io.StringIO(csv_text))[0].start.hour == 2
+
+    def test_repeated_hour_on_the_fall_back_day_is_disambiguated(self) -> None:
+        """Naive split timestamps are ambiguous on the autumn transition.
+
+        01:00 happens twice and zoneinfo resolves both to fold=0, so without this
+        the second pass prices as PG&E's HS1 instead of HS2 and coverage reports
+        the file as overlapping itself.
+        """
+        csv_text = (
+            "DATE,START TIME,IMPORT (kWh)\n"
+            "2026-11-01,01:00,1\n"
+            "2026-11-01,01:30,1\n"
+            "2026-11-01,01:00,1\n"
+            "2026-11-01,01:30,1\n"
+        )
+        readings = read_csv(io.StringIO(csv_text))
+        assert [r.start.fold for r in readings] == [0, 0, 1, 1]
+        assert [export_hour(r.start) for r in readings] == [1, 1, 2, 2]
+        instants = [r.start.astimezone(UTC) for r in readings]
+        assert instants == sorted(instants)
+        assert len(set(instants)) == 4
+
+    def test_spring_forward_and_ordinary_days_are_left_alone(self) -> None:
+        csv_text = "DATE,START TIME,IMPORT (kWh)\n2027-03-14,01:30,1\n2027-03-14,03:00,1\n"
+        assert [r.start.fold for r in read_csv(io.StringIO(csv_text))] == [0, 0]
+        plain = "start,imported\n2026-07-15T01:00:00-07:00,1\n2026-07-15T02:00:00-07:00,1\n"
+        assert [r.start.fold for r in read_csv(io.StringIO(plain))] == [0, 0]
+
+    def test_preamble_skipping_honours_a_configured_column_name(self) -> None:
+        """Otherwise the two features do not compose: a custom layout plus a preamble."""
+        csv_text = "Name,JANE DOE\n\nwhen,imported\n2026-07-06T02:00:00-07:00,1.5\n"
+        reading = read_csv(io.StringIO(csv_text), CsvLayout(start="when"))[0]
+        assert reading.imported == pytest.approx(1.5)
+
+    def test_split_date_time_columns_can_be_configured(self) -> None:
+        csv_text = "day,clock,imported\n2026-07-06,02:00,1.5\n"
+        reading = read_csv(io.StringIO(csv_text), CsvLayout(date="day", time="clock"))[0]
+        assert (reading.start.hour, reading.start.day) == (2, 6)
 
     def test_round_trips_into_a_bill(self) -> None:
         csv_text = "start,imported,exported\n" + "".join(

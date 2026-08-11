@@ -150,7 +150,51 @@ class TestExport:
         price = RateEngine(config()).price_at(at(19, month=9)).export_price
         assert price.components["acc_plus"] == pytest.approx(0.00880)
 
-    def test_export_stays_flagged_until_mce_publishes_its_credit(self) -> None:
-        """MCE's export credit basis is unverified, so it is not sold as exact."""
-        assert load_rate_card("mce").export_credit_verified is False
-        assert RateEngine(config()).price_at(at(19, month=9)).export_price.complete is False
+    def test_export_credit_basis_is_reconciled_against_a_real_cycle(self) -> None:
+        """MCE still does not publish its credit matrix, but it has been measured.
+
+        Priced against 2,784 quarter-hourly meter intervals for the
+        2026-06-30..2026-07-28 cycle, every export component matched that cycle's
+        statement within 0.3% -- inside the rounding of the bill's own displayed
+        dollars. So exports are no longer flagged as an estimate.
+        """
+        assert load_rate_card("mce").export_credit_verified is True
+        assert RateEngine(config()).price_at(at(19, month=9)).export_price.complete is True
+
+    @pytest.mark.parametrize(
+        ("hour", "delivery", "generation", "total"),
+        [
+            (19, 0.35038, 0.10708, 0.476968),  # peak
+            (15, 0.00119, 0.05522, 0.070732),  # part-peak
+            (12, 0.00077, 0.05686, 0.072116),  # off-peak
+        ],
+    )
+    def test_export_components_reproduce_the_reconciled_cycle_rates(
+        self, hour: int, delivery: float, generation: float, total: float
+    ) -> None:
+        """Pins the absolute values the reconciliation rests on.
+
+        Sampled inside the reconciled cycle (2026-06-30..2026-07-28) and across
+        all three TOU periods. Both NBT matrices are indexed by month, so pinning
+        some other month would leave every cell that produced the evidence free
+        to drift while this stayed green.
+
+        Asserted absolutely rather than against each other: checking that the
+        solar bonus is 10% of whatever ``cca_generation`` happens to be would
+        still pass if the ACC generation lookup moved, silently invalidating
+        ``export_credit_verified``.
+        """
+        price = RateEngine(config()).price_at(datetime(2026, 7, 15, hour, tzinfo=PACIFIC))
+        components = price.export_price.components
+        assert components["delivery"] == pytest.approx(delivery)
+        assert components["cca_generation"] == pytest.approx(generation)
+        assert components["acc_plus"] == pytest.approx(0.00880)
+        assert components["cca_solar_bonus"] == pytest.approx(generation * 0.10)
+        assert price.export_price.total == pytest.approx(total)
+
+    def test_solar_bonus_tracks_the_generation_credit(self) -> None:
+        """The 10% relationship, separately from the absolute values above."""
+        price = RateEngine(config()).price_at(at(19, month=9)).export_price
+        assert price.components["cca_solar_bonus"] == pytest.approx(
+            price.components["cca_generation"] * 0.10
+        )

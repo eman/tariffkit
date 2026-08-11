@@ -94,23 +94,36 @@ is **not** a marginal rate; do not dispatch on it. Use
 
 A bill computed over a lossy series is silently wrong: it just looks like a
 month with less usage. So coverage is checked rather than assumed, and problems
-appear in `bill.warnings` and clear `bill.complete`:
+appear in `bill.warnings`:
 
 - gaps and overlaps in the series
 - readings covering materially less than the period
 - intervals reporting **both** import and export, which suggests gross data that
   was never netted
 
-```python
-if not bill.complete:
-    for warning in bill.warnings:
-        log.warning("%s", warning)
-```
-
 Pass `check=False` to skip, or `--no-check` on the CLI.
 
-`bill.complete` also goes false when any priced hour was itself incomplete,
-for example CCA export credits, which are currently unverified.
+## Two independent signals
+
+`warnings` and `complete` answer different questions, and neither implies the
+other:
+
+| | Question | Goes bad when |
+|---|---|---|
+| `bill.warnings` | Is the meter data sound? | gaps, overlaps, short coverage, un-netted intervals |
+| `bill.complete` | Are the rates fully known? | a priced hour was incomplete or inexact, e.g. an unconfigured CCA generation rate card |
+
+A bill can reconcile against a real statement to a fraction of a percent and
+still carry coverage warnings; it can cover the period perfectly and still be
+priced from rates that are estimates. Check both before trusting a total.
+
+```python
+if bill.warnings:
+    for warning in bill.warnings:
+        log.warning("%s", warning)
+if not bill.complete:
+    log.warning("priced from incomplete or inexact rates")
+```
 
 ## Netting
 

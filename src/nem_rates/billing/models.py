@@ -156,9 +156,13 @@ class Bill:
     export_components: dict[str, float] = field(default_factory=dict)
     #: Charges that do not scale with energy, e.g. the Base Services Charge.
     fixed_components: dict[str, float] = field(default_factory=dict)
-    #: Set when the readings did not cover the period cleanly.
+    #: Set when the readings did not cover the period cleanly. Independent of
+    #: ``complete``: patchy meter data does not make the rates uncertain.
     warnings: tuple[str, ...] = ()
-    #: False when any priced hour was itself incomplete or inexact.
+    #: False when any priced hour was itself incomplete or inexact -- a statement
+    #: about the *rates*, not the readings. A bill can be fully priced and still
+    #: carry coverage warnings, or cover the period perfectly and still be priced
+    #: from an unverified CCA export credit. Check both before trusting a total.
     complete: bool = True
 
     @property

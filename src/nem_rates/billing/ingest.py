@@ -8,9 +8,10 @@ dumps, inverter logs), so they are configurable rather than guessed.
 from __future__ import annotations
 
 import csv
+import re
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta, tzinfo
+from datetime import UTC, datetime, timedelta, tzinfo
 from itertools import pairwise
 from pathlib import Path
 from typing import IO, NamedTuple
@@ -42,6 +43,22 @@ START_CANDIDATES = (
 IMPORT_CANDIDATES = ("imported", "import", "import_kwh", "delivered", "consumption", "usage", "kwh")
 EXPORT_CANDIDATES = ("exported", "export", "export_kwh", "received", "surplus", "production")
 NET_CANDIDATES = ("net", "net_kwh", "net_usage")
+#: Split date/time pairs, as PG&E's interval export uses. A matching pair takes
+#: precedence over a single timestamp column, because PG&E's time column is named
+#: "START TIME" and would otherwise be mistaken for a whole timestamp. A date
+#: column with no time column beside it falls back to being read as one.
+DATE_CANDIDATES = ("date", "usage_date", "read_date", "interval_date")
+TIME_CANDIDATES = ("start_time", "time", "interval_start_time", "hour")
+
+
+def _normalize(name: str) -> str:
+    """Fold case, punctuation, and units so header spellings converge.
+
+    ``"IMPORT (kWh)"`` and ``"import_kwh"`` are the same column; so are
+    ``"START TIME"`` and ``"start_time"``. Matching on the raw string means every
+    new export format needs its own candidate entry.
+    """
+    return re.sub(r"[^0-9a-z]+", "_", name.strip().lower()).strip("_")
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +69,10 @@ class CsvLayout:
     """
 
     start: str | None = None
+    #: Split date/time pair. Setting both takes precedence over ``start``; set
+    #: neither and a pair is still auto-detected ahead of a single column.
+    date: str | None = None
+    time: str | None = None
     imported: str | None = None
     exported: str | None = None
     #: Signed column, positive meaning import. Alternative to imported/exported.
@@ -67,11 +88,40 @@ def _pick(header: list[str], configured: str | None, candidates: tuple[str, ...]
         if configured not in header:
             raise DataError(f"column {configured!r} not in header: {header}")
         return configured
-    lowered = {name.strip().lower(): name for name in header}
+    normalized = {_normalize(name): name for name in header if name}
     for candidate in candidates:
-        if candidate in lowered:
-            return lowered[candidate]
+        if candidate in normalized:
+            return normalized[candidate]
     return None
+
+
+def _skip_preamble(handle: IO[str], layout: CsvLayout) -> Iterator[str]:
+    """Yield lines from the real header row onward.
+
+    PG&E's interval export opens with account metadata (name, address, account
+    and service numbers) and a blank line before the column header, so feeding
+    the file straight to ``DictReader`` picks up ``"Name,EMMANUEL ..."`` as the
+    header. Scan for the first row carrying a recognisable timestamp column
+    instead of assuming a fixed offset, since the preamble's length is not
+    documented and has changed before.
+
+    Configured column names count as recognisable too, so a preamble does not
+    stop ``CsvLayout(start="when")`` from working on a file whose header this
+    module would not otherwise know.
+    """
+    wanted = set(START_CANDIDATES) | set(DATE_CANDIDATES)
+    wanted |= {_normalize(name) for name in (layout.start, layout.date) if name}
+    lines = handle.read().splitlines()
+    for index, row in enumerate(csv.reader(lines)):
+        if any(_normalize(cell) in wanted for cell in row):
+            yield from lines[index:]
+            return
+    # No recognisable header anywhere. Hand back the file unchanged rather than
+    # guessing which row was meant: the caller gets the "no timestamp column"
+    # error naming whatever the first row held, which for a file with a preamble
+    # is the preamble. Nothing here can do better without inventing a rule for
+    # where the header starts, and a wrong guess would mis-parse silently.
+    yield from lines
 
 
 def _parse_timestamp(raw: str, assume_tz: tzinfo) -> datetime:
@@ -111,15 +161,26 @@ def read_csv(
 
 
 def _read(handle: IO[str], layout: CsvLayout) -> Iterator[IntervalReading]:
-    reader = csv.DictReader(handle)
+    reader = csv.DictReader(_skip_preamble(handle, layout))
     header = reader.fieldnames
     if not header:
         raise DataError("CSV has no header row")
     header = list(header)
 
+    date_col = _pick(header, layout.date, DATE_CANDIDATES)
+    time_col = _pick(header, layout.time, TIME_CANDIDATES)
     start_col = _pick(header, layout.start, START_CANDIDATES)
-    if start_col is None:
-        raise DataError(f"no timestamp column found in {header}; set CsvLayout(start=...)")
+
+    # A split date/time pair wins over a single column, because PG&E names its
+    # time column "START TIME" -- which looks like a full timestamp column but
+    # holds "00:15". Falling back to a lone date column keeps files that put a
+    # complete ISO value under "date" working.
+    paired = date_col is not None and time_col is not None and date_col != time_col
+    if not paired:
+        start_col = start_col or date_col
+        date_col = time_col = None
+        if start_col is None:
+            raise DataError(f"no timestamp column found in {header}; set CsvLayout(start=...)")
 
     import_col = _pick(header, layout.imported, IMPORT_CANDIDATES)
     export_col = _pick(header, layout.exported, EXPORT_CANDIDATES)
@@ -133,9 +194,17 @@ def _read(handle: IO[str], layout: CsvLayout) -> Iterator[IntervalReading]:
 
     rows: list[_Row] = []
     for row in reader:
-        if not (row.get(start_col) or "").strip():
-            continue
-        start = _parse_timestamp(row[start_col], layout.assume_tz)
+        if date_col is not None and time_col is not None:
+            day = (row.get(date_col) or "").strip()
+            clock = (row.get(time_col) or "").strip()
+            if not day or not clock:
+                continue
+            start = _parse_timestamp(f"{day}T{clock}", layout.assume_tz)
+        else:
+            assert start_col is not None
+            if not (row.get(start_col) or "").strip():
+                continue
+            start = _parse_timestamp(row[start_col], layout.assume_tz)
         if net_col is not None and import_col is None and export_col is None:
             rows.append(_Row(start, None, None, _parse_float(row.get(net_col))))
         else:
@@ -151,6 +220,7 @@ def _read(handle: IO[str], layout: CsvLayout) -> Iterator[IntervalReading]:
     if not rows:
         raise DataError("CSV contained no data rows")
 
+    rows = _resolve_repeated_hour(rows)
     duration = layout.duration or _infer_duration([r.start for r in rows])
 
     for start, imported, exported, net in rows:
@@ -160,6 +230,33 @@ def _read(handle: IO[str], layout: CsvLayout) -> Iterator[IntervalReading]:
             yield IntervalReading(
                 start, imported=imported or 0.0, exported=exported or 0.0, duration=duration
             )
+
+
+def _resolve_repeated_hour(rows: list[_Row]) -> list[_Row]:
+    """Mark the second pass through a repeated local hour as ``fold=1``.
+
+    A naive timestamp on the autumn transition is genuinely ambiguous: 01:00
+    happens twice. ``zoneinfo`` resolves both to ``fold=0``, the earlier PDT
+    hour, so an hour of readings prices at the wrong export rate -- PG&E labels
+    the repeat HS2 -- and coverage reports the file as overlapping itself.
+
+    Meter exports are chronological, which supplies the missing bit: if a row's
+    instant does not advance, and setting ``fold=1`` makes it advance, then it
+    belongs to the second pass. Rows carrying an explicit offset are already
+    unambiguous, and for them ``fold`` does not move the instant, so this is a
+    no-op rather than a special case.
+    """
+    resolved: list[_Row] = []
+    previous: datetime | None = None
+    for row in rows:
+        start = row.start
+        if previous is not None and start.astimezone(UTC) <= previous.astimezone(UTC):
+            shifted = start.replace(fold=1)
+            if shifted.astimezone(UTC) > previous.astimezone(UTC):
+                start = shifted
+        resolved.append(row._replace(start=start))
+        previous = start
+    return resolved
 
 
 def _infer_duration(timestamps: Sequence[datetime]) -> timedelta:
