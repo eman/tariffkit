@@ -386,6 +386,21 @@ class TestCsvIngest:
         csv_text = "start,IMPORT (kWh),USAGE (kWh)\n2026-07-06T02:00:00-07:00,1.5,9.9\n"
         assert read_csv(io.StringIO(csv_text))[0].imported == pytest.approx(1.5)
 
+    @pytest.mark.parametrize(
+        ("columns", "values"),
+        [("IMPORT (kWh),import", "9.9,1.5"), ("import,IMPORT (kWh)", "1.5,9.9")],
+        ids=["suffixed first", "exact first"],
+    )
+    def test_an_exact_name_beats_a_unit_stripped_alias(self, columns: str, values: str) -> None:
+        """And does so whichever order the file lists them in.
+
+        Registering aliases in the same pass as exact names let an alias take the
+        key first, which made the answer depend on column order: these two
+        headers resolved to different columns.
+        """
+        csv_text = f"start,{columns}\n2026-07-06T02:00:00-07:00,{values}\n"
+        assert read_csv(io.StringIO(csv_text))[0].imported == pytest.approx(1.5)
+
     def test_a_lone_date_column_holding_a_full_timestamp_still_works(self) -> None:
         """Only pair date with time when both are present; date alone may be ISO."""
         csv_text = "date,imported\n2026-07-06T02:00:00-07:00,1.5\n"

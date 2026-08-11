@@ -91,15 +91,22 @@ def _pick(header: list[str], configured: str | None, candidates: tuple[str, ...]
         if configured not in header:
             raise DataError(f"column {configured!r} not in header: {header}")
         return configured
+    # Exact header names first, then unit-stripped aliases, so an alias can never
+    # shadow a column that genuinely carries the candidate's name. Registering
+    # both in one pass also made the answer depend on column order: a file with
+    # "IMPORT (kWh)" before "import" resolved differently from the same two the
+    # other way round.
     normalized: dict[str, str] = {}
+    for name in header:
+        if name:
+            normalized.setdefault(_normalize(name), name)
+    # A candidate list then does not need an entry per unit spelling. PG&E alone
+    # ships "IMPORT (kWh)" on an exporting account and "USAGE (kWh)" on one
+    # without.
     for name in header:
         if not name:
             continue
         key = _normalize(name)
-        normalized.setdefault(key, name)
-        # Also register the name with its unit stripped, so a candidate list
-        # does not need an entry per unit spelling. PG&E alone ships "IMPORT
-        # (kWh)" on an exporting account and "USAGE (kWh)" on one without.
         for suffix in UNIT_SUFFIXES:
             if key.endswith(suffix) and key != suffix.lstrip("_"):
                 normalized.setdefault(key[: -len(suffix)], name)
