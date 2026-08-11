@@ -185,6 +185,69 @@ class TestCoverageChecks:
         ]
         assert len(list(find_overlaps(readings))) == 1
 
+    def test_a_missing_hour_on_the_fall_back_day_is_reported(self) -> None:
+        """The autumn transition hides an hour from wall-clock arithmetic.
+
+        PG&E's own export emits 96 intervals for that 25-hour day: the repeated
+        01:00 hour is simply absent. Measured on the clock face, 01:45 plus
+        fifteen minutes reads as 02:00 and the missing hour vanishes -- which is
+        precisely the silently-short bill coverage checking exists to catch.
+        """
+        readings = [
+            IntervalReading(
+                datetime(2025, 11, 2, 1, 45, tzinfo=PACIFIC),
+                imported=1.0,
+                duration=timedelta(minutes=15),
+            ),
+            IntervalReading(
+                datetime(2025, 11, 2, 2, 0, tzinfo=PACIFIC),
+                imported=1.0,
+                duration=timedelta(minutes=15),
+            ),
+        ]
+        gaps = list(find_gaps(readings))
+        assert len(gaps) == 1
+        start, end = gaps[0]
+        assert (end.astimezone(UTC) - start.astimezone(UTC)) == timedelta(hours=1)
+
+    def test_the_spring_forward_jump_is_not_a_gap(self) -> None:
+        """The labels skip an hour that never existed, so the series is contiguous.
+
+        PG&E writes a nonexistent 02:00 and then resumes at 03:15; both resolve to
+        instants fifteen minutes apart.
+        """
+        readings = [
+            IntervalReading(
+                datetime(2026, 3, 8, 2, 0, tzinfo=PACIFIC),
+                imported=1.0,
+                duration=timedelta(minutes=15),
+            ),
+            IntervalReading(
+                datetime(2026, 3, 8, 3, 15, tzinfo=PACIFIC),
+                imported=1.0,
+                duration=timedelta(minutes=15),
+            ),
+        ]
+        assert list(find_gaps(readings)) == []
+        assert list(find_overlaps(readings)) == []
+
+    def test_the_repeated_hour_is_not_an_overlap(self) -> None:
+        """Two 01:00 readings an hour apart in real time are contiguous, not overlapping."""
+        readings = [
+            IntervalReading(
+                datetime(2026, 11, 1, 1, 0, fold=0, tzinfo=PACIFIC),
+                imported=1.0,
+                duration=timedelta(hours=1),
+            ),
+            IntervalReading(
+                datetime(2026, 11, 1, 1, 0, fold=1, tzinfo=PACIFIC),
+                imported=1.0,
+                duration=timedelta(hours=1),
+            ),
+        ]
+        assert list(find_overlaps(readings)) == []
+        assert list(find_gaps(readings)) == []
+
     def test_missing_coverage_is_reported(self) -> None:
         warnings = list(check_coverage(self._full_day(), PERIOD))
         assert any("missing" in w for w in warnings)

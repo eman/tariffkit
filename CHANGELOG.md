@@ -64,6 +64,15 @@ All notable changes to this project are documented here. This project follows
 - `TOU Period` now declares `device_class: enum` with its three options.
 
 ### Fixed
+- Coverage checking measured real time as clock time, so both DST transitions
+  were wrong and in opposite directions. On the autumn day an hour missing from
+  the data was hidden: 01:45 plus fifteen minutes reads as 02:00 while the clock
+  has meanwhile gone back, so `find_gaps` saw contiguity across a real one-hour
+  hole. On the spring day a contiguous series looked broken, because the labels
+  skip an hour that never existed. Both matter against real data — PG&E's own
+  export emits 96 intervals for the 25-hour autumn day, omitting the repeated
+  hour entirely, which is exactly the silently-short bill this check exists to
+  catch.
 - Naive timestamps on the autumn DST transition are now disambiguated on ingest.
   01:00 occurs twice and `zoneinfo` resolves both to `fold=0`, so an hour of
   readings priced as PG&E's HS1 instead of HS2 and coverage reported the file as

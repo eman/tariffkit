@@ -12,7 +12,7 @@ coverage warnings. Callers wanting "trust this total" check both.
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Sequence
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 
 from ..timeutil import to_pacific
@@ -65,21 +65,34 @@ def check_coverage(readings: Sequence[IntervalReading], period: BillingPeriod) -
         )
 
 
+def _elapsed(moment: datetime) -> datetime:
+    """The instant, so arithmetic measures real time rather than clock face.
+
+    Adding a duration to a zoned datetime advances the wall clock, which on a DST
+    transition is not the same as advancing time. Both transitions get it wrong
+    and in opposite directions: on the autumn day an hour missing from the data
+    is hidden, because 01:45 plus fifteen minutes reads as 02:00 and the clock
+    has meanwhile gone back; on the spring day a contiguous series looks
+    discontinuous, because the labels jump an hour that never existed.
+    """
+    return to_pacific(moment).astimezone(UTC)
+
+
 def find_gaps(readings: Sequence[IntervalReading]) -> Iterator[tuple[datetime, datetime]]:
     """Yield (gap_start, gap_end) for each discontinuity, in order."""
-    ordered = sorted(readings, key=lambda r: to_pacific(r.start))
+    ordered = sorted(readings, key=lambda r: _elapsed(r.start))
     for earlier, later in pairwise(ordered):
-        expected = to_pacific(earlier.start) + earlier.duration
-        actual = to_pacific(later.start)
+        expected = _elapsed(earlier.start) + earlier.duration
+        actual = _elapsed(later.start)
         if actual > expected:
-            yield (expected, actual)
+            yield (to_pacific(expected), to_pacific(actual))
 
 
 def find_overlaps(readings: Sequence[IntervalReading]) -> Iterator[datetime]:
     """Yield the start of each interval that begins before its predecessor ends."""
-    ordered = sorted(readings, key=lambda r: to_pacific(r.start))
+    ordered = sorted(readings, key=lambda r: _elapsed(r.start))
     for earlier, later in pairwise(ordered):
-        if to_pacific(later.start) < to_pacific(earlier.start) + earlier.duration:
+        if _elapsed(later.start) < _elapsed(earlier.start) + earlier.duration:
             yield to_pacific(later.start)
 
 
