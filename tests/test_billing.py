@@ -345,6 +345,47 @@ class TestCsvIngest:
         assert reading.imported == pytest.approx(1.5)
         assert reading.exported == pytest.approx(0.5)
 
+    def test_reads_the_export_shape_for_an_account_without_solar(self) -> None:
+        """PG&E ships a single USAGE column when there is nothing to export.
+
+        The same download for an exporting account splits into IMPORT and
+        EXPORT, so a reader that only knows the latter cannot open a
+        pre-solar cycle -- which is exactly the data needed to check a rate
+        schedule the account has since left.
+        """
+        csv_text = (
+            "\n"
+            "Name,JANE DOE\n"
+            "Account Number,0000000000\n"
+            "\n"
+            "TYPE,DATE,START TIME,END TIME,USAGE (kWh),COST,NOTES\n"
+            "Electric usage,2026-01-15,00:00,00:14,0.30,$0.09\n"
+            "Electric usage,2026-01-15,00:15,00:29,0.23,$0.09\n"
+        )
+        readings = read_csv(io.StringIO(csv_text))
+        assert [r.imported for r in readings] == [0.30, 0.23]
+        assert all(r.exported == 0.0 for r in readings)
+        assert readings[0].duration == timedelta(minutes=15)
+
+    @pytest.mark.parametrize(
+        ("column", "attr"),
+        [
+            ("USAGE (kWh)", "imported"),
+            ("Consumption (kWh)", "imported"),
+            ("Production (kWh)", "exported"),
+            ("Net (kWh)", "imported"),
+        ],
+    )
+    def test_a_unit_suffix_does_not_need_its_own_candidate(self, column: str, attr: str) -> None:
+        """Matching strips the unit, so each new spelling is not a new entry."""
+        csv_text = f"start,{column}\n2026-07-06T02:00:00-07:00,2.0\n"
+        assert getattr(read_csv(io.StringIO(csv_text))[0], attr) == pytest.approx(2.0)
+
+    def test_an_explicit_import_column_still_wins_over_usage(self) -> None:
+        """Candidate order decides when a file carries both."""
+        csv_text = "start,IMPORT (kWh),USAGE (kWh)\n2026-07-06T02:00:00-07:00,1.5,9.9\n"
+        assert read_csv(io.StringIO(csv_text))[0].imported == pytest.approx(1.5)
+
     def test_a_lone_date_column_holding_a_full_timestamp_still_works(self) -> None:
         """Only pair date with time when both are present; date alone may be ISO."""
         csv_text = "date,imported\n2026-07-06T02:00:00-07:00,1.5\n"
