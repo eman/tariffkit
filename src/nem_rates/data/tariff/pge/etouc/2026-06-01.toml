@@ -184,9 +184,6 @@ drop_components = ["generation", "bundled_pcia"]
 2025 = 0.00093
 2026 = 0.00093
 
-# AB 205 income-graduated fixed charge, billed per day. This is deliberately
-# NOT folded into the per-kWh price: it does not vary with consumption and
-
 # AB 205 income-graduated fixed charge, billed per day. Deliberately NOT folded
 # into the per-kWh price: it does not vary with consumption, and including it
 # would corrupt any marginal dispatch decision.
