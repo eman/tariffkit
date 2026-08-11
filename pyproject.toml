@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nem-rates"
-version = "0.2.0"
+version = "0.1.0"
 description = "Real-time and forecast import/export electricity prices for PG&E E-ELEC under NEM 3.0 (Net Billing Tariff)"
 readme = "README.md"
 license = { file = "LICENSE" }
