@@ -6,6 +6,19 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **Two more rate schedules: E-TOU-C** (Time-of-Use, peak 4–9 p.m. every day)
+  and **EV2-A** (Home Charging). Both transcribed from their June 2026 tariff
+  sheets, with all ten new rate cells verified against the published totals.
+  Select with `tariff = "E-TOU-C"` / `"EV2-A"`.
+- **E-TOU-C baseline credit.** The bill prints one credit; the sheet implements
+  it as two Conservation Incentive Adjustment rates whose spread is $0.08140.
+  It applies to a *quantity* rather than a time, so `price_at` returns the
+  over-baseline price — correct for dispatch — and reports the credit as
+  `ImportPrice.baseline_credit`. The billing engine, which sees a whole cycle,
+  applies it as a `baseline_credit` line, accumulating the allowance day by day
+  so a cycle crossing the season boundary is right. Needs `baseline_territory`
+  and `baseline_code` in config; without a territory there is no credit line,
+  since the quantities vary several-fold and guessing would be worse.
 - The complete PCIA vintage table, 2009 through 2026, from Schedule E-ELEC
   Sheet 5. Eleven vintages were missing (2010 and 2012–2020), so
   `pcia_vintage = 2011` — the vintage named on a real MCE statement — raised
@@ -16,7 +29,6 @@ All notable changes to this project are documented here. This project follows
   without any hand-entered rates. The tariff data previously recorded that this
   surcharge was "not published and must not be guessed"; it is published, in a
   separate schedule.
-
 - `read_csv` reads PG&E's interval export as downloaded. It previously failed on
   three things at once: the account preamble before the header row, a timestamp
   split across `DATE` and `START TIME` rather than one ISO column, and
@@ -33,6 +45,27 @@ All notable changes to this project are documented here. This project follows
   second pass. Rows carrying an explicit offset are unaffected.
 
 ### Changed
+- The EV2-A snapshot is dated from the 2026-03-01 Base Services Charge
+  restructure rather than from its advice letter. The rates come from a sheet
+  carrying Advice 7921-E effective 2026-06-01, but a 2026-04-01..04-29 statement
+  bills them exactly, so dating the snapshot from the letter made that whole
+  cycle unpriceable. Back-dating cannot misapply the summer rates the letter did
+  set, since the summer season starts June 1.
+- **CCA rate cards are keyed by PG&E schedule.** A CCA prices each schedule
+  separately and the rates differ substantially — MCE winter off-peak is 0.06754
+  on E-ELEC against 0.11042 on E-TOU-C — so the card previously applied E-ELEC's
+  rates to any schedule, understating an E-TOU-C customer's generation by nearly
+  half. `CcaRateCard.generation` now takes the schedule and raises for one the
+  card does not cover, rather than falling back. `mce.toml` vendors E-ELEC,
+  E-TOU-C and EV2-A, each verified at parity with PG&E's generation component.
+- `EelecTariff` is now `RetailTariff`, in `nem_rates.tariff.retail`. It was
+  already schedule-agnostic — everything that varies lives in the vendored
+  snapshot — so the name had stopped being true. Not part of the top-level
+  public API.
+- A schedule whose sheet does not publish a CARE or FERA percentage now raises
+  when one is requested, rather than falling back to another schedule's figure.
+  Neither the E-TOU-C nor the EV2-A sheet prints them.
+- `[periods].part_peak` is optional. E-TOU-C has no part-peak at all.
 - `Bill.complete` is now purely a statement about the rates, as its own docstring
   always claimed. Coverage problems travel in `Bill.warnings` alone rather than
   also clearing `complete`. Conflating them meant a bill that reconciles against
@@ -50,11 +83,20 @@ All notable changes to this project are documented here. This project follows
   untested; the claim it supports is structural.
 
 ### Notes
+- **EV2-A is reconciled against a real statement**, the first for any schedule
+  other than E-ELEC and the first winter cycle on any of them. All three delivery
+  rates, all three MCE generation rates, the cost relief credit, the Base
+  Services Charge, and every flat rider on the statement's own breakdown page
+  reproduce exactly; energy charges, MCE net charges and the fixed charge all
+  land within a cent. `tests/test_ev2a.py` pins it.
+- The vendored E-ELEC and E-TOU-C **winter** rates still have no statement behind
+  them. They first apply in October 2026.
 - Both tables were reconciled against two statements for a 2011-vintage MCE
   account: $0.03492 × 23.589 kWh = $0.82 and × 39.906 kWh = $1.39;
   $0.00060 × 23.589 = $0.01 and × 39.906 = $0.02, all four as billed. With them,
   a full CCA import price reproduces that account's bill exactly rather than to
   the $0.00015/kWh that hand-derived rates achieved.
+
 ## [0.2.0] - 2026-08-09
 
 ### Added

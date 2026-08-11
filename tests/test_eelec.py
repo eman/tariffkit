@@ -9,13 +9,13 @@ import pytest
 from nem_rates import Config, Season, Supplier, TouPeriod
 from nem_rates.config import CcaConfig
 from nem_rates.errors import ConfigError
-from nem_rates.tariff.eelec import EelecTariff, load_snapshot
+from nem_rates.tariff.retail import RetailTariff, load_snapshot
 from nem_rates.timeutil import PACIFIC
 
 
 @pytest.fixture
-def tariff() -> EelecTariff:
-    return EelecTariff(Config())
+def tariff() -> RetailTariff:
+    return RetailTariff(Config())
 
 
 def pt(year: int, month: int, day: int, hour: int) -> datetime:
@@ -57,11 +57,11 @@ def test_components_sum_to_published_total(season: str, period: str, published: 
         (23, TouPeriod.PART_PEAK),
     ],
 )
-def test_tou_period_boundaries(tariff: EelecTariff, hour: int, expected: TouPeriod) -> None:
+def test_tou_period_boundaries(tariff: RetailTariff, hour: int, expected: TouPeriod) -> None:
     assert tariff.period(pt(2026, 7, 15, hour)) is expected
 
 
-def test_periods_are_identical_every_day_of_the_week(tariff: EelecTariff) -> None:
+def test_periods_are_identical_every_day_of_the_week(tariff: RetailTariff) -> None:
     """E-ELEC makes no weekday/weekend/holiday distinction at all."""
     # 2026-07-06 is a Monday; the following six days cover the whole week, and
     # 2026-07-03 is an observed holiday.
@@ -80,24 +80,24 @@ def test_periods_are_identical_every_day_of_the_week(tariff: EelecTariff) -> Non
     ],
 )
 def test_season_boundaries(
-    tariff: EelecTariff, year: int, month: int, day: int, expected: Season
+    tariff: RetailTariff, year: int, month: int, day: int, expected: Season
 ) -> None:
     assert tariff.season(pt(year, month, day, 12)) is expected
 
 
 def test_dates_before_the_earliest_vendored_sheet_refuse_to_price(
-    tariff: EelecTariff,
+    tariff: RetailTariff,
 ) -> None:
     """Better to raise than to back-date June's rates onto March."""
     with pytest.raises(Exception, match="no snapshot effective"):
         tariff.price_at(pt(2026, 3, 1, 12))
 
 
-def test_summer_peak_price(tariff: EelecTariff) -> None:
+def test_summer_peak_price(tariff: RetailTariff) -> None:
     assert tariff.price_at(pt(2026, 7, 15, 17)).total == pytest.approx(0.55214)
 
 
-def test_winter_peak_price(tariff: EelecTariff) -> None:
+def test_winter_peak_price(tariff: RetailTariff) -> None:
     """November 4-9pm is winter peak.
 
     OpenEI's URDB record misfiles these hours as summer off-peak, so this
@@ -118,7 +118,7 @@ def test_effective_dated_snapshot_selection() -> None:
 
 
 def test_base_services_charge_is_daily_and_excluded_from_energy_price(
-    tariff: EelecTariff,
+    tariff: RetailTariff,
 ) -> None:
     moment = pt(2026, 7, 15, 17)
     assert tariff.daily_fixed_charge(moment) == pytest.approx(0.79343)
@@ -129,7 +129,7 @@ def test_base_services_charge_is_daily_and_excluded_from_energy_price(
 def test_base_services_charge_tiers() -> None:
     moment = pt(2026, 7, 15, 12)
     charges = [
-        EelecTariff(
+        RetailTariff(
             Config(base_services_charge_tier=tier, discount=discount, acc_plus_segment=segment)
         ).daily_fixed_charge(moment)
         for tier, discount, segment in (
@@ -144,9 +144,9 @@ def test_base_services_charge_tiers() -> None:
 def test_care_discount_drops_wildfire_fund_charge() -> None:
     """CARE sales are not levied the Wildfire Fund Charge at all."""
     moment = pt(2026, 7, 15, 17)
-    care = EelecTariff(Config(discount="care", acc_plus_segment="residential_low_income")).price_at(
-        moment
-    )
+    care = RetailTariff(
+        Config(discount="care", acc_plus_segment="residential_low_income")
+    ).price_at(moment)
     assert "wildfire_fund_charge" not in care.components
     assert care.total == pytest.approx((0.55214 - 0.00591) * 0.65, abs=1e-6)
 
@@ -156,13 +156,13 @@ class TestCca:
         return Config(supplier=Supplier.CCA, cca=CcaConfig(**cca_kwargs))  # type: ignore[arg-type]
 
     def test_drops_bundled_generation_and_pcia(self) -> None:
-        price = EelecTariff(self._config(name="MCE")).price_at(pt(2026, 7, 15, 17))
+        price = RetailTariff(self._config(name="MCE")).price_at(pt(2026, 7, 15, 17))
         assert "generation" not in price.components
         assert "bundled_pcia" not in price.components
 
     def test_incomplete_without_a_generation_rate_card(self) -> None:
         """Delivery-only must be flagged, not passed off as a full price."""
-        price = EelecTariff(self._config(name="MCE")).price_at(pt(2026, 7, 15, 17))
+        price = RetailTariff(self._config(name="MCE")).price_at(pt(2026, 7, 15, 17))
         assert price.complete is False
 
     def test_complete_with_generation_and_franchise_fee(self) -> None:
@@ -172,7 +172,7 @@ class TestCca:
             franchise_fee_surcharge=0.0009,
             generation_rates={"summer": {"peak": 0.21}},
         )
-        price = EelecTariff(config).price_at(pt(2026, 7, 15, 17))
+        price = RetailTariff(config).price_at(pt(2026, 7, 15, 17))
         assert price.complete is True
         assert price.components["cca_generation"] == pytest.approx(0.21)
         assert price.components["pcia"] == pytest.approx(0.05066)
@@ -188,7 +188,7 @@ class TestCca:
         """
         config = self._config(name="MCE", pcia_vintage=vintage)
         with pytest.raises(ConfigError, match="no PCIA rate vendored"):
-            EelecTariff(config).price_at(pt(2026, 7, 15, 17))
+            RetailTariff(config).price_at(pt(2026, 7, 15, 17))
 
     def test_both_vintaged_tables_cover_the_same_years(self) -> None:
         """Keeps the ConfigError in the franchise fee branch unreachable.
@@ -221,7 +221,7 @@ class TestCca:
         the PCIA jumps and the franchise fee drops, and 2026 because it is the
         only negative PCIA.
         """
-        price = EelecTariff(self._config(name="MCE", pcia_vintage=vintage)).price_at(
+        price = RetailTariff(self._config(name="MCE", pcia_vintage=vintage)).price_at(
             pt(2026, 7, 15, 17)
         )
         assert price.components["pcia"] == pytest.approx(pcia)
@@ -232,13 +232,13 @@ class TestCca:
         config = self._config(
             name="MCE", pcia_vintage=2011, generation_rates={"summer": {"peak": 0.21}}
         )
-        price = EelecTariff(config).price_at(pt(2026, 7, 15, 17))
+        price = RetailTariff(config).price_at(pt(2026, 7, 15, 17))
         assert price.components["franchise_fee_surcharge"] == pytest.approx(0.00060)
         assert price.complete is True
 
     def test_explicit_franchise_fee_still_wins_over_the_table(self) -> None:
         config = self._config(name="MCE", pcia_vintage=2011, franchise_fee_surcharge=0.00042)
-        price = EelecTariff(config).price_at(pt(2026, 7, 15, 17))
+        price = RetailTariff(config).price_at(pt(2026, 7, 15, 17))
         assert price.components["franchise_fee_surcharge"] == pytest.approx(0.00042)
 
     @pytest.mark.parametrize(
@@ -253,7 +253,7 @@ class TestCca:
         are rounded to the cent, so they cannot pin a five-decimal rate, but an
         exact rate must still reproduce them.
         """
-        price = EelecTariff(self._config(name="MCE", pcia_vintage=2011)).price_at(
+        price = RetailTariff(self._config(name="MCE", pcia_vintage=2011)).price_at(
             pt(2026, 7, 15, 17)
         )
         assert round(price.components["pcia"] * kwh, 2) == pcia_billed

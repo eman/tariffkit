@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from .config import Config
 from .export.nbt import NbtExportRates
 from .models import PriceCurve, PricePoint
-from .tariff.eelec import EelecTariff
+from .tariff.retail import RetailTariff
 from .timeutil import PACIFIC, hour_floor, now_pacific, to_pacific
 
 
@@ -21,7 +21,7 @@ class RateEngine:
 
     def __init__(self, config: Config | None = None) -> None:
         self.config = config or Config()
-        self.tariff = EelecTariff(self.config)
+        self.tariff = RetailTariff(self.config)
         self.export_rates = NbtExportRates(self.config)
 
     def price_at(self, moment: datetime) -> PricePoint:

@@ -33,12 +33,29 @@ class CcaRateCard:
     def source_url(self) -> str:
         return str(self.raw.get("source_url", ""))
 
-    def generation(self, season: str, period: str, option: str = "light_green") -> float:
-        """Generation charge in $/kWh, including any product premium."""
+    def generation(
+        self, schedule: str, season: str, period: str, option: str = "light_green"
+    ) -> float:
+        """Generation charge in $/kWh, including any product premium.
+
+        Keyed by PG&E schedule: a CCA prices each one separately, and the rates
+        differ enough that borrowing another schedule's card is a large silent
+        error rather than an approximation. MCE winter off-peak is 0.06754 on
+        E-ELEC against 0.11042 on E-TOU-C.
+        """
+        slug = schedule.lower().replace("-", "")
+        by_schedule = self.raw["generation"]
+        if slug not in by_schedule:
+            raise DataError(
+                f"{self.provider}: no generation rates for schedule {schedule!r}; "
+                f"this card covers {sorted(by_schedule)}"
+            )
         try:
-            base = float(self.raw["generation"][season][period])
+            base = float(by_schedule[slug][season][period])
         except KeyError as exc:
-            raise DataError(f"{self.provider}: no generation rate for {season}/{period}") from exc
+            raise DataError(
+                f"{self.provider}: no {schedule} generation rate for {season}/{period}"
+            ) from exc
         premium = self.raw.get("options", {}).get(option)
         if premium is None:
             raise ConfigError(
