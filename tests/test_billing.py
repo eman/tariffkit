@@ -163,6 +163,28 @@ class TestStatementReconciliation:
         assert payload["imported_kwh"] == pytest.approx(23.589)
 
 
+class TestPeriodElapsed:
+    """days x 24h is not the real span of a cycle containing a DST transition."""
+
+    @pytest.mark.parametrize(
+        ("start", "end", "days", "hours"),
+        [
+            (date(2026, 6, 30), date(2026, 7, 28), 29, 29 * 24),
+            (date(2025, 10, 29), date(2025, 11, 30), 33, 33 * 24 + 1),  # fall back
+            (date(2026, 3, 3), date(2026, 3, 31), 29, 29 * 24 - 1),  # spring forward
+        ],
+        ids=["ordinary", "fall back", "spring forward"],
+    )
+    def test_elapsed_counts_real_hours(self, start: date, end: date, days: int, hours: int) -> None:
+        period = BillingPeriod(start, end)
+        assert period.days == days
+        assert period.elapsed == timedelta(hours=hours)
+
+    def test_days_still_counts_calendar_days(self) -> None:
+        """The Base Services Charge is billed per calendar day, not per 24 hours."""
+        assert BillingPeriod(date(2025, 10, 29), date(2025, 11, 30)).days == 33
+
+
 class TestCoverageChecks:
     def _full_day(self) -> list[IntervalReading]:
         return [IntervalReading(pt(6, h), imported=1.0) for h in range(24)]
@@ -184,6 +206,69 @@ class TestCoverageChecks:
             IntervalReading(pt(6, 1), imported=1.0),
         ]
         assert len(list(find_overlaps(readings))) == 1
+
+    def test_a_missing_hour_on_the_fall_back_day_is_reported(self) -> None:
+        """The autumn transition hides an hour from wall-clock arithmetic.
+
+        PG&E's own export emits 96 intervals for that 25-hour day: the repeated
+        01:00 hour is simply absent. Measured on the clock face, 01:45 plus
+        fifteen minutes reads as 02:00 and the missing hour vanishes -- which is
+        precisely the silently-short bill coverage checking exists to catch.
+        """
+        readings = [
+            IntervalReading(
+                datetime(2025, 11, 2, 1, 45, tzinfo=PACIFIC),
+                imported=1.0,
+                duration=timedelta(minutes=15),
+            ),
+            IntervalReading(
+                datetime(2025, 11, 2, 2, 0, tzinfo=PACIFIC),
+                imported=1.0,
+                duration=timedelta(minutes=15),
+            ),
+        ]
+        gaps = list(find_gaps(readings))
+        assert len(gaps) == 1
+        start, end = gaps[0]
+        assert (end.astimezone(UTC) - start.astimezone(UTC)) == timedelta(hours=1)
+
+    def test_the_spring_forward_jump_is_not_a_gap(self) -> None:
+        """The labels skip an hour that never existed, so the series is contiguous.
+
+        PG&E writes a nonexistent 02:00 and then resumes at 03:15; both resolve to
+        instants fifteen minutes apart.
+        """
+        readings = [
+            IntervalReading(
+                datetime(2026, 3, 8, 2, 0, tzinfo=PACIFIC),
+                imported=1.0,
+                duration=timedelta(minutes=15),
+            ),
+            IntervalReading(
+                datetime(2026, 3, 8, 3, 15, tzinfo=PACIFIC),
+                imported=1.0,
+                duration=timedelta(minutes=15),
+            ),
+        ]
+        assert list(find_gaps(readings)) == []
+        assert list(find_overlaps(readings)) == []
+
+    def test_the_repeated_hour_is_not_an_overlap(self) -> None:
+        """Two 01:00 readings an hour apart in real time are contiguous, not overlapping."""
+        readings = [
+            IntervalReading(
+                datetime(2026, 11, 1, 1, 0, fold=0, tzinfo=PACIFIC),
+                imported=1.0,
+                duration=timedelta(hours=1),
+            ),
+            IntervalReading(
+                datetime(2026, 11, 1, 1, 0, fold=1, tzinfo=PACIFIC),
+                imported=1.0,
+                duration=timedelta(hours=1),
+            ),
+        ]
+        assert list(find_overlaps(readings)) == []
+        assert list(find_gaps(readings)) == []
 
     def test_missing_coverage_is_reported(self) -> None:
         warnings = list(check_coverage(self._full_day(), PERIOD))

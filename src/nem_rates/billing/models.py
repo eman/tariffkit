@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from ..models import Season, TouPeriod
-from ..timeutil import to_pacific
+from ..timeutil import PACIFIC, to_pacific
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +93,22 @@ class BillingPeriod:
 
     def contains(self, moment: datetime) -> bool:
         return self.start <= to_pacific(moment).date() <= self.end
+
+    @property
+    def elapsed(self) -> timedelta:
+        """Real time the cycle spans, which is not ``days`` times 24 hours.
+
+        A cycle containing a DST transition is an hour longer or shorter. Use
+        this to ask how much metered data *should* be there; use ``days`` for
+        anything billed per calendar day, like the Base Services Charge.
+        """
+        opens = datetime(self.start.year, self.start.month, self.start.day, tzinfo=PACIFIC)
+        # Wall-clock arithmetic is right here: the cycle closes at the next local
+        # midnight, however many real hours away that falls.
+        closes = datetime(self.end.year, self.end.month, self.end.day, tzinfo=PACIFIC) + timedelta(
+            days=1
+        )
+        return closes.astimezone(UTC) - opens.astimezone(UTC)
 
     def to_dict(self) -> dict[str, Any]:
         return {
