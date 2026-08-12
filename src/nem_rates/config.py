@@ -114,11 +114,14 @@ class Config:
         # a string therefore priced a CCA customer as bundled, silently and with
         # entirely plausible numbers. from_dict already coerced; direct
         # construction did not, which is the path library callers take.
-        # mypy reads this as unreachable because the annotation promises a
-        # Supplier. That is exactly the gap: the annotation is not enforced at
-        # runtime, and callers pass the string form.
-        if not isinstance(self.supplier, Supplier):  # type: ignore[unreachable]
-            object.__setattr__(self, "supplier", Supplier(self.supplier))
+        # Written through the value rather than as an isinstance guard: the
+        # annotation promises a Supplier, so mypy reads any such guard as dead
+        # code. That promise is exactly what is not enforced at runtime -- a
+        # caller passing "cca" got a str, which compares equal to Supplier.CCA
+        # but is not it, and every branch that matters tests identity.
+        # Supplier(Supplier.CCA) is Supplier.CCA, so this is a no-op when the
+        # annotation was honoured and a coercion when it was not.
+        object.__setattr__(self, "supplier", Supplier(self.supplier))
         if self.supplier is Supplier.CCA and self.cca is None:
             raise ConfigError("supplier='cca' requires a CcaConfig")
         if self.vintage is None and self.interconnection_year is None:
