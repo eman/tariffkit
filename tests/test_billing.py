@@ -487,3 +487,34 @@ class TestEnergyCommissionTax:
             + bill.export_credits
             + bill.fixed_charges
         )
+
+    def test_days_with_no_tax_vintage_are_reported_not_dropped(self) -> None:
+        """A bill that quietly omits a tax is the plausible-but-wrong kind.
+
+        Exercised directly rather than through ``compute``: the tax and tariff
+        datasets both start 2025-01-01 today, so no date reaches the tax gap
+        without failing on the tariff first. That alignment is a coincidence of
+        what is vendored rather than a guarantee, so the behaviour is pinned
+        here even though nothing currently routes to it.
+        """
+        start = datetime(2020, 1, 5, tzinfo=PACIFIC)
+        readings = [
+            IntervalReading(
+                start=start + timedelta(hours=h),
+                imported=10.0,
+                exported=0.0,
+                duration=timedelta(hours=1),
+            )
+            for h in range(24)
+        ]
+        charge, uncovered = engine()._energy_surcharge(
+            readings, BillingPeriod(date(2020, 1, 5), date(2020, 1, 5))
+        )
+        assert charge == 0.0
+        assert uncovered == [date(2020, 1, 5)]
+
+    def test_a_covered_period_is_not_flagged(self) -> None:
+        bill = engine().compute(
+            self.readings(), BillingPeriod(date(2026, 1, 5), date(2026, 1, 5)), check=False
+        )
+        assert not any("energy surcharge vintage" in w for w in bill.warnings)

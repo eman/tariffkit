@@ -117,9 +117,16 @@ class BillEngine:
                 _add_scaled(export_components, export_price.components, -reading.exported)
 
         fixed_components = self._fixed_charges(period)
-        tax = self._energy_surcharge(in_period, period)
+        tax, untaxed_days = self._energy_surcharge(in_period, period)
         if tax:
             import_components["energy_commission_tax"] = tax
+        if untaxed_days:
+            complete = False
+            warnings.append(
+                f"no energy surcharge vintage covers {len(untaxed_days)} day(s) "
+                f"({untaxed_days[0]} to {untaxed_days[-1]}); those days carry no tax, "
+                f"so the total is understated. Run `nem-rates regen tax`."
+            )
 
         credit = self._baseline_credit(in_period, period)
         if credit:
@@ -151,7 +158,7 @@ class BillEngine:
 
     def _energy_surcharge(
         self, readings: Sequence[IntervalReading], period: BillingPeriod
-    ) -> float:
+    ) -> tuple[float, list[date]]:
         """California's Energy Resources Surcharge on energy consumed.
 
         A state tax rather than a utility tariff, so it is charged whoever
@@ -162,6 +169,11 @@ class BillEngine:
 
         Rated per kilowatt-hour imported, by the vintage in force on each day, so
         a cycle spanning a January rate change is charged correctly.
+
+        Returns the charge and the days no vintage covered. Those days are not
+        charged, and the caller says so and marks the bill incomplete: a bill
+        that quietly omits a tax is the plausible-but-wrong kind, which is worse
+        than one that refuses to claim it is finished.
         """
         from ..data import versioned
 
@@ -171,19 +183,19 @@ class BillEngine:
             remaining[to_pacific(reading.start).date()] = (
                 remaining.get(to_pacific(reading.start).date(), 0.0) + reading.imported
             )
-        for day, imported in remaining.items():
+        uncovered: list[date] = []
+        for day, imported in sorted(remaining.items()):
             if not imported:
                 continue
             try:
                 rate = float(versioned.load("tax/ca_energy_resources", day).raw["rate"])
             except DataError:
-                # No vintage covers this day. The surcharge is small and the
-                # rest of the bill is still worth producing, so this is left off
-                # rather than made fatal -- and the coverage check already tells
-                # the reader which period is being priced.
+                # The rest of the bill is still worth producing, so this is not
+                # fatal -- but it is not silent either.
+                uncovered.append(day)
                 continue
             total += imported * rate
-        return total
+        return total, uncovered
 
     def _baseline_credit(self, readings: Sequence[IntervalReading], period: BillingPeriod) -> float:
         """Credit on imports falling within the cycle's baseline allowance.

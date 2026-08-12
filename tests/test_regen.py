@@ -263,7 +263,7 @@ def test_every_vendored_snapshot_still_reconciles() -> None:
                 # One unit in the last published decimal: the sheet rounds its
                 # total independently of the components, so a vintage can miss
                 # by an ulp. See regen.tariff.ROUNDING_TOLERANCE.
-                assert got == pytest.approx(want, abs=1.5e-5), (
+                assert got == pytest.approx(want, abs=rt.ROUNDING_TOLERANCE), (
                     f"{path.relative_to(root)} {season}.{period}"
                 )
 

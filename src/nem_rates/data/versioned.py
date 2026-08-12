@@ -77,8 +77,10 @@ def versions(relative: str) -> tuple[Version, ...]:
         raw = tomllib.loads(entry.read_text(encoding="utf-8"))
         stamp = raw.get("effective")
         if stamp is None:
+            # A single-file dataset already names the file, so do not repeat it.
+            where = relative if relative.endswith(entry.name) else f"{relative}/{entry.name}"
             raise DataError(
-                f"{relative}/{entry.name} declares no 'effective' date, so it cannot "
+                f"{where} declares no 'effective' date, so it cannot "
                 f"be placed in time; every vendored version must say when it took force"
             )
         found.append(Version(date.fromisoformat(str(stamp)), raw))

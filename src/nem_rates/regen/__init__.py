@@ -280,7 +280,7 @@ def _filing_for_date(
         root = cache / "al"
         indexed = filings.load_index(root, key)
         if scan or not indexed:
-            lo, hi = scan or (7500, 7900)
+            lo, hi = scan or DEFAULT_SCAN
             print(f"  indexing {key} filings {lo}-{hi} (cached after the first run)")
             indexed = filings.build_index(util, lo, hi, root, refresh=refresh)
         sheet = (
