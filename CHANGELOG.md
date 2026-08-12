@@ -6,19 +6,35 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Added
-- **`tools/regen_tariff.py`** generates the vendored retail tariff snapshots
-  from PG&E's published sheets, closing the gap that left export rates automated
-  while retail rates — which change far more often — were hand-transcribed with
-  nothing watching for drift. The weekly CI job now checks both.
-- Two gates gate every write. The unbundled components must sum to the sheet's
-  own published totals, printed in a different table on a different page; and
-  the rendered file must then be priced by a real `RetailTariff` and match those
-  totals, because the generator's key names and `nem_rates.tariff.retail`'s are
-  two independent encodings of one schema that could otherwise drift apart
-  silently. That second check caught an API mismatch on its first run.
-- Season boundaries, period hours, `has_baseline`, CCA drop components and the
-  E-FFS franchise fee vintages are carried forward from the previous snapshot
-  rather than generated: a sheet publishes rates, not structure.
+- **`nem_rates.regen`**, shipped inside the package and reachable as
+  `nem-rates regen`, rebuilds every vendored dataset from what publishers
+  publish. It replaces the two scripts under `tools/`, which were sdist-only: a
+  released wheel that carries rates its user cannot refresh is only useful until
+  the next advice letter.
+- Four datasets, each with a check that has to pass before anything is written.
+  `tariff` reads a utility's retail sheets and proves the unbundled components
+  sum to the sheet's own published totals, then hands the rendered file to a real
+  `RetailTariff` and compares the price it computes. `accplus` reads the export
+  tariff's adder table and reads it back through the library. `cca` reads a CCA's
+  generation rate card. `export` collapses the hourly export archive, verified
+  cell by cell.
+- **CCA rate cards are no longer hand-transcribed.** A CCA supplies generation
+  only, so its card is one rate per schedule, season and period. Every MCE value
+  currently equals PG&E's generation component exactly, but the card is still
+  extracted and stored separately and regeneration *reports* the parity rather
+  than requiring it — deriving one from the other would be less code and would
+  silently produce wrong prices the day MCE moves. Schedules a card lists but the
+  library does not vendor are skipped and named.
+- **Publishers are declared, not hard-coded.** `nem_rates.regen.providers` holds
+  every publisher-specific fact; PG&E is not the only utility and MCE is not the
+  only CCA, so adding either is a registry entry rather than a parser change.
+  A source also records whether a script can fetch it: PG&E serves tariff PDFs to
+  anything that asks, MCE's CDN returns 403 to every scripted request regardless
+  of headers. A blocked source is skipped with a note rather than failed — it is
+  unknown, not stale — and regenerates from a file supplied with `--pdf`.
+- A new `regen` extra carries `pypdf`. The library itself never opens a PDF.
+- The weekly job now checks all four datasets rather than export rates alone,
+  and reports each independently so the first failure does not hide the second.
 
 ### Fixed
 - **The three tariff snapshots are now dated from the sheet that carries the

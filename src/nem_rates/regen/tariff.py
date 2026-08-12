@@ -41,37 +41,28 @@ provenance survives.
 
 from __future__ import annotations
 
-import argparse
 import re
-import sys
 import tomllib
-import urllib.request
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-TARIFF_DIR = REPO_ROOT / "src" / "nem_rates" / "data" / "tariff" / "pge"
+from .emit import DATA_DIR, Result, fmt, write_or_check
+from .providers import Utility
+from .sheets import (
+    TRAILING_CELLS,
+    ExtractionError,
+    Page,
+    cells,
+    clean_label,
+    rate_lines,
+    read_pages,
+)
+
 PACIFIC = ZoneInfo("America/Los_Angeles")
 
-#: Slug -> the schedule it holds. Slugs match the data directories: the tariff
-#: name with punctuation stripped.
-SCHEDULES: dict[str, dict[str, str]] = {
-    "eelec": {
-        "tariff": "E-ELEC",
-        "url": "https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-ELEC.pdf",
-    },
-    "etouc": {
-        "tariff": "E-TOU-C",
-        "url": "https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-TOU-C.pdf",
-    },
-    "ev2a": {
-        "tariff": "EV2-A",
-        "url": "https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_EV2%20(Sch).pdf",
-    },
-}
 
 #: Sheet label -> the key used in the snapshot. Footnote markers and the
 #: "(all usage)" qualifier are stripped before matching, so only the component
@@ -106,29 +97,6 @@ CARRIED_FORWARD = (
 #: Column header -> period key.
 PERIOD_KEYS = {"PEAK": "peak", "PART-PEAK": "part_peak", "OFF-PEAK": "off_peak"}
 
-#: A dollar figure, optionally parenthesised for negative, optionally followed
-#: by a change marker.
-CELL = re.compile(r"(\()?\$\s?([0-9]+\.[0-9]+)\)?\s*(?:\([IRNL]\))?")
-#: Everything after the label on a rate line: a run of one or more such cells.
-TRAILING_CELLS = re.compile(r"((?:\(?\$\s?[0-9]+\.[0-9]+\)?\s*(?:\([IRNL]\))?\s*)+)$")
-SHEET_HEADER = re.compile(r"ELECTRIC SCHEDULE\s+(\S+)\s+Sheet\s+(\d+)", re.I)
-ADVICE = re.compile(r"Advice\s+(\d+-E)", re.I)
-EFFECTIVE = re.compile(r"Effective\s+([A-Z][a-z]+ \d{1,2}, \d{4})")
-
-
-class ExtractionError(RuntimeError):
-    """The sheet did not match the structure we rely on."""
-
-
-@dataclass
-class Sheet:
-    """One page of the tariff book, with its own provenance."""
-
-    number: int | None
-    advice_letter: str | None
-    effective: date | None
-    text: str
-
 
 @dataclass
 class Extracted:
@@ -147,72 +115,6 @@ class Extracted:
     rates_advice: str | None = None
 
 
-def cells(blob: str) -> list[float]:
-    """Every dollar figure in ``blob``, negative when parenthesised."""
-    return [(-1.0 if m.group(1) else 1.0) * float(m.group(2)) for m in CELL.finditer(blob)]
-
-
-def clean_label(raw: str) -> str:
-    """Strip footnote markers, the '(all usage)' qualifier, and punctuation."""
-    text = re.sub(r"\*+", " ", raw)
-    text = re.sub(r"\((?:all|Bundled)\s+usage\)", " ", text, flags=re.I)
-    return re.sub(r"\s+", " ", text).strip(" :|").lower()
-
-
-def read_pdf(path: Path) -> list[Sheet]:
-    try:
-        from pypdf import PdfReader
-    except ImportError as exc:  # pragma: no cover - exercised by packaging
-        raise ExtractionError(
-            "this tool needs pypdf: uv sync --all-extras, or pip install pypdf"
-        ) from exc
-
-    sheets: list[Sheet] = []
-    for page in PdfReader(str(path)).pages:
-        text = page.extract_text() or ""
-        head = SHEET_HEADER.search(text)
-        advice = ADVICE.search(text)
-        eff = EFFECTIVE.search(text)
-        sheets.append(
-            Sheet(
-                number=int(head.group(2)) if head else None,
-                advice_letter=advice.group(1).upper() if advice else None,
-                effective=(datetime.strptime(eff.group(1), "%B %d, %Y").date() if eff else None),
-                text=text,
-            )
-        )
-    if not sheets:
-        raise ExtractionError(f"{path} has no pages")
-    return sheets
-
-
-def _rate_lines(text: str) -> list[tuple[str, list[float]]]:
-    """``(label, values)`` for every line carrying dollar figures.
-
-    A label that wrapped onto its own line is joined to the values beneath it,
-    which is how "Bundled Power Charge Indifference Adjustment / (all usage)***"
-    appears on the EV2-A sheet.
-    """
-    out: list[tuple[str, list[float]]] = []
-    pending: list[str] = []
-    for raw in text.splitlines():
-        line = raw.strip().rstrip("|").strip()
-        if not line:
-            continue
-        match = TRAILING_CELLS.search(line)
-        if not match:
-            pending.append(line)
-            if len(pending) > 3:  # not a label; a wrapped label is short
-                pending = pending[-3:]
-            continue
-        label = line[: match.start()].strip()
-        if not label and pending:
-            label = " ".join(pending)
-        pending = []
-        out.append((label, cells(match.group(1))))
-    return out
-
-
 def _period_columns(text: str) -> list[str]:
     """Which time-of-use periods this schedule prices, from the column header."""
     for line in text.splitlines():
@@ -227,7 +129,7 @@ def _period_columns(text: str) -> list[str]:
     raise ExtractionError("no 'Energy Rates by Component' column header found")
 
 
-def extract_unbundled(sheet: Sheet) -> tuple[list[str], dict[str, Any], dict[str, float]]:
+def extract_unbundled(sheet: Page) -> tuple[list[str], dict[str, Any], dict[str, float]]:
     """Energy components by season/period, plus the flat riders."""
     periods = _period_columns(sheet.text)
     energy: dict[str, dict[str, dict[str, float]]] = {}
@@ -239,7 +141,7 @@ def extract_unbundled(sheet: Sheet) -> tuple[list[str], dict[str, Any], dict[str
         if re.fullmatch(r"(Generation|Distribution)\*{0,2}\s*:", line, re.I):
             section = line.split("*")[0].strip(" :").lower()
 
-    for label, values in _rate_lines(sheet.text):
+    for label, values in rate_lines(sheet.text):
         low = label.lower()
         season = (
             "summer" if low.startswith("summer") else "winter" if low.startswith("winter") else None
@@ -284,7 +186,7 @@ def extract_unbundled(sheet: Sheet) -> tuple[list[str], dict[str, Any], dict[str
     return periods, energy, adders
 
 
-def extract_totals(sheets: list[Sheet], periods: list[str]) -> dict[str, dict[str, float]]:
+def extract_totals(sheets: list[Page], periods: list[str]) -> dict[str, dict[str, float]]:
     """The sheet's own published totals, used to verify the unbundled table.
 
     Two layouts in the wild. E-ELEC and EV2-A put the season on the rate line
@@ -324,13 +226,13 @@ def extract_totals(sheets: list[Sheet], periods: list[str]) -> dict[str, dict[st
     return totals
 
 
-def extract_base_services_charge(sheets: list[Sheet]) -> dict[str, float]:
+def extract_base_services_charge(sheets: list[Page]) -> dict[str, float]:
     """Total base services charge per income tier, $/customer/day."""
     for sheet in sheets:
         if "Base Services Charge Rates ($" not in sheet.text:
             continue
         found: dict[str, float] = {}
-        for label, values in _rate_lines(sheet.text):
+        for label, values in rate_lines(sheet.text):
             m = re.fullmatch(r"income tier (\d)", clean_label(label))
             if m and values:
                 found[f"tier_{m.group(1)}"] = values[0]
@@ -339,13 +241,13 @@ def extract_base_services_charge(sheets: list[Sheet]) -> dict[str, float]:
     raise ExtractionError("no Base Services Charge tier table found")
 
 
-def extract_pcia(sheets: list[Sheet]) -> dict[int, float]:
+def extract_pcia(sheets: list[Page]) -> dict[int, float]:
     """Vintaged PCIA by year, from the sheet that publishes the vintage table."""
     for sheet in sheets:
         if "Vintage Power Charge Indifference Adjustment" not in sheet.text:
             continue
         found: dict[int, float] = {}
-        for label, values in _rate_lines(sheet.text):
+        for label, values in rate_lines(sheet.text):
             m = re.fullmatch(r"(20\d{2})", label.strip())
             if m and values:
                 found[int(m.group(1))] = values[0]
@@ -354,7 +256,7 @@ def extract_pcia(sheets: list[Sheet]) -> dict[int, float]:
     return {}
 
 
-def extract_baseline(sheets: list[Sheet], adders: dict[str, float]) -> dict[str, Any]:
+def extract_baseline(sheets: list[Page], adders: dict[str, float]) -> dict[str, Any]:
     """Conservation Incentive Adjustment rates and the daily baseline quantities.
 
     The credit a bill prints is the *spread* between the two CIA rates, which is
@@ -363,7 +265,7 @@ def extract_baseline(sheets: list[Sheet], adders: dict[str, float]) -> dict[str,
     """
     within = over = None
     for sheet in sheets:
-        for label, values in _rate_lines(sheet.text):
+        for label, values in rate_lines(sheet.text):
             low = clean_label(label)
             if "conservation incentive adjustment" not in low or not values:
                 continue
@@ -401,7 +303,7 @@ def extract_baseline(sheets: list[Sheet], adders: dict[str, float]) -> dict[str,
     return baseline
 
 
-def extract(sheets: list[Sheet]) -> Extracted:
+def extract(sheets: list[Page]) -> Extracted:
     unbundled = next((s for s in sheets if "UNBUNDLING" in s.text.upper()), None)
     if unbundled is None:
         raise ExtractionError("no 'UNBUNDLING OF ... TOTAL RATES' table found")
@@ -419,8 +321,8 @@ def extract(sheets: list[Sheet]) -> Extracted:
     result.rates_effective = unbundled.effective
     result.rates_advice = unbundled.advice_letter
     for sheet in sheets:
-        if sheet.advice_letter and sheet.number is not None:
-            result.provenance.append((sheet.number, sheet.advice_letter, sheet.effective))
+        if sheet.advice_letter and sheet.sheet_number is not None:
+            result.provenance.append((sheet.sheet_number, sheet.advice_letter, sheet.effective))
     return result
 
 
@@ -466,29 +368,20 @@ def verify(data: Extracted) -> list[str]:
     return problems
 
 
-def _fmt(value: Any) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, float):
-        return f"{value:.5f}".rstrip("0").rstrip(".") if value else "0.0"
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, list):
-        return "[" + ", ".join(_fmt(v) for v in value) + "]"
-    return f'"{value}"'
-
-
-def render(slug: str, data: Extracted, previous: dict[str, Any], effective: date) -> str:
+def render(
+    slug: str, data: Extracted, previous: dict[str, Any], effective: date, provider: Utility
+) -> str:
     """Build the snapshot, carrying structure forward and rates from the sheet."""
-    schedule = SCHEDULES[slug]
+    tariff_name = provider.schedule_names[slug]
+    url = provider.schedules[slug].url
     lines = [
-        f"# PG&E Schedule {schedule['tariff']} -- retail time-of-use rates.",
+        f"# {provider.name} Schedule {tariff_name} -- retail time-of-use rates.",
         "#",
-        f"# Source: {schedule['url']}",
+        f"# Source: {url}",
         "#",
-        "# GENERATED by tools/regen_tariff.py -- do not hand-edit the rate tables.",
+        "# GENERATED by `nem-rates regen tariff` -- do not hand-edit the rate tables.",
         "# Regenerate with:",
-        f"#     python tools/regen_tariff.py --schedule {slug} --download",
+        f"#     nem-rates regen tariff --provider {slug}",
         "#",
         "# A tariff book's sheets revise independently, so each carries its own",
         "# advice letter and effective date. The snapshot is dated from the sheet",
@@ -505,24 +398,24 @@ def render(slug: str, data: Extracted, previous: dict[str, Any], effective: date
         "# makes a silent mis-parse essentially impossible.",
         "",
         "schema = 1",
-        'utility = "PGE"',
-        f'tariff = "{schedule["tariff"]}"',
+        f'utility = "{provider.key.upper()}"',
+        f'tariff = "{tariff_name}"',
         f'effective = "{effective.isoformat()}"',
         f'advice_letter = "{data.rates_advice or previous.get("advice_letter", "")}"',
-        f'source_url = "{schedule["url"]}"',
+        f'source_url = "{url}"',
         f'currency = "{previous.get("currency", "USD/kWh")}"',
         "",
         "# Structure the sheet does not publish, carried forward from the previous",
         "# snapshot. Changing any of it is a deliberate human edit.",
-        f"has_baseline = {_fmt(previous.get('has_baseline', False))}",
+        f"has_baseline = {fmt(previous.get('has_baseline', False))}",
         "",
         "[seasons]",
     ]
     for key, value in previous.get("seasons", {}).items():
-        lines.append(f"{key} = {_fmt(value)}")
+        lines.append(f"{key} = {fmt(value)}")
     lines += ["", "[periods]"]
     for key, value in previous.get("periods", {}).items():
-        lines.append(f"{key} = {_fmt(value)}")
+        lines.append(f"{key} = {fmt(value)}")
 
     lines += ["", "# Season- and period-dependent components."]
     for season in ("summer", "winter"):
@@ -533,11 +426,11 @@ def render(slug: str, data: Extracted, previous: dict[str, Any], effective: date
             lines.append(f"\n[energy.{season}.{period}]")
             for name in ("generation", "distribution"):
                 if name in components:
-                    lines.append(f"{name} = {_fmt(components[name])}")
+                    lines.append(f"{name} = {fmt(components[name])}")
 
     lines += ["", "# Flat riders applied to all usage in every period and season.", "[adders]"]
     for key, value in data.adders.items():
-        lines.append(f"{key} = {_fmt(value)}")
+        lines.append(f"{key} = {fmt(value)}")
 
     if data.baseline:
         lines += [
@@ -545,9 +438,9 @@ def render(slug: str, data: Extracted, previous: dict[str, Any], effective: date
             "# The bill prints one baseline credit; the sheet implements it as two",
             "# Conservation Incentive Adjustment rates whose spread is that credit.",
             "[baseline]",
-            f"within_rate = {_fmt(data.baseline['within_rate'])}",
-            f"over_rate = {_fmt(data.baseline['over_rate'])}",
-            f"credit = {_fmt(data.baseline['credit'])}",
+            f"within_rate = {fmt(data.baseline['within_rate'])}",
+            f"over_rate = {fmt(data.baseline['over_rate'])}",
+            f"credit = {fmt(data.baseline['credit'])}",
         ]
         quantities = data.baseline.get("quantities") or previous.get("baseline", {}).get(
             "quantities", {}
@@ -556,14 +449,14 @@ def render(slug: str, data: Extracted, previous: dict[str, Any], effective: date
             for territory, seasons in sorted(quantities.get(code, {}).items()):
                 lines.append(f"\n[baseline.quantities.{code}.{territory}]")
                 for season, value in seasons.items():
-                    lines.append(f"{season} = {_fmt(value)}")
+                    lines.append(f"{season} = {fmt(value)}")
 
     lines += [
         "",
         "# Riders a CCA or Direct Access customer does not pay, because PG&E is not",
         "# supplying their generation.",
         "[cca]",
-        f"drop_components = {_fmt(previous.get('cca', {}).get('drop_components', []))}",
+        f"drop_components = {fmt(previous.get('cca', {}).get('drop_components', []))}",
         "",
         "# Vintaged PCIA a CCA/DA customer pays instead of the bundled PCIA, keyed",
         "# by the year their generation service began.",
@@ -573,7 +466,7 @@ def render(slug: str, data: Extracted, previous: dict[str, Any], effective: date
         int(k): v for k, v in previous.get("cca", {}).get("pcia_vintages", {}).items()
     }
     for year in sorted(pcia):
-        lines.append(f"{year} = {_fmt(pcia[year])}")
+        lines.append(f"{year} = {fmt(pcia[year])}")
 
     lines += [
         "",
@@ -582,16 +475,16 @@ def render(slug: str, data: Extracted, previous: dict[str, Any], effective: date
         "[cca.franchise_fee_vintages]",
     ]
     for year, value in sorted(previous.get("cca", {}).get("franchise_fee_vintages", {}).items()):
-        lines.append(f"{year} = {_fmt(value)}")
+        lines.append(f"{year} = {fmt(value)}")
 
     lines += ["", "[base_services_charge]", 'unit = "USD/day"']
     for key in ("tier_1", "tier_2", "tier_3"):
-        lines.append(f"{key} = {_fmt(data.base_services_charge[key])}")
+        lines.append(f"{key} = {fmt(data.base_services_charge[key])}")
 
     if previous.get("discounts"):
         lines += ["", "[discounts]"]
         for key, value in previous["discounts"].items():
-            lines.append(f"{key} = {_fmt(value)}")
+            lines.append(f"{key} = {fmt(value)}")
 
     lines += [
         "",
@@ -601,12 +494,12 @@ def render(slug: str, data: Extracted, previous: dict[str, Any], effective: date
     for season in ("summer", "winter"):
         lines.append(f"\n[totals.{season}]")
         for period in data.periods:
-            lines.append(f"{period} = {_fmt(data.totals[season][period])}")
+            lines.append(f"{period} = {fmt(data.totals[season][period])}")
 
     return "\n".join(lines).replace("[totals]\n\n[totals.", "[totals.") + "\n"
 
 
-def price_through_the_loader(slug: str, body: str, data: Extracted) -> list[str]:
+def price_through_the_loader(slug: str, body: str, data: Extracted, provider: Utility) -> list[str]:
     """Price the generated snapshot with the library's own reader.
 
     ``render`` writes key names as string literals; ``nem_rates.tariff.retail``
@@ -621,13 +514,12 @@ def price_through_the_loader(slug: str, body: str, data: Extracted) -> list[str]
     adders through the consumer, which is the only thing that proves the two
     encodings still agree.
     """
-    sys.path.insert(0, str(REPO_ROOT / "src"))
     from nem_rates.config import Config
     from nem_rates.tariff import retail
 
     raw = tomllib.loads(body)
     snapshot = retail.TariffSnapshot(date.fromisoformat(raw["effective"]), raw)
-    tariff = retail.RetailTariff(Config(tariff=SCHEDULES[slug]["tariff"]))
+    tariff = retail.RetailTariff(Config(tariff=provider.schedule_names[slug]))
     # The generated file is not on disk yet and load_snapshot reads packaged
     # data, so point the reader at what we just rendered.
     tariff.snapshot_for = lambda moment: snapshot  # type: ignore[method-assign]
@@ -652,104 +544,33 @@ def price_through_the_loader(slug: str, body: str, data: Extracted) -> list[str]
     return problems
 
 
-def latest_snapshot(slug: str) -> tuple[Path | None, dict[str, Any]]:
-    directory = TARIFF_DIR / slug
-    files = sorted(directory.glob("*.toml")) if directory.is_dir() else []
-    if not files:
-        return None, {}
-    return files[-1], tomllib.loads(files[-1].read_text(encoding="utf-8"))
-
-
-def fetch(url: str, cache: Path) -> Path:
-    if cache.exists():
-        return cache
-    cache.parent.mkdir(parents=True, exist_ok=True)
-    print(f"downloading {url}")
-    with urllib.request.urlopen(url) as response:
-        cache.write_bytes(response.read())
-    return cache
-
-
-def run(slug: str, pdf: Path, check: bool) -> tuple[bool, bool]:
-    """``(changed, failed)`` for one schedule."""
-    sheets = read_pdf(pdf)
-    data = extract(sheets)
+def regenerate(provider: Utility, slug: str, pdf: Path, *, check: bool) -> Result:
+    """Rebuild one schedule's snapshot from ``pdf``."""
+    data = extract(read_pages(pdf))
     problems = verify(data)
     if problems:
-        print(f"{slug}: REFUSING to write, components do not reconcile:")
-        for problem in problems:
-            print(f"    {problem}")
-        return False, True
+        return Result(
+            f"{provider.key}/{slug}",
+            changed=False,
+            failed=True,
+            messages=(
+                "REFUSING to write, components do not reconcile:",
+                *[f"    {p}" for p in problems],
+            ),
+        )
+
+    effective = pick_effective(data)
+    directory = DATA_DIR / "tariff" / provider.key / slug
+    existing = sorted(directory.glob("*.toml")) if directory.is_dir() else []
+    previous = tomllib.loads(existing[-1].read_text(encoding="utf-8")) if existing else {}
+    body = render(slug, data, previous, effective, provider)
 
     checked = sum(len(v) for v in data.energy.values())
-    print(f"{slug}: {checked} season/period cells reconcile against the published totals")
-
-    previous_path, previous = latest_snapshot(slug)
-    effective = pick_effective(data)
-    body = render(slug, data, previous, effective)
-    schema_problems = price_through_the_loader(slug, body, data)
-    if schema_problems:
-        print(f"{slug}: REFUSING to write, the library cannot read what was generated:")
-        for problem in schema_problems:
-            print(f"    {problem}")
-        return False, True
-    print(f"{slug}: the library prices the generated file at the sheet's published totals")
-    target = TARIFF_DIR / slug / f"{effective.isoformat()}.toml"
-
-    if previous_path is not None and tomllib.loads(body) == previous:
-        print(f"{slug}: unchanged ({previous_path.name})")
-        return False, False
-
-    if check:
-        where = target.relative_to(REPO_ROOT)
-        print(f"{slug}: CHANGED -> would write {where}")
-        return True, False
-
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(body, encoding="utf-8")
-    print(f"{slug}: wrote {target.relative_to(REPO_ROOT)}")
-    return True, False
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--schedule", default="all", choices=[*SCHEDULES, "all"], help="which schedule to rebuild"
+    return write_or_check(
+        f"{provider.key}/{slug}",
+        directory / f"{effective.isoformat()}.toml",
+        body,
+        check=check,
+        verify=lambda text: price_through_the_loader(slug, text, data, provider),
+        messages=[f"{checked} season/period cells reconcile against the published totals"],
     )
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument("--pdf", type=Path, help="a local copy of the tariff sheet")
-    source.add_argument("--download", action="store_true", help="fetch the sheet from PG&E")
-    parser.add_argument(
-        "--check",
-        action="store_true",
-        help="report whether the vendored snapshot is stale without writing anything",
-    )
-    parser.add_argument("--cache", type=Path, default=REPO_ROOT / ".cache" / "tariff")
-    args = parser.parse_args(argv)
-
-    slugs = list(SCHEDULES) if args.schedule == "all" else [args.schedule]
-    if args.pdf and len(slugs) > 1:
-        parser.error("--pdf takes one --schedule")
-
-    changed = failed = False
-    for slug in slugs:
-        pdf = args.pdf or fetch(SCHEDULES[slug]["url"], args.cache / f"{slug}.pdf")
-        try:
-            slug_changed, slug_failed = run(slug, pdf, args.check)
-        except ExtractionError as exc:
-            print(f"{slug}: {exc}")
-            failed = True
-            continue
-        changed |= slug_changed
-        failed |= slug_failed
-
-    if failed:
-        return 2
-    if args.check and changed:
-        print("\nvendored tariff data is stale; rerun without --check to update")
-        return 1
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

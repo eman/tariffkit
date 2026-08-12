@@ -1,4 +1,4 @@
-"""Parsing PG&E tariff sheets.
+"""Rebuilding the vendored rate data from published documents.
 
 The extraction functions take text, not PDFs, so everything here runs on
 fragments copied verbatim from the three sheets rather than on a vendored
@@ -9,15 +9,16 @@ parser written against one sheet gets wrong on the next.
 
 from __future__ import annotations
 
-import sys
 from datetime import date
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+pytest.importorskip("pypdf")
 
-import regen_tariff as rt
+from nem_rates.regen import accplus, cca, sheets
+from nem_rates.regen import tariff as rt
+from nem_rates.regen.sheets import ExtractionError
 
 # Verbatim from Schedule E-ELEC Sheet 3.
 EELEC_UNBUNDLED = """UNBUNDLING OF TOTAL RATES |
@@ -83,21 +84,25 @@ Z 5.9 (R) 7.8 (R) 6.7 (R) 15.7 (R) |
 
 
 def sheet(text: str, number: int = 3, advice: str = "7846-E", eff: date | None = None) -> rt.Sheet:
-    return rt.Sheet(
-        number=number, advice_letter=advice, effective=eff or date(2026, 3, 1), text=text
+    return sheets.Page(
+        index=0,
+        sheet_number=number,
+        advice_letter=advice,
+        effective=eff or date(2026, 3, 1),
+        text=text,
     )
 
 
 class TestCells:
     def test_a_parenthesised_value_is_negative(self) -> None:
-        assert rt.cells("($0.00002)") == [-0.00002]
+        assert sheets.cells("($0.00002)") == [-0.00002]
 
     def test_change_markers_are_not_values(self) -> None:
         # (I)/(R)/(N)/(L) mark increased/reduced/new/left-unchanged, not money.
-        assert rt.cells("$0.23199 (I) $0.16922 (R)") == [0.23199, 0.16922]
+        assert sheets.cells("$0.23199 (I) $0.16922 (R)") == [0.23199, 0.16922]
 
     def test_a_row_of_three(self) -> None:
-        assert rt.cells("$0.04638  $0.04638  $0.04638") == [0.04638] * 3
+        assert sheets.cells("$0.04638  $0.04638  $0.04638") == [0.04638] * 3
 
 
 class TestLabels:
@@ -110,11 +115,11 @@ class TestLabels:
         ],
     )
     def test_footnotes_and_qualifiers_are_stripped(self, raw: str, expected: str) -> None:
-        assert rt.clean_label(raw) == expected
+        assert sheets.clean_label(raw) == expected
 
     def test_a_wrapped_label_is_joined_to_its_values(self) -> None:
         # The EV2-A and E-ELEC sheets wrap this one across three lines.
-        lines = dict(rt._rate_lines(EELEC_UNBUNDLED))
+        lines = dict(sheets.rate_lines(EELEC_UNBUNDLED))
         assert any("Indifference" in label for label in lines)
         assert any(v == [-0.01011] * 3 for v in lines.values())
 
@@ -144,7 +149,7 @@ class TestUnbundled:
 
     def test_a_column_count_mismatch_is_an_error(self) -> None:
         broken = EELEC_UNBUNDLED.replace("$0.26299  $0.16388  $0.11878", "$0.26299  $0.16388")
-        with pytest.raises(rt.ExtractionError, match="values for"):
+        with pytest.raises(ExtractionError, match="values for"):
             rt.extract_unbundled(sheet(broken))
 
 
@@ -165,7 +170,7 @@ class TestTotals:
 
     def test_a_sheet_without_both_seasons_is_an_error(self) -> None:
         half = ETOUC_TOTALS.split("Winter")[0]
-        with pytest.raises(rt.ExtractionError, match="expected summer and winter"):
+        with pytest.raises(ExtractionError, match="expected summer and winter"):
             rt.extract_totals([sheet(half, number=2)], ["peak", "off_peak"])
 
 
@@ -237,7 +242,7 @@ class TestPickEffective:
         assert rt.pick_effective(data) == date(2026, 3, 1)
 
     def test_an_undated_sheet_is_an_error_rather_than_today(self) -> None:
-        with pytest.raises(rt.ExtractionError, match="no effective date"):
+        with pytest.raises(ExtractionError, match="no effective date"):
             rt.pick_effective(rt.Extracted(periods=["peak"]))
 
 
@@ -256,3 +261,145 @@ def test_every_vendored_snapshot_still_reconciles() -> None:
                 got = sum(components.values()) + flat
                 want = data["totals"][season][period]
                 assert got == pytest.approx(want, abs=5e-6), f"{path.name} {season}.{period}"
+
+
+# Verbatim from MCE's residential rate card.
+MCE_CARD = """MCE Light Green Residential Rates
+(Rates effective 1.1.23)
+E1, EM, ES, ESR, ET - Basic Residential
+$0.149/kWh
+ETOUC - Default Residential Time-of-Use
+Summer - Service June 1 through September 30
+Peak $0.195/kWh 4 P.M. to 9 P.M. every day
+Off Peak $0.144/kWh All other hours
+Winter - Service October 1 through May 31
+Peak $0.149/kWh 4 P.M. to 9 P.M. every day
+Off Peak $0.135/kWh All other hours
+ETOUD - Residential Time-of-Use
+Summer - Service June 1 through September 30
+Peak $0.224/kWh 5 P.M. to 8 P.M. Monday through Friday
+Off Peak $0.124/kWh All other hours including holidays**
+Winter - Service October 1 through May 31
+Peak $0.185/kWh 5 P.M. to 8 P.M. Monday through Friday
+Off Peak $0.152/kWh All other hours including holidays**
+ELEC - Residential Time-of-Use for Qualified Eletric Technologies
+Summer - Service June 1 through September 30
+Peak $0.301/kWh 4 P.M. to 9 P.M. every day
+Part-Peak $0.199/kWh 3 P.M. to 4 P.M. and 9 P.M. to 12 A.M. every day
+Off Peak $0.152/kWh All other hours
+Winter - Service October 1 through May 31
+Peak $0.134/kWh 4 P.M. to 9 P.M. every day
+Part-Peak $0.113/kWh 3 P.M. to 4 P.M. and 9 P.M. to 12 A.M. every day
+Off Peak $0.099/kWh All other hours
+CLOSED rates
+ETOUB - Residential Time-of-Use (Closed to new enrollments)
+Summer - Service June 1 through September 30
+Peak $0.999/kWh 4 P.M. to 9 P.M. every day
+Off Peak $0.888/kWh All other hours
+"""
+
+ALIASES = {"ELEC": "eelec", "ETOUC": "etouc", "EV2": "ev2a"}
+
+
+class TestCcaRateCard:
+    def extract(self) -> tuple[dict, list[str]]:
+        return cca.extract_generation([sheet(MCE_CARD)], ALIASES)
+
+    def test_periods_are_read_per_schedule_and_season(self) -> None:
+        generation, _ = self.extract()
+        assert generation["eelec"]["summer"] == {
+            "peak": 0.301,
+            "part_peak": 0.199,
+            "off_peak": 0.152,
+        }
+        assert generation["etouc"]["winter"] == {"peak": 0.149, "off_peak": 0.135}
+
+    def test_a_schedule_with_no_part_peak_gets_none(self) -> None:
+        generation, _ = self.extract()
+        assert "part_peak" not in generation["etouc"]["summer"]
+
+    def test_unvendored_schedules_are_skipped_and_named(self) -> None:
+        # Silently dropping them would hide a schedule becoming relevant.
+        _, skipped = self.extract()
+        assert "ETOUD" in skipped
+
+    def test_closed_schedules_are_not_priced(self) -> None:
+        # Closed to new enrolment; including them would overwrite a live rate.
+        generation, skipped = self.extract()
+        assert not any(
+            0.9 < r < 1.0 for s in generation.values() for p in s.values() for r in p.values()
+        )
+        assert "ETOUB" not in skipped
+
+    def test_an_implausible_rate_is_an_error(self) -> None:
+        broken = MCE_CARD.replace("Peak $0.195/kWh", "Peak $19.5/kWh")
+        with pytest.raises(ExtractionError, match="plausible"):
+            cca.extract_generation([sheet(broken)], ALIASES)
+
+    def test_mismatched_period_sets_between_seasons_are_reported(self) -> None:
+        generation, _ = self.extract()
+        generation["etouc"]["winter"].pop("off_peak")
+        assert "misread" in cca.verify(generation)[0]
+
+    def test_the_card_dates_itself(self) -> None:
+        assert sheets.parse_effective(MCE_CARD) == date(2023, 1, 1)
+
+
+# Verbatim from PG&E Schedule NBT, ACC Plus table.
+ACC_PLUS_TABLE = """Adopted Avoided Cost Calculator Plus Adder (ACC Plus)
+Customer
+Segment
+2023
+$/kWh
+2024
+$/kWh
+2025
+$/kWh
+2026
+$/kWh
+2027
+$/kWh
+Residential 0.02200 0.01760 0.01320 0.00880 0.00440
+Residential
+Low
+Income
+0.09000 0.07200 0.05400 0.03600 0.01800
+Non-
+Residential
+Not Eligible
+
+The adder will decrease by 20 percent annually, for newly enrolled tariff
+"""
+
+
+class TestAccPlus:
+    def test_both_customer_segments(self) -> None:
+        got = accplus.extract([sheet(ACC_PLUS_TABLE)])
+        assert got["residential"] == {
+            2023: 0.02200,
+            2024: 0.01760,
+            2025: 0.01320,
+            2026: 0.00880,
+            2027: 0.00440,
+        }
+        assert got["residential_low_income"][2026] == 0.03600
+
+    def test_the_longer_segment_name_wins(self) -> None:
+        # "residential" is a substring of "residentiallowincome", so matching in
+        # declaration order files the low-income row under residential and then
+        # drops it as a duplicate.
+        got = accplus.extract([sheet(ACC_PLUS_TABLE)])
+        assert got["residential"][2023] != got["residential_low_income"][2023]
+
+    def test_a_wrapped_segment_label_is_joined_to_its_figures(self) -> None:
+        got = accplus.extract([sheet(ACC_PLUS_TABLE)])
+        assert len(got["residential_low_income"]) == 5
+
+    def test_trailing_prose_is_not_read_as_a_row(self) -> None:
+        got = accplus.extract([sheet(ACC_PLUS_TABLE)])
+        assert set(got) == {"residential", "residential_low_income"}
+
+    def test_a_missing_segment_is_an_error(self) -> None:
+        half = ACC_PLUS_TABLE.split("Residential\nLow")[0]
+        with pytest.raises(ExtractionError, match="residential_low_income"):
+            accplus.extract([sheet(half)])
