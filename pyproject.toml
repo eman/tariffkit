@@ -31,7 +31,9 @@ web = ["fastapi>=0.110", "uvicorn[standard]>=0.29"]
 fetch = ["httpx>=0.27"]
 # Home Assistant statistics are only exposed over the WebSocket API.
 ha = ["websockets>=12"]
-all = ["nem-rates[cli,mqtt,web,fetch,ha]"]
+# InfluxDB 3 is queried over its HTTP SQL API.
+influx = ["httpx>=0.27"]
+all = ["nem-rates[cli,mqtt,web,fetch,ha,influx]"]
 dev = [
     "nem-rates[all]",
     "pytest>=8.0",
