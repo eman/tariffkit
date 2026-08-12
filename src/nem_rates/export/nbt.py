@@ -83,9 +83,18 @@ class NbtExportRates:
         year = self.config.interconnection_year
         if year is None:
             return 0.0
-        # Resolved against the interconnection year's own start: the adder is
-        # fixed for the nine-year lock from that vintage, so the table in force
-        # when the customer interconnected is the one that governs.
+        # Resolved against the last day of the interconnection year, not its
+        # first. The adder locks at interconnection, so what strictly governs is
+        # the table in force on that *date* -- which the config does not carry,
+        # only the year. Year-end is the reading that works: the first NBT table
+        # took force on 2023-04-15, part-way into the first year it prices, so
+        # asking for 2023-01-01 would raise for every 2023 interconnection.
+        #
+        # The cost is that a table revised mid-year would be applied to everyone
+        # who interconnected that year, including applicants who preceded the
+        # revision. No such revision has happened; if one does, this needs a real
+        # interconnection date rather than a different guess at which end of the
+        # year to ask for.
         table = _acc_plus_table(self.config.utility, date(year, 12, 31)).get(segment)
         if table is None:
             raise ConfigError(f"unknown acc_plus_segment {segment!r}")

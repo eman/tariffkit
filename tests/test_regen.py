@@ -755,3 +755,108 @@ class TestEnergySurcharge:
             / f"src/nem_rates/data/tax/ca_energy_resources/{year}-01-01.toml"
         )
         assert tomllib.loads(path.read_text(encoding="utf-8"))["rate"] == pytest.approx(0.0003)
+
+
+class TestFilingScanWidening:
+    """Reaching back for a date older than the default scan.
+
+    The caller knows the date it wants priced; it has no way to know which
+    advice letter numbers that lands on, which is the whole reason `--for-date`
+    exists. So a date that falls outside the default range has to widen on its
+    own rather than telling the user to guess a number range.
+    """
+
+    def _stub(
+        self, monkeypatch: pytest.MonkeyPatch, *, target: int | None
+    ) -> list[tuple[int, int, bool]]:
+        """Stand in for the network. Returns the (lo, hi, refresh) of each pass."""
+        from nem_rates.regen import filings
+
+        passes: list[tuple[int, int, bool]] = []
+        index: dict[str, filings.Filing] = {}
+
+        def build_index(
+            util: object,
+            lo: int,
+            hi: int,
+            root: object,
+            *,
+            refresh: bool = False,
+            report: object = print,
+        ) -> dict[str, filings.Filing]:
+            passes.append((lo, hi, refresh))
+            if refresh:
+                index.clear()
+            for number in range(lo, hi + 1):
+                index[f"{number}-E"] = filings.Filing(f"{number}-E", 0, {})
+            return dict(index)
+
+        def filing_for(
+            util: object, sheet: str, on: date, indexed: dict[str, filings.Filing]
+        ) -> filings.Filing | None:
+            if target is None or f"{target}-E" not in indexed:
+                return None
+            return filings.Filing(f"{target}-E", 0, {sheet.upper(): "2024-01-01"})
+
+        monkeypatch.setattr(filings, "load_index", lambda root, key: {})
+        monkeypatch.setattr(filings, "build_index", build_index)
+        monkeypatch.setattr(filings, "filing_for", filing_for)
+        return passes
+
+    def test_it_reaches_back_until_it_finds_the_filing(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from nem_rates import regen
+
+        passes = self._stub(monkeypatch, target=7250)
+        found = regen._filing_for_date("eelec", date(2024, 6, 1), tmp_path, None, False)
+
+        assert found == "7250-E"
+        # Contiguous and disjoint, walking backwards from the default range.
+        assert [(lo, hi) for lo, hi, _ in passes] == [(7500, 7900), (7300, 7499), (7100, 7299)]
+
+    def test_it_stops_at_the_bound_and_says_how_far_it_got(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # A date the utility never filed for has to stop somewhere rather than
+        # walking back to advice letter one.
+        from nem_rates import regen
+
+        passes = self._stub(monkeypatch, target=None)
+        with pytest.raises(ExtractionError) as caught:
+            regen._filing_for_date("eelec", date(2015, 1, 1), tmp_path, None, False)
+
+        assert len(passes) == 1 + regen.MAX_SCAN_WIDENINGS
+        message = str(caught.value)
+        assert (
+            f"reached back to {regen.DEFAULT_SCAN[0] - regen.MAX_SCAN_WIDENINGS * regen.SCAN_STEP}"
+            in message
+        )
+        assert f"{regen.MAX_SCAN_WIDENINGS} widening(s)" in message
+        assert "--scan" in message
+
+    def test_an_explicit_scan_is_honoured_rather_than_widened_past(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Passing --scan is the caller pinning a range; searching outside it
+        # anyway would defeat the point of having passed it.
+        from nem_rates import regen
+
+        passes = self._stub(monkeypatch, target=None)
+        with pytest.raises(ExtractionError, match="pinned to 7000-7100"):
+            regen._filing_for_date("eelec", date(2015, 1, 1), tmp_path, (7000, 7100), False)
+
+        assert [(lo, hi) for lo, hi, _ in passes] == [(7000, 7100)]
+
+    def test_refresh_applies_only_to_the_first_pass(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # A widening probes numbers the index has never held, so re-fetching
+        # with refresh set would discard the block just indexed instead of
+        # adding to it -- and the search would never accumulate enough to hit.
+        from nem_rates import regen
+
+        passes = self._stub(monkeypatch, target=7250)
+        regen._filing_for_date("eelec", date(2024, 6, 1), tmp_path, None, True)
+
+        assert [refresh for _, _, refresh in passes] == [True, False, False]

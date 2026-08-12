@@ -273,6 +273,13 @@ def _filing_for_date(
 
     Indexes the utility's advice letters if it has not already; the index is
     cached, so this is slow once and instant afterwards.
+
+    A date older than :data:`DEFAULT_SCAN` reaches back on its own, a
+    :data:`SCAN_STEP` block at a time up to :data:`MAX_SCAN_WIDENINGS`, because
+    the caller knows the date it wants priced and has no way to know which
+    advice letter numbers that lands on. Widening is skipped when ``scan`` was
+    given explicitly: that is the caller pinning a range, and quietly searching
+    outside it would defeat the point of passing it.
     """
     for key, util in sorted(UTILITIES.items()):
         if not util.advice_letter_url or (provider and provider not in (key, *util.schedules)):
@@ -289,12 +296,33 @@ def _filing_for_date(
             else next(iter(util.schedule_names.values()))
         )
         found = filings.filing_for(util, sheet, on, indexed)
+
+        widenings = 0
+        reached = DEFAULT_SCAN[0]
+        while found is None and scan is None and widenings < MAX_SCAN_WIDENINGS:
+            widenings += 1
+            lo = DEFAULT_SCAN[0] - widenings * SCAN_STEP
+            hi = DEFAULT_SCAN[0] - (widenings - 1) * SCAN_STEP - 1
+            print(f"  nothing in force on {on} yet; reaching back to {lo}-{hi}")
+            # refresh only ever applies to the first pass: a widening probes
+            # numbers the index has never held, and re-fetching with refresh set
+            # would discard the block just indexed instead of adding to it.
+            indexed = filings.build_index(util, lo, hi, root, refresh=False)
+            found = filings.filing_for(util, sheet, on, indexed)
+            reached = lo
+
         if found is None:
             span = sorted({v for f in indexed.values() for v in f.schedules.values()})
+            how_far = (
+                f"pinned to {scan[0]}-{scan[1]}"
+                if scan
+                else f"reached back to {reached} over {widenings} widening(s)"
+            )
             raise ExtractionError(
                 f"no indexed {key} filing was in force for {sheet} on {on}; "
                 f"indexed vintages run {span[0] if span else 'none'} to "
-                f"{span[-1] if span else 'none'}. Widen the scan range."
+                f"{span[-1] if span else 'none'}, having {how_far}. "
+                f"Pass --scan LO-HI to search a range directly."
             )
         print(f"  {on} -> filing {found.number} ({found.schedules.get(sheet)})")
         return found.number
