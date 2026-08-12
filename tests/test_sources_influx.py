@@ -8,6 +8,7 @@ that keeps a sparse sample from shoving energy forward over a TOU boundary.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -143,6 +144,23 @@ class TestSettings:
         )
         assert got.import_entity == "meter_in"
 
+    def test_a_table_name_that_could_break_the_sql_is_refused(self, tmp_path: Path) -> None:
+        # The table reaches the query as text too, and it can come from the
+        # config file, so it needs the same constraint the entity ids get.
+        config = tmp_path / "config.toml"
+        config.write_text('[influxdb]\ntable = "x WHERE 1=1--"\n', encoding="utf-8")
+        with pytest.raises(ConfigError, match="table name"):
+            influx.InfluxSettings.load(config, tmp_path / "none", host="h", database="d", token="t")
+
+    def test_a_bad_table_is_caught_even_when_built_directly(
+        self, settings: influx.InfluxSettings, patch_post: Any
+    ) -> None:
+        # load() is not the only way to get a settings object.
+        patch_post({IMPORT_ID: [(at(0), 10.0), (at(1), 11.0)]})
+        bad = replace(settings, table="sensor_numeric; DROP TABLE x--")
+        with pytest.raises(ConfigError, match="table name"):
+            influx.read_counters(bad, at(0), at(1))
+
     @pytest.mark.parametrize("bad", ["meter'; DROP TABLE x--", "meter in", "meter-in"])
     def test_entity_ids_that_could_break_the_sql_are_refused(self, bad: str) -> None:
         # Ids are interpolated into SQL rather than bound, so the constraint is
@@ -245,6 +263,51 @@ class TestReadCounters:
         influx.read_counters(settings, at(0), at(1))
         assert fake.calls[0]["headers"]["Authorization"] == "Bearer secret"
         assert fake.calls[0]["json"]["db"] == "homedb"
+
+    @pytest.mark.parametrize(
+        "row",
+        [
+            {"time": "not a timestamp", "value": 1.0},
+            {"time": "2026-07-01T00:00:00Z", "value": "not a number"},
+        ],
+    )
+    def test_an_unreadable_row_is_a_dataerror_naming_it(
+        self, settings: influx.InfluxSettings, patch_post: Any, row: dict[str, Any]
+    ) -> None:
+        # A wire-format problem should not surface as a bare ValueError.
+        patch_post({}, payload=[row])
+        with pytest.raises(DataError) as caught:
+            influx.read_counters(settings, at(0), at(1))
+        assert str(row["time"]) in str(caught.value)
+
+    def test_a_utc_suffix_parses(self, settings: influx.InfluxSettings, patch_post: Any) -> None:
+        # Python has accepted a trailing Z since 3.11, which is this project's
+        # floor; InfluxDB sends naive UTC, but either must work.
+        patch_post(
+            {},
+            payload=[
+                {"time": "2026-07-01T07:00:00Z", "value": 10.0},
+                {"time": "2026-07-01T08:00:00Z", "value": 11.0},
+            ],
+        )
+        got = influx.read_counters(settings, at(0), at(1))
+        assert sum(r.imported for r in got) == pytest.approx(1.0)
+
+    def test_a_naive_timestamp_is_read_as_utc(
+        self, settings: influx.InfluxSettings, patch_post: Any
+    ) -> None:
+        # This is what the real API returns. Reading it as local would shift
+        # every sample by the offset and land energy in the wrong TOU period.
+        patch_post(
+            {},
+            payload=[
+                {"time": "2026-07-01T07:00:00", "value": 10.0},
+                {"time": "2026-07-01T08:00:00", "value": 11.0},
+            ],
+        )
+        got = influx.read_counters(settings, at(0), at(1))
+        assert got[0].start.astimezone(UTC).hour == 7
+        assert sum(r.imported for r in got) == pytest.approx(1.0)
 
     def test_no_samples_names_the_entities(
         self, settings: influx.InfluxSettings, patch_post: Any

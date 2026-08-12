@@ -52,8 +52,9 @@ DEFAULT_TABLE = "sensor_numeric"
 #: baseline the first interval would silently start from zero.
 BASELINE_LOOKBACK = timedelta(days=3)
 
-#: Entity ids are interpolated into SQL, so they are constrained rather than
-#: quoted: anything outside this is rejected instead of escaped.
+#: Entity ids and the table name are interpolated into SQL, so they are
+#: constrained rather than quoted: anything outside this is rejected instead of
+#: escaped.
 _ENTITY_RE = re.compile(r"^[A-Za-z0-9_.]+$")
 
 
@@ -121,15 +122,26 @@ class InfluxSettings:
             token=values["token"],
             import_entity=_clean_entity(values.get("import_entity", DEFAULT_IMPORT_ENTITY)),
             export_entity=_clean_entity(values.get("export_entity", DEFAULT_EXPORT_ENTITY)),
-            table=values.get("table", DEFAULT_TABLE),
+            table=_sql_name(values.get("table", DEFAULT_TABLE), "table name"),
         )
 
 
 def _clean_entity(entity: str) -> str:
     """Accept either ``sensor.foo`` or ``foo``; InfluxDB stores the latter."""
     name = entity.split(".", 1)[1] if entity.startswith("sensor.") else entity
+    return _sql_name(name, "entity id")
+
+
+def _sql_name(name: str, what: str) -> str:
+    """Guard an identifier that will be interpolated into SQL.
+
+    Both the entity ids and the table name reach the query as text rather than
+    bound parameters, and both can come from a config file. Constrain rather
+    than escape: a name outside this alphabet is a mistake, not something to
+    quote around.
+    """
     if not _ENTITY_RE.match(name):
-        raise ConfigError(f"unsupported entity id {entity!r}")
+        raise ConfigError(f"unsupported {what} {name!r}")
     return name
 
 
@@ -185,9 +197,11 @@ def _query(settings: InfluxSettings, sql: str) -> list[dict[str, Any]]:
 def _samples(
     settings: InfluxSettings, entity: str, start: datetime, end: datetime
 ) -> list[tuple[datetime, float]]:
+    # Guard here as well as in load(): settings can be constructed directly, and
+    # nothing downstream would notice a name that is not an identifier.
     sql = (
-        f"SELECT time, value FROM {settings.table} "
-        f"WHERE entity_id = '{entity}' "
+        f"SELECT time, value FROM {_sql_name(settings.table, 'table name')} "
+        f"WHERE entity_id = '{_sql_name(entity, 'entity id')}' "
         f"AND time >= '{start.astimezone(UTC):%Y-%m-%dT%H:%M:%SZ}' "
         f"AND time <= '{end.astimezone(UTC):%Y-%m-%dT%H:%M:%SZ}' "
         f"ORDER BY time"
@@ -199,8 +213,19 @@ def _samples(
         value = row.get("value")
         if raw is None or value is None:
             continue
-        moment = datetime.fromisoformat(str(raw))
-        out.append((moment if moment.tzinfo else moment.replace(tzinfo=UTC), float(value)))
+        try:
+            moment = datetime.fromisoformat(str(raw))
+            reading = float(value)
+        except (TypeError, ValueError) as exc:
+            # A row we cannot read is a wire-format problem, not a programming
+            # error; say which row rather than letting a bare ValueError out.
+            raise DataError(
+                f"could not read a {entity} sample from InfluxDB "
+                f"(time={raw!r}, value={value!r}): {exc}"
+            ) from exc
+        # InfluxDB stores UTC and returns it without an offset, so a naive
+        # timestamp is UTC rather than local.
+        out.append((moment if moment.tzinfo else moment.replace(tzinfo=UTC), reading))
     return out
 
 
