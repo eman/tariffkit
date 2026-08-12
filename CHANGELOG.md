@@ -5,6 +5,23 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+- **The CSV reader moved to `nem_rates.sources.greenbutton` and is named for the
+  format it reads.** It sat in `nem_rates.billing.ingest` while the other two
+  sources lived in `nem_rates.sources`, on the reasoning that it had no optional
+  dependency to isolate. That was the wrong organising principle: what a module
+  reads is more useful than what it happens to import, and the one file-based
+  source was the hardest to find. `read_csv` is now `read_green_button` and
+  `CsvLayout` is `GreenButtonLayout`, both exported from `nem_rates.sources`
+  rather than `nem_rates.billing`.
+- `--source csv` is now `--source green-button`. "CSV" named a container rather
+  than a format and could have meant any of several exports; Green Button is the
+  industry standard PG&E publishes under "Download my data", and naming it also
+  makes explicit that this reads the **CSV** form and not the ESPI/XML one. The
+  old spelling still works.
+- The Green Button parsing tests moved to `tests/test_sources_greenbutton.py`,
+  alongside the tests for the other two sources.
+
 ### Added
 - **Annual true-up** (`nem_rates.billing.trueup`), the layer that closes a year
   on the credit bank. For a CCA account this is two events on two calendars that
@@ -110,12 +127,15 @@ All notable changes to this project are documented here. This project follows
   without any hand-entered rates. The tariff data previously recorded that this
   surcharge was "not published and must not be guessed"; it is published, in a
   separate schedule.
-- `read_csv` reads PG&E's interval export as downloaded. It previously failed on
-  three things at once: the account preamble before the header row, a timestamp
-  split across `DATE` and `START TIME` rather than one ISO column, and
-  unit-suffixed names like `IMPORT (kWh)`. Header matching now folds case and
-  punctuation, `CsvLayout` gained `date`/`time` for split pairs, and the preamble
-  is located by scanning for the header rather than assuming a fixed offset.
+- `read_green_button` reads PG&E's Green Button export as downloaded. It
+  previously failed on three things at once: the account preamble before the
+  header row, a timestamp split across `DATE` and `START TIME` rather than one
+  ISO column, and unit-suffixed names like `IMPORT (kWh)`. Header matching now
+  folds case and punctuation, `GreenButtonLayout` gained `date`/`time` for split
+  pairs, and the preamble is located by scanning for the header rather than
+  assuming a fixed offset. (Both were added under their former names,
+  `read_csv` and `CsvLayout`, earlier in this same unreleased cycle; they are
+  written here as they ship.)
 - `nem_rates.interop`: adapters publishing rates in formats existing energy
   management systems already read. `resample()` splits the hourly curve onto
   shorter slots, `predbat.payload()` builds Predbat's `raw_today` /
