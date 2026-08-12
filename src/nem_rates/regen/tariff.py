@@ -684,10 +684,17 @@ def regenerate(
         else "franchise fees carried forward: E-FFS could not be read"
     )
     if not data.pcia_vintages:
-        notes.append(
-            "PCIA table carried forward: this filing does not restate it, so the "
-            "values come from the preceding vintage rather than from the sheet"
-        )
+        # The filing does not restate it, so find the one that did rather than
+        # inheriting from whichever snapshot happens to sit next to this one.
+        found, source = _pcia_from_earlier_filing(provider, slug, effective, cache)
+        if found:
+            data.pcia_vintages.update(found)
+            notes.append(f"PCIA table read from {source}, the last filing to restate it")
+        else:
+            notes.append(
+                "PCIA table carried forward: no indexed filing restates it, so the "
+                "values come from the preceding vintage rather than from a sheet"
+            )
     return write_or_check(
         f"{provider.key}/{slug}",
         directory / f"{effective.isoformat()}.toml",
@@ -719,6 +726,44 @@ def pages_for_schedule(pages: list[Page], tariff_name: str) -> list[Page]:
             f"{', '.join(seen) if seen else 'no identifiable schedules'}"
         )
     return mine
+
+
+def _pcia_from_earlier_filing(
+    provider: Utility, slug: str, effective: date, cache: Path | None
+) -> tuple[dict[int, float], str]:
+    """Find the filing that last set the vintaged PCIA before ``effective``.
+
+    The table is republished when it changes -- annually, with the ERRA update --
+    and simply omitted from filings that do not touch it. So a rate change in
+    September carries no PCIA at all, and taking the value from the neighbouring
+    snapshot only works if snapshots happen to be built oldest-first. Looking it
+    up instead makes the answer independent of the order things were generated
+    in, which is the difference between a rule and a coincidence.
+
+    Returns the table and the filing it came from, or empty and "" when the
+    index has nothing earlier to offer.
+    """
+    from . import filings
+
+    root = (cache or Path.home() / ".cache" / "nem-rates" / "regen") / "al"
+    indexed = filings.load_index(root, provider.key)
+    if not indexed:
+        return {}, ""
+    sheet = provider.sheet_name(slug)
+    earlier = sorted(
+        (when, entry)
+        for entry in indexed.values()
+        if (when := entry.effective_for(sheet)) and when <= effective
+    )
+    for _, entry in reversed(earlier):
+        try:
+            pages = pages_for_schedule(read_pages(root / f"{entry.number}.pdf"), sheet)
+        except (ExtractionError, FileNotFoundError, OSError):
+            continue
+        table = extract_pcia(pages)
+        if table:
+            return table, entry.number
+    return {}, ""
 
 
 def _predecessor(directory: Path, effective: date) -> dict[str, Any]:

@@ -10,7 +10,8 @@
 # advice letter and effective date. The snapshot is dated from the sheet
 # carrying the unbundled rate table, which is when these values took
 # force -- not the latest date in the book. Sheets read:
-#     Sheet 2: Advice 7684-E, effective 2025-09-01
+#     Sheet 2: Advice 7469-E, effective 2025-01-01
+#     Sheet 4: Advice 7469-E, effective 2025-01-01
 #
 # The unbundled components below sum exactly to the published totals in
 # [totals]; regeneration refuses to write unless they do, which is what
@@ -19,8 +20,8 @@
 schema = 1
 utility = "PGE"
 tariff = "E-ELEC"
-effective = "2025-09-01"
-advice_letter = "7684-E"
+effective = "2025-01-01"
+advice_letter = "7469-E"
 source_url = "https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-ELEC.pdf"
 currency = "USD/kWh"
 
@@ -40,42 +41,42 @@ part_peak = [[15, 16], [21, 24]]
 
 [energy.summer.peak]
 generation = 0.31659
-distribution = 0.231
+distribution = 0.23528
 
 [energy.summer.part_peak]
 generation = 0.21748
-distribution = 0.16823
+distribution = 0.17251
 
 [energy.summer.off_peak]
 generation = 0.17238
-distribution = 0.15665
+distribution = 0.16093
 
 [energy.winter.peak]
 generation = 0.15446
-distribution = 0.16162
+distribution = 0.1659
 
 [energy.winter.part_peak]
 generation = 0.13449
-distribution = 0.1595
+distribution = 0.16378
 
 [energy.winter.off_peak]
 generation = 0.12114
-distribution = 0.15899
+distribution = 0.16327
 
 # Flat riders applied to all usage in every period and season.
 [adders]
 transmission = 0.05122
-transmission_rate_adjustments = -0.01213
+transmission_rate_adjustments = -0.01509
 reliability_services = 0.00032
 public_purpose_programs = 0.02644
-nuclear_decommissioning = -0.00024
+nuclear_decommissioning = -0.00013
 competition_transition_charges = -0.00072
 energy_cost_recovery = 0.00001
 wildfire_fund_charge = 0.00595
 new_system_generation = 0.00574
-wildfire_hardening = 0.00339
-recovery_bond_charge = 0.00778
-recovery_bond_credit = -0.00778
+wildfire_hardening = 0.00494
+recovery_bond_charge = 0.0065
+recovery_bond_credit = -0.0065
 bundled_pcia = -0.02327
 
 # Riders a CCA or Direct Access customer does not pay, because PG&E is not
@@ -141,11 +142,11 @@ care_excludes = ["wildfire_fund_charge"]
 
 # The sheet's own published totals; the components above sum to these.
 [totals.summer]
-peak = 0.6043
-part_peak = 0.44242
-off_peak = 0.38574
+peak = 0.60728
+part_peak = 0.4454
+off_peak = 0.38872
 
 [totals.winter]
-peak = 0.37279
-part_peak = 0.3507
-off_peak = 0.33684
+peak = 0.37577
+part_peak = 0.35368
+off_peak = 0.33982
