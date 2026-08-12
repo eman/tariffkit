@@ -108,6 +108,14 @@ class Config:
     nsc_rate: float | None = None
 
     def __post_init__(self) -> None:
+        # Coerce the string forms of the enums. Supplier is a StrEnum, so a
+        # plain "cca" compares equal to Supplier.CCA but is not it -- and every
+        # branch that matters tests identity. Constructing Config directly with
+        # a string therefore priced a CCA customer as bundled, silently and with
+        # entirely plausible numbers. from_dict already coerced; direct
+        # construction did not, which is the path library callers take.
+        if not isinstance(self.supplier, Supplier):
+            object.__setattr__(self, "supplier", Supplier(self.supplier))
         if self.supplier is Supplier.CCA and self.cca is None:
             raise ConfigError("supplier='cca' requires a CcaConfig")
         if self.vintage is None and self.interconnection_year is None:

@@ -68,11 +68,21 @@ class BillEngine:
             # Price at the hour containing the interval: rates change hourly,
             # data may be finer.
             moment = hour_floor(to_pacific(reading.start))
-            point = self.rates.price_at(moment)
-            import_price = point.import_price
-            export_price = point.export_price
+            import_price = self.rates.tariff.price_at(moment)
 
-            if not (import_price.complete and export_price.complete and export_price.exact):
+            # Only ask what an export was worth when there was one. A cycle
+            # before interconnection has no net-billing arrangement, and the
+            # meter data says so directly -- PG&E's own export for the
+            # December 2025 cycle carries zero exported kWh in all 2,880
+            # intervals. Demanding an export rate for it would refuse to price a
+            # bill over a question the data never asks.
+            export_price = None
+            if reading.exported:
+                export_price = self.rates.export_rates.price_at(moment)
+
+            if not import_price.complete:
+                complete = False
+            if export_price is not None and not (export_price.complete and export_price.exact):
                 complete = False
 
             key = (import_price.season, import_price.period)
@@ -83,7 +93,7 @@ class BillEngine:
                 bucket.import_charge += reading.imported * import_price.total
                 _add_scaled(import_components, import_price.components, reading.imported)
 
-            if reading.exported:
+            if reading.exported and export_price is not None:
                 bucket.exported += reading.exported
                 # Credits are negative so the bill sums directly.
                 bucket.export_credit -= reading.exported * export_price.total

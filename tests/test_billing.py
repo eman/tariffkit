@@ -348,3 +348,40 @@ class TestGreenButtonRoundTrip:
         bill = engine().compute(readings, BillingPeriod(date(2026, 7, 6), date(2026, 7, 6)))
         assert bill.imported_kwh == pytest.approx(24.0)
         assert bill.energy_charges > 0
+
+
+class TestPeriodsWithoutExports:
+    """A cycle before interconnection has no net-billing arrangement.
+
+    PG&E's own export for the December 2025 cycle carries zero exported kWh in
+    all 2,880 intervals -- there was no export channel to meter. Demanding an
+    export rate for such a period refuses to price a bill over a question the
+    data never asks, and export-rate matrices only start at the customer's own
+    NBT vintage year.
+    """
+
+    def readings(self) -> list[IntervalReading]:
+        start = datetime(2025, 12, 30, tzinfo=PACIFIC)
+        return [
+            IntervalReading(
+                start=start + timedelta(hours=h),
+                imported=1.0,
+                exported=0.0,
+                duration=timedelta(hours=1),
+            )
+            for h in range(48)
+        ]
+
+    def test_a_cycle_with_no_exports_prices_before_the_export_vintage(self) -> None:
+        bill = engine().compute(
+            self.readings(), BillingPeriod(date(2025, 12, 30), date(2025, 12, 31)), check=False
+        )
+        assert sum(b.imported for b in bill.buckets) == pytest.approx(48.0)
+        assert bill.energy_charges > 0
+
+    def test_no_export_components_are_invented(self) -> None:
+        bill = engine().compute(
+            self.readings(), BillingPeriod(date(2025, 12, 30), date(2025, 12, 31)), check=False
+        )
+        assert bill.export_components == {}
+        assert all(b.exported == 0 for b in bill.buckets)
