@@ -669,8 +669,7 @@ def regenerate(
     fees = _franchise_fees(provider, cache)
     effective = pick_effective(data)
     directory = DATA_DIR / "tariff" / provider.key / slug
-    existing = sorted(directory.glob("*.toml")) if directory.is_dir() else []
-    previous = tomllib.loads(existing[-1].read_text(encoding="utf-8")) if existing else {}
+    previous = _predecessor(directory, effective)
     body = render(slug, data, previous, effective, provider, fees)
 
     checked = sum(len(v) for v in data.energy.values())
@@ -684,6 +683,11 @@ def regenerate(
         if fees
         else "franchise fees carried forward: E-FFS could not be read"
     )
+    if not data.pcia_vintages:
+        notes.append(
+            "PCIA table carried forward: this filing does not restate it, so the "
+            "values come from the preceding vintage rather than from the sheet"
+        )
     return write_or_check(
         f"{provider.key}/{slug}",
         directory / f"{effective.isoformat()}.toml",
@@ -715,6 +719,36 @@ def pages_for_schedule(pages: list[Page], tariff_name: str) -> list[Page]:
             f"{', '.join(seen) if seen else 'no identifiable schedules'}"
         )
     return mine
+
+
+def _predecessor(directory: Path, effective: date) -> dict[str, Any]:
+    """The snapshot in force immediately before ``effective``.
+
+    Carried-forward values must come from the past, never the future. Taking
+    whatever happened to be newest on disk meant backfilling an older vintage
+    inherited the *current* one's structure -- and silently its PCIA table, when
+    a filing did not restate it. The September 2025 vintage came out with
+    January 2026's vintaged PCIA of 0.03492 against the 0.01163 the bill
+    actually charged, which is a threefold error on that line.
+    """
+    if not directory.is_dir():
+        return {}
+    earlier: list[tuple[date, dict[str, Any]]] = []
+    for entry in directory.glob("*.toml"):
+        raw = tomllib.loads(entry.read_text(encoding="utf-8"))
+        when = date.fromisoformat(str(raw["effective"]))
+        if when < effective:
+            earlier.append((when, raw))
+    if earlier:
+        return max(earlier, key=lambda pair: pair[0])[1]
+    # Nothing older exists. Structure has to come from somewhere, so the nearest
+    # later vintage is used -- but only for the shape, and the caller reports
+    # which tables were carried rather than read.
+    later = sorted(
+        (date.fromisoformat(str(raw["effective"])), raw)
+        for raw in (tomllib.loads(e.read_text(encoding="utf-8")) for e in directory.glob("*.toml"))
+    )
+    return later[0][1] if later else {}
 
 
 def _franchise_fees(provider: Utility, cache: Path | None) -> dict[int, float]:

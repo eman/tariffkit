@@ -39,6 +39,16 @@ class BillEngine:
     def __init__(self, rates: RateEngine | None = None) -> None:
         self.rates = rates or RateEngine()
 
+    def _compensated(self, moment: datetime) -> bool:
+        """Whether an export at ``moment`` earns anything.
+
+        Net Billing compensation runs from Permission To Operate. Energy leaving
+        the house before then is real -- the meter records it -- but the tariff
+        grants nothing for it, so crediting it would invent money.
+        """
+        pto = self.rates.config.pto_date
+        return pto is None or moment.date() >= pto
+
     def compute(
         self,
         readings: Iterable[IntervalReading],
@@ -60,6 +70,7 @@ class BillEngine:
         warnings = list(check_coverage(in_period, period)) if check else []
 
         buckets: dict[tuple[Season, TouPeriod], _Accumulator] = {}
+        uncompensated = 0.0
         import_components: dict[str, float] = {}
         export_components: dict[str, float] = {}
         complete = True
@@ -70,15 +81,20 @@ class BillEngine:
             moment = hour_floor(to_pacific(reading.start))
             import_price = self.rates.tariff.price_at(moment)
 
-            # Only ask what an export was worth when there was one. A cycle
-            # before interconnection has no net-billing arrangement, and the
-            # meter data says so directly -- PG&E's own export for the
-            # December 2025 cycle carries zero exported kWh in all 2,880
-            # intervals. Demanding an export rate for it would refuse to price a
-            # bill over a question the data never asks.
+            # Only ask what an export was worth when it could earn anything.
+            #
+            # Export compensation starts at Permission To Operate: before it
+            # there is no Net Billing arrangement, whatever the meter saw. The
+            # two data sources disagree about that on purpose -- PG&E's own
+            # export reports zero exported kWh for the December 2025 cycle
+            # because there was no export channel to meter, while the Rainforest
+            # counter behind it recorded real energy leaving the house. Pricing
+            # the counter's view would invent credits the tariff does not grant.
             export_price = None
-            if reading.exported:
+            if reading.exported and self._compensated(moment):
                 export_price = self.rates.export_rates.price_at(moment)
+            elif reading.exported:
+                uncompensated += reading.exported
 
             if not import_price.complete:
                 complete = False
@@ -103,6 +119,13 @@ class BillEngine:
         credit = self._baseline_credit(in_period, period)
         if credit:
             import_components["baseline_credit"] = credit
+
+        if uncompensated:
+            warnings.append(
+                f"{uncompensated:.1f} kWh exported before the Permission To Operate date "
+                f"({self.rates.config.pto_date}); Net Billing compensation starts at PTO, "
+                f"so it earns nothing and is not credited here"
+            )
 
         return Bill(
             period=period,
