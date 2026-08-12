@@ -6,6 +6,30 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **`nem-rates regen tariff --advice-letter NUMBER`** rebuilds a superseded rate
+  vintage from the filing that adopted it. The tariff book only ever serves what
+  is current, so this is the only way to recover history — and without it the
+  library could not price January or February 2026 at all. All three PG&E
+  schedules are backfilled to 2026-01-01 (Advice 7797-E), each reconciling
+  against that filing's own published totals.
+- Vintages differ in shape, not only in value, and the extractor now handles the
+  differences rather than assuming today's layout: the base services charge is
+  absent on most schedules before AB 205 began it on 2026-03-01 and flat rather
+  than tiered on E-ELEC, PCIA rows are spelled `2009 Vintage` in a filing and
+  `2009` in the book, and a sheet's own header identifies which schedule it
+  belongs to so one filing can be narrowed to one schedule.
+- `daily_fixed_charge` returns zero for a vintage that had no such charge, which
+  is the right answer rather than a missing-data error.
+
+### Fixed
+- The PCIA vintage table is read with its own row pattern rather than one that
+  needs the figures at end of line. The last row runs into the next page's
+  header — `2026 Vintage ($0.01011) (N) (L)U 39Oakland, California` — so a
+  trailing match dropped the newest vintage, which is the worst one to lose. It
+  had been masked: extraction previously failed outright and the values were
+  silently carried forward from the prior snapshot.
+
+### Added
 - **A CCA card that cannot be parsed is still watched.** The vendored file records
   a checksum of the document its values were read from, so the weekly check
   downloads the card and reports whether the publisher has moved. Detection never

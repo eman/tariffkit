@@ -121,6 +121,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="report whether the vendored data is stale without writing anything",
     )
     regen.add_argument("--refresh", action="store_true", help="ignore the download cache")
+    regen.add_argument(
+        "--advice-letter",
+        metavar="NUMBER",
+        help="rebuild a superseded tariff vintage from the filing that adopted it "
+        "(e.g. 7797-E); the tariff book only serves what is current",
+    )
 
     serve = sub.add_parser("serve", help="run the REST API")
     serve.add_argument("--host", default="127.0.0.1")
@@ -356,6 +362,7 @@ def main(argv: list[str] | None = None) -> int:
                     pdf=args.pdf,
                     check=args.check,
                     refresh=args.refresh,
+                    advice_letter=args.advice_letter,
                 ):
                     outcome.report()
                     changed |= outcome.changed

@@ -23,6 +23,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+#: Where a utility files a rate change. An advice letter carries the sheets it
+#: revises, so it is how a superseded vintage is recovered: the tariff book only
+#: ever serves what is current.
+ADVICE_LETTER_URL = "https://www.pge.com/tariffs/assets/pdf/adviceletter/ELEC_{number}.pdf"
+
 #: Sent when fetching. Some publishers reject the default urllib agent outright.
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -62,6 +67,16 @@ class Utility:
     franchise_fees: Source | None = None
     #: The Net Surplus Compensation series, published as a standing table.
     nsc_rates: Source | None = None
+    #: Template for one of this utility's advice-letter filings, if it publishes
+    #: them at a predictable address. ``{number}`` is e.g. "7797-E".
+    advice_letter_url: str = ""
+    #: Slug -> how the sheet header spells the schedule, where that differs from
+    #: the tariff name. PG&E bills "EV2-A" but heads its sheets "EV2".
+    sheet_aliases: dict[str, str] = field(default_factory=dict)
+
+    def sheet_name(self, slug: str) -> str:
+        """How this schedule identifies itself in a sheet header."""
+        return self.sheet_aliases.get(slug, self.schedule_names[slug])
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +117,8 @@ PGE = Utility(
         "https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-FFS.pdf"
     ),
     nsc_rates=Source("https://www.pge.com/assets/pge/docs/clean-energy/solar/AB920-RateTable.pdf"),
+    advice_letter_url=ADVICE_LETTER_URL,
+    sheet_aliases={"ev2a": "EV2"},
 )
 
 MCE = Cca(

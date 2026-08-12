@@ -171,8 +171,18 @@ def run(
     check: bool = False,
     cache: Path = DEFAULT_CACHE,
     refresh: bool = False,
+    advice_letter: str | None = None,
 ) -> list[Result]:
-    """Regenerate ``dataset``, returning one result per document."""
+    """Regenerate ``dataset``, returning one result per document.
+
+    ``advice_letter`` rebuilds a *superseded* vintage instead of the current one.
+    The tariff book only ever serves what is in force now, so a historical
+    snapshot comes from the filing that adopted it -- one filing carries every
+    schedule the utility revised that day, which is why this pairs naturally with
+    regenerating all of them at once.
+    """
+    if advice_letter is not None:
+        return _run_advice_letter(dataset, advice_letter, provider, check, cache, refresh)
     selected = jobs(dataset, provider)
     if pdf is not None and len(selected) > 1:
         raise ExtractionError(
@@ -201,6 +211,37 @@ def run(
             results.append(job.run(path, check))
         except ExtractionError as exc:
             results.append(Result(job.label, changed=False, failed=True, messages=(str(exc),)))
+    return results
+
+
+def _run_advice_letter(
+    dataset: str, number: str, provider: str | None, check: bool, cache: Path, refresh: bool
+) -> list[Result]:
+    if dataset != "tariff":
+        raise ExtractionError(
+            f"--advice-letter rebuilds retail tariff vintages; {dataset!r} is not "
+            f"published that way"
+        )
+    number = number.upper() if number.upper().endswith("-E") else f"{number}-E"
+    results: list[Result] = []
+    for key, util in sorted(UTILITIES.items()):
+        if not util.advice_letter_url or (provider and provider not in (key, *util.schedules)):
+            continue
+        source = Source(util.advice_letter_url.format(number=number))
+        path = fetch(source, cache / "al" / f"{number}.pdf", refresh=refresh)
+        for slug in sorted(util.schedules):
+            if provider in util.schedules and provider != slug:
+                continue
+            try:
+                results.append(tariff.regenerate(util, slug, path, check=check, cache=cache))
+            except ExtractionError as exc:
+                # A filing revises only some schedules, so "not in here" is a
+                # normal answer rather than a failure.
+                results.append(
+                    Result(f"{key}/{slug}", changed=False, failed=False, messages=(str(exc),))
+                )
+    if not results:
+        raise ExtractionError(f"no utility publishes advice letters for provider {provider!r}")
     return results
 
 

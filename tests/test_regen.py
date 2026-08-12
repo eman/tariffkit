@@ -260,7 +260,12 @@ def test_every_vendored_snapshot_still_reconciles() -> None:
             for period, components in by_period.items():
                 got = sum(components.values()) + flat
                 want = data["totals"][season][period]
-                assert got == pytest.approx(want, abs=5e-6), f"{path.name} {season}.{period}"
+                # One unit in the last published decimal: the sheet rounds its
+                # total independently of the components, so a vintage can miss
+                # by an ulp. See regen.tariff.ROUNDING_TOLERANCE.
+                assert got == pytest.approx(want, abs=1.5e-5), (
+                    f"{path.relative_to(root)} {season}.{period}"
+                )
 
 
 # Verbatim from MCE's residential rate card.
@@ -602,3 +607,65 @@ class TestUnparseableCardIsStillWatched:
         )
         assert len(str(raw.get("source_sha256", ""))) == 64
         assert raw.get("source_read_on")
+
+
+PCIA_TABLE = """Vintage Power Charge Indifference Adjustment (per kWh) Rate
+2009 Vintage $0.02973 (I)
+2024 Vintage $0.05066 (I)
+2025 Vintage ($0.01011) (I)
+2026 Vintage ($0.01011) (N) (L)U 39Oakland, California
+Revised Cal. P.U.C. Sheet No. 61121-E
+"""
+
+
+class TestPciaVintages:
+    def test_the_last_row_is_read_even_when_the_page_header_runs_into_it(self) -> None:
+        # "2026 Vintage ($0.01011) (N) (L)U 39Oakland, California" -- the figures
+        # are not at end of line, and dropping the newest vintage is the worst
+        # one to lose.
+        got = rt.extract_pcia([sheet(PCIA_TABLE)])
+        assert got[2026] == -0.01011
+
+    def test_parenthesised_vintages_are_negative(self) -> None:
+        got = rt.extract_pcia([sheet(PCIA_TABLE)])
+        assert got[2025] == -0.01011
+        assert got[2009] == 0.02973
+
+    def test_a_sheet_without_the_table_yields_nothing(self) -> None:
+        # Carried forward by the caller rather than invented here.
+        assert rt.extract_pcia([sheet("no vintage table on this sheet")]) == {}
+
+
+class TestScheduleNarrowing:
+    def test_an_advice_letter_is_narrowed_to_one_schedule(self) -> None:
+        pages = [
+            sheet("ELECTRIC SCHEDULE E-ELEC Sheet 2\nSummer Usage $0.1 $0.2 $0.3"),
+            sheet("ELECTRIC SCHEDULE E-TOU-C Sheet 2\nSummer (all usage) $0.4 $0.5"),
+        ]
+        assert len(rt.pages_for_schedule(pages, "E-ELEC")) == 1
+
+    def test_a_schedule_the_filing_did_not_revise_says_what_it_carries(self) -> None:
+        # A filing revises only some schedules, so this is a normal answer.
+        pages = [sheet("ELECTRIC SCHEDULE E-TOU-C Sheet 2\nSummer (all usage) $0.4 $0.5")]
+        with pytest.raises(ExtractionError, match="E-TOU-C"):
+            rt.pages_for_schedule(pages, "EV2")
+
+
+class TestBaseServicesChargeShapes:
+    def test_the_tiered_form(self) -> None:
+        got = rt.extract_base_services_charge([sheet(EELEC_TOTALS, number=2)])
+        assert got == {"tier_1": 0.19713, "tier_2": 0.39688, "tier_3": 0.79343}
+
+    def test_the_flat_pre_ab205_form_becomes_three_equal_tiers(self) -> None:
+        # Before AB 205's charge began on 2026-03-01, E-ELEC had one flat rate
+        # for everyone; recording it as equal tiers keeps consumers era-agnostic.
+        flat = "TOTAL BUNDLED RATES\nBase Services Charge ($ per meter per day) $0.49281\n"
+        assert rt.extract_base_services_charge([sheet(flat, number=2)]) == {
+            "tier_1": 0.49281,
+            "tier_2": 0.49281,
+            "tier_3": 0.49281,
+        }
+
+    def test_absence_is_an_answer_not_a_failure(self) -> None:
+        # E-TOU-C and EV2-A had no daily fixed charge at all before AB 205.
+        assert rt.extract_base_services_charge([sheet("no charge table here")]) == {}

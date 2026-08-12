@@ -178,6 +178,35 @@ fee vintages (Schedule E-FFS, a different document) are **carried forward from
 the previous snapshot**. A structural change is still a human edit, and should
 be.
 
+### Rebuilding a superseded vintage
+
+The tariff book only ever serves what is in force now, so history comes from the
+filing that adopted it:
+
+```bash
+nem-rates regen tariff --advice-letter 7797-E
+```
+
+An advice letter carries every sheet the utility revised that day — 255 pages
+across 40-odd schedules for a general rate change — and each sheet states which
+schedule it belongs to, so the same extractor works once the filing is narrowed
+by those headers. The reconciliation check applies unchanged, because the filing
+carries the totals too.
+
+Vintages differ in shape as well as in value, and the extractor handles the ones
+seen so far rather than assuming today's layout:
+
+| | Jan 2026 (7797-E) | Mar 2026 (7846-E) |
+|---|---|---|
+| Base services charge | E-ELEC: one flat rate. E-TOU-C, EV2-A: **none** | three income tiers |
+| Public purpose programs | 0.02829 | 0.00614 |
+| PCIA rows | `2009 Vintage $0.02973` | `2009 $0.02973` |
+
+AB 205's Base Services Charge began 2026-03-01 and moved public-purpose costs
+into the daily fixed charge, which is why that component fell by more than two
+cents. A snapshot with no charge omits the section, and `daily_fixed_charge`
+returns zero for it — the correct answer, not missing data.
+
 ### Sheets revise independently
 
 A tariff book is a compilation and its pages carry their own advice letters. On
