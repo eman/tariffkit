@@ -333,11 +333,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "regen":
             from . import regen as regen_mod
 
-            datasets = (
-                [d for d in regen_mod.DATASETS if d != "export"]
-                if args.dataset == "all"
-                else [args.dataset]
-            )
+            datasets = list(regen_mod.DATASETS) if args.dataset == "all" else [args.dataset]
             changed = failed = False
             for dataset in datasets:
                 if dataset == "export":

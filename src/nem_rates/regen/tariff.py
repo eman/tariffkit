@@ -1,14 +1,13 @@
-#!/usr/bin/env python3
-"""Regenerate a vendored retail tariff snapshot from PG&E's published sheet.
+"""Regenerate a vendored retail tariff snapshot from a utility's published sheet.
 
 Retail rates change far more often than export rates -- three times in the first
-half of 2026 -- and until now they were hand-transcribed from the tariff PDF.
+half of 2026 -- and were hand-transcribed from the tariff PDF for most of that.
 That made the *detection* of a change the weak point: nothing noticed a new
 advice letter, so a stale snapshot surfaced only when a bill disagreed.
 
-    python tools/regen_tariff.py --schedule eelec --download
-    python tools/regen_tariff.py --schedule all --download --check
-    python tools/regen_tariff.py --schedule etouc --pdf /path/to/sheet.pdf
+    nem-rates regen tariff
+    nem-rates regen tariff --check
+    nem-rates regen tariff --provider etouc --pdf /path/to/sheet.pdf
 
 The tariff sheets turn out to be highly regular. Every rate line is a label
 followed by one value per time-of-use period, negatives in parentheses and an
