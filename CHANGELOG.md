@@ -5,6 +5,17 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+- **A CCA card that cannot be parsed is still watched.** The vendored file records
+  a checksum of the document its values were read from, so the weekly check
+  downloads the card and reports whether the publisher has moved. Detection never
+  needed a text layer, only bytes, and detection was always the more valuable
+  half of a scheduled check — extraction being manual does not mean staleness
+  has to be invisible. A change is reported rather than failed, since it needs a
+  person and a permanently red job gets ignored; a card with no recorded checksum
+  *is* a failure, because that is the one state where silence and safety look
+  the same.
+
 ### Fixed
 - `cca/mce.toml`'s 16 generation rates, its cost relief credit and its Deep Green
   premium were all re-read from MCE's published card and confirmed. The header

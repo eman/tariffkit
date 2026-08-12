@@ -16,7 +16,7 @@ import pytest
 
 pytest.importorskip("pypdf")
 
-from nem_rates.regen import accplus, cca, franchise, nsc, sheets
+from nem_rates.regen import accplus, cca, franchise, nsc, providers, sheets
 from nem_rates.regen import tariff as rt
 from nem_rates.regen.sheets import ExtractionError
 
@@ -540,3 +540,64 @@ class TestNscSeries:
     def test_a_document_without_the_table_is_an_error(self) -> None:
         with pytest.raises(ExtractionError, match="Net Surplus"):
             nsc.extract([sheet("Jan. 2025 0.03396")])
+
+
+class TestUnparseableCardIsStillWatched:
+    """A card with no text layer cannot be rebuilt, but it can be watched.
+
+    Detection was always the more valuable half of a scheduled check, and it
+    needs only bytes -- so a republished card is noticed even when nothing can
+    read it.
+    """
+
+    STORED = "0c0ff13a" * 8
+    OTHER = "deadbeef" * 8
+
+    def prev(self, **over: object) -> dict[str, object]:
+        base = {"source_sha256": self.STORED, "source_read_on": "2026-08-12"}
+        return {**base, **over}
+
+    def test_matching_bytes_report_no_change(self) -> None:
+        got = cca._watch_by_checksum(
+            providers.MCE, self.STORED, self.prev(), ExtractionError("no text layer")
+        )
+        assert not got.changed and not got.failed
+        assert "publisher has not moved" in got.messages[0]
+
+    def test_different_bytes_report_a_change_and_say_what_to_do(self) -> None:
+        got = cca._watch_by_checksum(
+            providers.MCE, self.OTHER, self.prev(), ExtractionError("no text layer")
+        )
+        assert got.changed and not got.failed
+        joined = " ".join(got.messages)
+        assert "SOURCE CHANGED" in joined
+        assert "re-read it from the rendered page" in joined
+        assert self.OTHER in joined  # the checksum to record afterwards
+
+    def test_a_change_is_not_a_failure(self) -> None:
+        # It needs a human, but the run itself worked; failing would make the
+        # scheduled job red until someone edits a file.
+        got = cca._watch_by_checksum(
+            providers.MCE, self.OTHER, self.prev(), ExtractionError("no text layer")
+        )
+        assert not got.failed
+
+    def test_no_recorded_checksum_is_a_failure(self) -> None:
+        # Without a baseline nothing can be detected at all, which is the one
+        # state that must not look like "unchanged".
+        got = cca._watch_by_checksum(
+            providers.MCE, self.OTHER, {}, ExtractionError("no text layer")
+        )
+        assert got.failed
+        assert "no source_sha256" in got.messages[0]
+
+    def test_the_vendored_card_records_a_checksum(self) -> None:
+        import tomllib
+
+        raw = tomllib.loads(
+            (Path(__file__).resolve().parent.parent / "src/nem_rates/data/cca/mce.toml").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert len(str(raw.get("source_sha256", ""))) == 64
+        assert raw.get("source_read_on")

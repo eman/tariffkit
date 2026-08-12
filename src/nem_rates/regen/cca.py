@@ -23,10 +23,20 @@ per period:
 Schedules a card lists but the library does not vendor -- MCE publishes ETOUD,
 E1 and a block of closed schedules -- are skipped rather than guessed at, and
 named in the run's output so a newly relevant one is noticed.
+
+**A card with no text layer is still watched.** MCE currently publishes a
+print-to-PDF export whose figures are glyph ids with no characters behind them,
+so nothing can parse it and the values are read from the rendered page instead.
+That stops the *extraction* being automatic; it does not stop the *detection*,
+which was always the more valuable half. The vendored file records a checksum of
+the document it was read from, so a scheduled run downloads the card, compares
+bytes, and says whether a human needs to go and look. Silence then means the
+publisher has not moved, rather than meaning nobody checked.
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import date
 from pathlib import Path
@@ -172,6 +182,7 @@ def render(
     effective: date,
     previous: dict[str, object],
     names: dict[str, str],
+    digest: str = "",
 ) -> str:
     lines = [
         f"# {provider.name} ({provider.key.upper()}) residential generation rates.",
@@ -200,6 +211,12 @@ def render(
         f'effective = "{effective.isoformat()}"',
         f'currency = "{previous.get("currency", "USD/kWh")}"',
         f'source_url = "{provider.rate_card.url}"',
+        "",
+        "# Checksum of the document these values were read from. A scheduled check",
+        "# compares it so a republished card is noticed even when it cannot be",
+        "# parsed -- detection does not need a text layer, only bytes.",
+        f'source_sha256 = "{digest or previous.get("source_sha256", "")}"',
+        f'source_read_on = "{previous.get("source_read_on", date.today().isoformat())}"',
     ]
     for slug in sorted(generation):
         for season in ("summer", "winter"):
@@ -216,8 +233,15 @@ def render(
 def regenerate(provider: Cca, pdf: Path, *, check: bool) -> Result:
     import tomllib
 
-    pages = read_pages(pdf)
-    generation, skipped = extract_generation(pages, provider.schedule_aliases)
+    target = DATA_DIR / "cca" / f"{provider.key}.toml"
+    previous = tomllib.loads(target.read_text(encoding="utf-8")) if target.exists() else {}
+    digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
+
+    try:
+        pages = read_pages(pdf)
+        generation, skipped = extract_generation(pages, provider.schedule_aliases)
+    except ExtractionError as exc:
+        return _watch_by_checksum(provider, digest, previous, exc)
     problems = verify(generation)
 
     messages: list[str] = []
@@ -234,8 +258,6 @@ def regenerate(provider: Cca, pdf: Path, *, check: bool) -> Result:
     messages.append(f"{counted} rates across {len(generation)} schedule(s)")
     messages += parity_note(generation, provider.utility)
 
-    target = DATA_DIR / "cca" / f"{provider.key}.toml"
-    previous = tomllib.loads(target.read_text(encoding="utf-8")) if target.exists() else {}
     effective = next(
         (p.effective for p in pages if p.effective),
         date.fromisoformat(str(previous.get("effective", date.today()))),
@@ -243,6 +265,59 @@ def regenerate(provider: Cca, pdf: Path, *, check: bool) -> Result:
     from .providers import utility as get_utility
 
     body = render(
-        provider, generation, effective, previous, get_utility(provider.utility).schedule_names
+        provider,
+        generation,
+        effective,
+        previous,
+        get_utility(provider.utility).schedule_names,
+        digest,
     )
     return write_or_check(provider.key, target, body, check=check, messages=messages)
+
+
+def _watch_by_checksum(
+    provider: Cca, digest: str, previous: dict[str, object], why: ExtractionError
+) -> Result:
+    """Report whether an unparseable card has changed since it was last read.
+
+    The card cannot be extracted, so this cannot rebuild the file. It can still
+    answer the question a scheduled check exists to answer -- has the publisher
+    moved? -- by comparing bytes against the document the vendored values were
+    read from.
+    """
+    known = str(previous.get("source_sha256", ""))
+    read_on = str(previous.get("source_read_on", "an unrecorded date"))
+    if not known:
+        return Result(
+            provider.key,
+            changed=False,
+            failed=True,
+            messages=(
+                f"cannot parse this card and {provider.key}.toml records no "
+                f"source_sha256 to compare against, so a change cannot be detected. "
+                f"Read the rendered page, update the values, and record the checksum "
+                f"{digest}.",
+                str(why),
+            ),
+        )
+    if known == digest:
+        return Result(
+            provider.key,
+            changed=False,
+            failed=False,
+            messages=(
+                f"source unchanged since it was read on {read_on} (sha256 {digest[:12]}); "
+                f"its values cannot be re-parsed, but the publisher has not moved",
+            ),
+        )
+    return Result(
+        provider.key,
+        changed=True,
+        failed=False,
+        messages=(
+            f"SOURCE CHANGED since {read_on}: sha256 was {known[:12]}, now {digest[:12]}.",
+            f"This card has no text layer, so re-read it from the rendered page and "
+            f'update {provider.key}.toml, then record source_sha256 = "{digest}".',
+            f"Document: {provider.rate_card.url}",
+        ),
+    )

@@ -55,6 +55,13 @@ effective = "2026-04-01"
 currency = "USD/kWh"
 source_url = "https://mcecleanenergy.org/compare-rates-and-options/"
 
+# Checksum of the rate card these values were read from. This card has no text
+# layer, so it cannot be re-parsed -- but a scheduled check compares these bytes
+# and says whether MCE has republished, which is the half that matters. Silence
+# means the publisher has not moved, not that nobody looked.
+source_sha256 = "0c0ff13aa015eeb27fb8067e434e669a4ecfe4a2995af6f4bc2146f7465b1036"
+source_read_on = "2026-08-12"
+
 # TOU periods and season boundaries follow each PG&E schedule exactly, including
 # E-TOU-C having no part-peak at all.
 #
