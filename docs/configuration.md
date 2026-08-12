@@ -156,6 +156,40 @@ environment variables, then `--ha-import-entity` / `--ha-export-entity`.
 `HA_TOKEN` is deliberately never read from the config file, which is not
 gitignored.
 
+## InfluxDB
+
+Only needed for `nem-rates bill --source influx`. Same split as above: series
+names are configuration, the token is not.
+
+```toml
+[influxdb]
+host = "influxdb.example"
+database = "homedb"
+import_entity = "eagle_100_total_energy_delivered"
+export_entity = "eagle_100_total_energy_received"
+```
+
+`host` may be a bare name (`https://` is assumed) or a full URL with a scheme
+and port; `/api/v3/query_sql` is appended either way. The entity defaults are
+the **raw** counters, unlike the Home Assistant defaults — they reach back much
+further, and the drop-to-zero artefacts are filtered out on read. A `sensor.`
+prefix is accepted and stripped, since InfluxDB stores the bare name. `table`
+defaults to `sensor_numeric`, which is what Home Assistant's InfluxDB
+integration writes.
+
+```ini
+# .env
+INFLUXDB3_HOST = "influxdb.example"
+INFLUXDB3_DATABASE = "homedb"
+INFLUXDB3_AUTH_TOKEN = "<database token>"
+```
+
+Resolution order, later winning: the config file, then `.env`, then real
+environment variables (`NEM_RATES_INFLUX_IMPORT_ENTITY` /
+`NEM_RATES_INFLUX_EXPORT_ENTITY` for the series), then
+`--influx-import-entity` / `--influx-export-entity`. As with `HA_TOKEN`,
+`INFLUXDB3_AUTH_TOKEN` is never read from the config file.
+
 ## Environment variables
 
 `NEM_RATES_SUPPLIER`, `NEM_RATES_VINTAGE`, `NEM_RATES_INTERCONNECTION_YEAR`,

@@ -11,7 +11,7 @@ nem-rates bill - --json < intervals.csv
 
 ## Where readings come from
 
-Two sources. CSV is the default and needs nothing installed beyond the core
+Three sources. CSV is the default and needs nothing installed beyond the core
 package:
 
 ```bash
@@ -63,6 +63,58 @@ period's change. One real instance put 543.663 kWh inside a five-minute slot,
 about 6,500 kW against a service that tops out near 48. Anything implying more
 than 100 kW is discarded with a warning naming the timestamp, and the hole it
 leaves is reported by the usual coverage check rather than filled in.
+
+## InfluxDB
+
+If Home Assistant also writes sensor samples to InfluxDB 3, the raw meter
+counters are there as a plain time series, and reading them directly is more
+accurate than either of the other two sources:
+
+```bash
+pip install 'nem-rates[influx]'
+nem-rates bill --source influx --start 2026-06-30 --end 2026-07-28
+```
+
+Energy over a window is a cumulative counter's endpoints, so the total does not
+depend on how densely it was sampled in between. Against the July 2026
+statement, all three sources on the same cycle:
+
+| Source | Imported | Exported | MCE credit | Delivery credit |
+|---|---|---|---|---|
+| PG&E CSV | 39.060 | 193.320 | 9.59 | 6.22 |
+| Home Assistant | 39.902 | 193.795 | 9.68 | 6.73 |
+| InfluxDB | 39.902 | **193.793** | **9.64** | **6.30** |
+| *billed* | *39.906* | *193.797* | *9.63* | *6.25* |
+
+The CSV is low because PG&E rounds every interval to two decimals before
+exporting it, which costs about 2% of a low-import month.
+
+The gap between the two live sources is subtler and worth understanding, because
+it is the one thing a counter series can get wrong. **A sample reports an advance
+since the previous sample, not an instant.** Crediting the whole advance to the
+interval holding the later sample pushes energy forward across every boundary it
+spans, and boundaries are where the money is — the export delivery credit is
+roughly 500× larger during the 4–9pm peak than outside it. On that cycle the
+naive rule put 55.52 kWh of export in peak where PG&E's own 15-minute data has
+52.08. This source spreads each advance pro rata over the span it actually
+covers, giving 52.62. Home Assistant's statistics are pre-aggregated by Home
+Assistant using the forward-crediting rule, which is why its credit components
+sit further from the statement despite identical totals.
+
+Sampling density still bounds how fine an interval is meaningful. On this data
+the median gap is five minutes but the 90th percentile is three quarters of an
+hour, so hourly is the default; `--influx-resolution 15` is interpolation, not
+measurement, and should be checked against the density for the period.
+
+Two smaller notes:
+
+- Defaults are the **unfiltered** counters — the opposite of the Home Assistant
+  source's defaults, and deliberate. They reach back fourteen months against the
+  filtered pair's five, and the drop-to-zero behaviour that makes them unusable
+  raw is repaired here anyway (about one sample in ten).
+- Entity ids are constrained to `[A-Za-z0-9_.]` rather than escaped, because they
+  are interpolated into SQL. A `sensor.` prefix is stripped; InfluxDB stores the
+  bare name.
 
 ## CSV input
 

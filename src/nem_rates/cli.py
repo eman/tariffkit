@@ -45,7 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bill.add_argument(
         "--source",
-        choices=("csv", "ha"),
+        choices=("csv", "ha", "influx"),
         default="csv",
         help="where the readings come from (default: csv)",
     )
@@ -55,6 +55,15 @@ def build_parser() -> argparse.ArgumentParser:
     bill.add_argument("--no-check", dest="check", action="store_false", help="skip coverage checks")
     bill.add_argument("--ha-import-entity", help="override the grid-import entity")
     bill.add_argument("--ha-export-entity", help="override the grid-export entity")
+    bill.add_argument("--influx-import-entity", help="override the grid-import series")
+    bill.add_argument("--influx-export-entity", help="override the grid-export series")
+    bill.add_argument(
+        "--influx-resolution",
+        type=int,
+        default=60,
+        metavar="MINUTES",
+        help="interval length for InfluxDB counters (default: 60; finer needs dense sampling)",
+    )
     bill.add_argument(
         "--ha-resolution",
         choices=("auto", "5minute", "hour"),
@@ -253,8 +262,29 @@ def main(argv: list[str] | None = None) -> int:
                     resolution=args.ha_resolution,
                 )
                 note = f"  source: Home Assistant statistics ({describe_resolution(readings)})"
+            elif args.source == "influx":
+                from .sources import InfluxSettings, read_counters
+
+                if not (args.start and args.end):
+                    raise ConfigError("--source influx requires --start and --end")
+                influx_settings = InfluxSettings.load(
+                    config_path=args.config,
+                    import_entity=args.influx_import_entity,
+                    export_entity=args.influx_export_entity,
+                )
+                step = timedelta(minutes=args.influx_resolution)
+                readings = read_counters(
+                    influx_settings,
+                    _midnight(args.start),
+                    _midnight(args.end) + timedelta(days=1),
+                    step,
+                )
+                note = (
+                    f"  source: InfluxDB counters ({len(readings)} x {args.influx_resolution}min; "
+                    f"totals are exact, distribution follows sample density)"
+                )
             elif args.csv is None:
-                raise ConfigError("give a CSV path, or use --source ha")
+                raise ConfigError("give a CSV path, or use --source ha or --source influx")
             else:
                 readings = read_csv(sys.stdin if str(args.csv) == "-" else args.csv)
 

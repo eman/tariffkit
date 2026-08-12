@@ -6,6 +6,26 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **`nem-rates bill --source influx`** reads the raw meter counters from
+  InfluxDB 3 over `/api/v3/query_sql`. A cumulative counter's total depends only
+  on its endpoints, so this is exact regardless of sampling density: against the
+  July 2026 statement it reproduced 39.902 kWh imported against 39.906 billed and
+  193.793 exported against 193.797, where PG&E's own CSV export loses about 2% of
+  a low-import month to two-decimal rounding. Configuration is a `[influxdb]`
+  section, credentials `.env` or the environment; needs the new `influx` extra.
+- The InfluxDB source spreads each counter advance **pro rata over the span it
+  accrued across** rather than crediting it to the interval holding the later
+  sample. A sample reports an advance since the previous sample, not an instant,
+  and forward-crediting biases energy across every boundary it spans — expensive
+  when the export delivery credit is roughly 500x larger during the 4-9pm peak
+  than outside it. On one real cycle the naive rule put 55.52 kWh of export in
+  peak where PG&E's 15-minute data has 52.08; spreading gives 52.62, and moves
+  the modelled delivery credit from $6.73 to $6.30 against $6.25 billed.
+- The InfluxDB source defaults to the **unfiltered** counters, opposite to the
+  Home Assistant source and deliberately: they reach back fourteen months against
+  the filtered pair's five, and the drop-to-zero artefacts that make them
+  unusable raw — about one sample in ten, emitted while the Eagle-100
+  re-establishes its meter session — are filtered on read.
 - **`nem-rates bill --source ha`** reads interval data straight from Home
   Assistant, so a cycle can be billed without downloading anything. It pulls
   long-term statistics rather than state history, which is the only place a whole
