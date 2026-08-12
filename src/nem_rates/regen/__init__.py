@@ -34,9 +34,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
-from . import accplus, cca, nsc, tariff
+from . import accplus, cca, filings, nsc, tariff
 from .emit import Result
 from .fetch import fetch
 from .providers import CCAS, UTILITIES, Cca, Source, Utility
@@ -172,6 +173,8 @@ def run(
     cache: Path = DEFAULT_CACHE,
     refresh: bool = False,
     advice_letter: str | None = None,
+    for_date: date | None = None,
+    scan: tuple[int, int] | None = None,
 ) -> list[Result]:
     """Regenerate ``dataset``, returning one result per document.
 
@@ -181,6 +184,8 @@ def run(
     schedule the utility revised that day, which is why this pairs naturally with
     regenerating all of them at once.
     """
+    if for_date is not None:
+        advice_letter = _filing_for_date(provider, for_date, cache, scan, refresh)
     if advice_letter is not None:
         return _run_advice_letter(dataset, advice_letter, provider, check, cache, refresh)
     selected = jobs(dataset, provider)
@@ -212,6 +217,41 @@ def run(
         except ExtractionError as exc:
             results.append(Result(job.label, changed=False, failed=True, messages=(str(exc),)))
     return results
+
+
+def _filing_for_date(
+    provider: str | None, on: date, cache: Path, scan: tuple[int, int] | None, refresh: bool
+) -> str:
+    """Which filing set the rates in force on ``on``.
+
+    Indexes the utility's advice letters if it has not already; the index is
+    cached, so this is slow once and instant afterwards.
+    """
+    for key, util in sorted(UTILITIES.items()):
+        if not util.advice_letter_url or (provider and provider not in (key, *util.schedules)):
+            continue
+        root = cache / "al"
+        indexed = filings.load_index(root, key)
+        if scan or not indexed:
+            lo, hi = scan or (7500, 7900)
+            print(f"  indexing {key} filings {lo}-{hi} (cached after the first run)")
+            indexed = filings.build_index(util, lo, hi, root, refresh=refresh)
+        sheet = (
+            util.sheet_name(provider)
+            if provider in util.schedules
+            else next(iter(util.schedule_names.values()))
+        )
+        found = filings.filing_for(util, sheet, on, indexed)
+        if found is None:
+            span = sorted({v for f in indexed.values() for v in f.schedules.values()})
+            raise ExtractionError(
+                f"no indexed {key} filing was in force for {sheet} on {on}; "
+                f"indexed vintages run {span[0] if span else 'none'} to "
+                f"{span[-1] if span else 'none'}. Widen the scan range."
+            )
+        print(f"  {on} -> filing {found.number} ({found.schedules.get(sheet)})")
+        return found.number
+    raise ExtractionError(f"no utility publishes advice letters for provider {provider!r}")
 
 
 def _run_advice_letter(
