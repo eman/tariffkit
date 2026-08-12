@@ -152,30 +152,44 @@ class BillEngine:
         eligibility depends on cumulative usage over the cycle, which
         ``price_at`` cannot see.
 
-        The allowance is a daily quantity that changes at the season boundary, so
-        it accumulates day by day rather than being multiplied by the cycle
-        length. The credit is identical in every TOU period, so how PG&E
-        allocates baseline usage across periods moves the printed lines but not
-        this total.
+        Both the allowance and the credit rate are daily quantities, and both
+        can change inside one cycle -- the allowance at the season boundary, the
+        rate whenever a new tariff vintage takes force. So this walks the days
+        and credits each one at its own rate rather than reading a rate once.
+
+        A statement spanning a rate change prints exactly that: the December
+        2025 cycle shows 19.40 kWh at $0.10084 for its two December days and
+        281.30 kWh at $0.09566 for its twenty-nine January ones. Reading one
+        rate for the cycle applied December's to all 300.70 kWh and overstated
+        the credit by $1.45.
+
+        The credit is identical in every TOU period, so how PG&E allocates
+        baseline usage across periods moves the printed lines but not this total.
         """
         tariff = self.rates.tariff
-        rate = tariff.price_at(
-            datetime(period.start.year, period.start.month, period.start.day, 12, tzinfo=PACIFIC)
-        ).baseline_credit
-        if not rate:
+        remaining = sum(r.imported for r in readings)
+        if remaining <= 0:
             return 0.0
 
-        allowance = 0.0
+        credit = 0.0
         for offset in range(period.days):
             day = period.start + timedelta(days=offset)
-            allowance += tariff.baseline_allowance(
-                datetime(day.year, day.month, day.day, 12, tzinfo=PACIFIC)
-            )
-        if not allowance:
-            return 0.0
-
-        imported = sum(r.imported for r in readings)
-        return -min(imported, allowance) * rate
+            noon = datetime(day.year, day.month, day.day, 12, tzinfo=PACIFIC)
+            allowance = tariff.baseline_allowance(noon)
+            if not allowance:
+                continue
+            rate = tariff.price_at(noon).baseline_credit
+            if not rate:
+                continue
+            # Imports are credited against the allowance in day order, so a
+            # cycle that used less than its allowance is capped rather than
+            # credited for energy it never took.
+            within = min(allowance, remaining)
+            credit -= within * rate
+            remaining -= within
+            if remaining <= 0:
+                break
+        return credit
 
     def _fixed_charges(self, period: BillingPeriod) -> dict[str, float]:
         """Charges billed per day rather than per kWh.

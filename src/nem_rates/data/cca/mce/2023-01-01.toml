@@ -28,20 +28,9 @@ source_url = "https://mcecleanenergy.org/wp-content/uploads/2025/09/MCE-website-
 source_sha256 = "db92362d02205c24ccaed4c42e5508d5f4fd7077226b88cea3900acec9c55270"
 source_read_on = "2026-08-12"
 
-[cost_relief_credit]
-rate = -0.0062
-through = "2026-12-31"
-
 [options]
 light_green = 0.0
-deep_green = 0.0125
-
-[export]
-solar_bonus_fraction = 0.1
-care_fera_bonus_rate = 0.05
-care_fera_bonus_through = "2028-12-31"
-export_credit_basis = "acc_generation"
-export_credit_verified = true
+deep_green = 0.01
 
 [generation.eelec.summer]
 peak = 0.301

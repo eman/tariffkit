@@ -385,3 +385,55 @@ class TestPeriodsWithoutExports:
         )
         assert bill.export_components == {}
         assert all(b.exported == 0 for b in bill.buckets)
+
+
+class TestBaselineCreditAcrossARateChange:
+    """The credit rate is a daily quantity and can change inside a cycle.
+
+    The December 2025 statement prints exactly that: 19.40 kWh at $0.10084 for
+    its two December days and 281.30 kWh at $0.09566 for its twenty-nine January
+    ones. Reading one rate for the whole cycle applied December's to all 300.70
+    kWh and overstated the credit by $1.45.
+    """
+
+    def config(self) -> Config:
+        return Config(tariff="E-TOU-C", baseline_territory="X", baseline_code="basic")
+
+    def readings(self) -> list[IntervalReading]:
+        start = datetime(2025, 12, 30, tzinfo=PACIFIC)
+        return [
+            IntervalReading(
+                start=start + timedelta(hours=h),
+                imported=2.0,
+                exported=0.0,
+                duration=timedelta(hours=1),
+            )
+            for h in range(24 * 31)
+        ]
+
+    def test_each_day_is_credited_at_its_own_rate(self) -> None:
+        bill = BillEngine(RateEngine(self.config())).compute(
+            self.readings(), BillingPeriod(date(2025, 12, 30), date(2026, 1, 29)), check=False
+        )
+        credit = bill.import_components["baseline_credit"]
+        # 2 days x 9.7 @ 0.10084 + 29 days x 9.7 @ 0.09566
+        expected = -(2 * 9.7 * 0.10084 + 29 * 9.7 * 0.09566)
+        assert credit == pytest.approx(expected, abs=0.01)
+
+    def test_a_single_rate_for_the_cycle_would_be_wrong(self) -> None:
+        bill = BillEngine(RateEngine(self.config())).compute(
+            self.readings(), BillingPeriod(date(2025, 12, 30), date(2026, 1, 29)), check=False
+        )
+        naive = -(31 * 9.7 * 0.10084)  # December's rate applied throughout
+        assert abs(bill.import_components["baseline_credit"] - naive) > 1.0
+
+    def test_usage_below_the_allowance_caps_the_credit(self) -> None:
+        few = self.readings()[:24]  # one day of 2 kWh/h = 48 kWh
+        bill = BillEngine(RateEngine(self.config())).compute(
+            few, BillingPeriod(date(2025, 12, 30), date(2026, 1, 29)), check=False
+        )
+        # 48 kWh against a 300.7 kWh allowance: credited on 48, not 300.7. The
+        # 48 still spans days on both sides of the rate change, so it is not all
+        # at December's rate -- two days at 9.7 kWh @ 0.10084, the rest @ 0.09566.
+        expected = -(2 * 9.7 * 0.10084 + (48 - 2 * 9.7) * 0.09566)
+        assert bill.import_components["baseline_credit"] == pytest.approx(expected, abs=0.01)
