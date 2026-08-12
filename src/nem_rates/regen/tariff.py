@@ -637,7 +637,13 @@ def price_through_the_loader(slug: str, body: str, data: Extracted, provider: Ut
 
 
 def regenerate(
-    provider: Utility, slug: str, pdf: Path, *, check: bool, cache: Path | None = None
+    provider: Utility,
+    slug: str,
+    pdf: Path,
+    *,
+    check: bool,
+    cache: Path | None = None,
+    refresh: bool = False,
 ) -> Result:
     """Rebuild one schedule's snapshot from ``pdf``.
 
@@ -667,7 +673,7 @@ def regenerate(
         )
 
     effective = pick_effective(data)
-    fees, fees_from = _franchise_fees(provider, cache, effective)
+    fees, fees_from = _franchise_fees(provider, cache, effective, refresh=refresh)
     directory = DATA_DIR / "tariff" / provider.key / slug
     previous = _predecessor(directory, effective)
     body = render(slug, data, previous, effective, provider, fees)
@@ -797,7 +803,7 @@ def _predecessor(directory: Path, effective: date) -> dict[str, Any]:
 
 
 def _franchise_fees(
-    provider: Utility, cache: Path | None, effective: date
+    provider: Utility, cache: Path | None, effective: date, *, refresh: bool = False
 ) -> tuple[dict[int, float], str]:
     """The franchise fee surcharge in force at ``effective``, and where from.
 
@@ -831,11 +837,19 @@ def _franchise_fees(
     try:
         return (
             franchise.extract(
-                read_pages(fetch(provider.franchise_fees, root / f"{provider.key}-effs.pdf"))
+                read_pages(
+                    fetch(
+                        provider.franchise_fees,
+                        root / f"{provider.key}-effs.pdf",
+                        refresh=refresh,
+                    )
+                )
             ),
             "the current E-FFS sheet",
         )
-    except ExtractionError:
-        # Not fatal: the retail rates are the point of this dataset, and the
-        # previous snapshot's fees are still the last known-good ones.
+    except (ExtractionError, OSError):
+        # Not fatal, and that includes an unwritable cache: the retail rates are
+        # the point of this dataset and the previous snapshot's fees are still
+        # the last known-good ones, so a full disk should not stop a rate
+        # change being vendored.
         return {}, ""

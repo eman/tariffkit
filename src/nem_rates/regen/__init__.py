@@ -74,9 +74,14 @@ class Job:
     run: Callable[[Path, bool], Result]
 
 
-def _tariff_runner(util: Utility, slug: str) -> Callable[[Path, bool], Result]:
+def _tariff_runner(
+    util: Utility, slug: str, cache: Path, refresh: bool
+) -> Callable[[Path, bool], Result]:
     def run_one(pdf: Path, check: bool) -> Result:
-        return tariff.regenerate(util, slug, pdf, check=check)
+        # The schedule sheet arrives already fetched; E-FFS is fetched inside,
+        # so the run's cache and --refresh policy has to travel with it or that
+        # second document quietly ignores both.
+        return tariff.regenerate(util, slug, pdf, check=check, cache=cache, refresh=refresh)
 
     return run_one
 
@@ -102,7 +107,9 @@ def _cca_runner(provider: Cca) -> Callable[[Path, bool], Result]:
     return run_one
 
 
-def _tariff_jobs(provider: str | None) -> Iterator[Job]:
+def _tariff_jobs(
+    provider: str | None, cache: Path = DEFAULT_CACHE, refresh: bool = False
+) -> Iterator[Job]:
     for key, util in sorted(UTILITIES.items()):
         if provider and provider not in (key, *util.schedules):
             continue
@@ -112,7 +119,7 @@ def _tariff_jobs(provider: str | None) -> Iterator[Job]:
             yield Job(
                 f"{key}/{slug}",
                 source,
-                _tariff_runner(util, slug),
+                _tariff_runner(util, slug, cache, refresh),
             )
 
 
@@ -167,7 +174,9 @@ def _cca_jobs(provider: str | None) -> Iterator[Job]:
         )
 
 
-JOB_BUILDERS: dict[str, Callable[[str | None], Iterator[Job]]] = {
+#: Only the tariff builder needs the run's cache policy, because only it fetches
+#: a second document of its own.
+JOB_BUILDERS: dict[str, Callable[..., Iterator[Job]]] = {
     "tariff": _tariff_jobs,
     "accplus": _accplus_jobs,
     "nsc": _nsc_jobs,
@@ -176,7 +185,12 @@ JOB_BUILDERS: dict[str, Callable[[str | None], Iterator[Job]]] = {
 }
 
 
-def jobs(dataset: str, provider: str | None = None) -> list[Job]:
+def jobs(
+    dataset: str,
+    provider: str | None = None,
+    cache: Path = DEFAULT_CACHE,
+    refresh: bool = False,
+) -> list[Job]:
     """Every regeneration job for ``dataset``, optionally narrowed to a provider."""
     if dataset not in JOB_BUILDERS:
         known = ", ".join(DATASETS)
@@ -186,7 +200,8 @@ def jobs(dataset: str, provider: str | None = None) -> list[Job]:
                 f"not through run(); it reads an archive rather than a published PDF"
             )
         raise ExtractionError(f"unknown dataset {dataset!r}; known: {known}")
-    found = list(JOB_BUILDERS[dataset](provider))
+    builder = JOB_BUILDERS[dataset]
+    found = list(builder(provider, cache, refresh) if dataset == "tariff" else builder(provider))
     if not found:
         raise ExtractionError(
             f"no {dataset} sources for provider {provider!r}; "
@@ -220,7 +235,7 @@ def run(
         advice_letter = _filing_for_date(provider, for_date, cache, scan, refresh)
     if advice_letter is not None:
         return _run_advice_letter(dataset, advice_letter, provider, check, cache, refresh)
-    selected = jobs(dataset, provider)
+    selected = jobs(dataset, provider, cache, refresh)
     if pdf is not None and len(selected) > 1:
         raise ExtractionError(
             f"--pdf takes one document, but {dataset} with this provider has "
@@ -305,7 +320,9 @@ def _run_advice_letter(
             if provider in util.schedules and provider != slug:
                 continue
             try:
-                results.append(tariff.regenerate(util, slug, path, check=check, cache=cache))
+                results.append(
+                    tariff.regenerate(util, slug, path, check=check, cache=cache, refresh=refresh)
+                )
             except ExtractionError as exc:
                 # A filing revises only some schedules, so "not in here" is a
                 # normal answer rather than a failure.
