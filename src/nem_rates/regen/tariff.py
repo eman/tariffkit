@@ -666,8 +666,8 @@ def regenerate(
             ),
         )
 
-    fees = _franchise_fees(provider, cache)
     effective = pick_effective(data)
+    fees, fees_from = _franchise_fees(provider, cache, effective)
     directory = DATA_DIR / "tariff" / provider.key / slug
     previous = _predecessor(directory, effective)
     body = render(slug, data, previous, effective, provider, fees)
@@ -679,7 +679,7 @@ def regenerate(
             f"{len(rounded)} of them only within the sheet's own rounding: {', '.join(rounded)}"
         )
     notes.append(
-        f"{len(fees)} franchise fee vintages read from E-FFS"
+        f"{len(fees)} franchise fee vintages read from {fees_from}"
         if fees
         else "franchise fees carried forward: E-FFS could not be read"
     )
@@ -796,19 +796,46 @@ def _predecessor(directory: Path, effective: date) -> dict[str, Any]:
     return later[0][1] if later else {}
 
 
-def _franchise_fees(provider: Utility, cache: Path | None) -> dict[int, float]:
-    """Read E-FFS, or return empty so the caller falls back and says so."""
+def _franchise_fees(
+    provider: Utility, cache: Path | None, effective: date
+) -> tuple[dict[int, float], str]:
+    """The franchise fee surcharge in force at ``effective``, and where from.
+
+    E-FFS is its own schedule with its own vintages, so reading the current one
+    for a historical snapshot is the same mistake as inheriting a PCIA table
+    from the future -- and it was: the December 2025 segment of a real bill was
+    charged 0.00106 where today's sheet says 0.00060.
+
+    So the filing index is asked which filing last set E-FFS on or before the
+    date, exactly as for the PCIA. Only when the index has nothing does this
+    fall back to the standalone schedule, which is by definition the current
+    one, and the caller says so.
+    """
     if provider.franchise_fees is None:
-        return {}
+        return {}, ""
+    from . import filings
     from .fetch import fetch
 
     root = cache or Path.home() / ".cache" / "nem-rates" / "regen"
+    indexed = filings.load_index(root / "al", provider.key)
+    entry = filings.filing_for(provider, "E-FFS", effective, indexed) if indexed else None
+    if entry is not None:
+        try:
+            pages = pages_for_schedule(read_pages(root / "al" / f"{entry.number}.pdf"), "E-FFS")
+            found = franchise.extract(pages)
+            if found:
+                return found, entry.number
+        except (ExtractionError, FileNotFoundError, OSError):
+            pass
+
     try:
-        return franchise.extract(
-            read_pages(fetch(provider.franchise_fees, root / f"{provider.key}-effs.pdf"))
+        return (
+            franchise.extract(
+                read_pages(fetch(provider.franchise_fees, root / f"{provider.key}-effs.pdf"))
+            ),
+            "the current E-FFS sheet",
         )
     except ExtractionError:
         # Not fatal: the retail rates are the point of this dataset, and the
-        # previous snapshot's fees are still the last known-good ones. The
-        # caller reports that they were carried rather than read.
-        return {}
+        # previous snapshot's fees are still the last known-good ones.
+        return {}, ""

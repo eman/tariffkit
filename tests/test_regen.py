@@ -669,3 +669,45 @@ class TestBaseServicesChargeShapes:
     def test_absence_is_an_answer_not_a_failure(self) -> None:
         # E-TOU-C and EV2-A had no daily fixed charge at all before AB 205.
         assert rt.extract_base_services_charge([sheet("no charge table here")]) == {}
+
+
+class TestVintagedTablesComeFromTheirOwnEra:
+    """PCIA and the franchise fee are republished only when they change.
+
+    Both live in documents with their own vintages -- the PCIA on the schedule's
+    own sheet, the franchise fee in Schedule E-FFS -- and a filing that does not
+    touch them simply omits them. Reading the current version for a historical
+    snapshot put January 2026's values on a December 2025 cycle: 0.03492 against
+    the 0.01161 billed for PCIA, 0.00060 against 0.00105 for the surcharge.
+    """
+
+    def vintage(self, slug: str, effective: str) -> dict:
+        import tomllib
+
+        path = (
+            Path(__file__).resolve().parent.parent
+            / f"src/nem_rates/data/tariff/pge/{slug}/{effective}.toml"
+        )
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+
+    @pytest.mark.parametrize("slug", ["eelec", "etouc", "ev2a"])
+    def test_the_2025_vintages_carry_the_2025_pcia(self, slug: str) -> None:
+        for effective in ("2025-01-01", "2025-03-01", "2025-09-01"):
+            raw = self.vintage(slug, effective)
+            assert raw["cca"]["pcia_vintages"]["2011"] == pytest.approx(0.01161), effective
+
+    @pytest.mark.parametrize("slug", ["eelec", "etouc", "ev2a"])
+    def test_the_2026_vintages_carry_the_2026_pcia(self, slug: str) -> None:
+        for effective in ("2026-01-01", "2026-03-01"):
+            raw = self.vintage(slug, effective)
+            assert raw["cca"]["pcia_vintages"]["2011"] == pytest.approx(0.03492), effective
+
+    @pytest.mark.parametrize("slug", ["eelec", "etouc", "ev2a"])
+    def test_the_franchise_fee_follows_its_own_schedule(self, slug: str) -> None:
+        # Billed 0.00105 for the December 2025 segment, 0.00060 for January.
+        assert self.vintage(slug, "2025-09-01")["cca"]["franchise_fee_vintages"][
+            "2011"
+        ] == pytest.approx(0.00105)
+        assert self.vintage(slug, "2026-01-01")["cca"]["franchise_fee_vintages"][
+            "2011"
+        ] == pytest.approx(0.00060)

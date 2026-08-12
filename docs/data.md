@@ -178,6 +178,22 @@ fee vintages (Schedule E-FFS, a different document) are **carried forward from
 the previous snapshot**. A structural change is still a human edit, and should
 be.
 
+### Tables with their own publication cycle
+
+The vintaged PCIA and the franchise fee surcharge are republished only when they
+change -- the PCIA annually with the ERRA update, the surcharge in Schedule
+E-FFS -- so a rate change that does not touch them simply omits them. Reading
+the current version for a historical snapshot applies today's values to an old
+cycle, which is worth about 3c/kWh on the PCIA.
+
+Both are therefore resolved through the filing index rather than taken from
+whatever is newest, and each run says where the values came from:
+
+```
+pge/etouc: 17 franchise fee vintages read from 7469-E
+pge/etouc: PCIA table read from 7469-E, the last filing to restate it
+```
+
 ### Rebuilding a superseded vintage
 
 The tariff book only ever serves what is in force now, so history comes from the

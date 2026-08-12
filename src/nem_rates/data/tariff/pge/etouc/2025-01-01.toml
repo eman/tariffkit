@@ -190,24 +190,23 @@ drop_components = ["generation", "bundled_pcia"]
 # because carrying it forward would let that schedule be reissued without
 # anything noticing -- it is live rate data on every CCA price.
 [cca.franchise_fee_vintages]
-2009 = 0.00064
-2010 = 0.00061
-2011 = 0.0006
-2012 = 0.00059
-2013 = 0.00059
-2014 = 0.00059
-2015 = 0.00059
-2016 = 0.00059
-2017 = 0.00059
-2018 = 0.00059
-2019 = 0.00059
-2020 = 0.00059
-2021 = 0.00048
-2022 = 0.00048
-2023 = 0.00047
-2024 = 0.00049
-2025 = 0.00093
-2026 = 0.00093
+2009 = 0.00105
+2010 = 0.00105
+2011 = 0.00105
+2012 = 0.00104
+2013 = 0.00105
+2014 = 0.00105
+2015 = 0.00105
+2016 = 0.00105
+2017 = 0.00105
+2018 = 0.00108
+2019 = 0.00111
+2020 = 0.00111
+2021 = 0.00127
+2022 = 0.00127
+2023 = 0.00129
+2024 = 0.00133
+2025 = 0.0013
 
 # No daily fixed charge on this schedule at this vintage. AB 205's Base
 # Services Charge began 2026-03-01; before it these schedules had none,
