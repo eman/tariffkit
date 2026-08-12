@@ -284,14 +284,65 @@ Two things to know:
   Delivered charge" falls is not: confirming it needs a cycle whose credits
   exceed the charges they may offset, so the cap binds.
 
+## The annual true-up
+
+Closing a year is a separate module, because for a CCA account it is two events
+on two calendars that do not line up:
+
+```python
+from nem_rates.billing import run_ledger, run_true_ups
+
+ledger = run_ledger(bills)
+run_true_ups(ledger.entries, pto_date=config.pto_date, is_cca=True)
+```
+
+|  | MCE Annual Cash-Out | PG&E Relevant Period |
+|---|---|---|
+| Ends | after the **March–April** billing cycle | on the **PTO anniversary** |
+| Fixed for | every customer alike | this account alone |
+| Covers | generation credits | delivery credits, ACC Plus |
+| Pays surplus | yes, at MCE's NSC rate | **no** — a CCA account is barred |
+
+An account with a June PTO date therefore cashes out with MCE in April and
+trues up with PG&E in June, and neither closes the other's bank.
+
+**PG&E pays a CCA account no Net Surplus Compensation at all.** Schedule NBT,
+Special Condition 5.a: net surplus generators receiving "Community Choice
+Aggregation (CCA) Service from a CCA are not eligible to receive NSC from PG&E".
+Applicability is limited to "all bundled Net Surplus Generators". PG&E publishes
+an NSC rate monthly and it is vendored here, but for a CCA account it is a
+stand-in, not the rate that gets paid.
+
+**Credits do not expire**, which is worth saying because the opposite is widely
+repeated. Schedule NBT carries excess credits "forward to the customer's next
+Relevant Period", forfeited only on leaving the tariff; MCE's SBP tariff rolls
+the balance over "indefinitely". The annual reset to zero belongs to NEM 2.0.
+
+Surplus is a **kilowatt-hour** test in both tariffs — exported energy exceeding
+imported energy over the period — not a dollar balance. When it is met, the
+export credit already paid for that energy is reversed at the average export
+credit rate (including MCE's Solar Bonus Credit) so the same kilowatt-hours are
+not paid for twice, and the reversal is charged against the balance first and
+the payment second.
+
+### What is not settled
+
+`TrueUp.verified` is always `False`. Nothing here has been checked against a
+statement, because none exists yet: the first MCE cash-out falls after the
+March–April 2027 cycle and the first PG&E Relevant Period ends 2027-06-03.
+`nem_rates.billing.trueup.OPEN_QUESTIONS` records the two places the tariff text
+supports more than one reading — whether the credit reversal and the NSC rate
+are two steps or one, and whether MCE's $5,000 cap and "NSC + $0.02/kWh" formula
+(both published under its NEM 1.0/2.0 program) carry over to the SBP.
+
+`Config.nsc_rate` is unset by default and the result is marked `estimated`,
+because MCE determines its SBP rate *at* cash-out rather than publishing it in
+advance. The fallback also degrades to the latest published month when the
+true-up month is still in the future, which it will be for the first cash-out.
+
 ## What this does not do
 
-It does **not** model the annual true-up, Net Surplus Compensation, or the credit
-reversal at cash-out. Those need a published NSC rate and the expiry rules for
-unspent credit, neither vendored, and neither checkable against a statement until
-a true-up cycle exists. MCE's program year runs April to March.
-
-Two more known limits:
+Two known limits:
 
 - A **rate change mid-cycle** is not prorated. The Base Services Charge is priced
   from the tariff in force at the start of the cycle; PG&E prorates. Cycles

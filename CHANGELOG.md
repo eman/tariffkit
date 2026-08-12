@@ -6,6 +6,35 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **Annual true-up** (`nem_rates.billing.trueup`), the layer that closes a year
+  on the credit bank. For a CCA account this is two events on two calendars that
+  do not line up: MCE's Annual Cash-Out follows the March-April billing cycle and
+  is the same for every customer, while PG&E's Relevant Period ends on the
+  account's own PTO anniversary. An account with a June PTO date cashes out with
+  MCE in April and trues up with PG&E in June, and neither closes the other's
+  bank; modelling one annual event would be wrong for at least one of them.
+- **PG&E pays a CCA account no Net Surplus Compensation.** Schedule NBT, Special
+  Condition 5.a bars net surplus generators taking CCA service, and applicability
+  is limited to "all bundled Net Surplus Generators". PG&E's published NSC series
+  is vendored as `data/nsc/pge.toml` because it is the only auditable one, but
+  for a CCA account it is a stand-in and results computed from it are flagged
+  `estimated`.
+- **Excess credits carry forward rather than expiring.** Schedule NBT carries
+  them "forward to the customer's next Relevant Period", forfeited only on
+  leaving the tariff; MCE's SBP tariff rolls the balance over "indefinitely". The
+  annual reset to zero that is widely described belongs to NEM 2.0.
+- Surplus is tested in kilowatt-hours, not dollars, per both tariffs. When a
+  customer is a Net Surplus Generator the export credit already paid for that
+  energy is reversed at the average export credit rate including MCE's Solar
+  Bonus Credit, charged against the balance first and the payment second.
+- `Config.nsc_rate` and `NEM_RATES_NSC_RATE`, unset by default because MCE
+  determines its Solar Billing Plan rate at cash-out rather than publishing it in
+  advance. `LedgerEntry` gained `imported_kwh` / `exported_kwh` to carry the
+  surplus test.
+- Nothing in the true-up is reconciled against a statement, so `TrueUp.verified`
+  is always `False`; the first MCE cash-out falls after the March-April 2027
+  cycle. `trueup.OPEN_QUESTIONS` records the two places the tariff text supports
+  more than one reading.
 - **`nem-rates bill --source influx`** reads the raw meter counters from
   InfluxDB 3 over `/api/v3/query_sql`. A cumulative counter's total depends only
   on its endpoints, so this is exact regardless of sampling density: against the
