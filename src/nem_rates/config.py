@@ -98,6 +98,15 @@ class Config:
 
     cca: CcaConfig | None = None
 
+    #: Net Surplus Compensation rate, $/kWh, for the annual true-up.
+    #:
+    #: Left unset because for a CCA account nobody publishes one in advance: MCE
+    #: determines its Solar Billing Plan rate at cash-out. When this is ``None``
+    #: the true-up falls back to PG&E's published series as a stand-in and marks
+    #: the result estimated. Set it once a real cash-out statement says what was
+    #: actually paid.
+    nsc_rate: float | None = None
+
     def __post_init__(self) -> None:
         if self.supplier is Supplier.CCA and self.cca is None:
             raise ConfigError("supplier='cca' requires a CcaConfig")
@@ -173,6 +182,8 @@ class Config:
             overrides["discount"] = value
         if value := os.environ.get("NEM_RATES_BSC_TIER"):
             overrides["base_services_charge_tier"] = int(value)
+        if value := os.environ.get("NEM_RATES_NSC_RATE"):
+            overrides["nsc_rate"] = float(value)
         return replace(config, **overrides) if overrides else config
 
     @classmethod

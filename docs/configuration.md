@@ -156,6 +156,22 @@ environment variables, then `--ha-import-entity` / `--ha-export-entity`.
 `HA_TOKEN` is deliberately never read from the config file, which is not
 gitignored.
 
+## Net Surplus Compensation
+
+`nsc_rate` ($/kWh) is the rate used at the annual true-up. It is **unset by
+default and should usually stay that way** until a cash-out statement exists:
+
+```toml
+nsc_rate = 0.031
+```
+
+MCE determines its Solar Billing Plan rate *at* cash-out and does not publish it
+in advance, so there is no correct value to pre-fill. Left unset, the true-up
+falls back to PG&E's published series (vendored, monthly) and marks the result
+`estimated`. That series is PG&E's rate for **bundled** customers — a CCA account
+is not eligible for PG&E NSC at all — so treat the fallback as an order-of-
+magnitude stand-in, not a forecast. Also settable as `NEM_RATES_NSC_RATE`.
+
 ## InfluxDB
 
 Only needed for `nem-rates bill --source influx`. Same split as above: series
