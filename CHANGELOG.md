@@ -23,6 +23,43 @@ All notable changes to this project are documented here. This project follows
   alongside the tests for the other two sources.
 
 ### Added
+- **`nem_rates.regen`**, shipped inside the package and reachable as
+  `nem-rates regen`, rebuilds every vendored dataset from what publishers
+  publish. It replaces the two scripts under `tools/`, which were sdist-only: a
+  released wheel that carries rates its user cannot refresh is only useful until
+  the next advice letter.
+- Four datasets, each with a check that has to pass before anything is written.
+  `tariff` reads a utility's retail sheets and proves the unbundled components
+  sum to the sheet's own published totals, then hands the rendered file to a real
+  `RetailTariff` and compares the price it computes. `accplus` reads the export
+  tariff's adder table and reads it back through the library. `cca` reads a CCA's
+  generation rate card. `export` collapses the hourly export archive, verified
+  cell by cell.
+- **CCA rate cards are no longer hand-transcribed.** A CCA supplies generation
+  only, so its card is one rate per schedule, season and period. Every MCE value
+  currently equals PG&E's generation component exactly, but the card is still
+  extracted and stored separately and regeneration *reports* the parity rather
+  than requiring it — deriving one from the other would be less code and would
+  silently produce wrong prices the day MCE moves. Schedules a card lists but the
+  library does not vendor are skipped and named.
+- **Publishers are declared, not hard-coded.** `nem_rates.regen.providers` holds
+  every publisher-specific fact; PG&E is not the only utility and MCE is not the
+  only CCA, so adding either is a registry entry rather than a parser change.
+  A source also records whether a script can fetch it, because publishers differ
+  arbitrarily: MCE's CDN answers urllib and curl with 403 whatever headers they
+  send, and answers httpx with 200 and the file, so the fetcher tries httpx
+  first. A source that genuinely cannot be fetched is skipped with a note rather
+  than failed — unknown, not stale — and regenerates from a file supplied with
+  `--pdf`.
+- A document with no text layer is diagnosed rather than reported as an empty
+  table. MCE's current rate card is a print-to-PDF export whose font maps six
+  characters to Unicode: every figure is a glyph id with no character behind it,
+  so no parser can reach them. The page still renders, so the table can be read
+  from it and the values entered by hand, which is what the message now says --
+  the distinction is between "no automated extraction" and "no data", and only
+  the first is true. Their 2023 card extracts exactly, which is what the CCA
+  extractor is tested against.
+
 - **Annual true-up** (`nem_rates.billing.trueup`), the layer that closes a year
   on the credit bank. For a CCA account this is two events on two calendars that
   do not line up: MCE's Annual Cash-Out follows the March-April billing cycle and
@@ -183,6 +220,27 @@ All notable changes to this project are documented here. This project follows
 - `forecast --format table` rendered the autumn transition as
   `01:00 PDT - 01:00`, a seemingly zero-length hour, because only the start
   carried `%Z`.
+
+- `cca/mce.toml` now records **how** its values were obtained and which are
+  independently confirmed. They were read visually from the rendered rate card
+  on 2026-08-01 rather than parsed, so a transcription slip has no automatic
+  check behind it the way a PG&E sheet does. Three of the sixteen -- summer
+  E-ELEC peak, part-peak and off-peak -- reconcile against the July 2026
+  statement; the other thirteen, including every winter rate, do not, and winter
+  first applies in October 2026. The previous header cited the source URL
+  without distinguishing the two.
+- A new `regen` extra carries `pypdf`. The library itself never opens a PDF.
+- The weekly job now checks all four datasets rather than export rates alone,
+  and reports each independently so the first failure does not hide the second.
+- **The three tariff snapshots are now dated from the sheet that carries the
+  rates**, not the latest date in the tariff book. A tariff book reissues pages
+  independently: on all three schedules the totals page is Advice 7921-E
+  effective 2026-06-01 while the unbundled rate table is 7846-E effective
+  2026-03-01, and the two reconcile exactly, so those values have been in force
+  since March. Hand transcription had reached both answers from the same
+  evidence — E-ELEC and E-TOU-C dated June, EV2-A March. Every rate value is
+  unchanged; what changes is that April and May 2026 now price instead of
+  raising "no snapshot effective on or before".
 
 ### Changed
 - The EV2-A snapshot is dated from the 2026-03-01 Base Services Charge

@@ -88,9 +88,9 @@ def test_season_boundaries(
 def test_dates_before_the_earliest_vendored_sheet_refuse_to_price(
     tariff: RetailTariff,
 ) -> None:
-    """Better to raise than to back-date June's rates onto March."""
+    """Better to raise than to back-date a snapshot onto an earlier month."""
     with pytest.raises(Exception, match="no snapshot effective"):
-        tariff.price_at(pt(2026, 3, 1, 12))
+        tariff.price_at(pt(2026, 2, 28, 12))
 
 
 def test_summer_peak_price(tariff: RetailTariff) -> None:
@@ -111,8 +111,14 @@ def test_winter_peak_price(tariff: RetailTariff) -> None:
 
 
 def test_effective_dated_snapshot_selection() -> None:
-    """A date before the June sheet must not silently use June's rates."""
-    assert load_snapshot("PGE", "E-ELEC", date(2026, 7, 1)).effective == date(2026, 6, 1)
+    """A date before the earliest sheet must not silently borrow its rates.
+
+    The snapshot is dated from the sheet carrying the unbundled rate table
+    (Advice 7846-E, effective 2026-03-01), not from the later reissue of the
+    totals page; see tools/regen_tariff.py::pick_effective.
+    """
+    assert load_snapshot("PGE", "E-ELEC", date(2026, 7, 1)).effective == date(2026, 3, 1)
+    assert load_snapshot("PGE", "E-ELEC", date(2026, 4, 15)).effective == date(2026, 3, 1)
     with pytest.raises(Exception, match="no snapshot effective"):
         load_snapshot("PGE", "E-ELEC", date(2020, 1, 1))
 

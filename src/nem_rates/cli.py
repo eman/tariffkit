@@ -94,6 +94,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mqtt.add_argument("--once", action="store_true", help="publish once and exit")
 
+    regen = sub.add_parser(
+        "regen",
+        help="rebuild the vendored rate data from what publishers publish",
+    )
+    regen.add_argument(
+        "dataset",
+        nargs="?",
+        default="all",
+        choices=("all", "tariff", "accplus", "cca", "export"),
+        help="which dataset to rebuild (default: all)",
+    )
+    regen.add_argument(
+        "--provider",
+        help="limit to one utility, schedule or CCA (e.g. pge, eelec, mce)",
+    )
+    regen.add_argument(
+        "--pdf",
+        type=Path,
+        help="use a local document instead of downloading; required for publishers "
+        "that block scripted fetches",
+    )
+    regen.add_argument(
+        "--check",
+        action="store_true",
+        help="report whether the vendored data is stale without writing anything",
+    )
+    regen.add_argument("--refresh", action="store_true", help="ignore the download cache")
+
     serve = sub.add_parser("serve", help="run the REST API")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
@@ -311,6 +339,32 @@ def main(argv: list[str] | None = None) -> int:
                 _print_bill(result)
                 if note:
                     print(note)
+            return 0
+
+        if args.command == "regen":
+            from . import regen as regen_mod
+
+            datasets = list(regen_mod.DATASETS) if args.dataset == "all" else [args.dataset]
+            changed = failed = False
+            for dataset in datasets:
+                if dataset == "export":
+                    print("export: run nem_rates.regen.export directly; it reads a 843 MB archive")
+                    continue
+                for outcome in regen_mod.run(
+                    dataset,
+                    provider=args.provider,
+                    pdf=args.pdf,
+                    check=args.check,
+                    refresh=args.refresh,
+                ):
+                    outcome.report()
+                    changed |= outcome.changed
+                    failed |= outcome.failed
+            if failed:
+                return 2
+            if args.check and changed:
+                print("\nvendored rate data is stale; rerun without --check to update")
+                return 1
             return 0
 
         if args.command == "mqtt":

@@ -1,0 +1,435 @@
+"""Rebuilding the vendored rate data from published documents.
+
+The extraction functions take text, not PDFs, so everything here runs on
+fragments copied verbatim from the three sheets rather than on a vendored
+binary. What it pins is the ways the three schedules differ from one another --
+column counts, season-row layouts, wrapped labels -- since those are what a
+parser written against one sheet gets wrong on the next.
+"""
+
+from __future__ import annotations
+
+from datetime import date
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("pypdf")
+
+from nem_rates.regen import accplus, cca, sheets
+from nem_rates.regen import tariff as rt
+from nem_rates.regen.sheets import ExtractionError
+
+# Verbatim from Schedule E-ELEC Sheet 3.
+EELEC_UNBUNDLED = """UNBUNDLING OF TOTAL RATES |
+Energy Rates by Component ($ per kWh) PEAK PART-PEAK OFF-PEAK |
+Generation: |
+Summer Usage $0.26299  $0.16388  $0.11878  |
+Winter Usage $0.10086  $0.08089  $0.06754  |
+Distribution**: |
+Summer Usage $0.23199 (I) $0.16922 (I) $0.15764 (I) |
+Winter Usage $0.16261 (I) $0.16049 (I) $0.15998 (I) |
+Transmission* (all usage) $0.04638  $0.04638  $0.04638  |
+Nuclear Decommissioning (all usage) ($0.00002)  ($0.00002)  ($0.00002)  |
+Bundled Power Charge Indifference
+Adjustment (all usage)***
+($0.01011)  ($0.01011)  ($0.01011)  (L)
+"""
+
+# Verbatim from Schedule E-TOU-C Sheet 3: two columns, different season labels.
+ETOUC_UNBUNDLED = """UNBUNDLING OF E-TOU-C TOTAL RATES
+Energy Rates by Component ($ per kWh) PEAK OFF-PEAK
+Generation:
+Summer (all usage) $0.20782   $0.10482
+Winter (all usage) $0.13710   $0.11042
+Distribution**:
+Summer (all usage) $0.20388  (R) $0.18388  (R)
+Winter (all usage) $0.14977  (R) $0.14645  (R)
+Conservation Incentive Adjustment (Baseline Usage) ($0.02786) (I)
+Conservation Incentive Adjustment (Over Baseline Usage) $0.05354 (R)
+Transmission* (all usage) $0.04638
+"""
+
+# E-ELEC/EV2-A put the season on the rate line...
+EELEC_TOTALS = """TOTAL BUNDLED RATES
+Total Energy Rates ($ per kWh) PEAK PART-PEAK OFF-PEAK
+Summer Usage $0.55214 (R) $0.39026 (R) $0.33358 (R)
+Winter Usage $0.32063 (R) $0.29854 (R) $0.28468 (R)
+Base Services Charge Rates ($ per customer per day)
+Income Tier 1 $0.19713 (N)
+Income Tier 2 $0.39688 (N)
+Income Tier 3 $0.79343 (N)
+"""
+
+# ...E-TOU-C puts it on a line of its own, above a "Total Usage" row.
+ETOUC_TOTALS = """Total Energy Rates ($ per kWh) PEAK OFF-PEAK
+Summer
+Total Usage $0.52240 (R) $0.39940 (R)
+Baseline Credit (Applied to Baseline Usage Only) ($0.08140) (I) ($0.08140) (I)
+Winter
+Total Usage $0.39757 (R) $0.36757 (R)
+Baseline Credit (Applied to Baseline Usage Only) ($0.08140) (I) ($0.08140) (I)
+Base Services Charge Rates ($ per customer per day)
+Income Tier 1 $0.19713 (N)
+Income Tier 2 $0.39688 (N)
+Income Tier 3 $0.79343 (N)
+"""
+
+BASELINE_QUANTITIES = """BASELINE QUANTITIES (kWh PER DAY) |
+Territory* Tier 1 Tier 1 Tier 1 Tier 1 |
+P 13.5 (R) 11.0 (R) 15.2 (R) 26.0 (R) |
+Q 9.8 (R) 11.0 (R) 8.5 (R) 26.0 (R) |
+Z 5.9 (R) 7.8 (R) 6.7 (R) 15.7 (R) |
+"""
+
+
+def sheet(text: str, number: int = 3, advice: str = "7846-E", eff: date | None = None) -> rt.Sheet:
+    return sheets.Page(
+        index=0,
+        sheet_number=number,
+        advice_letter=advice,
+        effective=eff or date(2026, 3, 1),
+        text=text,
+    )
+
+
+class TestCells:
+    def test_a_parenthesised_value_is_negative(self) -> None:
+        assert sheets.cells("($0.00002)") == [-0.00002]
+
+    def test_change_markers_are_not_values(self) -> None:
+        # (I)/(R)/(N)/(L) mark increased/reduced/new/left-unchanged, not money.
+        assert sheets.cells("$0.23199 (I) $0.16922 (R)") == [0.23199, 0.16922]
+
+    def test_a_row_of_three(self) -> None:
+        assert sheets.cells("$0.04638  $0.04638  $0.04638") == [0.04638] * 3
+
+
+class TestLabels:
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("Transmission* (all usage)", "transmission"),
+            ("New System Generation Charge (all usage)**", "new system generation charge"),
+            ("Recovery Bond Credit (all usage)", "recovery bond credit"),
+        ],
+    )
+    def test_footnotes_and_qualifiers_are_stripped(self, raw: str, expected: str) -> None:
+        assert sheets.clean_label(raw) == expected
+
+    def test_a_wrapped_label_is_joined_to_its_values(self) -> None:
+        # The EV2-A and E-ELEC sheets wrap this one across three lines.
+        lines = dict(sheets.rate_lines(EELEC_UNBUNDLED))
+        assert any("Indifference" in label for label in lines)
+        assert any(v == [-0.01011] * 3 for v in lines.values())
+
+
+class TestUnbundled:
+    def test_three_column_schedule(self) -> None:
+        periods, energy, adders = rt.extract_unbundled(sheet(EELEC_UNBUNDLED))
+        assert periods == ["peak", "part_peak", "off_peak"]
+        assert energy["summer"]["peak"] == {"generation": 0.26299, "distribution": 0.23199}
+        assert energy["winter"]["off_peak"]["generation"] == 0.06754
+        assert adders["transmission"] == 0.04638
+        assert adders["nuclear_decommissioning"] == -0.00002
+        assert adders["bundled_pcia"] == -0.01011
+
+    def test_two_column_schedule_has_no_part_peak(self) -> None:
+        # E-TOU-C genuinely has no part-peak; inventing one would misprice it.
+        periods, energy, _ = rt.extract_unbundled(sheet(ETOUC_UNBUNDLED))
+        assert periods == ["peak", "off_peak"]
+        assert set(energy["summer"]) == {"peak", "off_peak"}
+        assert energy["summer"]["peak"]["distribution"] == 0.20388
+
+    def test_generation_and_distribution_are_not_confused(self) -> None:
+        # Both sections use the same "Summer Usage" label, so only the section
+        # header above them tells the two apart.
+        _, energy, _ = rt.extract_unbundled(sheet(EELEC_UNBUNDLED))
+        assert energy["summer"]["peak"]["generation"] != energy["summer"]["peak"]["distribution"]
+
+    def test_a_column_count_mismatch_is_an_error(self) -> None:
+        broken = EELEC_UNBUNDLED.replace("$0.26299  $0.16388  $0.11878", "$0.26299  $0.16388")
+        with pytest.raises(ExtractionError, match="values for"):
+            rt.extract_unbundled(sheet(broken))
+
+
+class TestTotals:
+    def test_season_on_the_rate_line(self) -> None:
+        got = rt.extract_totals([sheet(EELEC_TOTALS, number=2)], ["peak", "part_peak", "off_peak"])
+        assert got["summer"]["peak"] == 0.55214
+        assert got["winter"]["off_peak"] == 0.28468
+
+    def test_season_on_its_own_line_above_a_total_usage_row(self) -> None:
+        got = rt.extract_totals([sheet(ETOUC_TOTALS, number=2)], ["peak", "off_peak"])
+        assert got["summer"] == {"peak": 0.52240, "off_peak": 0.39940}
+        assert got["winter"] == {"peak": 0.39757, "off_peak": 0.36757}
+
+    def test_the_baseline_credit_row_is_not_mistaken_for_a_total(self) -> None:
+        got = rt.extract_totals([sheet(ETOUC_TOTALS, number=2)], ["peak", "off_peak"])
+        assert all(v > 0 for by_period in got.values() for v in by_period.values())
+
+    def test_a_sheet_without_both_seasons_is_an_error(self) -> None:
+        half = ETOUC_TOTALS.split("Winter")[0]
+        with pytest.raises(ExtractionError, match="expected summer and winter"):
+            rt.extract_totals([sheet(half, number=2)], ["peak", "off_peak"])
+
+
+class TestBaseServicesCharge:
+    def test_three_income_tiers(self) -> None:
+        got = rt.extract_base_services_charge([sheet(EELEC_TOTALS, number=2)])
+        assert got == {"tier_1": 0.19713, "tier_2": 0.39688, "tier_3": 0.79343}
+
+
+class TestBaseline:
+    def test_the_credit_is_the_spread_between_the_two_cia_rates(self) -> None:
+        # The sheet never prints the credit as one number in this table; the
+        # bill does. 0.05354 - (-0.02786) = 0.08140, which the totals page then
+        # confirms as "Baseline Credit ($0.08140)".
+        adders: dict[str, float] = {}
+        got = rt.extract_baseline([sheet(ETOUC_UNBUNDLED)], adders)
+        assert got["within_rate"] == -0.02786
+        assert got["over_rate"] == 0.05354
+        assert got["credit"] == pytest.approx(0.08140)
+        assert adders["conservation_incentive_adjustment"] == 0.05354
+
+    def test_quantities_split_basic_from_all_electric(self) -> None:
+        adders: dict[str, float] = {}
+        got = rt.extract_baseline([sheet(ETOUC_UNBUNDLED + BASELINE_QUANTITIES)], adders)
+        assert got["quantities"]["basic"]["P"] == {"summer": 13.5, "winter": 11.0}
+        assert got["quantities"]["all_electric"]["P"] == {"summer": 15.2, "winter": 26.0}
+        assert got["quantities"]["all_electric"]["Z"]["winter"] == 15.7
+
+    def test_a_schedule_without_a_baseline_yields_nothing(self) -> None:
+        assert rt.extract_baseline([sheet(EELEC_UNBUNDLED)], {}) == {}
+
+
+class TestVerify:
+    def build(self, adders: dict[str, float]) -> rt.Extracted:
+        return rt.Extracted(
+            periods=["peak"],
+            energy={"summer": {"peak": {"generation": 0.5, "distribution": 0.4}}},
+            adders=adders,
+            totals={"summer": {"peak": 1.0}},
+        )
+
+    def test_reconciling_components_pass(self) -> None:
+        assert rt.verify(self.build({"transmission": 0.1})) == []
+
+    def test_a_shortfall_is_reported_with_both_figures(self) -> None:
+        problems = rt.verify(self.build({"transmission": 0.05}))
+        assert len(problems) == 1
+        assert "0.95000" in problems[0] and "1.00000" in problems[0]
+
+    def test_the_conservation_incentive_adjustment_counts_toward_the_total(self) -> None:
+        # E-TOU-C's published total is the over-baseline price, so excluding the
+        # CIA left every cell short by exactly its value.
+        assert rt.verify(self.build({"conservation_incentive_adjustment": 0.1})) == []
+
+    def test_a_missing_total_is_reported_rather_than_skipped(self) -> None:
+        data = self.build({"transmission": 0.1})
+        data.totals = {}
+        assert "no published total" in rt.verify(data)[0]
+
+
+class TestPickEffective:
+    def test_the_sheet_carrying_the_rates_wins_over_a_later_reissue(self) -> None:
+        # All three schedules reissued their totals page as 7921-E effective
+        # 2026-06-01 while the unbundled table stayed 7846-E effective
+        # 2026-03-01. Dating the snapshot June would leave April unpriceable.
+        data = rt.Extracted(periods=["peak"])
+        data.rates_effective = date(2026, 3, 1)
+        data.provenance = [(2, "7921-E", date(2026, 6, 1)), (3, "7846-E", date(2026, 3, 1))]
+        assert rt.pick_effective(data) == date(2026, 3, 1)
+
+    def test_an_undated_sheet_is_an_error_rather_than_today(self) -> None:
+        with pytest.raises(ExtractionError, match="no effective date"):
+            rt.pick_effective(rt.Extracted(periods=["peak"]))
+
+
+def test_every_vendored_snapshot_still_reconciles() -> None:
+    """The invariant the generator enforces must hold for what is committed."""
+    import tomllib
+
+    root = Path(__file__).resolve().parent.parent / "src" / "nem_rates" / "data" / "tariff" / "pge"
+    files = sorted(root.rglob("*.toml"))
+    assert files, "no vendored tariff snapshots found"
+    for path in files:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        flat = sum(data["adders"].values())
+        for season, by_period in data["energy"].items():
+            for period, components in by_period.items():
+                got = sum(components.values()) + flat
+                want = data["totals"][season][period]
+                assert got == pytest.approx(want, abs=5e-6), f"{path.name} {season}.{period}"
+
+
+# Verbatim from MCE's residential rate card.
+MCE_CARD = """MCE Light Green Residential Rates
+(Rates effective 1.1.23)
+E1, EM, ES, ESR, ET - Basic Residential
+$0.149/kWh
+ETOUC - Default Residential Time-of-Use
+Summer - Service June 1 through September 30
+Peak $0.195/kWh 4 P.M. to 9 P.M. every day
+Off Peak $0.144/kWh All other hours
+Winter - Service October 1 through May 31
+Peak $0.149/kWh 4 P.M. to 9 P.M. every day
+Off Peak $0.135/kWh All other hours
+ETOUD - Residential Time-of-Use
+Summer - Service June 1 through September 30
+Peak $0.224/kWh 5 P.M. to 8 P.M. Monday through Friday
+Off Peak $0.124/kWh All other hours including holidays**
+Winter - Service October 1 through May 31
+Peak $0.185/kWh 5 P.M. to 8 P.M. Monday through Friday
+Off Peak $0.152/kWh All other hours including holidays**
+ELEC - Residential Time-of-Use for Qualified Eletric Technologies
+Summer - Service June 1 through September 30
+Peak $0.301/kWh 4 P.M. to 9 P.M. every day
+Part-Peak $0.199/kWh 3 P.M. to 4 P.M. and 9 P.M. to 12 A.M. every day
+Off Peak $0.152/kWh All other hours
+Winter - Service October 1 through May 31
+Peak $0.134/kWh 4 P.M. to 9 P.M. every day
+Part-Peak $0.113/kWh 3 P.M. to 4 P.M. and 9 P.M. to 12 A.M. every day
+Off Peak $0.099/kWh All other hours
+CLOSED rates
+ETOUB - Residential Time-of-Use (Closed to new enrollments)
+Summer - Service June 1 through September 30
+Peak $0.999/kWh 4 P.M. to 9 P.M. every day
+Off Peak $0.888/kWh All other hours
+"""
+
+ALIASES = {"ELEC": "eelec", "ETOUC": "etouc", "EV2": "ev2a"}
+
+
+class TestCcaRateCard:
+    def extract(self) -> tuple[dict, list[str]]:
+        return cca.extract_generation([sheet(MCE_CARD)], ALIASES)
+
+    def test_periods_are_read_per_schedule_and_season(self) -> None:
+        generation, _ = self.extract()
+        assert generation["eelec"]["summer"] == {
+            "peak": 0.301,
+            "part_peak": 0.199,
+            "off_peak": 0.152,
+        }
+        assert generation["etouc"]["winter"] == {"peak": 0.149, "off_peak": 0.135}
+
+    def test_a_schedule_with_no_part_peak_gets_none(self) -> None:
+        generation, _ = self.extract()
+        assert "part_peak" not in generation["etouc"]["summer"]
+
+    def test_unvendored_schedules_are_skipped_and_named(self) -> None:
+        # Silently dropping them would hide a schedule becoming relevant.
+        _, skipped = self.extract()
+        assert "ETOUD" in skipped
+
+    def test_closed_schedules_are_not_priced(self) -> None:
+        # Closed to new enrolment; including them would overwrite a live rate.
+        generation, skipped = self.extract()
+        assert not any(
+            0.9 < r < 1.0 for s in generation.values() for p in s.values() for r in p.values()
+        )
+        assert "ETOUB" not in skipped
+
+    def test_an_implausible_rate_is_an_error(self) -> None:
+        broken = MCE_CARD.replace("Peak $0.195/kWh", "Peak $19.5/kWh")
+        with pytest.raises(ExtractionError, match="plausible"):
+            cca.extract_generation([sheet(broken)], ALIASES)
+
+    def test_mismatched_period_sets_between_seasons_are_reported(self) -> None:
+        generation, _ = self.extract()
+        generation["etouc"]["winter"].pop("off_peak")
+        assert "misread" in cca.verify(generation)[0]
+
+    def test_the_card_dates_itself(self) -> None:
+        assert sheets.parse_effective(MCE_CARD) == date(2023, 1, 1)
+
+
+# Verbatim from PG&E Schedule NBT, ACC Plus table.
+ACC_PLUS_TABLE = """Adopted Avoided Cost Calculator Plus Adder (ACC Plus)
+Customer
+Segment
+2023
+$/kWh
+2024
+$/kWh
+2025
+$/kWh
+2026
+$/kWh
+2027
+$/kWh
+Residential 0.02200 0.01760 0.01320 0.00880 0.00440
+Residential
+Low
+Income
+0.09000 0.07200 0.05400 0.03600 0.01800
+Non-
+Residential
+Not Eligible
+
+The adder will decrease by 20 percent annually, for newly enrolled tariff
+"""
+
+
+class TestAccPlus:
+    def test_both_customer_segments(self) -> None:
+        got = accplus.extract([sheet(ACC_PLUS_TABLE)])
+        assert got["residential"] == {
+            2023: 0.02200,
+            2024: 0.01760,
+            2025: 0.01320,
+            2026: 0.00880,
+            2027: 0.00440,
+        }
+        assert got["residential_low_income"][2026] == 0.03600
+
+    def test_the_longer_segment_name_wins(self) -> None:
+        # "residential" is a substring of "residentiallowincome", so matching in
+        # declaration order files the low-income row under residential and then
+        # drops it as a duplicate.
+        got = accplus.extract([sheet(ACC_PLUS_TABLE)])
+        assert got["residential"][2023] != got["residential_low_income"][2023]
+
+    def test_a_wrapped_segment_label_is_joined_to_its_figures(self) -> None:
+        got = accplus.extract([sheet(ACC_PLUS_TABLE)])
+        assert len(got["residential_low_income"]) == 5
+
+    def test_trailing_prose_is_not_read_as_a_row(self) -> None:
+        got = accplus.extract([sheet(ACC_PLUS_TABLE)])
+        assert set(got) == {"residential", "residential_low_income"}
+
+    def test_a_missing_segment_is_an_error(self) -> None:
+        half = ACC_PLUS_TABLE.split("Residential\nLow")[0]
+        with pytest.raises(ExtractionError, match="residential_low_income"):
+            accplus.extract([sheet(half)])
+
+
+class TestRefusesToGuess:
+    def test_a_rider_that_differs_by_period_is_an_error(self) -> None:
+        # [adders] holds one scalar per rider because they have always been
+        # equal across periods. Taking the first column silently would misprice
+        # the day that stops being true.
+        broken = EELEC_UNBUNDLED.replace(
+            "Transmission* (all usage) $0.04638  $0.04638  $0.04638",
+            "Transmission* (all usage) $0.04638  $0.05000  $0.04638",
+        )
+        with pytest.raises(ExtractionError, match="differs by period"):
+            rt.extract_unbundled(sheet(broken))
+
+    def test_a_rider_equal_across_periods_is_fine(self) -> None:
+        _, _, adders = rt.extract_unbundled(sheet(EELEC_UNBUNDLED))
+        assert adders["transmission"] == 0.04638
+
+    def test_a_sheet_with_no_advice_letter_is_refused(self) -> None:
+        # Inheriting the previous snapshot's would make the emitted file claim a
+        # revision it was not built from, which looks authoritative and is wrong.
+        data = rt.Extracted(periods=["peak"])
+        data.rates_effective = date(2026, 3, 1)
+        with pytest.raises(ExtractionError, match="no advice letter"):
+            rt.require_provenance(data)
+
+    def test_a_sheet_with_an_advice_letter_passes(self) -> None:
+        data = rt.Extracted(periods=["peak"])
+        data.rates_advice = "7846-E"
+        rt.require_provenance(data)

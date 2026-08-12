@@ -304,6 +304,6 @@ class TestCcaExport:
 def test_describe_reports_provenance(engine: RateEngine) -> None:
     info = engine.describe()
     assert info["export_vintage"] == "NBT26"
-    assert info["tariff_effective"] == "2026-06-01"
-    assert info["tariff_advice_letter"] == "7921-E"
+    assert info["tariff_effective"] == "2026-03-01"
+    assert info["tariff_advice_letter"] == "7846-E"
     assert info["lock_end"] == "2035-06-02"
