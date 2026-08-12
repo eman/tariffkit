@@ -108,7 +108,11 @@ def load(relative: str, on: date, *, label: str | None = None) -> Version:
     return applicable[-1]
 
 
-def coverage(relative: str) -> tuple[date, date | None]:
-    """``(earliest effective, latest effective)`` for a dataset."""
+def coverage(relative: str) -> tuple[date, date]:
+    """``(earliest effective, latest effective)`` for a dataset.
+
+    Both are always real dates: ``versions`` raises rather than returning an
+    empty tuple, so there is no dataset whose span is open at either end.
+    """
     available = versions(relative)
     return available[0].effective, available[-1].effective

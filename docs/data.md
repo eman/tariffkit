@@ -32,7 +32,7 @@ Every vendored file maps to one of these:
 |---|---|
 | `tariff/<utility>/<schedule>/*.toml` | `tariff` |
 | `export/<utility>/nbt*.json.gz`, `holidays.toml`, `manifest.json` | `export` |
-| `export/<utility>/acc_plus.toml` | `accplus` |
+| `export/<utility>/acc_plus/*.toml` | `accplus` |
 | `nsc/<utility>.toml` | `nsc` |
 | `cca/<provider>/*.toml` | `cca` |
 | `tax/<surcharge>/*.toml` | `tax` |
@@ -242,8 +242,8 @@ generator exists to remove.
 
 ## ACC Plus and CCA rate cards: automated
 
-`export/<utility>/acc_plus.toml` comes from the utility's export tariff, and
-`cca/<provider>.toml` from that CCA's residential rate card.
+`export/<utility>/acc_plus/*.toml` comes from the utility's export tariff, and
+`cca/<provider>/*.toml` from that CCA's residential rate card.
 
 A CCA supplies generation only, so its card is one rate per schedule, season and
 time-of-use period. Every MCE value currently equals PG&E's generation component

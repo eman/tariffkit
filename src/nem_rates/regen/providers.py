@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .sheets import ExtractionError
+
 #: Where a utility files a rate change. An advice letter carries the sheets it
 #: revises, so it is how a superseded vintage is recovered: the tariff book only
 #: ever serves what is current.
@@ -161,6 +163,16 @@ class Tax:
 
     @property
     def latest_notice(self) -> str:
+        if not self.notices:
+            # Reached by adding a surcharge to the registry and not the notice
+            # that publishes its rate. `regen tax` falls back to this when no
+            # --notice is passed, so the bare IndexError would surface far from
+            # the omission that caused it.
+            raise ExtractionError(
+                f"{self.key} lists no notices, so there is nothing to regenerate from; "
+                f"add the notice number to its 'notices' in regen/providers.py, "
+                f"or pass --notice to name one directly"
+            )
         return self.notices[-1]
 
     def url_for(self, notice: str) -> str:

@@ -68,31 +68,34 @@ round-trips the new matrices against known-good rows sampled from PG&E's own
 files (including both DST transitions and a holiday), so a bad collapse fails
 loudly rather than shipping silently.
 
-### Retail tariff (E-ELEC), ACC Plus, and CCA rate cards: manual
+### Retail tariffs, ACC Plus, CCA cards, NSC, and the state surcharge: `nem-rates regen`
 
-`src/nem_rates/data/tariff/pge/eelec/*.toml`, `export/pge/acc_plus.toml`, and
-`cca/*.toml` are **hand-transcribed** from PG&E/CCA tariff PDFs. There is no
-script for these because PG&E does not publish them as machine-readable data.
-When a new advice letter or rate card changes these numbers:
+`src/nem_rates/data/{tariff,export/*/acc_plus,cca,nsc,tax}/**.toml` are
+**generated** from published documents by `nem_rates.regen`. Do not hand-edit
+them; each names the document it came from in a header comment.
 
-1. Add a **new dated file** rather than editing the current one, e.g. a new
-   `src/nem_rates/data/tariff/pge/eelec/YYYY-MM-DD.toml` with the new
-   `effective` date and `advice_letter`. `EelecTariff`/`load_snapshot` picks
-   the latest snapshot whose `effective` date is on or before the priced
-   moment, so old snapshots (and old bills) keep resolving to the rate that
-   was actually in force.
-2. Transcribe each unbundled component from the tariff sheet, then fill in
-   `[totals]` from the sheet's own published totals. `tests/test_eelec.py::test_components_sum_to_published_total`
-   asserts the components sum to the total, which is what catches a
-   transcription slip.
-3. For a CCA rate card (e.g. `mce.toml`), cite the source URL/PDF in a
-   comment, and update `tests/test_mce.py` (or add an equivalent test) to
-   pin the new values, ideally reconciled against a real bill, as the
-   existing MCE tests do.
-4. Run the relevant tests (`uv run pytest tests/test_eelec.py tests/test_mce.py`)
-   and update any hardcoded expected totals elsewhere (`tests/test_engine.py`,
-   `tests/test_integrations.py`, `tests/test_mqtt_publisher.py` all assert
-   specific dollar figures derived from the current vendored data).
+```bash
+nem-rates regen                                # rebuild every dataset from live documents
+nem-rates regen --check                        # exit 1 if a publisher moved, writing nothing
+nem-rates regen tariff --for-date 2025-12-15   # rebuild a superseded vintage
+```
+
+Nothing is written unless the rendered file survives being read back by the
+library code that will consume it. A generator writes key names and the library
+reads them with a second, independent set of literals — two encodings of one
+schema — so the check is what keeps them from drifting apart silently.
+
+Rates are **effective-dated**: a dataset is a directory of `<effective>.toml`,
+and `nem_rates.data.versioned` resolves the version in force on a date — the
+latest effective on or before it, raising rather than borrowing when a date
+predates every vintage. Add a new dated file rather than editing the current
+one, or old bills silently reprice at today's rates.
+
+`RetailTariff` / `load_snapshot` (`src/nem_rates/tariff/retail.py`) read those
+snapshots. After vendored data changes, run `uv run pytest` in full:
+`tests/test_engine.py`, `tests/test_integrations.py` and
+`tests/test_mqtt_publisher.py` all assert specific dollar figures derived from
+it, and a CCA card should be reconciled against a real bill as the MCE tests do.
 
 ## High-level architecture
 

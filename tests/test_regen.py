@@ -860,3 +860,25 @@ class TestFilingScanWidening:
         regen._filing_for_date("eelec", date(2024, 6, 1), tmp_path, None, True)
 
         assert [refresh for _, _, refresh in passes] == [True, False, False]
+
+
+class TestRegistryOmissions:
+    """A provider registered without the document that publishes its rate."""
+
+    def test_a_tax_with_no_notices_says_what_is_missing(self) -> None:
+        # `regen tax` falls back to latest_notice when no --notice is passed, so
+        # a bare IndexError here would surface far from the omission causing it.
+        bare = providers.Tax(
+            key="nowhere",
+            name="A surcharge nobody filed a notice for",
+            jurisdiction="XX",
+            notice_url="https://example.invalid/{notice}.pdf",
+        )
+        with pytest.raises(ExtractionError) as caught:
+            _ = bare.latest_notice
+        message = str(caught.value)
+        assert "lists no notices" in message
+        assert "--notice" in message
+
+    def test_a_registered_tax_still_resolves_its_latest(self) -> None:
+        assert providers.CA_ENERGY_RESOURCES.latest_notice == "L-1020"
