@@ -5,6 +5,23 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+- **The CSV reader moved to `nem_rates.sources.greenbutton` and is named for the
+  format it reads.** It sat in `nem_rates.billing.ingest` while the other two
+  sources lived in `nem_rates.sources`, on the reasoning that it had no optional
+  dependency to isolate. That was the wrong organising principle: what a module
+  reads is more useful than what it happens to import, and the one file-based
+  source was the hardest to find. `read_csv` is now `read_green_button` and
+  `CsvLayout` is `GreenButtonLayout`, both exported from `nem_rates.sources`
+  rather than `nem_rates.billing`.
+- `--source csv` is now `--source green-button`. "CSV" named a container rather
+  than a format and could have meant any of several exports; Green Button is the
+  industry standard PG&E publishes under "Download my data", and naming it also
+  makes explicit that this reads the **CSV** form and not the ESPI/XML one. The
+  old spelling still works.
+- The Green Button parsing tests moved to `tests/test_sources_greenbutton.py`,
+  alongside the tests for the other two sources.
+
 ### Added
 - **`nem_rates.regen`**, shipped inside the package and reachable as
   `nem-rates regen`, rebuilds every vendored dataset from what publishers
@@ -43,31 +60,35 @@ All notable changes to this project are documented here. This project follows
   the first is true. Their 2023 card extracts exactly, which is what the CCA
   extractor is tested against.
 
-### Fixed
-- `cca/mce.toml` now records **how** its values were obtained and which are
-  independently confirmed. They were read visually from the rendered rate card
-  on 2026-08-01 rather than parsed, so a transcription slip has no automatic
-  check behind it the way a PG&E sheet does. Three of the sixteen -- summer
-  E-ELEC peak, part-peak and off-peak -- reconcile against the July 2026
-  statement; the other thirteen, including every winter rate, do not, and winter
-  first applies in October 2026. The previous header cited the source URL
-  without distinguishing the two.
-- A new `regen` extra carries `pypdf`. The library itself never opens a PDF.
-- The weekly job now checks all four datasets rather than export rates alone,
-  and reports each independently so the first failure does not hide the second.
-
-### Fixed
-- **The three tariff snapshots are now dated from the sheet that carries the
-  rates**, not the latest date in the tariff book. A tariff book reissues pages
-  independently: on all three schedules the totals page is Advice 7921-E
-  effective 2026-06-01 while the unbundled rate table is 7846-E effective
-  2026-03-01, and the two reconcile exactly, so those values have been in force
-  since March. Hand transcription had reached both answers from the same
-  evidence — E-ELEC and E-TOU-C dated June, EV2-A March. Every rate value is
-  unchanged; what changes is that April and May 2026 now price instead of
-  raising "no snapshot effective on or before".
-
-### Added
+- **Annual true-up** (`nem_rates.billing.trueup`), the layer that closes a year
+  on the credit bank. For a CCA account this is two events on two calendars that
+  do not line up: MCE's Annual Cash-Out follows the March-April billing cycle and
+  is the same for every customer, while PG&E's Relevant Period ends on the
+  account's own PTO anniversary. An account with a June PTO date cashes out with
+  MCE in April and trues up with PG&E in June, and neither closes the other's
+  bank; modelling one annual event would be wrong for at least one of them.
+- **PG&E pays a CCA account no Net Surplus Compensation.** Schedule NBT, Special
+  Condition 5.a bars net surplus generators taking CCA service, and applicability
+  is limited to "all bundled Net Surplus Generators". PG&E's published NSC series
+  is vendored as `data/nsc/pge.toml` because it is the only auditable one, but
+  for a CCA account it is a stand-in and results computed from it are flagged
+  `estimated`.
+- **Excess credits carry forward rather than expiring.** Schedule NBT carries
+  them "forward to the customer's next Relevant Period", forfeited only on
+  leaving the tariff; MCE's SBP tariff rolls the balance over "indefinitely". The
+  annual reset to zero that is widely described belongs to NEM 2.0.
+- Surplus is tested in kilowatt-hours, not dollars, per both tariffs. When a
+  customer is a Net Surplus Generator the export credit already paid for that
+  energy is reversed at the average export credit rate including MCE's Solar
+  Bonus Credit, charged against the balance first and the payment second.
+- `Config.nsc_rate` and `NEM_RATES_NSC_RATE`, unset by default because MCE
+  determines its Solar Billing Plan rate at cash-out rather than publishing it in
+  advance. `LedgerEntry` gained `imported_kwh` / `exported_kwh` to carry the
+  surplus test.
+- Nothing in the true-up is reconciled against a statement, so `TrueUp.verified`
+  is always `False`; the first MCE cash-out falls after the March-April 2027
+  cycle. `trueup.OPEN_QUESTIONS` records the two places the tariff text supports
+  more than one reading.
 - **`nem-rates bill --source influx`** reads the raw meter counters from
   InfluxDB 3 over `/api/v3/query_sql`. A cumulative counter's total depends only
   on its endpoints, so this is exact regardless of sampling density: against the
@@ -143,12 +164,15 @@ All notable changes to this project are documented here. This project follows
   without any hand-entered rates. The tariff data previously recorded that this
   surcharge was "not published and must not be guessed"; it is published, in a
   separate schedule.
-- `read_csv` reads PG&E's interval export as downloaded. It previously failed on
-  three things at once: the account preamble before the header row, a timestamp
-  split across `DATE` and `START TIME` rather than one ISO column, and
-  unit-suffixed names like `IMPORT (kWh)`. Header matching now folds case and
-  punctuation, `CsvLayout` gained `date`/`time` for split pairs, and the preamble
-  is located by scanning for the header rather than assuming a fixed offset.
+- `read_green_button` reads PG&E's Green Button export as downloaded. It
+  previously failed on three things at once: the account preamble before the
+  header row, a timestamp split across `DATE` and `START TIME` rather than one
+  ISO column, and unit-suffixed names like `IMPORT (kWh)`. Header matching now
+  folds case and punctuation, `GreenButtonLayout` gained `date`/`time` for split
+  pairs, and the preamble is located by scanning for the header rather than
+  assuming a fixed offset. (Both were added under their former names,
+  `read_csv` and `CsvLayout`, earlier in this same unreleased cycle; they are
+  written here as they ship.)
 - `nem_rates.interop`: adapters publishing rates in formats existing energy
   management systems already read. `resample()` splits the hourly curve onto
   shorter slots, `predbat.payload()` builds Predbat's `raw_today` /
@@ -196,6 +220,27 @@ All notable changes to this project are documented here. This project follows
 - `forecast --format table` rendered the autumn transition as
   `01:00 PDT - 01:00`, a seemingly zero-length hour, because only the start
   carried `%Z`.
+
+- `cca/mce.toml` now records **how** its values were obtained and which are
+  independently confirmed. They were read visually from the rendered rate card
+  on 2026-08-01 rather than parsed, so a transcription slip has no automatic
+  check behind it the way a PG&E sheet does. Three of the sixteen -- summer
+  E-ELEC peak, part-peak and off-peak -- reconcile against the July 2026
+  statement; the other thirteen, including every winter rate, do not, and winter
+  first applies in October 2026. The previous header cited the source URL
+  without distinguishing the two.
+- A new `regen` extra carries `pypdf`. The library itself never opens a PDF.
+- The weekly job now checks all four datasets rather than export rates alone,
+  and reports each independently so the first failure does not hide the second.
+- **The three tariff snapshots are now dated from the sheet that carries the
+  rates**, not the latest date in the tariff book. A tariff book reissues pages
+  independently: on all three schedules the totals page is Advice 7921-E
+  effective 2026-06-01 while the unbundled rate table is 7846-E effective
+  2026-03-01, and the two reconcile exactly, so those values have been in force
+  since March. Hand transcription had reached both answers from the same
+  evidence — E-ELEC and E-TOU-C dated June, EV2-A March. Every rate value is
+  unchanged; what changes is that April and May 2026 now price instead of
+  raising "no snapshot effective on or before".
 
 ### Changed
 - The EV2-A snapshot is dated from the 2026-03-01 Base Services Charge

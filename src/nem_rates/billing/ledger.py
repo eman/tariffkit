@@ -20,10 +20,11 @@ gives an approximation -- the two banks spend in an order a merged view cannot
 reproduce. Feed one provider's charges and credits to get an exact answer; the
 tests do that for each half of a real statement.
 
-Scope: this models carryover only. The annual true-up and Net Surplus
-Compensation are deliberately absent -- they need a published NSC rate and the
-expiry rules for unspent credits, neither of which is vendored, and neither can
-be checked against a statement until a true-up cycle exists.
+Scope: this models carryover within a year. Closing a year -- the annual
+true-up, and Net Surplus Compensation -- lives in
+:mod:`nem_rates.billing.trueup`, which is built from tariff text rather than
+reconciled against a statement, because no true-up has happened on this account
+yet.
 """
 
 from __future__ import annotations
@@ -175,6 +176,12 @@ class LedgerEntry:
     gross_charges: float
     #: The part of ``gross_charges`` no credit could reach.
     non_offsettable: float
+    #: Metered energy for the cycle. Carried here because the annual true-up
+    #: tests surplus in kilowatt-hours rather than dollars -- both PG&E and MCE
+    #: define a Net Surplus Generator as one whose exported energy exceeds its
+    #: imported energy over the period.
+    imported_kwh: float = 0.0
+    exported_kwh: float = 0.0
     #: False while the charge classification is only partly reconciled against a
     #: statement; see ``SCOPING_VERIFIED``.
     complete: bool = SCOPING_VERIFIED
@@ -189,6 +196,8 @@ class LedgerEntry:
             "cash_due": round(self.cash_due, 2),
             "gross_charges": round(self.gross_charges, 2),
             "non_offsettable": round(self.non_offsettable, 2),
+            "imported_kwh": round(self.imported_kwh, 3),
+            "exported_kwh": round(self.exported_kwh, 3),
             "complete": self.complete,
         }
 
@@ -305,6 +314,8 @@ def apply_credits(bill: Bill, opening: CreditBalances | None = None) -> LedgerEn
         cash_due=gross - applied.total,
         gross_charges=gross,
         non_offsettable=non_offsettable,
+        imported_kwh=sum(b.imported for b in bill.buckets),
+        exported_kwh=sum(b.exported for b in bill.buckets),
     )
 
 

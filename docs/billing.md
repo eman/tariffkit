@@ -11,13 +11,16 @@ nem-rates bill - --json < intervals.csv
 
 ## Where readings come from
 
-Three sources. CSV is the default and needs nothing installed beyond the core
-package:
+Three sources, all in `nem_rates.sources`. Green Button is the default and needs
+nothing installed beyond the core package:
 
 ```bash
-nem-rates bill intervals.csv --start 2026-07-02 --end 2026-07-28
+nem-rates bill pge_electric_usage_interval_data_....csv --start 2026-07-02 --end 2026-07-28
 nem-rates bill - --json < intervals.csv
 ```
+
+`--source csv` is still accepted as a spelling of `--source green-button`, but
+"CSV" says nothing about *which* CSV, so the documented name is the format.
 
 Home Assistant reads the meter directly, so there is no download step:
 
@@ -81,13 +84,16 @@ statement, all three sources on the same cycle:
 
 | Source | Imported | Exported | MCE credit | Delivery credit |
 |---|---|---|---|---|
-| PG&E CSV | 39.060 | 193.320 | 9.59 | 6.22 |
+| Green Button | 39.060 | 193.320 | 9.59 | 6.22 |
 | Home Assistant | 39.902 | 193.795 | 9.68 | 6.73 |
 | InfluxDB | 39.902 | **193.793** | **9.64** | **6.30** |
 | *billed* | *39.906* | *193.797* | *9.63* | *6.25* |
 
-The CSV is low because PG&E rounds every interval to two decimals before
-exporting it, which costs about 2% of a low-import month.
+Green Button is low because PG&E rounds every interval to two decimals before
+exporting it, which costs about 2% of a low-import month. Its compensating
+strength is timing: it is the utility's own record at true fifteen-minute
+metering, which is why its credit split was the best of the three until the
+InfluxDB source started spreading advances pro rata.
 
 The gap between the two live sources is subtler and worth understanding, because
 it is the one thing a counter series can get wrong. **A sample reports an advance
@@ -95,7 +101,7 @@ since the previous sample, not an instant.** Crediting the whole advance to the
 interval holding the later sample pushes energy forward across every boundary it
 spans, and boundaries are where the money is — the export delivery credit is
 roughly 500× larger during the 4–9pm peak than outside it. On that cycle the
-naive rule put 55.52 kWh of export in peak where PG&E's own 15-minute data has
+naive rule put 55.52 kWh of export in peak where Green Button's 15-minute data has
 52.08. This source spreads each advance pro rata over the span it actually
 covers, giving 52.62. Home Assistant's statistics are pre-aggregated by Home
 Assistant using the forward-crediting rule, which is why its credit components
@@ -116,10 +122,21 @@ Two smaller notes:
   are interpolated into SQL. A `sensor.` prefix is stripped; InfluxDB stores the
   bare name.
 
-## CSV input
+## Green Button input
 
-Columns are auto-detected from the header; common names for each field are
-recognised (`start`/`timestamp`/`datetime`, `imported`/`delivered`/`usage`,
+Green Button is the industry format for handing a customer their own meter data;
+PG&E exposes it as **"Download my data"** on the usage page, which returns a file
+named like `pge_electric_usage_interval_data_<account>_<dates>.csv`, generally at
+fifteen-minute resolution.
+
+**This reads the CSV form, not the XML one.** Green Button also has an ESPI/XML
+serialisation; that is a different parser and is not implemented.
+
+It is Green Button first rather than Green Button only. The preamble skipping and
+the default column names exist for PG&E's export, but every column is
+configurable, so an inverter log or a statistics dump works too. Columns are
+auto-detected from the header; common names for each field are recognised
+(`start`/`timestamp`/`datetime`, `imported`/`delivered`/`usage`,
 `exported`/`received`/`production`, `net`).
 
 ```csv
@@ -139,11 +156,11 @@ autumn DST transition is ambiguous without one.
 Override detection when needed:
 
 ```python
-from nem_rates.billing import CsvLayout, read_csv
+from nem_rates.sources import GreenButtonLayout, read_green_button
 
-readings = read_csv(
+readings = read_green_button(
     "meter.csv",
-    CsvLayout(
+    GreenButtonLayout(
         start="Interval Start",
         imported="Consumption (kWh)",
         exported="Surplus (kWh)",
@@ -156,11 +173,12 @@ readings = read_csv(
 ```python
 from datetime import date
 from nem_rates import Config, RateEngine
-from nem_rates.billing import BillEngine, BillingPeriod, read_csv
+from nem_rates.billing import BillEngine, BillingPeriod
+from nem_rates.sources import read_green_button
 
 engine = BillEngine(RateEngine(Config.load()))
 bill = engine.compute(
-    read_csv("intervals.csv"),
+    read_green_button("intervals.csv"),
     BillingPeriod(date(2026, 7, 2), date(2026, 7, 28)),
 )
 
@@ -284,14 +302,65 @@ Two things to know:
   Delivered charge" falls is not: confirming it needs a cycle whose credits
   exceed the charges they may offset, so the cap binds.
 
+## The annual true-up
+
+Closing a year is a separate module, because for a CCA account it is two events
+on two calendars that do not line up:
+
+```python
+from nem_rates.billing import run_ledger, run_true_ups
+
+ledger = run_ledger(bills)
+run_true_ups(ledger.entries, pto_date=config.pto_date, is_cca=True)
+```
+
+|  | MCE Annual Cash-Out | PG&E Relevant Period |
+|---|---|---|
+| Ends | after the **March–April** billing cycle | on the **PTO anniversary** |
+| Fixed for | every customer alike | this account alone |
+| Covers | generation credits | delivery credits, ACC Plus |
+| Pays surplus | yes, at MCE's NSC rate | **no** — a CCA account is barred |
+
+An account with a June PTO date therefore cashes out with MCE in April and
+trues up with PG&E in June, and neither closes the other's bank.
+
+**PG&E pays a CCA account no Net Surplus Compensation at all.** Schedule NBT,
+Special Condition 5.a: net surplus generators receiving "Community Choice
+Aggregation (CCA) Service from a CCA are not eligible to receive NSC from PG&E".
+Applicability is limited to "all bundled Net Surplus Generators". PG&E publishes
+an NSC rate monthly and it is vendored here, but for a CCA account it is a
+stand-in, not the rate that gets paid.
+
+**Credits do not expire**, which is worth saying because the opposite is widely
+repeated. Schedule NBT carries excess credits "forward to the customer's next
+Relevant Period", forfeited only on leaving the tariff; MCE's SBP tariff rolls
+the balance over "indefinitely". The annual reset to zero belongs to NEM 2.0.
+
+Surplus is a **kilowatt-hour** test in both tariffs — exported energy exceeding
+imported energy over the period — not a dollar balance. When it is met, the
+export credit already paid for that energy is reversed at the average export
+credit rate (including MCE's Solar Bonus Credit) so the same kilowatt-hours are
+not paid for twice, and the reversal is charged against the balance first and
+the payment second.
+
+### What is not settled
+
+`TrueUp.verified` is always `False`. Nothing here has been checked against a
+statement, because none exists yet: the first MCE cash-out falls after the
+March–April 2027 cycle and the first PG&E Relevant Period ends 2027-06-03.
+`nem_rates.billing.trueup.OPEN_QUESTIONS` records the two places the tariff text
+supports more than one reading — whether the credit reversal and the NSC rate
+are two steps or one, and whether MCE's $5,000 cap and "NSC + $0.02/kWh" formula
+(both published under its NEM 1.0/2.0 program) carry over to the SBP.
+
+`Config.nsc_rate` is unset by default and the result is marked `estimated`,
+because MCE determines its SBP rate *at* cash-out rather than publishing it in
+advance. The fallback also degrades to the latest published month when the
+true-up month is still in the future, which it will be for the first cash-out.
+
 ## What this does not do
 
-It does **not** model the annual true-up, Net Surplus Compensation, or the credit
-reversal at cash-out. Those need a published NSC rate and the expiry rules for
-unspent credit, neither vendored, and neither checkable against a statement until
-a true-up cycle exists. MCE's program year runs April to March.
-
-Two more known limits:
+Two known limits:
 
 - A **rate change mid-cycle** is not prorated. The Base Services Charge is priced
   from the tariff in force at the start of the cycle; PG&E prorates. Cycles

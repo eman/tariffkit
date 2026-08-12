@@ -41,13 +41,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     bill = sub.add_parser("bill", help="compute a bill from interval meter data")
     bill.add_argument(
-        "csv", type=Path, nargs="?", help="interval data CSV; '-' for stdin. Omit with --source ha"
+        "csv",
+        type=Path,
+        nargs="?",
+        metavar="GREEN_BUTTON_CSV",
+        help="PG&E Green Button CSV ('Download my data'); '-' for stdin. "
+        "Omit with --source ha or --source influx",
     )
     bill.add_argument(
         "--source",
-        choices=("csv", "ha", "influx"),
-        default="csv",
-        help="where the readings come from (default: csv)",
+        # "csv" stays accepted so existing invocations keep working, but it is
+        # not the documented spelling: it says nothing about which CSV.
+        choices=("green-button", "csv", "ha", "influx"),
+        default="green-button",
+        help="where the readings come from (default: green-button)",
     )
     bill.add_argument("--start", type=date.fromisoformat, help="cycle start (meter read date)")
     bill.add_argument("--end", type=date.fromisoformat, help="cycle end, inclusive")
@@ -270,7 +277,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "bill":
-            from .billing import BillEngine, BillingPeriod, read_csv
+            from .billing import BillEngine, BillingPeriod
+            from .sources import read_green_button
 
             note = ""
             if args.source == "ha":
@@ -312,9 +320,12 @@ def main(argv: list[str] | None = None) -> int:
                     f"totals are exact, distribution follows sample density)"
                 )
             elif args.csv is None:
-                raise ConfigError("give a CSV path, or use --source ha or --source influx")
+                raise ConfigError(
+                    "give a Green Button CSV path, or use --source ha or --source influx"
+                )
             else:
-                readings = read_csv(sys.stdin if str(args.csv) == "-" else args.csv)
+                readings = read_green_button(sys.stdin if str(args.csv) == "-" else args.csv)
+                note = f"  source: Green Button CSV ({len(readings)} intervals)"
 
             period = (
                 BillingPeriod(args.start, args.end)
