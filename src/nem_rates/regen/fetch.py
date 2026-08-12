@@ -28,6 +28,17 @@ HEADERS = {
 #: Anything smaller than this is an error page, not a rate document.
 MIN_PLAUSIBLE_BYTES = 4096
 
+#: Bound every request. A publisher that hangs must not hang a scheduled job.
+TIMEOUT_SECONDS = 120
+
+
+def _age_days(path: Path) -> str:
+    from datetime import datetime
+
+    delta = datetime.now() - datetime.fromtimestamp(path.stat().st_mtime)
+    days = delta.days
+    return "downloaded today" if days == 0 else f"downloaded {days}d ago"
+
 
 def fetch(source: Source, cache: Path, *, refresh: bool = False) -> Path:
     """Download ``source`` to ``cache``, returning the path.
@@ -40,6 +51,10 @@ def fetch(source: Source, cache: Path, *, refresh: bool = False) -> Path:
             f"{source.url} cannot be downloaded automatically. {source.blocked_note}"
         )
     if cache.exists() and not refresh:
+        # Silence here makes a stale cache look like an unchanged upstream,
+        # which is the one answer --check must never get wrong.
+        age = _age_days(cache)
+        print(f"    using cached {cache.name} ({age}), --refresh to re-download")
         return cache
 
     cache.parent.mkdir(parents=True, exist_ok=True)
@@ -49,7 +64,7 @@ def fetch(source: Source, cache: Path, *, refresh: bool = False) -> Path:
 
     request = urllib.request.Request(source.url, headers=HEADERS)
     try:
-        with urllib.request.urlopen(request, timeout=120) as response:
+        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
             body = response.read()
     except urllib.error.HTTPError as exc:
         raise ExtractionError(
@@ -76,7 +91,9 @@ def _get_with_httpx(url: str) -> bytes | None:
     except ImportError:
         return None
     try:
-        with httpx.Client(follow_redirects=True, timeout=120, headers=HEADERS) as client:
+        with httpx.Client(
+            follow_redirects=True, timeout=TIMEOUT_SECONDS, headers=HEADERS
+        ) as client:
             response = client.get(url)
     except Exception:
         return None

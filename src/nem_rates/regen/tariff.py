@@ -150,6 +150,15 @@ def extract_unbundled(sheet: Page) -> tuple[list[str], dict[str, Any], dict[str,
             continue  # handled below, where section state is tracked
         key = ADDER_KEYS.get(clean_label(label))
         if key and values:
+            # Riders are published once per period but have always been equal
+            # across them, which is why [adders] stores one scalar. Taking the
+            # first column silently would misprice the day that stops being
+            # true, so disagreement is an error rather than a choice.
+            if len({round(v, 9) for v in values}) > 1:
+                raise ExtractionError(
+                    f"{key} differs by period ({values}); [adders] holds one value "
+                    f"per rider, so this schedule needs a period-aware adder table"
+                )
             adders[key] = values[0]
 
     # Season rows need the Generation:/Distribution: header above them, so walk
@@ -345,6 +354,21 @@ def pick_effective(data: Extracted) -> date:
     return data.rates_effective
 
 
+def require_provenance(data: Extracted) -> None:
+    """The rate sheet has to identify itself.
+
+    Falling back to the previous snapshot's advice letter would let a provenance
+    parse failure through, and the emitted file would then claim a revision it
+    was not built from -- worse than not building it, because the claim looks
+    authoritative.
+    """
+    if not data.rates_advice:
+        raise ExtractionError(
+            "the unbundled sheet carries no advice letter; refusing to inherit the "
+            "previous snapshot's, which would misreport where these rates came from"
+        )
+
+
 def verify(data: Extracted) -> list[str]:
     """Every season/period must reconcile the components against the total.
 
@@ -401,7 +425,7 @@ def render(
         f'utility = "{provider.key.upper()}"',
         f'tariff = "{tariff_name}"',
         f'effective = "{effective.isoformat()}"',
-        f'advice_letter = "{data.rates_advice or previous.get("advice_letter", "")}"',
+        f'advice_letter = "{data.rates_advice}"',
         f'source_url = "{url}"',
         f'currency = "{previous.get("currency", "USD/kWh")}"',
         "",
@@ -547,6 +571,7 @@ def price_through_the_loader(slug: str, body: str, data: Extracted, provider: Ut
 def regenerate(provider: Utility, slug: str, pdf: Path, *, check: bool) -> Result:
     """Rebuild one schedule's snapshot from ``pdf``."""
     data = extract(read_pages(pdf))
+    require_provenance(data)
     problems = verify(data)
     if problems:
         return Result(

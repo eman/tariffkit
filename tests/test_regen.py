@@ -403,3 +403,33 @@ class TestAccPlus:
         half = ACC_PLUS_TABLE.split("Residential\nLow")[0]
         with pytest.raises(ExtractionError, match="residential_low_income"):
             accplus.extract([sheet(half)])
+
+
+class TestRefusesToGuess:
+    def test_a_rider_that_differs_by_period_is_an_error(self) -> None:
+        # [adders] holds one scalar per rider because they have always been
+        # equal across periods. Taking the first column silently would misprice
+        # the day that stops being true.
+        broken = EELEC_UNBUNDLED.replace(
+            "Transmission* (all usage) $0.04638  $0.04638  $0.04638",
+            "Transmission* (all usage) $0.04638  $0.05000  $0.04638",
+        )
+        with pytest.raises(ExtractionError, match="differs by period"):
+            rt.extract_unbundled(sheet(broken))
+
+    def test_a_rider_equal_across_periods_is_fine(self) -> None:
+        _, _, adders = rt.extract_unbundled(sheet(EELEC_UNBUNDLED))
+        assert adders["transmission"] == 0.04638
+
+    def test_a_sheet_with_no_advice_letter_is_refused(self) -> None:
+        # Inheriting the previous snapshot's would make the emitted file claim a
+        # revision it was not built from, which looks authoritative and is wrong.
+        data = rt.Extracted(periods=["peak"])
+        data.rates_effective = date(2026, 3, 1)
+        with pytest.raises(ExtractionError, match="no advice letter"):
+            rt.require_provenance(data)
+
+    def test_a_sheet_with_an_advice_letter_passes(self) -> None:
+        data = rt.Extracted(periods=["peak"])
+        data.rates_advice = "7846-E"
+        rt.require_provenance(data)
