@@ -19,10 +19,21 @@ python -m nem_rates.regen.export --download   # the 843 MB export archive
 
 | Dataset | Reads | Proven right by |
 |---|---|---|
-| `tariff` | a utility's retail tariff sheets | components sum to the sheet's own published totals, then the library prices the result |
+| `tariff` | a utility's retail tariff sheets, plus Schedule E-FFS | components sum to the sheet's own published totals, then the library prices the result |
 | `export` | the hourly export-rate archive | every cell of a lossless collapse, verified individually |
 | `accplus` | the export tariff's adder table | the library reads back every adder it wrote |
+| `nsc` | the published Net Surplus Compensation series | the library reads back every month it wrote |
 | `cca` | a CCA's generation rate card | both seasons present, period sets agreeing between them |
+
+Every vendored file maps to one of these:
+
+| File | Dataset |
+|---|---|
+| `tariff/<utility>/<schedule>/*.toml` | `tariff` |
+| `export/<utility>/nbt*.json.gz`, `holidays.toml`, `manifest.json` | `export` |
+| `export/<utility>/acc_plus.toml` | `accplus` |
+| `nsc/<utility>.toml` | `nsc` |
+| `cca/<provider>.toml` | `cca` |
 
 The check matters more than the extraction. A generator writes key names and the
 library reads them back with a second, independent set of literals — two
@@ -46,30 +57,49 @@ not stale — and regenerates from a file saved by hand with `--pdf`.
 
 ### When a document has no text layer
 
-Downloading a PDF is not the same as being able to read one. MCE's current rate
+Downloading a PDF is not the same as being able to parse one. MCE's current rate
 card is a `Microsoft: Print To PDF` export: 1.4 MB of drawing operators whose
 font maps six characters to Unicode, enough to spell "Page 1". Every figure in
-the rate table is a bare glyph id with no character behind it, so **no parser can
-recover it** — only OCR could. Their 2023 card extracts perfectly, so this is a
-change in how they produce the file.
+the table is a bare glyph id with no character behind it, so **no text parser can
+reach it**. Their 2023 card parses perfectly, so this is a change in how they
+publish rather than a gap in the extractor.
 
-The failure says exactly that rather than "no table found", because the three
-ways to get an unreadable PDF need different answers.
+The failure says which of the three ways-to-be-unreadable it hit, because they
+need different answers — a saved error page, a scan, and a print-to-PDF export
+are not the same problem.
 
-**No text layer is not no data.** The page still renders, so the table can be
-read from it visually and the values entered by hand — which is exactly how the
-current `cca/mce.toml` values were obtained (2026-08-01, from the rendered
-page). What is lost is the *automated* path and its checks, not the source.
+**No text layer is not no data.** The page renders perfectly. Reading it is a
+supported way to maintain the file, not a fallback, and it does not need a
+person: an agent session renders the PDF and reads the table directly. That is
+how every value in `cca/mce.toml` was obtained, and how all sixteen were
+re-verified on 2026-08-12.
 
-When you do that, say so in the file. `cca/mce.toml` records which of its values
-are confirmed against a bill and which are not, because a visually-read table
-has no reconciliation behind it the way a PG&E sheet does — there is no published
-total for its components to sum to. Today three of its sixteen values are
-verified against the July 2026 statement; the other thirteen, including every
-winter rate, are not, and winter first applies in October 2026.
+So the loop stays closed, just split across two places:
+
+| | rebuilt by `regen` in CI | rebuilt in an agent session |
+|---|---|---|
+| `tariff`, `accplus`, `nsc` | yes | yes |
+| `cca` with a text layer | yes | yes |
+| `cca` without one (MCE today) | no — a CI runner has no reader | **yes** |
+
+CI still detects the change (see the checksum below); what it cannot do is read
+the replacement. Nothing waits on a person beyond starting the session.
+
+**The procedure when the checksum moves:**
+
+1. `nem-rates regen cca` reports `SOURCE CHANGED` and names the cached PDF.
+2. Render that PDF and read the rate table from it.
+3. Check every value against `cca/<provider>.toml`; update what moved.
+4. Record the new `source_sha256` and `source_read_on`.
+
+**What this file lacks that a PG&E snapshot has** is an arithmetic check. A
+tariff sheet publishes totals its components must sum to, so a misread digit
+fails; a rate card publishes only the rates. Three of MCE's sixteen are
+confirmed a second way, against the July 2026 statement; the rest rest on one
+reading of one document. That is why the header records when it was read.
 
 The extractor — verified against MCE's 2023 card, which it reads exactly — takes
-over as soon as the publisher ships a text-bearing document again.
+over as soon as they ship a text-bearing document again.
 
 ## Export rates (NBT matrices + holiday calendar): automated
 

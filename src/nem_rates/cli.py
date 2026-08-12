@@ -102,7 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
         "dataset",
         nargs="?",
         default="all",
-        choices=("all", "tariff", "accplus", "cca", "export"),
+        choices=("all", "tariff", "accplus", "nsc", "cca", "export"),
         help="which dataset to rebuild (default: all)",
     )
     regen.add_argument(

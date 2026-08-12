@@ -57,6 +57,11 @@ class Utility:
     export_adder: Source | None = None
     #: The archive of hourly export-rate matrices, if published.
     export_rates: Source | None = None
+    #: The franchise fee surcharge schedule. A separate document from the retail
+    #: sheets, but its values live inside a tariff snapshot's [cca] table.
+    franchise_fees: Source | None = None
+    #: The Net Surplus Compensation series, published as a standing table.
+    nsc_rates: Source | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +98,10 @@ PGE = Utility(
     export_rates=Source(
         "https://www.pge.com/assets/pge/docs/vanities/PGE-Solar-Billing-Plan-Export-Rates.zip"
     ),
+    franchise_fees=Source(
+        "https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-FFS.pdf"
+    ),
+    nsc_rates=Source("https://www.pge.com/assets/pge/docs/clean-energy/solar/AB920-RateTable.pdf"),
 )
 
 MCE = Cca(

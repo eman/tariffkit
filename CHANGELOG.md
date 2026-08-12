@@ -5,6 +5,42 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+- **A CCA card that cannot be parsed is still watched.** The vendored file records
+  a checksum of the document its values were read from, so the weekly check
+  downloads the card and reports whether the publisher has moved. Detection never
+  needed a text layer, only bytes, and detection was always the more valuable
+  half of a scheduled check — extraction being manual does not mean staleness
+  has to be invisible. A change is reported rather than failed, since it needs a
+  person and a permanently red job gets ignored; a card with no recorded checksum
+  *is* a failure, because that is the one state where silence and safety look
+  the same.
+
+### Fixed
+- `cca/mce.toml`'s 16 generation rates, its cost relief credit and its Deep Green
+  premium were all re-read from MCE's published card and confirmed. The header
+  previously said thirteen of them had never been checked against anything MCE
+  published; they have now, and it says so. The card has no text layer, so this
+  is a read of the rendered page rather than a parse -- which `docs/data.md` now
+  documents as the procedure for that case rather than describing it as a
+  blocker. Reading a rendered page needs a *reader* rather than a parser, not a
+  person: an agent session does it directly. What a CI runner lacks is the
+  reader, not the capability, which is why it detects the change by checksum and
+  leaves the reading to a session that can.
+
+### Added
+- **`nem-rates regen nsc`** rebuilds the Net Surplus Compensation series from the
+  published rate table. It was vendored by hand when the annual true-up landed
+  and had no regeneration path at all, which made it the one dataset that could
+  go stale silently — it grows by a row a month, and nothing about a missing
+  month looks wrong until a true-up falls in it.
+- **The franchise fee surcharge is read from Schedule E-FFS** rather than carried
+  forward from the previous snapshot. It sits in a tariff snapshot's `[cca]`
+  table but is published in a different schedule, so carrying it meant PG&E could
+  reissue E-FFS with nothing noticing — and it is live rate data on every CCA
+  price. `regen tariff` now reads both documents and reports which. All eighteen
+  extracted vintages match the hand-transcribed ones exactly.
+
 ### Changed
 - **The CSV reader moved to `nem_rates.sources.greenbutton` and is named for the
   format it reads.** It sat in `nem_rates.billing.ingest` while the other two

@@ -36,7 +36,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import accplus, cca, tariff
+from . import accplus, cca, nsc, tariff
 from .emit import Result
 from .fetch import fetch
 from .providers import CCAS, UTILITIES, Cca, Source, Utility
@@ -46,7 +46,7 @@ from .sheets import ExtractionError
 DEFAULT_CACHE = Path.home() / ".cache" / "nem-rates" / "regen"
 
 #: Datasets :func:`run` can build. Each maps to an entry in ``JOB_BUILDERS``.
-DATASETS = ("tariff", "accplus", "cca")
+DATASETS = ("tariff", "accplus", "nsc", "cca")
 
 #: The export-rate matrices are regenerated too, but from a 843 MB archive of
 #: CSVs rather than a published PDF, so they have their own entry point --
@@ -74,6 +74,13 @@ def _tariff_runner(util: Utility, slug: str) -> Callable[[Path, bool], Result]:
 def _accplus_runner(util: Utility) -> Callable[[Path, bool], Result]:
     def run_one(pdf: Path, check: bool) -> Result:
         return accplus.regenerate(util, pdf, check=check)
+
+    return run_one
+
+
+def _nsc_runner(util: Utility) -> Callable[[Path, bool], Result]:
+    def run_one(pdf: Path, check: bool) -> Result:
+        return nsc.regenerate(util, pdf, check=check)
 
     return run_one
 
@@ -110,6 +117,13 @@ def _accplus_jobs(provider: str | None) -> Iterator[Job]:
         )
 
 
+def _nsc_jobs(provider: str | None) -> Iterator[Job]:
+    for key, util in sorted(UTILITIES.items()):
+        if (provider and provider != key) or util.nsc_rates is None:
+            continue
+        yield Job(f"{key}/nsc", util.nsc_rates, _nsc_runner(util))
+
+
 def _cca_jobs(provider: str | None) -> Iterator[Job]:
     for key, provider_def in sorted(CCAS.items()):
         if provider and provider != key:
@@ -124,6 +138,7 @@ def _cca_jobs(provider: str | None) -> Iterator[Job]:
 JOB_BUILDERS: dict[str, Callable[[str | None], Iterator[Job]]] = {
     "tariff": _tariff_jobs,
     "accplus": _accplus_jobs,
+    "nsc": _nsc_jobs,
     "cca": _cca_jobs,
 }
 

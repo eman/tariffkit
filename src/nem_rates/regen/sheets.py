@@ -117,10 +117,12 @@ def _require_text_layer(path: Path, pages: list[Page], raw_pages: Sequence[Any])
     perfectly, so this is a change in how they publish, not a gap here.
 
     **A document with no text layer is not a dead end.** It cannot be *parsed*,
-    but it can still be read from the rendered page, which is how the current
-    MCE values were obtained. So the message points at that rather than
-    declaring the source unusable -- the distinction is between "no automated
-    extraction" and "no data", and only the first is true.
+    but the page renders, so it can be read -- which is how the current MCE
+    values were obtained and re-verified. The distinction that matters is
+    between "no text parser can reach this" and "no data", and only the first
+    is true. A CI runner has no reader, so it detects the change by checksum and
+    leaves the reading to a session that does; see
+    :func:`nem_rates.regen.cca._watch_by_checksum`.
     """
     if sum(len(p.text.strip()) for p in pages) >= MIN_TEXT_CHARS:
         return
@@ -144,10 +146,10 @@ def _require_text_layer(path: Path, pages: list[Page], raw_pages: Sequence[Any])
             f"{path} draws {content_bytes:,} bytes of content but exposes no readable "
             f"text (its fonts map {mapped} characters to Unicode). That is a "
             f"print-to-PDF export: the figures are glyph ids with no characters "
-            f"behind them, so no parser can reach them. The page still renders, so "
-            f"the table can be read from it visually and the values entered by hand "
-            f"-- which is how the current MCE rate card was read. Record in the "
-            f"emitted file that the values were read rather than parsed."
+            f"behind them, so no text parser can reach them. The page still renders, "
+            f"so read the table from it and update the vendored file directly -- that "
+            f"is how the current MCE rate card was read, and it needs a reader rather "
+            f"than a parser, not a person. Record when you read it in the file."
         )
     raise ExtractionError(
         f"{path} has no extractable text -- it may be a scan, or the download may "
