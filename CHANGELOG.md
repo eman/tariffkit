@@ -5,6 +5,23 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+- **The CSV reader moved to `nem_rates.sources.greenbutton` and is named for the
+  format it reads.** It sat in `nem_rates.billing.ingest` while the other two
+  sources lived in `nem_rates.sources`, on the reasoning that it had no optional
+  dependency to isolate. That was the wrong organising principle: what a module
+  reads is more useful than what it happens to import, and the one file-based
+  source was the hardest to find. `read_csv` is now `read_green_button` and
+  `CsvLayout` is `GreenButtonLayout`, both exported from `nem_rates.sources`
+  rather than `nem_rates.billing`.
+- `--source csv` is now `--source green-button`. "CSV" named a container rather
+  than a format and could have meant any of several exports; Green Button is the
+  industry standard PG&E publishes under "Download my data", and naming it also
+  makes explicit that this reads the **CSV** form and not the ESPI/XML one. The
+  old spelling still works.
+- The Green Button parsing tests moved to `tests/test_sources_greenbutton.py`,
+  alongside the tests for the other two sources.
+
 ### Added
 - **`nem-rates bill --source influx`** reads the raw meter counters from
   InfluxDB 3 over `/api/v3/query_sql`. A cumulative counter's total depends only

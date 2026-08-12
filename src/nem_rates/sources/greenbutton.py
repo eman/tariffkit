@@ -1,8 +1,29 @@
-"""Read interval data from CSV.
+"""Interval readings from a Green Button CSV export.
 
-Deliberately stdlib-only, so the billing path stays dependency-free. Column
-names vary by source (PG&E Green Button exports, Home Assistant statistics
-dumps, inverter logs), so they are configurable rather than guessed.
+Green Button is the industry format for handing a customer their own meter data,
+and PG&E exposes it as "Download my data" on the usage page. What comes back is
+a CSV named like ``pge_electric_usage_interval_data_<account>_<dates>.csv``,
+generally at fifteen-minute resolution.
+
+**This reads the CSV form, not the XML one.** Green Button also has an ESPI/XML
+serialisation, which is a different parser and is not implemented here.
+
+It is Green Button first rather than Green Button only. The preamble skipping in
+:func:`_skip_preamble` exists because PG&E's export opens with account metadata,
+and the default column names are the ones PG&E emits -- but every column is
+configurable through :class:`GreenButtonLayout`, so an inverter log or a Home
+Assistant statistics dump with different headers works too.
+
+The one thing to know before trusting it: **PG&E rounds every interval to two
+decimals before exporting**, and on a low-import month that loses about 2% of the
+total. Reading the meter directly through :mod:`nem_rates.sources.influx` or
+:mod:`nem_rates.sources.homeassistant` avoids it. The Green Button file's
+advantage is that it is the utility's own record of what it billed, at true
+fifteen-minute metering, which makes it the better source for how energy divided
+across time-of-use periods even where its totals are worse.
+
+Stdlib-only, unlike its neighbours in this package: there is no download step to
+authenticate and no client library involved, just a file the user already has.
 """
 
 from __future__ import annotations
@@ -16,9 +37,9 @@ from itertools import pairwise
 from pathlib import Path
 from typing import IO, NamedTuple
 
+from ..billing.models import IntervalReading
 from ..errors import DataError
 from ..timeutil import PACIFIC
-from .models import IntervalReading
 
 
 class _Row(NamedTuple):
@@ -65,7 +86,7 @@ def _normalize(name: str) -> str:
 
 
 @dataclass(frozen=True, slots=True)
-class CsvLayout:
+class GreenButtonLayout:
     """Which columns hold what.
 
     Leave fields as ``None`` to auto-detect from the header.
@@ -116,7 +137,7 @@ def _pick(header: list[str], configured: str | None, candidates: tuple[str, ...]
     return None
 
 
-def _skip_preamble(handle: IO[str], layout: CsvLayout) -> Iterator[str]:
+def _skip_preamble(handle: IO[str], layout: GreenButtonLayout) -> Iterator[str]:
     """Yield lines from the real header row onward.
 
     PG&E's interval export opens with account metadata (name, address, account
@@ -127,7 +148,7 @@ def _skip_preamble(handle: IO[str], layout: CsvLayout) -> Iterator[str]:
     documented and has changed before.
 
     Configured column names count as recognisable too, so a preamble does not
-    stop ``CsvLayout(start="when")`` from working on a file whose header this
+    stop ``GreenButtonLayout(start="when")`` from working on a file whose header this
     module would not otherwise know.
     """
     wanted = set(START_CANDIDATES) | set(DATE_CANDIDATES)
@@ -170,18 +191,18 @@ def _parse_float(raw: str | None) -> float:
         raise DataError(f"could not parse {raw!r} as a number") from exc
 
 
-def read_csv(
-    source: str | Path | IO[str], layout: CsvLayout | None = None
+def read_green_button(
+    source: str | Path | IO[str], layout: GreenButtonLayout | None = None
 ) -> list[IntervalReading]:
     """Read interval readings from a CSV file or open stream."""
-    layout = layout or CsvLayout()
+    layout = layout or GreenButtonLayout()
     if isinstance(source, str | Path):
         with Path(source).open(encoding="utf-8-sig", newline="") as handle:
             return list(_read(handle, layout))
     return list(_read(source, layout))
 
 
-def _read(handle: IO[str], layout: CsvLayout) -> Iterator[IntervalReading]:
+def _read(handle: IO[str], layout: GreenButtonLayout) -> Iterator[IntervalReading]:
     reader = csv.DictReader(_skip_preamble(handle, layout))
     header = reader.fieldnames
     if not header:
@@ -201,7 +222,9 @@ def _read(handle: IO[str], layout: CsvLayout) -> Iterator[IntervalReading]:
         start_col = start_col or date_col
         date_col = time_col = None
         if start_col is None:
-            raise DataError(f"no timestamp column found in {header}; set CsvLayout(start=...)")
+            raise DataError(
+                f"no timestamp column found in {header}; set GreenButtonLayout(start=...)"
+            )
 
     import_col = _pick(header, layout.imported, IMPORT_CANDIDATES)
     export_col = _pick(header, layout.exported, EXPORT_CANDIDATES)
@@ -209,7 +232,7 @@ def _read(handle: IO[str], layout: CsvLayout) -> Iterator[IntervalReading]:
 
     if import_col is None and export_col is None and net_col is None:
         raise DataError(
-            f"no energy column found in {header}; set CsvLayout(imported=...), "
+            f"no energy column found in {header}; set GreenButtonLayout(imported=...), "
             f"(exported=...), or (net=...)"
         )
 
