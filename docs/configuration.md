@@ -134,11 +134,21 @@ section is only needed to point elsewhere. Note the defaults are the
 `sensor.eagle_100_total_energy_delivered` is the raw device feed and drops to
 zero several times a day when the meter session restarts.
 
-Credentials come from `.env` in the working directory, or the environment:
+Credentials come from `.env` in the working directory, or the environment.
+The file is not shell — spaces around `=` and quoted values are fine, and are
+what the parser expects:
 
-```bash
+```ini
+# .env
 HA_HOST = "https://homeassistant.example:8123"
 HA_TOKEN = "<long-lived access token>"
+```
+
+To use the environment instead, export them as shell variables:
+
+```bash
+export HA_HOST=https://homeassistant.example:8123
+export HA_TOKEN=...
 ```
 
 Resolution order, later winning: the config file, then `.env`, then real

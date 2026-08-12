@@ -227,7 +227,13 @@ async def _fetch(
                     }
                 )
             )
-            message = json.loads(await ws.recv())
+            # Match on id rather than taking the next frame: Home Assistant may
+            # interleave other messages, and pairing the wrong payload with a
+            # period would silently bill one resolution's data as another's.
+            while True:
+                message = json.loads(await ws.recv())
+                if message.get("id") == index:
+                    break
             if not message.get("success"):
                 error = (message.get("error") or {}).get("message", "unknown error")
                 raise DataError(f"Home Assistant refused the {period} statistics request: {error}")
@@ -235,7 +241,7 @@ async def _fetch(
     return out
 
 
-def read_statistics(
+async def read_statistics_async(
     settings: HaSettings,
     start: datetime,
     end: datetime,
@@ -251,11 +257,17 @@ def read_statistics(
     """
     if resolution not in ("auto", *PERIODS):
         raise ConfigError(f"unknown resolution {resolution!r}; use auto, 5minute or hour")
+    for name, moment in (("start", start), ("end", end)):
+        if moment.tzinfo is None:
+            # Naive datetimes do not raise here, they silently assume the
+            # machine's timezone -- so the window would be quietly wrong rather
+            # than obviously broken.
+            raise ConfigError(f"{name} must be timezone-aware; got {moment.isoformat()}")
     if end <= start:
         raise ConfigError(f"end {end.isoformat()} is not after start {start.isoformat()}")
 
     periods: list[str] = ["5minute", "hour"] if resolution == "auto" else [resolution]
-    fetched = asyncio.run(_fetch(settings, start, end, periods))
+    fetched = await _fetch(settings, start, end, periods)
 
     hourly = _readings_from(fetched.get("hour", {}), settings, PERIODS["hour"], max_kw)
     fine = _readings_from(fetched.get("5minute", {}), settings, PERIODS["5minute"], max_kw)
@@ -274,6 +286,31 @@ def read_statistics(
             f"between {start.isoformat()} and {end.isoformat()}"
         )
     return [readings[stamp] for stamp in sorted(readings)]
+
+
+def read_statistics(
+    settings: HaSettings,
+    start: datetime,
+    end: datetime,
+    resolution: Resolution = "auto",
+    max_kw: float = MAX_INTERVAL_KW,
+) -> list[IntervalReading]:
+    """Blocking wrapper around :func:`read_statistics_async`.
+
+    Refuses to run inside an existing event loop rather than letting
+    ``asyncio.run`` raise a bare RuntimeError, which says nothing about what to
+    do instead. Async callers -- the REST app among them -- want the coroutine.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise ConfigError(
+            "read_statistics() blocks and cannot run inside an event loop; "
+            "await read_statistics_async() instead"
+        )
+    return asyncio.run(read_statistics_async(settings, start, end, resolution, max_kw))
 
 
 def describe_resolution(readings: list[IntervalReading]) -> str:

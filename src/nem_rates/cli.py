@@ -86,7 +86,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _midnight(day: date) -> datetime:
-    """Local midnight starting ``day`` -- where a billing cycle boundary falls."""
+    """Local midnight starting ``day`` -- where a billing cycle boundary falls.
+
+    Callers add ``timedelta(days=1)`` to get the end of a cycle, and that is
+    deliberately wall-clock arithmetic: a cycle closes at the next local
+    midnight, 23 real hours later across the spring transition and 25 across the
+    autumn one. Converting to absolute time first would hold the window at 24
+    hours and land it an hour off on those two days -- the opposite of what
+    coverage checking needs, where elapsed time is the right measure.
+    """
     return datetime(day.year, day.month, day.day, tzinfo=PACIFIC)
 
 

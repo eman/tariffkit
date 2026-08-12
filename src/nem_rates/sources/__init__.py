@@ -15,6 +15,7 @@ from .homeassistant import (
     describe_resolution,
     load_dotenv,
     read_statistics,
+    read_statistics_async,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "describe_resolution",
     "load_dotenv",
     "read_statistics",
+    "read_statistics_async",
 ]

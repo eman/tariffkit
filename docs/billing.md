@@ -44,7 +44,7 @@ One run can therefore mix them, and the CLI says which it used rather than
 implying uniformity:
 
 ```
-source: Home Assistant statistics (2541 x 5minute, 76 x hour)
+  source: Home Assistant statistics (2541 x 5minute, 76 x hour)
 ```
 
 Force one with `--ha-resolution 5minute|hour`.

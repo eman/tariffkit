@@ -15,6 +15,10 @@ from typing import Any
 
 import pytest
 
+# The source needs the 'ha' extra; skip rather than fail the whole module for a
+# contributor who installed without it.
+pytest.importorskip("websockets")
+
 from nem_rates.errors import ConfigError, DataError
 from nem_rates.sources import homeassistant as ha
 from nem_rates.timeutil import PACIFIC
@@ -274,6 +278,59 @@ class TestReadStatistics:
     def test_unknown_resolution_is_rejected(self, settings: ha.HaSettings) -> None:
         with pytest.raises(ConfigError, match="unknown resolution"):
             self.read(settings, resolution="daily")
+
+
+class TestSyncWrapper:
+    def test_refuses_to_run_inside_an_event_loop(self, settings: ha.HaSettings) -> None:
+        """asyncio.run would raise a bare RuntimeError saying nothing useful."""
+        import asyncio
+
+        async def inner() -> None:
+            with pytest.raises(ConfigError, match="read_statistics_async"):
+                ha.read_statistics(
+                    settings,
+                    datetime(2026, 7, 1, tzinfo=PACIFIC),
+                    datetime(2026, 7, 2, tzinfo=PACIFIC),
+                )
+
+        asyncio.run(inner())
+
+    @pytest.mark.parametrize("which", ["start", "end"])
+    def test_naive_datetimes_are_rejected(self, settings: ha.HaSettings, which: str) -> None:
+        """They do not raise on their own -- astimezone silently assumes the
+        machine's timezone, so the window would be quietly wrong."""
+        import asyncio
+
+        window = {
+            "start": datetime(2026, 7, 1, tzinfo=PACIFIC),
+            "end": datetime(2026, 7, 2, tzinfo=PACIFIC),
+        }
+        window[which] = window[which].replace(tzinfo=None)
+        with pytest.raises(ConfigError, match="timezone-aware"):
+            asyncio.run(ha.read_statistics_async(settings, window["start"], window["end"]))
+
+
+def test_interleaved_messages_do_not_confuse_the_response(
+    settings: ha.HaSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Home Assistant may push other frames between request and reply."""
+    hour = timedelta(hours=1)
+    h0 = datetime(2026, 7, 1, tzinfo=PACIFIC)
+    socket = patch_socket(
+        monkeypatch,
+        {"hour": {IMPORT_ID: [point(h0, 3.0, hour)], EXPORT_ID: []}, "5minute": {}},
+    )
+    original = socket.send
+
+    async def send_with_noise(raw: str) -> None:
+        await original(raw)
+        if json.loads(raw).get("type") == "recorder/statistics_during_period":
+            # An unrelated event arrives before the answer we asked for.
+            socket.outbox.insert(-1, json.dumps({"id": 999, "type": "event"}))
+
+    monkeypatch.setattr(socket, "send", send_with_noise)
+    got = ha.read_statistics(settings, h0, h0 + timedelta(hours=2), resolution="hour")
+    assert [r.imported for r in got] == [3.0]
 
 
 def test_describe_resolution_names_a_mixed_run() -> None:
