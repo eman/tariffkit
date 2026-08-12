@@ -21,9 +21,11 @@ extra. Nothing on the pricing path reaches this module.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 from ..errors import DataError
 
@@ -71,8 +73,9 @@ def read_pages(path: Path) -> list[Page]:
             "regenerating rate data needs the 'regen' extra: pip install 'nem-rates[regen]'"
         ) from exc
 
+    reader_pages = list(PdfReader(str(path)).pages)
     pages: list[Page] = []
-    for index, raw in enumerate(PdfReader(str(path)).pages):
+    for index, raw in enumerate(reader_pages):
         text = raw.extract_text() or ""
         head = SHEET_HEADER.search(text)
         advice = ADVICE.search(text)
@@ -87,14 +90,62 @@ def read_pages(path: Path) -> list[Page]:
         )
     if not pages:
         raise ExtractionError(f"{path} has no pages")
-    if not any(p.text.strip() for p in pages):
-        # A scanned or mis-fetched file extracts to nothing. Saying so beats
-        # every downstream table reporting itself as missing.
-        raise ExtractionError(
-            f"{path} has no extractable text -- it may be a scanned image, or the "
-            f"download may have been blocked and saved as an error page"
-        )
+    _require_text_layer(path, pages, reader_pages)
     return pages
+
+
+#: Below this many characters a page is treated as having no text, whatever it
+#: nominally extracted: "Page 1" is six.
+MIN_TEXT_CHARS = 40
+
+
+def _require_text_layer(path: Path, pages: list[Page], raw_pages: Sequence[Any]) -> None:
+    """Fail with the actual reason when a document has no readable text.
+
+    There are three ways to end up with a PDF nothing can read, and they need
+    different answers, so guessing between them wastes the reader's time:
+
+    * the download was blocked and an error page got saved -- retry, or use --pdf
+    * the document is a scan -- OCR, or find another publication of it
+    * the document was printed to PDF with a font carrying no Unicode mapping
+
+    The third is the one that is easy to misdiagnose, because the file is large,
+    structurally valid, and full of drawing operators. MCE's current rate card is
+    exactly this: 1.4 MB of content streams whose ToUnicode CMap has six entries,
+    enough to spell "Page 1" and nothing else. Every glyph in the rate table is a
+    bare glyph id with no character behind it, so no parser can recover the
+    figures -- only OCR can. Their 2023 card extracts perfectly, so this is a
+    change in how they produce the file, not something we are doing wrong.
+    """
+    if sum(len(p.text.strip()) for p in pages) >= MIN_TEXT_CHARS:
+        return
+
+    content_bytes = 0
+    mapped = 0
+    for raw in raw_pages:
+        try:
+            contents = raw["/Contents"]
+            streams = contents if isinstance(contents, list) else [contents]
+            content_bytes += sum(len(s.get_object().get_data()) for s in streams)
+            for font in raw["/Resources"]["/Font"].values():
+                to_unicode = font.get_object().get("/ToUnicode")
+                if to_unicode is not None:
+                    mapped += to_unicode.get_object().get_data().count(b"<")
+        except Exception:
+            pass
+
+    if content_bytes > 10_000:
+        raise ExtractionError(
+            f"{path} draws {content_bytes:,} bytes of content but exposes no readable "
+            f"text (its fonts map {mapped} characters to Unicode). This is what a "
+            f"print-to-PDF export looks like: the figures are glyph ids with no "
+            f"characters behind them, so no parser can recover them and OCR would be "
+            f"required. Check whether the publisher offers the same table elsewhere."
+        )
+    raise ExtractionError(
+        f"{path} has no extractable text -- it may be a scan, or the download may "
+        f"have been blocked and saved as an error page"
+    )
 
 
 def parse_effective(text: str) -> date | None:

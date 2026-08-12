@@ -28,10 +28,18 @@ All notable changes to this project are documented here. This project follows
 - **Publishers are declared, not hard-coded.** `nem_rates.regen.providers` holds
   every publisher-specific fact; PG&E is not the only utility and MCE is not the
   only CCA, so adding either is a registry entry rather than a parser change.
-  A source also records whether a script can fetch it: PG&E serves tariff PDFs to
-  anything that asks, MCE's CDN returns 403 to every scripted request regardless
-  of headers. A blocked source is skipped with a note rather than failed — it is
-  unknown, not stale — and regenerates from a file supplied with `--pdf`.
+  A source also records whether a script can fetch it, because publishers differ
+  arbitrarily: MCE's CDN answers urllib and curl with 403 whatever headers they
+  send, and answers httpx with 200 and the file, so the fetcher tries httpx
+  first. A source that genuinely cannot be fetched is skipped with a note rather
+  than failed — unknown, not stale — and regenerates from a file supplied with
+  `--pdf`.
+- A document with no text layer is diagnosed rather than reported as an empty
+  table. MCE's current rate card is a print-to-PDF export whose font maps six
+  characters to Unicode: every figure is a glyph id with no character behind it,
+  so no parser can recover it and only OCR could. Their 2023 card extracts
+  exactly, which is what the CCA extractor is tested against, so `cca/mce.toml`
+  stays hand-maintained until the publisher ships readable text again.
 - A new `regen` extra carries `pypdf`. The library itself never opens a PDF.
 - The weekly job now checks all four datasets rather than export rates alone,
   and reports each independently so the first failure does not hide the second.

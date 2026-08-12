@@ -12,11 +12,11 @@ What a new entry has to supply:
 * the URL of each document, and whether it can actually be fetched by a script.
 
 That last one is not a detail. Publishers put their rate cards behind wildly
-different infrastructure: PG&E serves tariff PDFs to anything that asks, while
-MCE's CDN returns 403 to every scripted request regardless of headers. A source
-that cannot be downloaded is still perfectly regenerable from a file the user
-saved by hand, so :class:`Source` records the difference instead of pretending
-every publisher behaves the same.
+different infrastructure, and the differences are arbitrary: MCE's CDN answers
+urllib and curl with 403 whatever headers they send, and answers httpx with 200
+and the file. A source that genuinely cannot be fetched is still regenerable
+from a file saved by hand, so :class:`Source` records the difference instead of
+pretending every publisher behaves the same.
 """
 
 from __future__ import annotations
@@ -102,12 +102,9 @@ MCE = Cca(
     rate_card=Source(
         "https://mcecleanenergy.org/wp-content/uploads/2025/09/"
         "MCE-website-rate-table_RES_as-of-4.1.26.pdf",
-        fetchable=False,
-        blocked_note=(
-            "MCE's CDN returns 403 to scripted requests regardless of user agent, "
-            "referer or fetch-mode headers. Download the rate card in a browser "
-            "and pass it with --pdf."
-        ),
+        # Downloadable, but only by httpx: MCE's CDN answers urllib and curl
+        # with 403 no matter what headers they send. See fetch._get_with_httpx.
+        fetchable=True,
     ),
     schedule_aliases={"ELEC": "eelec", "ETOUC": "etouc", "EV2": "ev2a"},
     tariff_url=(

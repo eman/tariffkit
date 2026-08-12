@@ -37,12 +37,35 @@ a parser: adding either is an entry in `UTILITIES` or `CCAS` naming its
 documents, plus — for a CCA — how its rate card spells each schedule, since MCE
 writes `ELEC` for PG&E's `E-ELEC` and that cannot be derived.
 
-A `Source` also records whether a script can actually fetch it. That is not a
-detail: PG&E serves tariff PDFs to anything that asks, while MCE's CDN returns
-403 to every scripted request regardless of headers. A blocked source is
-**skipped with a note** rather than failed — it is unknown, not stale — and is
-regenerated from a file you saved by hand with `--pdf`. The extraction,
-validation and emission are automated either way; only the download is not.
+A `Source` also records whether a script can actually fetch it, because
+publishers differ arbitrarily: MCE's CDN answers `urllib` and `curl` with 403
+whatever headers they send, and answers `httpx` with 200 and the file. So the
+fetcher tries `httpx` first and falls back to `urllib`. A source that genuinely
+cannot be fetched is **skipped with a note** rather than failed — it is unknown,
+not stale — and regenerates from a file saved by hand with `--pdf`.
+
+### When a document has no text layer
+
+Downloading a PDF is not the same as being able to read one. MCE's current rate
+card is a `Microsoft: Print To PDF` export: 1.4 MB of drawing operators whose
+font maps six characters to Unicode, enough to spell "Page 1". Every figure in
+the rate table is a bare glyph id with no character behind it, so **no parser can
+recover it** — only OCR could. Their 2023 card extracts perfectly, so this is a
+change in how they produce the file.
+
+The failure says exactly that rather than "no table found", because the three
+ways to get an unreadable PDF need different answers:
+
+```
+mce: draws 1,409,939 bytes of content but exposes no readable text (its fonts
+map 16 characters to Unicode). This is what a print-to-PDF export looks like:
+the figures are glyph ids with no characters behind them, so no parser can
+recover them and OCR would be required.
+```
+
+`cca/mce.toml` is therefore still maintained by hand for now, and the extractor
+— verified against MCE's 2023 card, which it reads exactly — takes over as soon
+as the publisher ships a text-bearing document again.
 
 ## Export rates (NBT matrices + holiday calendar): automated
 

@@ -43,6 +43,10 @@ def fetch(source: Source, cache: Path, *, refresh: bool = False) -> Path:
         return cache
 
     cache.parent.mkdir(parents=True, exist_ok=True)
+    body = _get_with_httpx(source.url)
+    if body is not None:
+        return _store(source, cache, body)
+
     request = urllib.request.Request(source.url, headers=HEADERS)
     try:
         with urllib.request.urlopen(request, timeout=120) as response:
@@ -55,6 +59,33 @@ def fetch(source: Source, cache: Path, *, refresh: bool = False) -> Path:
     except urllib.error.URLError as exc:
         raise ExtractionError(f"could not reach {source.url}: {exc.reason}") from exc
 
+    return _store(source, cache, body)
+
+
+def _get_with_httpx(url: str) -> bytes | None:
+    """Try httpx first, because some publishers reject urllib specifically.
+
+    MCE's CDN answers urllib and curl with 403 no matter what headers they send,
+    and answers httpx with 200 and the file. The difference is the client, not
+    the request -- so this is worth trying before concluding a document cannot be
+    downloaded. Returns None when httpx is unavailable or does not succeed, and
+    the urllib path then runs and produces the error message.
+    """
+    try:
+        import httpx
+    except ImportError:
+        return None
+    try:
+        with httpx.Client(follow_redirects=True, timeout=120, headers=HEADERS) as client:
+            response = client.get(url)
+    except Exception:
+        return None
+    if response.status_code != 200:
+        return None
+    return bytes(response.content)
+
+
+def _store(source: Source, cache: Path, body: bytes) -> Path:
     if len(body) < MIN_PLAUSIBLE_BYTES or not body.lstrip().startswith(b"%PDF"):
         # A block page is served with 200 as often as with 403. Catching it here
         # turns "no rate table found" into something that names the real cause.
