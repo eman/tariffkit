@@ -54,7 +54,13 @@ def entry(
 
 
 def year_of_cycles(**kw: float) -> list[LedgerEntry]:
-    """Twelve cycles ending with a March-April one, sharing the same numbers."""
+    """Ten cycles ending with a March-April one, sharing the same numbers.
+
+    Ten rather than twelve: the helper builds within-year month pairs, so the
+    December-January cycle is elided. The count is incidental to what these
+    tests check -- that a run closes on a March-April cycle -- but the
+    arithmetic in the surplus tests is written against ten, so it is stated.
+    """
     months = [(5, 6), (6, 7), (7, 8), (8, 9), (9, 10), (10, 11), (11, 12)]
     out = [entry(date(2026, a, 15), date(2026, b, 14), **kw) for a, b in months]  # type: ignore[arg-type]
     out += [
@@ -87,6 +93,11 @@ class TestRelevantPeriod:
 
     def test_the_anniversary_itself_is_not_after_itself(self) -> None:
         assert relevant_period_end(date(2026, 6, 3), date(2027, 6, 3)) == date(2028, 6, 3)
+
+    def test_the_pto_date_itself_does_not_close_the_first_period(self) -> None:
+        # The PTO date starts the first Relevant Period; the first close is a
+        # year later, even for a ledger that begins before interconnection.
+        assert relevant_period_end(date(2026, 6, 3), date(2026, 5, 15)) == date(2027, 6, 3)
 
     def test_a_leap_day_pto_falls_back_to_the_28th(self) -> None:
         assert relevant_period_end(date(2024, 2, 29), date(2026, 1, 1)) == date(2026, 2, 28)
@@ -237,6 +248,22 @@ class TestRunTrueUps:
         kinds = [t.kind for t in got]
         assert TrueUpKind.MCE_CASH_OUT in kinds
         assert TrueUpKind.PGE_RELEVANT_PERIOD in kinds
+
+    def test_the_period_includes_the_cycle_holding_the_anniversary(self) -> None:
+        # The anniversary falls mid-cycle and the true-up lands on that cycle's
+        # statement, so it closes the period rather than opening the next one.
+        # Ending at the cycle before drops a month of energy out of the period.
+        cycles = [
+            entry(date(2026, 6, 30), date(2026, 7, 28), imported=10.0),
+            *[entry(date(2026, m, 28), date(2026, m + 1, 27), imported=10.0) for m in range(7, 12)],
+            *[entry(date(2027, m, 28), date(2027, m + 1, 27), imported=10.0) for m in range(1, 7)],
+        ]
+        got = run_true_ups(cycles, pto_date=date(2026, 6, 3), is_cca=True)
+        period = next(t for t in got if t.kind is TrueUpKind.PGE_RELEVANT_PERIOD)
+        assert period.period.start <= date(2027, 6, 3) <= period.period.end
+        # Eleven of the twelve cycles: the last one opens the next period.
+        assert period.period.end == date(2027, 6, 27)
+        assert period.imported_kwh == pytest.approx(110.0)
 
     def test_an_unclosed_year_is_not_reported(self) -> None:
         # A year that has not closed has not been trued up.

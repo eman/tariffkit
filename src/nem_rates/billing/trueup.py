@@ -238,13 +238,18 @@ def relevant_period_end(pto_date: date, after: date) -> date:
     PG&E's Relevant Period runs "from the customer's PTO date or anniversary
     thereof", so this is per-account rather than a fixed calendar. A 29 February
     PTO date falls back to the 28th in common years.
+
+    The PTO date itself is the start of the first period, not the end of one, so
+    it never closes a period however early ``after`` falls. Without that a ledger
+    beginning in the month before interconnection would close a Relevant Period
+    days after it opened.
     """
-    for year in (after.year, after.year + 1):
+    for year in range(min(after.year, pto_date.year), max(after.year, pto_date.year) + 2):
         try:
             anniversary = pto_date.replace(year=year)
         except ValueError:  # 29 February in a common year
             anniversary = pto_date.replace(year=year, day=28)
-        if anniversary > after:
+        if anniversary > after and anniversary > pto_date:
             return anniversary
     raise ConfigError(f"could not place a PTO anniversary after {after.isoformat()}")
 
@@ -476,14 +481,18 @@ def run_true_ups(
             out.append(mce_cash_out(group, nsc_rate))
 
     if pto_date is not None:
+        # Close the period *including* the cycle that reaches the anniversary,
+        # the way the March-April cycle closes an MCE year rather than opening
+        # the next one. An anniversary falls mid-cycle, and the true-up lands on
+        # the statement for the cycle containing it; ending the period at the
+        # cycle before would drop a month of energy and credits out of it.
         window: list[LedgerEntry] = []
         boundary = relevant_period_end(pto_date, ordered[0].period.start)
         for entry in ordered:
+            window.append(entry)
             if entry.period.end >= boundary:
-                if window:
-                    out.append(pge_true_up(window, pto_date, is_cca=is_cca))
+                out.append(pge_true_up(window, pto_date, is_cca=is_cca))
                 window = []
                 boundary = relevant_period_end(pto_date, entry.period.end)
-            window.append(entry)
 
     return sorted(out, key=lambda t: (t.period.end, str(t.kind)))
