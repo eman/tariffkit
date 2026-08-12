@@ -5,6 +5,19 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+- **`nem-rates regen nsc`** rebuilds the Net Surplus Compensation series from the
+  published rate table. It was vendored by hand when the annual true-up landed
+  and had no regeneration path at all, which made it the one dataset that could
+  go stale silently — it grows by a row a month, and nothing about a missing
+  month looks wrong until a true-up falls in it.
+- **The franchise fee surcharge is read from Schedule E-FFS** rather than carried
+  forward from the previous snapshot. It sits in a tariff snapshot's `[cca]`
+  table but is published in a different schedule, so carrying it meant PG&E could
+  reissue E-FFS with nothing noticing — and it is live rate data on every CCA
+  price. `regen tariff` now reads both documents and reports which. All eighteen
+  extracted vintages match the hand-transcribed ones exactly.
+
 ### Changed
 - **The CSV reader moved to `nem_rates.sources.greenbutton` and is named for the
   format it reads.** It sat in `nem_rates.billing.ingest` while the other two

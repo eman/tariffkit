@@ -16,7 +16,7 @@ import pytest
 
 pytest.importorskip("pypdf")
 
-from nem_rates.regen import accplus, cca, sheets
+from nem_rates.regen import accplus, cca, franchise, nsc, sheets
 from nem_rates.regen import tariff as rt
 from nem_rates.regen.sheets import ExtractionError
 
@@ -433,3 +433,110 @@ class TestRefusesToGuess:
         data = rt.Extracted(periods=["peak"])
         data.rates_advice = "7846-E"
         rt.require_provenance(data)
+
+
+# Verbatim from PG&E Schedule E-FFS, Sheet 2.
+EFFS_TABLE = """Customer Class DA/CCA Franchise Fee Surcharge Rate per kWh
+Pre-2009 Vintage 2009 Vintage 2010 Vintage
+Residential $0.00086 (R) $0.00064 (R) $0.00061 (R)
+Small L&P $0.00083 (R) $0.00062 (R) $0.00059 (R)
+Streetlights $0.00070 (R) $0.00052 (R) $0.00050 (R)
+2011 Vintage 2012 Vintage 2013 Vintage
+Residential $0.00060 (R) $0.00059 (R) $0.00059 (R)
+Small L&P $0.00058 (R) $0.00057 (R) $0.00057 (R)
+2014 Vintage 2015 Vintage 2016 Vintage
+Residential $0.00059 (R) $0.00059 (R) $0.00059 (R)
+2017 Vintage 2018 Vintage 2019 Vintage
+Residential $0.00059 (R) $0.00059 (R) $0.00059 (R)
+2020 Vintage 2021 Vintage 2022 Vintage
+Residential $0.00059 (R) $0.00048 (R) $0.00048 (R)
+"""
+
+
+class TestFranchiseFees:
+    def test_vintages_come_from_the_header_above_each_block(self) -> None:
+        got = franchise.extract([sheet(EFFS_TABLE)])
+        assert got[2009] == 0.00064
+        assert got[2011] == 0.00060
+        assert got[2021] == 0.00048
+
+    def test_only_the_requested_customer_class_is_read(self) -> None:
+        got = franchise.extract([sheet(EFFS_TABLE)])
+        # Streetlights 2009 is 0.00052; residential is 0.00064.
+        assert 0.00052 not in got.values()
+
+    def test_the_pre_2009_vintage_is_dropped(self) -> None:
+        # The PCIA table it is keyed alongside has no pre-2009 entry, so such a
+        # customer cannot be priced anyway.
+        got = franchise.extract([sheet(EFFS_TABLE)])
+        assert 0.00086 not in got.values()
+        assert all(isinstance(k, int) and k >= 2009 for k in got)
+
+    def test_a_row_that_does_not_match_its_header_is_an_error(self) -> None:
+        broken = EFFS_TABLE.replace(
+            "Residential $0.00060 (R) $0.00059 (R) $0.00059 (R)",
+            "Residential $0.00060 (R) $0.00059 (R)",
+        )
+        with pytest.raises(ExtractionError, match="values for"):
+            franchise.extract([sheet(broken)])
+
+    def test_a_truncated_table_is_an_error(self) -> None:
+        half = EFFS_TABLE.split("2014 Vintage")[0]
+        with pytest.raises(ExtractionError, match=r"only .* franchise fee vintages"):
+            franchise.extract([sheet(half)])
+
+    def test_a_document_without_the_table_is_an_error(self) -> None:
+        with pytest.raises(ExtractionError, match="Franchise Fee"):
+            franchise.extract([sheet("some other schedule entirely")])
+
+
+# Verbatim from PG&E's AB920 rate table.
+NSC_TABLE = """Net Surplus Compensation Rates for Energy
+True-up Month NSC Rate* ($/kWh)
+Jan. 2025 0.03396
+Feb. 2025 0.03087
+Mar. 2025 0.03043
+Dec. 2025 0.03145
+Jan. 2026 0.03116
+July 2026 0.03089
+Aug. 2026 0.02684
+* Per D.11-06-016, the electricity portion of the NSC rate is the simple rolling
+"""
+
+
+class TestNscSeries:
+    def test_months_are_keyed_year_first(self) -> None:
+        got = nsc.extract([sheet(NSC_TABLE)])
+        assert got["2025-01"] == 0.03396
+        assert got["2026-08"] == 0.02684
+
+    def test_a_full_month_name_parses_like_an_abbreviated_one(self) -> None:
+        # The table mixes "Jan." with "July".
+        got = nsc.extract([sheet(NSC_TABLE)])
+        assert got["2026-07"] == 0.03089
+
+    def test_the_footnote_is_not_read_as_a_row(self) -> None:
+        got = nsc.extract([sheet(NSC_TABLE)])
+        assert set(got) == {
+            "2025-01",
+            "2025-02",
+            "2025-03",
+            "2025-12",
+            "2026-01",
+            "2026-07",
+            "2026-08",
+        }
+
+    def test_an_implausible_rate_is_an_error(self) -> None:
+        broken = NSC_TABLE.replace("Jan. 2025 0.03396", "Jan. 2025 3.03396")
+        with pytest.raises(ExtractionError, match="plausible"):
+            nsc.extract([sheet(broken)])
+
+    def test_a_truncated_series_is_an_error(self) -> None:
+        half = NSC_TABLE.split("Mar. 2025")[0]
+        with pytest.raises(ExtractionError, match=r"only .* NSC months"):
+            nsc.extract([sheet(half)])
+
+    def test_a_document_without_the_table_is_an_error(self) -> None:
+        with pytest.raises(ExtractionError, match="Net Surplus"):
+            nsc.extract([sheet("Jan. 2025 0.03396")])

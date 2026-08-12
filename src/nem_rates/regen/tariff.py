@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from . import franchise
 from .emit import DATA_DIR, Result, fmt, write_or_check
 from .providers import Utility
 from .sheets import (
@@ -392,7 +393,12 @@ def verify(data: Extracted) -> list[str]:
 
 
 def render(
-    slug: str, data: Extracted, previous: dict[str, Any], effective: date, provider: Utility
+    slug: str,
+    data: Extracted,
+    previous: dict[str, Any],
+    effective: date,
+    provider: Utility,
+    franchise_fees: dict[int, float] | None = None,
 ) -> str:
     """Build the snapshot, carrying structure forward and rates from the sheet."""
     tariff_name = provider.schedule_names[slug]
@@ -493,11 +499,16 @@ def render(
 
     lines += [
         "",
-        "# Schedule E-FFS franchise fee surcharge. A different schedule, so it is",
-        "# carried forward rather than read from this sheet.",
+        "# Franchise fee surcharge, which a CCA/DA customer pays and a bundled one",
+        "# does not. Published in a separate schedule (E-FFS) and read from it,",
+        "# because carrying it forward would let that schedule be reissued without",
+        "# anything noticing -- it is live rate data on every CCA price.",
         "[cca.franchise_fee_vintages]",
     ]
-    for year, value in sorted(previous.get("cca", {}).get("franchise_fee_vintages", {}).items()):
+    fees = franchise_fees or {
+        int(k): v for k, v in previous.get("cca", {}).get("franchise_fee_vintages", {}).items()
+    }
+    for year, value in sorted(fees.items()):
         lines.append(f"{year} = {fmt(value)}")
 
     lines += ["", "[base_services_charge]", 'unit = "USD/day"']
@@ -567,8 +578,16 @@ def price_through_the_loader(slug: str, body: str, data: Extracted, provider: Ut
     return problems
 
 
-def regenerate(provider: Utility, slug: str, pdf: Path, *, check: bool) -> Result:
-    """Rebuild one schedule's snapshot from ``pdf``."""
+def regenerate(
+    provider: Utility, slug: str, pdf: Path, *, check: bool, cache: Path | None = None
+) -> Result:
+    """Rebuild one schedule's snapshot from ``pdf``.
+
+    The franchise fee surcharge lives in a different schedule, so a second
+    document is read here rather than the previous snapshot's values being
+    carried forward -- those are live rate data on every CCA price, and carrying
+    them meant E-FFS could be reissued with nothing noticing.
+    """
     data = extract(read_pages(pdf))
     require_provenance(data)
     problems = verify(data)
@@ -583,18 +602,43 @@ def regenerate(provider: Utility, slug: str, pdf: Path, *, check: bool) -> Resul
             ),
         )
 
+    fees = _franchise_fees(provider, cache)
     effective = pick_effective(data)
     directory = DATA_DIR / "tariff" / provider.key / slug
     existing = sorted(directory.glob("*.toml")) if directory.is_dir() else []
     previous = tomllib.loads(existing[-1].read_text(encoding="utf-8")) if existing else {}
-    body = render(slug, data, previous, effective, provider)
+    body = render(slug, data, previous, effective, provider, fees)
 
     checked = sum(len(v) for v in data.energy.values())
+    notes = [f"{checked} season/period cells reconcile against the published totals"]
+    notes.append(
+        f"{len(fees)} franchise fee vintages read from E-FFS"
+        if fees
+        else "franchise fees carried forward: E-FFS could not be read"
+    )
     return write_or_check(
         f"{provider.key}/{slug}",
         directory / f"{effective.isoformat()}.toml",
         body,
         check=check,
         verify=lambda text: price_through_the_loader(slug, text, data, provider),
-        messages=[f"{checked} season/period cells reconcile against the published totals"],
+        messages=notes,
     )
+
+
+def _franchise_fees(provider: Utility, cache: Path | None) -> dict[int, float]:
+    """Read E-FFS, or return empty so the caller falls back and says so."""
+    if provider.franchise_fees is None:
+        return {}
+    from .fetch import fetch
+
+    root = cache or Path.home() / ".cache" / "nem-rates" / "regen"
+    try:
+        return franchise.extract(
+            read_pages(fetch(provider.franchise_fees, root / f"{provider.key}-effs.pdf"))
+        )
+    except ExtractionError:
+        # Not fatal: the retail rates are the point of this dataset, and the
+        # previous snapshot's fees are still the last known-good ones. The
+        # caller reports that they were carried rather than read.
+        return {}
