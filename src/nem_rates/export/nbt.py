@@ -8,18 +8,20 @@ lookup is a few list indexes rather than a scan of 350,640 rows.
 
 from __future__ import annotations
 
-import tomllib
 from datetime import date, datetime
 from functools import lru_cache
 from typing import Any
 
 from ..config import FLOATING_VINTAGE, Config
-from ..data import read_data_json_gz, read_data_text
+from ..data import read_data_json_gz, versioned
 from ..errors import ConfigError, DataError, OutOfRangeError
 from ..models import ExportPrice, Supplier
 from ..timeutil import MONTHS, DayType, day_type, export_hour
 
-ACC_PLUS_FILE = "export/pge/acc_plus.toml"
+#: Where a utility's ACC Plus adder table lives. Keyed by utility rather than
+#: hardcoded to one, and effective-dated, so a revision sits beside its
+#: predecessor instead of overwriting it.
+ACC_PLUS_DIR = "export/{utility}/acc_plus"
 
 
 @lru_cache(maxsize=8)
@@ -30,9 +32,9 @@ def _matrix(vintage: str) -> dict[str, Any]:
     return payload
 
 
-@lru_cache(maxsize=1)
-def _acc_plus_table() -> dict[str, Any]:
-    return tomllib.loads(read_data_text(ACC_PLUS_FILE))
+def _acc_plus_table(utility: str, on: date) -> dict[str, Any]:
+    relative = ACC_PLUS_DIR.format(utility=utility.lower())
+    return versioned.load(relative, on, label=f"{utility} ACC Plus").raw
 
 
 class NbtExportRates:
@@ -81,7 +83,10 @@ class NbtExportRates:
         year = self.config.interconnection_year
         if year is None:
             return 0.0
-        table = _acc_plus_table().get(segment)
+        # Resolved against the interconnection year's own start: the adder is
+        # fixed for the nine-year lock from that vintage, so the table in force
+        # when the customer interconnected is the one that governs.
+        table = _acc_plus_table(self.config.utility, date(year, 12, 31)).get(segment)
         if table is None:
             raise ConfigError(f"unknown acc_plus_segment {segment!r}")
         value = table.get(str(year))
@@ -144,7 +149,7 @@ class NbtExportRates:
                 # MCE's is reconciled against a real cycle, others are estimates.
                 from ..cca import load_rate_card
 
-                card = load_rate_card(cca.rate_card)
+                card = load_rate_card(cca.rate_card, moment.date())
                 components["cca_generation"] = float(
                     data["generation"][month_index][day_index][hour]
                 )

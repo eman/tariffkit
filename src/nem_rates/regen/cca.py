@@ -230,11 +230,18 @@ def render(
     return "\n".join(lines) + "\n"
 
 
+def effective_of(previous: dict[str, object]) -> str:
+    """The date the vintage being written took force."""
+    return str(previous.get("effective", date.today().isoformat()))
+
+
 def regenerate(provider: Cca, pdf: Path, *, check: bool) -> Result:
     import tomllib
 
-    target = DATA_DIR / "cca" / f"{provider.key}.toml"
-    previous = tomllib.loads(target.read_text(encoding="utf-8")) if target.exists() else {}
+    directory = DATA_DIR / "cca" / provider.key
+    existing = sorted(directory.glob("*.toml")) if directory.is_dir() else []
+    previous = tomllib.loads(existing[-1].read_text(encoding="utf-8")) if existing else {}
+    target = directory / f"{effective_of(previous)}.toml"
     digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
 
     try:

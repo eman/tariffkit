@@ -595,9 +595,10 @@ class TestUnparseableCardIsStillWatched:
         import tomllib
 
         raw = tomllib.loads(
-            (Path(__file__).resolve().parent.parent / "src/nem_rates/data/cca/mce.toml").read_text(
-                encoding="utf-8"
-            )
+            (
+                Path(__file__).resolve().parent.parent
+                / "src/nem_rates/data/cca/mce/2026-04-01.toml"
+            ).read_text(encoding="utf-8")
         )
         assert len(str(raw.get("source_sha256", ""))) == 64
         assert raw.get("source_read_on")
