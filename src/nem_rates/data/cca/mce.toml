@@ -14,10 +14,12 @@
 # That is a supported way to maintain this file, not a failure: what is lost is
 # the automated extraction, not the source.
 #
-# `nem-rates regen cca` therefore cannot rebuild this file unattended. The
+# `nem-rates regen cca` therefore cannot rebuild this file inside a CI runner,
+# which has no reader -- but an agent session renders the page and reads it, so
+# the file is still maintainable without anyone transcribing by hand. CI detects
+# a republished card by checksum and leaves the reading to such a session. The
 # extractor exists and reads MCE's 2023 card exactly, and takes over the day
-# they publish text again; until then `regen cca` reports precisely why and
-# points at this path.
+# they publish text again.
 #
 # VERIFICATION. Every one of the 16 generation rates below was checked against
 # the rendered card on 2026-08-12 and matched. So were the cost relief credit

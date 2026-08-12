@@ -23,7 +23,10 @@ All notable changes to this project are documented here. This project follows
   published; they have now, and it says so. The card has no text layer, so this
   is a read of the rendered page rather than a parse -- which `docs/data.md` now
   documents as the procedure for that case rather than describing it as a
-  blocker.
+  blocker. Reading a rendered page needs a *reader* rather than a parser, not a
+  person: an agent session does it directly. What a CI runner lacks is the
+  reader, not the capability, which is why it detects the change by checksum and
+  leaves the reading to a session that can.
 
 ### Added
 - **`nem-rates regen nsc`** rebuilds the Net Surplus Compensation series from the
