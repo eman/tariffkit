@@ -5,27 +5,33 @@
 # Solar Billing Plan tariff (effective 2023-12-01, rev. 2024-12-04):
 #   https://mcecleanenergy.org/wp-content/uploads/2024/12/MCE-Solar-Billing-Plan-Tariff_120424.pdf
 #
-# HOW THESE WERE READ, and how confident to be in each.
+# HOW THESE WERE READ.
 #
-# The rate card is a "Microsoft: Print To PDF" export of a spreadsheet. It has
-# no text layer at all -- pdftotext, pdffonts and pypdf all come back empty, and
-# its font maps six characters to Unicode, enough to spell "Page 1". So these
-# values were read VISUALLY off the rendered page on 2026-08-01, not parsed.
-# `nem-rates regen cca` cannot rebuild this file until MCE publishes a
-# text-bearing document; the extractor exists and reads their 2023 card exactly.
+# The rate card is a "Microsoft: Print To PDF" export of a spreadsheet with no
+# text layer -- pdftotext, pdffonts and pypdf all come back empty, and its font
+# maps six characters to Unicode, enough to spell "Page 1". The page renders
+# perfectly, so the table is READ FROM THE RENDERED PAGE rather than parsed.
+# That is a supported way to maintain this file, not a failure: what is lost is
+# the automated extraction, not the source.
 #
-# That means a transcription slip here has no automatic check behind it, unlike
-# the PG&E sheets whose components must sum to published totals. What partial
-# cover exists:
+# `nem-rates regen cca` therefore cannot rebuild this file unattended. The
+# extractor exists and reads MCE's 2023 card exactly, and takes over the day
+# they publish text again; until then `regen cca` reports precisely why and
+# points at this path.
 #
-#   VERIFIED against the July 2026 statement -- summer E-ELEC only:
-#     peak 0.26299, part_peak 0.16388, off_peak 0.11878
-#     (tests/test_mce.py::test_generation_matches_the_billed_rate)
+# VERIFICATION. Every one of the 16 generation rates below was checked against
+# the rendered card on 2026-08-12 and matched. So were the cost relief credit
+# (-0.0062, through 2026-12-31) and the Deep Green premium (+0.0125).
 #
-#   NOT independently verified -- the other 13 values: every winter rate, and
-#     all of E-TOU-C and EV2-A. They were read from the same rendered page and
-#     have never been checked against a bill, because no bill has exercised
-#     them. Winter first applies in October 2026.
+# Three of them are independently confirmed a second way, against the July 2026
+# statement -- summer E-ELEC peak 0.26299, part-peak 0.16388, off-peak 0.11878
+# (tests/test_mce.py::test_generation_matches_the_billed_rate). The remaining
+# thirteen rest on the card alone, since no bill has exercised them yet; winter
+# first applies in October 2026.
+#
+# What this file does NOT have, unlike a PG&E snapshot, is an arithmetic check:
+# there is no published total for its components to sum to. Re-read the card
+# against these values when it changes.
 #
 # MCE calls the schedule "ELEC - Residential Time-of-Use for Qualified Electric
 # Technologies"; it pairs with PG&E's E-ELEC delivery service and appears on

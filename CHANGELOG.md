@@ -5,6 +5,15 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+- `cca/mce.toml`'s 16 generation rates, its cost relief credit and its Deep Green
+  premium were all re-read from MCE's published card and confirmed. The header
+  previously said thirteen of them had never been checked against anything MCE
+  published; they have now, and it says so. The card has no text layer, so this
+  is a read of the rendered page rather than a parse -- which `docs/data.md` now
+  documents as the procedure for that case rather than describing it as a
+  blocker.
+
 ### Added
 - **`nem-rates regen nsc`** rebuilds the Net Surplus Compensation series from the
   published rate table. It was vendored by hand when the annual true-up landed
