@@ -14,7 +14,7 @@ January bill priced at March rates gives no sign of it.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -103,13 +103,30 @@ class TestCcaCardsResolveByDate:
         assert card.provider == "MCE"
 
     def test_a_date_before_the_earliest_card_raises_rather_than_guessing(self) -> None:
-        # Before this took a date at all, January was priced with April's card.
-        # MCE cut generation about 14% on 2026-04-01, so that was silently wrong
-        # by the whole repricing.
+        # Asks the data where its own edge is: vintages get backfilled, so a
+        # hardcoded date here goes stale the moment one lands before it.
         from nem_rates.cca import load_rate_card
 
+        earliest = versioned.versions(CARD)[0].effective
         with pytest.raises(DataError, match="no version effective on or before"):
-            load_rate_card("mce", date(2026, 1, 15))
+            load_rate_card("mce", earliest - timedelta(days=1))
+
+    def test_january_2026_resolves_to_the_card_that_was_in_force(self) -> None:
+        # MCE repriced on 2026-04-01, moving down to parity with PG&E. Pricing
+        # January with April's card understated generation by about two cents a
+        # kilowatt-hour; the December 2025 statement shows 0.14900/0.13500 for
+        # E-TOU-C winter, which is what the vintage in force must give.
+        from nem_rates.cca import load_rate_card
+
+        card = load_rate_card("mce", date(2026, 1, 15))
+        assert card.generation("E-TOU-C", "winter", "peak") == pytest.approx(0.14900)
+        assert card.generation("E-TOU-C", "winter", "off_peak") == pytest.approx(0.13500)
+
+    def test_july_2026_resolves_to_the_repriced_card(self) -> None:
+        from nem_rates.cca import load_rate_card
+
+        card = load_rate_card("mce", date(2026, 7, 15))
+        assert card.generation("E-TOU-C", "winter", "peak") == pytest.approx(0.13710)
 
     def test_an_unvendored_provider_says_to_supply_rates_instead(self) -> None:
         # A different problem from "we have it but not that far back", and it
