@@ -163,6 +163,11 @@ class UsageBucket:
         }
 
 
+#: Per-kWh charges a statement prints as taxes rather than as energy charges.
+#: In ``import_components`` and in ``total``, but outside ``energy_charges``.
+TAX_COMPONENTS = frozenset({"energy_commission_tax"})
+
+
 @dataclass(frozen=True, slots=True)
 class Bill:
     """A computed statement.
@@ -198,7 +203,17 @@ class Bill:
 
     @property
     def energy_charges(self) -> float:
-        return sum(self.import_components.values())
+        """The per-kWh charges for energy, as a statement's own lines total.
+
+        Excludes statutory taxes, which are per-kWh but not energy charges and
+        print on their own line: the July 2026 statement's six energy lines come
+        to $8.90 and its Energy Commission Tax is separate. They are still in
+        ``import_components`` and still in ``total`` -- they are simply not what
+        this figure means.
+        """
+        return sum(
+            value for name, value in self.import_components.items() if name not in TAX_COMPONENTS
+        )
 
     @property
     def export_credits(self) -> float:
@@ -211,7 +226,21 @@ class Bill:
 
     @property
     def total(self) -> float:
-        return self.energy_charges + self.export_credits + self.fixed_charges
+        return self.energy_charges + self.taxes + self.export_credits + self.fixed_charges
+
+    @property
+    def taxes(self) -> float:
+        """Statutory per-kWh charges, which a statement prints on their own line.
+
+        Separate from ``energy_charges`` because they are not charges for energy
+        and a statement does not total them with the energy lines -- but they are
+        owed, so they are in ``total``. Splitting them out of ``energy_charges``
+        without adding them here dropped them from the bill entirely, which is
+        what the round-trip test now pins.
+        """
+        return sum(
+            value for name, value in self.import_components.items() if name in TAX_COMPONENTS
+        )
 
     @property
     def effective_import_rate(self) -> float | None:

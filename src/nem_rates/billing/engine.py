@@ -12,9 +12,10 @@ belong in a ledger built on top of this.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from ..engine import RateEngine
+from ..errors import DataError
 from ..models import ImportPrice, Season, TouPeriod
 from ..timeutil import PACIFIC, hour_floor, to_pacific
 from .models import Bill, BillingPeriod, IntervalReading, UsageBucket
@@ -116,6 +117,10 @@ class BillEngine:
                 _add_scaled(export_components, export_price.components, -reading.exported)
 
         fixed_components = self._fixed_charges(period)
+        tax = self._energy_surcharge(in_period, period)
+        if tax:
+            import_components["energy_commission_tax"] = tax
+
         credit = self._baseline_credit(in_period, period)
         if credit:
             import_components["baseline_credit"] = credit
@@ -143,6 +148,42 @@ class BillEngine:
             # estimate. Callers wanting "trust this total" should check both.
             complete=complete,
         )
+
+    def _energy_surcharge(
+        self, readings: Sequence[IntervalReading], period: BillingPeriod
+    ) -> float:
+        """California's Energy Resources Surcharge on energy consumed.
+
+        A state tax rather than a utility tariff, so it is charged whoever
+        supplies the generation. A statement prints it as "Energy Commission
+        Tax", and when a CCA supplies generation it prints on *their* page --
+        which is how it went unmodelled while every line on the utility's pages
+        reconciled.
+
+        Rated per kilowatt-hour imported, by the vintage in force on each day, so
+        a cycle spanning a January rate change is charged correctly.
+        """
+        from ..data import versioned
+
+        total = 0.0
+        remaining: dict[date, float] = {}
+        for reading in readings:
+            remaining[to_pacific(reading.start).date()] = (
+                remaining.get(to_pacific(reading.start).date(), 0.0) + reading.imported
+            )
+        for day, imported in remaining.items():
+            if not imported:
+                continue
+            try:
+                rate = float(versioned.load("tax/ca_energy_resources", day).raw["rate"])
+            except DataError:
+                # No vintage covers this day. The surcharge is small and the
+                # rest of the bill is still worth producing, so this is left off
+                # rather than made fatal -- and the coverage check already tells
+                # the reader which period is being priced.
+                continue
+            total += imported * rate
+        return total
 
     def _baseline_credit(self, readings: Sequence[IntervalReading], period: BillingPeriod) -> float:
         """Credit on imports falling within the cycle's baseline allowance.

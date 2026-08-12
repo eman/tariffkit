@@ -16,7 +16,7 @@ import pytest
 
 pytest.importorskip("pypdf")
 
-from nem_rates.regen import accplus, cca, franchise, nsc, providers, sheets
+from nem_rates.regen import accplus, cca, franchise, nsc, providers, sheets, tax
 from nem_rates.regen import tariff as rt
 from nem_rates.regen.sheets import ExtractionError
 
@@ -711,3 +711,47 @@ class TestVintagedTablesComeFromTheirOwnEra:
         assert self.vintage(slug, "2026-01-01")["cca"]["franchise_fee_vintages"][
             "2011"
         ] == pytest.approx(0.00060)
+
+
+# Verbatim from CDTFA notice L-1020.
+CDTFA_NOTICE = """DECEMBER 2025 L-1020
+2026 Energy Resources (Electrical Energy) Surcharge Rate
+The California Energy Commission (CEC) set the electrical energy surcharge rate
+for the 2026 calendar year to remain at three-tenths mill ($.0003) per
+kilowatt-hour. In the future, we will only send you a notice when the rate
+changes.
+"""
+
+
+class TestEnergySurcharge:
+    def test_the_year_and_rate_are_read(self) -> None:
+        assert tax.extract([sheet(CDTFA_NOTICE)]) == (2026, 0.0003)
+
+    def test_an_implausible_rate_is_an_error(self) -> None:
+        broken = CDTFA_NOTICE.replace("$.0003", "$3.0")
+        with pytest.raises(ExtractionError, match="plausible"):
+            tax.extract([sheet(broken)])
+
+    def test_a_reworded_notice_is_an_error_rather_than_a_guess(self) -> None:
+        with pytest.raises(ExtractionError, match="expected form"):
+            tax.extract([sheet("some other CDTFA notice entirely")])
+
+    def test_the_rendered_file_is_loadable_as_a_vintage(self) -> None:
+        body = tax.render(providers.CA_ENERGY_RESOURCES, 2026, 0.0003, "L-1020")
+        assert tax.verify_against_library(body, 2026, 0.0003) == []
+
+    def test_a_rendered_file_that_disagrees_is_caught(self) -> None:
+        body = tax.render(providers.CA_ENERGY_RESOURCES, 2026, 0.0003, "L-1020")
+        assert tax.verify_against_library(body, 2026, 0.0004) != []
+
+    @pytest.mark.parametrize("year", [2025, 2026])
+    def test_both_vintages_are_vendored(self, year: int) -> None:
+        # CDTFA issues a notice only when the rate changes, so the notices are
+        # exactly the vintages that exist.
+        import tomllib
+
+        path = (
+            Path(__file__).resolve().parent.parent
+            / f"src/nem_rates/data/tax/ca_energy_resources/{year}-01-01.toml"
+        )
+        assert tomllib.loads(path.read_text(encoding="utf-8"))["rate"] == pytest.approx(0.0003)

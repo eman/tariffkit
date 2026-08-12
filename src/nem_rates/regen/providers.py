@@ -138,7 +138,46 @@ MCE = Cca(
     ),
 )
 
+
+@dataclass(frozen=True, slots=True)
+class Tax:
+    """A statutory per-kWh surcharge, published by a tax authority.
+
+    Neither a utility nor a CCA: it is imposed on energy consumed regardless of
+    who supplies it, and is published as a numbered notice rather than a tariff
+    sheet. Registered here so it is regenerated and watched like everything else
+    rather than being the one number nobody looks at.
+    """
+
+    key: str
+    name: str
+    jurisdiction: str
+    #: Where a numbered notice lives. ``{notice}`` is e.g. "l1020".
+    notice_url: str
+    #: Every notice known to state this rate, oldest first. CDTFA issues one
+    #: only when the rate changes, so this is the list of vintages that exist --
+    #: adding a year is a registry edit, the same shape as adding a schedule.
+    notices: tuple[str, ...] = ()
+
+    @property
+    def latest_notice(self) -> str:
+        return self.notices[-1]
+
+    def url_for(self, notice: str) -> str:
+        """Where a notice lives. CDTFA prints "L-1020" but files it as l1020."""
+        return self.notice_url.format(notice=notice.lower().replace("-", ""))
+
+
+CA_ENERGY_RESOURCES = Tax(
+    key="ca_energy_resources",
+    name="California Energy Resources (Electrical Energy) Surcharge",
+    jurisdiction="CA",
+    notice_url="https://cdtfa.ca.gov/formspubs/{notice}.pdf",
+    notices=("L-971", "L-1020"),
+)
+
 UTILITIES: dict[str, Utility] = {PGE.key: PGE}
+TAXES: dict[str, Tax] = {CA_ENERGY_RESOURCES.key: CA_ENERGY_RESOURCES}
 CCAS: dict[str, Cca] = {MCE.key: MCE}
 
 

@@ -24,6 +24,7 @@ python -m nem_rates.regen.export --download   # the 843 MB export archive
 | `accplus` | the export tariff's adder table | the library reads back every adder it wrote |
 | `nsc` | the published Net Surplus Compensation series | the library reads back every month it wrote |
 | `cca` | a CCA's generation rate card | both seasons present, period sets agreeing between them |
+| `tax` | a tax authority's rate notice | the rendered file loads as a vintage and states what was read |
 
 Every vendored file maps to one of these:
 
@@ -33,7 +34,8 @@ Every vendored file maps to one of these:
 | `export/<utility>/nbt*.json.gz`, `holidays.toml`, `manifest.json` | `export` |
 | `export/<utility>/acc_plus.toml` | `accplus` |
 | `nsc/<utility>.toml` | `nsc` |
-| `cca/<provider>.toml` | `cca` |
+| `cca/<provider>/*.toml` | `cca` |
+| `tax/<surcharge>/*.toml` | `tax` |
 
 The check matters more than the extraction. A generator writes key names and the
 library reads them back with a second, independent set of literals — two

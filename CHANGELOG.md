@@ -6,6 +6,28 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **`nem-rates regen tax`** and the California Energy Resources (Electrical
+  Energy) Surcharge, read from CDTFA's numbered notices. A state tax rather than
+  a utility tariff -- imposed whoever supplies the generation -- and billed on
+  the generation provider's page, which on a CCA account is the CCA's. That is
+  how it went unmodelled while every line on the utility's pages reconciled to
+  the cent, and it was the whole of the remaining 29c on a real statement.
+  CDTFA issues a notice only when the rate changes, so the notices are exactly
+  the vintages that exist: L-971 for 2025, L-1020 for 2026.
+- `--for-date` widens its search backwards on its own instead of asking for a
+  `--scan` range nobody can guess. Filings are numbered sequentially across
+  everything a utility files, so how far back a date sits is something the index
+  discovers rather than something the caller knows.
+- `Bill.taxes`, kept out of `Bill.energy_charges` because a statement prints
+  taxes on their own line and does not total them with the energy lines -- the
+  July 2026 statement's six energy lines come to $8.90 with its Energy
+  Commission Tax separate -- but included in `Bill.total`, because they are
+  owed.
+
+The December 2025 / January 2026 statement now reconciles to **0.003%**:
+$468.42 modelled against $468.41 billed.
+
+### Added
 - **Historical rate vintages, reconciled against a real statement.** PG&E tariff
   snapshots now run 2025-01-01, 2025-03-01, 2025-09-01, 2026-01-01 and
   2026-03-01, and MCE's rate card has a pre-repricing vintage, so cycles back to

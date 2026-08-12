@@ -140,8 +140,10 @@ class TestStatementReconciliation:
         assert bill.exported_kwh == pytest.approx(180.68)
 
     def test_totals_sum_consistently(self, bill) -> None:  # type: ignore[no-untyped-def]
+        # Taxes are per-kWh but are not energy charges: a statement prints them
+        # on their own line and does not total them with the energy lines.
         assert bill.total == pytest.approx(
-            bill.energy_charges + bill.export_credits + bill.fixed_charges
+            bill.energy_charges + bill.taxes + bill.export_credits + bill.fixed_charges
         )
 
     def test_pricing_confidence_is_separate_from_coverage(self, bill) -> None:  # type: ignore[no-untyped-def]
@@ -437,3 +439,51 @@ class TestBaselineCreditAcrossARateChange:
         # at December's rate -- two days at 9.7 kWh @ 0.10084, the rest @ 0.09566.
         expected = -(2 * 9.7 * 0.10084 + (48 - 2 * 9.7) * 0.09566)
         assert bill.import_components["baseline_credit"] == pytest.approx(expected, abs=0.01)
+
+
+class TestEnergyCommissionTax:
+    """A statutory per-kWh surcharge, billed on the generation provider's page.
+
+    On a CCA account that is the CCA's page, which is how it went unmodelled
+    while every line on the utility's pages reconciled to the cent.
+    """
+
+    def readings(self) -> list[IntervalReading]:
+        start = datetime(2026, 1, 5, tzinfo=PACIFIC)
+        return [
+            IntervalReading(
+                start=start + timedelta(hours=h),
+                imported=10.0,
+                exported=0.0,
+                duration=timedelta(hours=1),
+            )
+            for h in range(24)
+        ]
+
+    def test_charged_per_kwh_imported(self) -> None:
+        bill = engine().compute(
+            self.readings(), BillingPeriod(date(2026, 1, 5), date(2026, 1, 5)), check=False
+        )
+        assert bill.import_components["energy_commission_tax"] == pytest.approx(240 * 0.0003)
+
+    def test_it_is_not_an_energy_charge(self) -> None:
+        # The July 2026 statement's six energy lines total $8.90 and its Energy
+        # Commission Tax prints separately, so this must not inflate that figure.
+        bill = engine().compute(
+            self.readings(), BillingPeriod(date(2026, 1, 5), date(2026, 1, 5)), check=False
+        )
+        assert "energy_commission_tax" not in {
+            k for k in bill.import_components if k in {"generation", "distribution"}
+        }
+        assert bill.energy_charges < sum(bill.import_components.values())
+
+    def test_but_it_is_in_the_total(self) -> None:
+        bill = engine().compute(
+            self.readings(), BillingPeriod(date(2026, 1, 5), date(2026, 1, 5)), check=False
+        )
+        assert bill.total == pytest.approx(
+            bill.energy_charges
+            + bill.import_components["energy_commission_tax"]
+            + bill.export_credits
+            + bill.fixed_charges
+        )

@@ -37,17 +37,26 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from . import accplus, cca, filings, nsc, tariff
+from . import accplus, cca, filings, nsc, tariff, tax
 from .emit import Result
 from .fetch import fetch
-from .providers import CCAS, UTILITIES, Cca, Source, Utility
+from .providers import CCAS, TAXES, UTILITIES, Cca, Source, Tax, Utility
 from .sheets import ExtractionError
 
 #: Where downloaded documents are kept between runs.
 DEFAULT_CACHE = Path.home() / ".cache" / "nem-rates" / "regen"
 
 #: Datasets :func:`run` can build. Each maps to an entry in ``JOB_BUILDERS``.
-DATASETS = ("tariff", "accplus", "nsc", "cca")
+DATASETS = ("tariff", "accplus", "nsc", "cca", "tax")
+
+#: Where to start looking for the filing that set a vintage. Covers the recent
+#: past; older dates widen the search rather than failing.
+DEFAULT_SCAN = (7500, 7900)
+#: How much further back each widening reaches.
+SCAN_STEP = 200
+#: A bound on widening, so a date the utility never filed for stops rather than
+#: walking to advice letter one.
+MAX_SCAN_WIDENINGS = 4
 
 #: The export-rate matrices are regenerated too, but from a 843 MB archive of
 #: CSVs rather than a published PDF, so they have their own entry point --
@@ -125,6 +134,28 @@ def _nsc_jobs(provider: str | None) -> Iterator[Job]:
         yield Job(f"{key}/nsc", util.nsc_rates, _nsc_runner(util))
 
 
+def _tax_runner(provider: Tax, notice: str) -> Callable[[Path, bool], Result]:
+    def run_one(pdf: Path, check: bool) -> Result:
+        return tax.regenerate(provider, pdf, check=check, notice=notice)
+
+    return run_one
+
+
+def _tax_jobs(provider: str | None) -> Iterator[Job]:
+    for key, entry in sorted(TAXES.items()):
+        if provider and provider not in (key, entry.jurisdiction.lower()):
+            continue
+        # One job per notice: each states one calendar year, and a rate that
+        # carried forward has no notice of its own, so the notices are exactly
+        # the vintages that exist.
+        for notice in entry.notices:
+            yield Job(
+                f"{key}/{notice}",
+                Source(entry.url_for(notice)),
+                _tax_runner(entry, notice),
+            )
+
+
 def _cca_jobs(provider: str | None) -> Iterator[Job]:
     for key, provider_def in sorted(CCAS.items()):
         if provider and provider != key:
@@ -141,6 +172,7 @@ JOB_BUILDERS: dict[str, Callable[[str | None], Iterator[Job]]] = {
     "accplus": _accplus_jobs,
     "nsc": _nsc_jobs,
     "cca": _cca_jobs,
+    "tax": _tax_jobs,
 }
 
 
