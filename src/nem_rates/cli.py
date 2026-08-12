@@ -7,16 +7,16 @@ import csv
 import json
 import logging
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from . import __version__
 from .config import Config
 from .engine import RateEngine
-from .errors import NemRatesError
+from .errors import ConfigError, NemRatesError
 from .models import PriceCurve, PricePoint
-from .timeutil import to_pacific
+from .timeutil import PACIFIC, to_pacific
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -40,11 +40,27 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("info", help="which data is loaded, and from where")
 
     bill = sub.add_parser("bill", help="compute a bill from interval meter data")
-    bill.add_argument("csv", type=Path, help="interval data; '-' for stdin")
+    bill.add_argument(
+        "csv", type=Path, nargs="?", help="interval data CSV; '-' for stdin. Omit with --source ha"
+    )
+    bill.add_argument(
+        "--source",
+        choices=("csv", "ha"),
+        default="csv",
+        help="where the readings come from (default: csv)",
+    )
     bill.add_argument("--start", type=date.fromisoformat, help="cycle start (meter read date)")
     bill.add_argument("--end", type=date.fromisoformat, help="cycle end, inclusive")
     bill.add_argument("--json", action="store_true")
     bill.add_argument("--no-check", dest="check", action="store_false", help="skip coverage checks")
+    bill.add_argument("--ha-import-entity", help="override the grid-import entity")
+    bill.add_argument("--ha-export-entity", help="override the grid-export entity")
+    bill.add_argument(
+        "--ha-resolution",
+        choices=("auto", "5minute", "hour"),
+        default="auto",
+        help="statistics resolution; auto prefers 5-minute where it still exists",
+    )
 
     mqtt = sub.add_parser("mqtt", help="publish to MQTT every hour")
     mqtt.add_argument("--broker", required=True)
@@ -67,6 +83,19 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--port", type=int, default=8000)
 
     return parser
+
+
+def _midnight(day: date) -> datetime:
+    """Local midnight starting ``day`` -- where a billing cycle boundary falls.
+
+    Callers add ``timedelta(days=1)`` to get the end of a cycle, and that is
+    deliberately wall-clock arithmetic: a cycle closes at the next local
+    midnight, 23 real hours later across the spring transition and 25 across the
+    autumn one. Converting to absolute time first would hold the window at 24
+    hours and land it an hour off on those two days -- the opposite of what
+    coverage checking needs, where elapsed time is the right measure.
+    """
+    return datetime(day.year, day.month, day.day, tzinfo=PACIFIC)
 
 
 def _format_point(point: PricePoint) -> str:
@@ -206,7 +235,29 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "bill":
             from .billing import BillEngine, BillingPeriod, read_csv
 
-            readings = read_csv(sys.stdin if str(args.csv) == "-" else args.csv)
+            note = ""
+            if args.source == "ha":
+                from .sources import HaSettings, describe_resolution, read_statistics
+
+                if not (args.start and args.end):
+                    raise ConfigError("--source ha requires --start and --end")
+                ha_settings = HaSettings.load(
+                    config_path=args.config,
+                    import_entity=args.ha_import_entity,
+                    export_entity=args.ha_export_entity,
+                )
+                readings = read_statistics(
+                    ha_settings,
+                    _midnight(args.start),
+                    _midnight(args.end) + timedelta(days=1),
+                    resolution=args.ha_resolution,
+                )
+                note = f"  source: Home Assistant statistics ({describe_resolution(readings)})"
+            elif args.csv is None:
+                raise ConfigError("give a CSV path, or use --source ha")
+            else:
+                readings = read_csv(sys.stdin if str(args.csv) == "-" else args.csv)
+
             period = (
                 BillingPeriod(args.start, args.end)
                 if args.start and args.end
@@ -217,6 +268,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(result.to_dict(), indent=2))
             else:
                 _print_bill(result)
+                if note:
+                    print(note)
             return 0
 
         if args.command == "mqtt":

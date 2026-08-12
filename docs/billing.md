@@ -9,6 +9,61 @@ nem-rates bill intervals.csv --start 2026-07-02 --end 2026-07-28
 nem-rates bill - --json < intervals.csv
 ```
 
+## Where readings come from
+
+Two sources. CSV is the default and needs nothing installed beyond the core
+package:
+
+```bash
+nem-rates bill intervals.csv --start 2026-07-02 --end 2026-07-28
+nem-rates bill - --json < intervals.csv
+```
+
+Home Assistant reads the meter directly, so there is no download step:
+
+```bash
+pip install 'nem-rates[ha]'
+nem-rates bill --source ha --start 2026-07-29 --end 2026-08-09
+```
+
+It pulls **long-term statistics**, not state history. That is the only place a
+whole cycle survives — the history behind `/api/history` is purged on the
+recorder's schedule, typically ten days, while statistics are kept indefinitely.
+Statistics are WebSocket-only, which is why this needs the `ha` extra;
+`nem_rates.billing` itself stays stdlib-only.
+
+Home Assistant keeps two resolutions for different lengths of time, so the
+default asks for both and prefers the finer one wherever it exists:
+
+| Period | Kept for | Used |
+|---|---|---|
+| `5minute` | about the recorder's window | recent cycles |
+| `hour` | indefinitely | everything older |
+
+One run can therefore mix them, and the CLI says which it used rather than
+implying uniformity:
+
+```
+  source: Home Assistant statistics (2541 x 5minute, 76 x hour)
+```
+
+Force one with `--ha-resolution 5minute|hour`.
+
+### Two things to expect from this source
+
+**"Both import and export" warnings are normal here.** Import and export are
+metered separately, so a slot carrying both is real rather than un-netted gross
+data, and the coarser the slot the more often it happens — on one real week, 42%
+of active hours against 12% of five-minute slots. That is why the finer
+resolution is preferred where it exists.
+
+**Statistics restart their running sum when recording is interrupted**, and the
+first point after the break reports the entire accumulated total as that
+period's change. One real instance put 543.663 kWh inside a five-minute slot,
+about 6,500 kW against a service that tops out near 48. Anything implying more
+than 100 kW is discarded with a warning naming the timestamp, and the hole it
+leaves is reported by the usual coverage check rather than filled in.
+
 ## CSV input
 
 Columns are auto-detected from the header; common names for each field are
