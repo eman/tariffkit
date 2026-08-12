@@ -37,9 +37,21 @@ All notable changes to this project are documented here. This project follows
 - A document with no text layer is diagnosed rather than reported as an empty
   table. MCE's current rate card is a print-to-PDF export whose font maps six
   characters to Unicode: every figure is a glyph id with no character behind it,
-  so no parser can recover it and only OCR could. Their 2023 card extracts
-  exactly, which is what the CCA extractor is tested against, so `cca/mce.toml`
-  stays hand-maintained until the publisher ships readable text again.
+  so no parser can reach them. The page still renders, so the table can be read
+  from it and the values entered by hand, which is what the message now says --
+  the distinction is between "no automated extraction" and "no data", and only
+  the first is true. Their 2023 card extracts exactly, which is what the CCA
+  extractor is tested against.
+
+### Fixed
+- `cca/mce.toml` now records **how** its values were obtained and which are
+  independently confirmed. They were read visually from the rendered rate card
+  on 2026-08-01 rather than parsed, so a transcription slip has no automatic
+  check behind it the way a PG&E sheet does. Three of the sixteen -- summer
+  E-ELEC peak, part-peak and off-peak -- reconcile against the July 2026
+  statement; the other thirteen, including every winter rate, do not, and winter
+  first applies in October 2026. The previous header cited the source URL
+  without distinguishing the two.
 - A new `regen` extra carries `pypdf`. The library itself never opens a PDF.
 - The weekly job now checks all four datasets rather than export rates alone,
   and reports each independently so the first failure does not hide the second.

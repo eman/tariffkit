@@ -5,15 +5,38 @@
 # Solar Billing Plan tariff (effective 2023-12-01, rev. 2024-12-04):
 #   https://mcecleanenergy.org/wp-content/uploads/2024/12/MCE-Solar-Billing-Plan-Tariff_120424.pdf
 #
+# HOW THESE WERE READ, and how confident to be in each.
+#
+# The rate card is a "Microsoft: Print To PDF" export of a spreadsheet. It has
+# no text layer at all -- pdftotext, pdffonts and pypdf all come back empty, and
+# its font maps six characters to Unicode, enough to spell "Page 1". So these
+# values were read VISUALLY off the rendered page on 2026-08-01, not parsed.
+# `nem-rates regen cca` cannot rebuild this file until MCE publishes a
+# text-bearing document; the extractor exists and reads their 2023 card exactly.
+#
+# That means a transcription slip here has no automatic check behind it, unlike
+# the PG&E sheets whose components must sum to published totals. What partial
+# cover exists:
+#
+#   VERIFIED against the July 2026 statement -- summer E-ELEC only:
+#     peak 0.26299, part_peak 0.16388, off_peak 0.11878
+#     (tests/test_mce.py::test_generation_matches_the_billed_rate)
+#
+#   NOT independently verified -- the other 13 values: every winter rate, and
+#     all of E-TOU-C and EV2-A. They were read from the same rendered page and
+#     have never been checked against a bill, because no bill has exercised
+#     them. Winter first applies in October 2026.
+#
 # MCE calls the schedule "ELEC - Residential Time-of-Use for Qualified Electric
 # Technologies"; it pairs with PG&E's E-ELEC delivery service and appears on
 # bills as "SBP EELEC" for Solar Billing Plan customers.
 #
-# NOTE: every one of these six values is currently IDENTICAL to PG&E's bundled
-# generation component. That is not an error and not an alias -- MCE prices this
-# schedule at parity today. They are vendored separately because nothing
-# guarantees that continues, and a future divergence must not go unnoticed.
-# tests/test_mce.py asserts the parity so it fails loudly if MCE moves.
+# NOTE: every one of these values is currently IDENTICAL to PG&E's bundled
+# generation component. That is an OBSERVATION from the rendered card, not an
+# alias and not an assumption -- MCE prices at parity today. They are vendored
+# separately because nothing guarantees that continues, and a future divergence
+# must not go unnoticed. tests/test_mce.py asserts the parity so it fails loudly
+# if MCE moves.
 
 schema = 1
 provider = "MCE"

@@ -113,9 +113,14 @@ def _require_text_layer(path: Path, pages: list[Page], raw_pages: Sequence[Any])
     structurally valid, and full of drawing operators. MCE's current rate card is
     exactly this: 1.4 MB of content streams whose ToUnicode CMap has six entries,
     enough to spell "Page 1" and nothing else. Every glyph in the rate table is a
-    bare glyph id with no character behind it, so no parser can recover the
-    figures -- only OCR can. Their 2023 card extracts perfectly, so this is a
-    change in how they produce the file, not something we are doing wrong.
+    bare glyph id with no character behind it. Their 2023 card extracts
+    perfectly, so this is a change in how they publish, not a gap here.
+
+    **A document with no text layer is not a dead end.** It cannot be *parsed*,
+    but it can still be read from the rendered page, which is how the current
+    MCE values were obtained. So the message points at that rather than
+    declaring the source unusable -- the distinction is between "no automated
+    extraction" and "no data", and only the first is true.
     """
     if sum(len(p.text.strip()) for p in pages) >= MIN_TEXT_CHARS:
         return
@@ -137,10 +142,12 @@ def _require_text_layer(path: Path, pages: list[Page], raw_pages: Sequence[Any])
     if content_bytes > 10_000:
         raise ExtractionError(
             f"{path} draws {content_bytes:,} bytes of content but exposes no readable "
-            f"text (its fonts map {mapped} characters to Unicode). This is what a "
-            f"print-to-PDF export looks like: the figures are glyph ids with no "
-            f"characters behind them, so no parser can recover them and OCR would be "
-            f"required. Check whether the publisher offers the same table elsewhere."
+            f"text (its fonts map {mapped} characters to Unicode). That is a "
+            f"print-to-PDF export: the figures are glyph ids with no characters "
+            f"behind them, so no parser can reach them. The page still renders, so "
+            f"the table can be read from it visually and the values entered by hand "
+            f"-- which is how the current MCE rate card was read. Record in the "
+            f"emitted file that the values were read rather than parsed."
         )
     raise ExtractionError(
         f"{path} has no extractable text -- it may be a scan, or the download may "

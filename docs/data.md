@@ -54,18 +54,22 @@ recover it** — only OCR could. Their 2023 card extracts perfectly, so this is 
 change in how they produce the file.
 
 The failure says exactly that rather than "no table found", because the three
-ways to get an unreadable PDF need different answers:
+ways to get an unreadable PDF need different answers.
 
-```
-mce: draws 1,409,939 bytes of content but exposes no readable text (its fonts
-map 16 characters to Unicode). This is what a print-to-PDF export looks like:
-the figures are glyph ids with no characters behind them, so no parser can
-recover them and OCR would be required.
-```
+**No text layer is not no data.** The page still renders, so the table can be
+read from it visually and the values entered by hand — which is exactly how the
+current `cca/mce.toml` values were obtained (2026-08-01, from the rendered
+page). What is lost is the *automated* path and its checks, not the source.
 
-`cca/mce.toml` is therefore still maintained by hand for now, and the extractor
-— verified against MCE's 2023 card, which it reads exactly — takes over as soon
-as the publisher ships a text-bearing document again.
+When you do that, say so in the file. `cca/mce.toml` records which of its values
+are confirmed against a bill and which are not, because a visually-read table
+has no reconciliation behind it the way a PG&E sheet does — there is no published
+total for its components to sum to. Today three of its sixteen values are
+verified against the July 2026 statement; the other thirteen, including every
+winter rate, are not, and winter first applies in October 2026.
+
+The extractor — verified against MCE's 2023 card, which it reads exactly — takes
+over as soon as the publisher ships a text-bearing document again.
 
 ## Export rates (NBT matrices + holiday calendar): automated
 
