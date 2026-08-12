@@ -98,12 +98,15 @@ All notable changes to this project are documented here. This project follows
   without any hand-entered rates. The tariff data previously recorded that this
   surcharge was "not published and must not be guessed"; it is published, in a
   separate schedule.
-- `read_csv` reads PG&E's interval export as downloaded. It previously failed on
-  three things at once: the account preamble before the header row, a timestamp
-  split across `DATE` and `START TIME` rather than one ISO column, and
-  unit-suffixed names like `IMPORT (kWh)`. Header matching now folds case and
-  punctuation, `CsvLayout` gained `date`/`time` for split pairs, and the preamble
-  is located by scanning for the header rather than assuming a fixed offset.
+- `read_green_button` reads PG&E's Green Button export as downloaded. It
+  previously failed on three things at once: the account preamble before the
+  header row, a timestamp split across `DATE` and `START TIME` rather than one
+  ISO column, and unit-suffixed names like `IMPORT (kWh)`. Header matching now
+  folds case and punctuation, `GreenButtonLayout` gained `date`/`time` for split
+  pairs, and the preamble is located by scanning for the header rather than
+  assuming a fixed offset. (Both were added under their former names,
+  `read_csv` and `CsvLayout`, earlier in this same unreleased cycle; they are
+  written here as they ship.)
 - `nem_rates.interop`: adapters publishing rates in formats existing energy
   management systems already read. `resample()` splits the hourly curve onto
   shorter slots, `predbat.payload()` builds Predbat's `raw_today` /
