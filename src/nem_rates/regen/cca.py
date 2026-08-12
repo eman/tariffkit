@@ -218,6 +218,17 @@ def render(
         f'source_sha256 = "{digest or previous.get("source_sha256", "")}"',
         f'source_read_on = "{previous.get("source_read_on", date.today().isoformat())}"',
     ]
+    # Everything a card states outside the rate table -- the cost relief credit,
+    # the service options, the export terms -- comes from the CCA's tariff rather
+    # than this table, so it is carried forward rather than dropped. Regenerating
+    # the rates must not silently discard the rest of the card.
+    for section in ("cost_relief_credit", "options", "export"):
+        block = previous.get(section)
+        if isinstance(block, dict):
+            lines.append(f"\n[{section}]")
+            for key, value in block.items():
+                lines.append(f"{key} = {fmt(value)}")
+
     for slug in sorted(generation):
         for season in ("summer", "winter"):
             periods = generation[slug].get(season, {})
@@ -230,18 +241,12 @@ def render(
     return "\n".join(lines) + "\n"
 
 
-def effective_of(previous: dict[str, object]) -> str:
-    """The date the vintage being written took force."""
-    return str(previous.get("effective", date.today().isoformat()))
-
-
 def regenerate(provider: Cca, pdf: Path, *, check: bool) -> Result:
     import tomllib
 
     directory = DATA_DIR / "cca" / provider.key
     existing = sorted(directory.glob("*.toml")) if directory.is_dir() else []
     previous = tomllib.loads(existing[-1].read_text(encoding="utf-8")) if existing else {}
-    target = directory / f"{effective_of(previous)}.toml"
     digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
 
     try:
@@ -279,7 +284,12 @@ def regenerate(provider: Cca, pdf: Path, *, check: bool) -> Result:
         get_utility(provider.utility).schedule_names,
         digest,
     )
-    return write_or_check(provider.key, target, body, check=check, messages=messages)
+    # Dated from the card's own statement of when it took force, so a historical
+    # card lands beside the current one rather than overwriting it.
+    target = directory / f"{effective.isoformat()}.toml"
+    return write_or_check(
+        f"{provider.key} {effective}", target, body, check=check, messages=messages
+    )
 
 
 def _watch_by_checksum(
