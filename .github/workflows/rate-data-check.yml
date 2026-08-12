@@ -18,7 +18,14 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --all-extras
       - name: Compare vendored export rates against PG&E
+        id: export
         run: uv run python tools/regen_data.py --download --check
+      # Runs even when the export check failed, so one report covers both
+      # rather than the first failure hiding the second.
+      - name: Compare vendored retail tariffs against PG&E
+        id: retail
+        if: always()
+        run: uv run python tools/regen_tariff.py --schedule all --download --check
       - name: Open an issue when upstream has moved
         if: failure()
         uses: actions/github-script@v7
@@ -38,13 +45,20 @@ jobs:
               title,
               labels: ['rate-data'],
               body: [
-                'The scheduled check found upstream export rates differing from the vendored data.',
+                'The scheduled check found upstream rate data differing from what is vendored.',
                 '',
-                'To refresh:',
+                `- export rates (\`regen_data.py\`): **${{ steps.export.outcome }}**`,
+                `- retail tariffs (\`regen_tariff.py\`): **${{ steps.retail.outcome }}**`,
+                '',
+                'To refresh whichever failed:',
                 '```bash',
-                'python tools/regen_data.py --download',
+                'python tools/regen_data.py --download      # export rates',
+                'python tools/regen_tariff.py --schedule all --download   # retail',
                 'uv run pytest',
                 '```',
+                '',
+                'Both refuse to write unless the new data reconciles against its own',
+                'published totals, so a failure here is a signal to look, not to trust.',
                 '',
                 `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
               ].join('\n'),

@@ -6,6 +6,32 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **`tools/regen_tariff.py`** generates the vendored retail tariff snapshots
+  from PG&E's published sheets, closing the gap that left export rates automated
+  while retail rates — which change far more often — were hand-transcribed with
+  nothing watching for drift. The weekly CI job now checks both.
+- Two gates gate every write. The unbundled components must sum to the sheet's
+  own published totals, printed in a different table on a different page; and
+  the rendered file must then be priced by a real `RetailTariff` and match those
+  totals, because the generator's key names and `nem_rates.tariff.retail`'s are
+  two independent encodings of one schema that could otherwise drift apart
+  silently. That second check caught an API mismatch on its first run.
+- Season boundaries, period hours, `has_baseline`, CCA drop components and the
+  E-FFS franchise fee vintages are carried forward from the previous snapshot
+  rather than generated: a sheet publishes rates, not structure.
+
+### Fixed
+- **The three tariff snapshots are now dated from the sheet that carries the
+  rates**, not the latest date in the tariff book. A tariff book reissues pages
+  independently: on all three schedules the totals page is Advice 7921-E
+  effective 2026-06-01 while the unbundled rate table is 7846-E effective
+  2026-03-01, and the two reconcile exactly, so those values have been in force
+  since March. Hand transcription had reached both answers from the same
+  evidence — E-ELEC and E-TOU-C dated June, EV2-A March. Every rate value is
+  unchanged; what changes is that April and May 2026 now price instead of
+  raising "no snapshot effective on or before".
+
+### Added
 - **`nem-rates bill --source influx`** reads the raw meter counters from
   InfluxDB 3 over `/api/v3/query_sql`. A cumulative counter's total depends only
   on its endpoints, so this is exact regardless of sampling density: against the
