@@ -66,6 +66,12 @@ TIMEOUT_SECONDS = 60.0
 FWUID = re.compile(r'"fwuid"\s*:\s*"([^"]+)"')
 #: The per-session CSRF token, present once authenticated.
 TOKEN = re.compile(r'"token"\s*:\s*"([^"]{20,})"')
+#: Where an authenticated page keeps its CSRF token: not in the HTML, but in a
+#: one-shot cookie whose *name* the page carries. The key is "tokencookie"
+#: spelled backwards, which is presumably the point. The page reads the cookie
+#: into its config and immediately deletes it, so a client that only greps the
+#: markup finds nothing and every authenticated call comes back invalidSession.
+TOKEN_COOKIE_NAME = re.compile(r'"eikoocnekot"\s*[\]:]?\s*=?\s*:?\s*"([^"]+)"')
 #: Salesforce's own descriptor for invoking an Apex method.
 APEX_ACTION = "aura://ApexActionController/ACTION$execute"
 
@@ -243,12 +249,17 @@ class PortalError(DataError):
 
 
 class InvalidSessionError(PortalError):
-    """The CSRF token is stale.
+    """The CSRF token is stale, and here is the replacement.
 
-    Its own type because the answer is specific and recoverable -- re-read the
-    token and try again -- rather than the generic "something about the portal
-    changed".
+    Its own type because the answer is specific and recoverable: Salesforce
+    rotates the token and hands the new one back inside the rejection, so the
+    call simply retries with it. Treating this as a generic failure means every
+    authenticated call fails once and stays failed.
     """
+
+    def __init__(self, message: str, *, endpoint: str = "", new_token: str = "") -> None:
+        super().__init__(message, endpoint=endpoint)
+        self.new_token = new_token
 
 
 def _frontdoor(answer: Any) -> str:
@@ -411,6 +422,19 @@ class PgeSession:
         self._token = token.group(1) if token else ""
         return self._fwuid, self._token
 
+    def _token_from(self, page: str) -> str:
+        """The CSRF token an authenticated page is carrying, if any."""
+        if self._client is None:
+            return ""
+        named = TOKEN_COOKIE_NAME.search(page)
+        if named:
+            jar = {c.name: c.value or "" for c in self._client.cookies.jar}
+            carried = jar.get(named.group(1), "")
+            if carried:
+                return carried
+        found = TOKEN.search(page)
+        return found.group(1) if found else ""
+
     def context(self, app: str = COMMUNITY_APP) -> str:
         if not self._fwuid:
             self.bootstrap()
@@ -460,7 +484,25 @@ class PgeSession:
                 "aura.token": self._token,
             },
         )
-        return _unwrap(response, known)
+        try:
+            return _unwrap(response, known)
+        except InvalidSessionError as stale:
+            # Salesforce rotates the CSRF token and returns the replacement in
+            # the rejection itself. Retry once with it; a second failure is real.
+            if not stale.new_token or stale.new_token == self._token:
+                raise
+            self._token = stale.new_token
+            retry = self._client.post(
+                AURA_PATH,
+                params={"r": 1, "aura.ApexAction.execute": 1},
+                data={
+                    "message": json.dumps(message),
+                    "aura.context": self.context(app),
+                    "aura.pageURI": page,
+                    "aura.token": self._token,
+                },
+            )
+            return _unwrap(retry, known)
 
     def signed_in(self) -> bool:
         """Whether the session is authenticated.
@@ -554,9 +596,9 @@ class PgeSession:
             # session exists. Re-read it, or every later call comes back as
             # aura:invalidSession.
             landing = self._client.get("/myaccount/s/")
-            found = TOKEN.search(landing.text)
-            if found:
-                self._token = found.group(1)
+            token = self._token_from(landing.text)
+            if token:
+                self._token = token
         # The response carries a redirect rather than a session flag, so the
         # only honest confirmation is a call that needs authentication.
         if not self.signed_in():
@@ -699,7 +741,11 @@ def _unwrap(response: Any, endpoint: Endpoint) -> Any:
             f"{endpoint.name}: the response carried no JSON body", endpoint=endpoint.name
         )
     try:
-        body = json.loads(text[brace:])
+        # raw_decode rather than loads: the guard prefix is sometimes a comment
+        # whose own brace defeats slicing, and some responses carry trailing
+        # bytes after the object. This reads exactly one value and ignores the
+        # rest.
+        body, _ = json.JSONDecoder().raw_decode(text[brace:])
     except ValueError as exc:
         raise PortalError(
             f"{endpoint.name}: unreadable response: {exc}", endpoint=endpoint.name
@@ -709,8 +755,11 @@ def _unwrap(response: Any, endpoint: Endpoint) -> Any:
     # replacement travels with it.
     event = body.get("event") or {}
     if "invalidSession" in str(event.get("descriptor", "")):
+        values = ((event.get("attributes") or {}).get("values")) or {}
         raise InvalidSessionError(
-            f"{endpoint.name}: the session token is stale", endpoint=endpoint.name
+            f"{endpoint.name}: the session token is stale",
+            endpoint=endpoint.name,
+            new_token=str(values.get("newToken") or ""),
         )
 
     actions = body.get("actions") or []
