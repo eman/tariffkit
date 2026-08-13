@@ -133,29 +133,40 @@ part of both cycles' difference.
 
 **Distribution on those same two cycles, about $0.16 each: which hours the
 energy arrived in.** Not the tariff, the parser, or the time-of-use rules --
-each was ruled out rather than assumed.
+each was ruled out by measurement rather than assumed.
 
 The rate data is exact: the cells reconcile against the published totals, the
-components sum to the cell totals to six decimals, and the statement itself
-prints `@ $0.50269` and `@ $0.62569`, which are the vendored figures. The
-cycle's total energy is right too, agreeing with the statement to 0.05 kWh.
+components sum to those totals to six decimals, and the statement prints
+`@ $0.50269` and `@ $0.62569`, which are the vendored figures. The cycle's total
+energy is right too, agreeing with the statement to 0.05 kWh. Every section of
+the parse sums exactly.
 
-What differs is the split. The statement bills 208.789 kWh at peak; our meter
-data yields 201.892. Applying *our own* time-of-use rules to *PG&E's own*
-interval export gives 209.110 -- so the rules are right and the meter data
-attributes about 6.9 kWh to different hours than the utility's meter does. At
-the roughly two-cent spread between peak and off-peak distribution, that is the
-entire residual.
+What differs is the split. The statement bills 208.789 kWh at peak; the
+InfluxDB series yields 201.892. Applying *our own* time-of-use rules to the
+meter's own 15-minute registers, fetched as a Green Button export, gives
+209.110 -- so the rules are right. At the roughly two-cent spread between peak
+and off-peak distribution, the 6.9 kWh gap is the entire residual.
 
-Pricing from the utility's export instead is not a fix: its window
-over-collects about 1.6 kWh, which lands the same line +0.36 out rather than
--0.15. So the residual is bounded by how closely an independent meter can
-reproduce a utility's interval attribution -- about 0.2% on a $178 line -- and
-is not a defect in the model.
+**Both series come from the same physical meter**, the Rainforest device simply
+reading its register, so this is not two meters disagreeing. Nor is it a clock
+offset: aligning the two hourly profiles is unambiguously best at zero shift
+(31 kWh of absolute difference, against 200+ at one hour either way). What the
+profile shows is the InfluxDB series running 1-3 kWh per hour below the
+register through the evening -- hours 16 to 20 sum to exactly the -7.22 kWh the
+source check reports -- while the cycle total stays right. Around 31 kWh is
+reshuffled between hours and nets out.
+
+That is an artefact of reconstructing intervals from cumulative counter
+samples. Sampling is regular at five minutes, which cannot move energy across
+an hour boundary on its own, so the remaining suspect is occasional gaps spread
+pro rata across the hours they span. `_per_interval` already spreads rather
+than crediting the later interval, which was worth 3.4 kWh of peak export when
+it was fixed; this is the same class of error one level down.
 
 `compare_sources` now compares the peak split as well as the total, because
-totals alone cannot see this: on that cycle the two sources agree to 0.2% on
-801 kWh and disagree by 6.9 kWh about when it arrived.
+totals cannot see it: on that cycle the two agree to 0.05 kWh on the cycle's
+energy and disagree by 7.22 kWh about when it arrived, which is the only place
+the money was.
 
 **Two EV2-A cycles, +0.23 and +0.12** on Distribution + Public Purpose
 Programs. Not a wrong distribution rate, which is the first thing to suspect and
