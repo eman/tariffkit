@@ -37,27 +37,72 @@ the page at session start, never hardcoded. `aura.token` likewise.
 | Session/guest check | `MyAcct_SessionValidatorController.isGuestUserCheck` | — |
 | Download one bill PDF | `MyAcct_DownloadBillPdf.httpCalloutDownloadBill` | `billidfrombillhistory` |
 
-Two actions are still missing, both for the same reason — the hook has to be
-installed *before* the call happens, and both happen at moments that are awkward
-to get in front of.
+**The bill list** is still uncaptured. It is fetched once when
+`/s/bill-and-payment-history` loads and paginates client-side, so hooking XHR
+after load never sees it. Install the hook below and reload with devtools open,
+or use a `document_start` content script.
 
-**The bill list.** Fetched once when `/s/bill-and-payment-history` loads, then
-paginated client-side, so hooking XHR after load never sees it. Install the hook
-below and reload with devtools open, or use a `document_start` content script.
+## Green Button is a different system entirely
 
-**Green Button download.** On `/s/usageandconsumption-homepage`, scroll to
-"Download your data" and click the Green Button control. Findings so far:
+Usage export is **not** Aura and not Salesforce. The usage page embeds a
+Visualforce page, `/myaccount/apex/myAcct_VF_GreenButton`, which hosts an Oracle
+Opower widget, and the export runs against Opower's own GraphQL API on its own
+host under `*.opower.com`.
 
-* Opening the panel issues **no server call at all** — it is pure client state.
-  The request only happens when the date range is submitted, so the hook must
-  survive until then, and clicking "Download my data" alone captures nothing.
-* The panel's controls are not reachable from the page's DOM, including a
-  recursive walk through open shadow roots across all ~4,300 nodes. It is a
-  Lightning Web Component with a closed shadow root, so it has to be driven by
-  real clicks rather than by script.
-* The only iframe on the page is Medallia's feedback widget, not the usage tool.
+The widget is nested three levels deep — shadow root, then Visualforce iframe —
+which is why a DOM walk of the top-level page finds nothing. **Open the
+Visualforce page directly in its own tab** and the whole form renders,
+unclipped, with its controls reachable:
 
-So: open the panel, install the hook, *then* pick a date range and submit.
+    https://myaccount.pge.com/myaccount/apex/myAcct_VF_GreenButton
+
+Radio ids: `period-all`, `period-bill` (+ `period-bill-select`), `period-date`
+(+ `date-selector--select-date-from` / `-to`), and `csv` / `xml`.
+
+### The export, end to end
+
+```
+POST https://<host>.opower.com/ei/edge/apis/dsm-graphql-v1/cws/graphql
+headers: authorization: Bearer <jwt>
+         opower-selected-entities: urn:opower:v1:account:pge:uuid:<uuid>
+         x-requested-with: XMLHttpRequest
+```
+
+1. `WUE_GenerateUsageExportFile(usageExportFileConfigurationInput)` → `{uuid}`.
+   The input carries `format: "CSV"`, `utilityCode: "pge"`, `urns`, and
+   `timeInterval: "2025-12-30T00:00:00-08:00/2026-01-29T23:59:59-08:00"`.
+2. `WUE_GetExportJob(jobUuid)` → poll. `isRunning` then `isFinished` with
+   `result` set to a **pre-authenticated Oracle object-storage URL**. That URL
+   needs no credentials of ours, so it is fetched with a bare client.
+3. The file is a ZIP holding one CSV. Despite the archive being named
+   `DailyUsageData.zip`, the CSV is
+   `pge_electric_usage_interval_data_<sa>_<n>_<from>_to_<to>.csv` —
+   **15-minute intervals**, 2,887 rows for a 31-day cycle.
+
+`maxAgeOfDataInDays: 1095`, so three years of interval history is available.
+
+### Two things this settles
+
+**Bill periods are enumerable, with their real boundaries.**
+`WUE_GetUsageExportBills` populates `period-bill-select`, whose option values are
+the cycles themselves:
+
+    Dec 30, 2025 - Jan 29, 2026
+      → 2025-12-30T00:00:00-08:00/2026-01-29T23:59:59-08:00
+
+**The meter read is at local midnight.** The boundaries above are `T00:00:00`
+and `T23:59:59` in the offset in force at each end. So `--read-hour` defaults to
+0 because that is what the utility says, not because it was assumed — and
+exporting *by bill period* rather than by date range removes the question
+entirely, since the utility defines the window.
+
+### Where the credentials come from
+
+The Visualforce page's own HTML carries the Opower host and the bearer token, so
+both are scraped per session rather than configured — the token is short-lived
+and the host is not ours to pin. If the account urn is not in the page,
+`billingAccountByAuthContext` derives it from the token itself, which is the one
+source that cannot disagree with the credentials in use.
 
 ## The finding that matters
 

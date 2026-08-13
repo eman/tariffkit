@@ -37,8 +37,9 @@ import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, time
 from pathlib import Path
+from time import sleep
 from typing import Any
 
 from ..billing import IntervalReading
@@ -66,6 +67,40 @@ FWUID = re.compile(r'"fwuid"\s*:\s*"([^"]+)"')
 TOKEN = re.compile(r'"token"\s*:\s*"([^"]{20,})"')
 #: Salesforce's own descriptor for invoking an Apex method.
 APEX_ACTION = "aura://ApexActionController/ACTION$execute"
+
+#: The Visualforce page that embeds the usage-export widget. Its HTML carries
+#: the Opower host and bearer token, which is why it is fetched at all.
+GREEN_BUTTON_PATH = "/myaccount/apex/myAcct_VF_GreenButton"
+#: Where the usage platform's GraphQL API lives on its own host.
+GRAPHQL_PATH = "/ei/edge/apis/dsm-graphql-v1/cws/graphql"
+
+OPOWER_HOST = re.compile(r"https://([a-z0-9][a-z0-9.-]*\.opower\.com)")
+OPOWER_TOKEN = re.compile(r"\"(eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]+)\"")
+OPOWER_URN = re.compile(r"(urn:opower:v1:account:[a-z]+:uuid:[0-9a-f-]+)")
+
+#: How far back the platform will export. Its own answer, not our choice.
+MAX_HISTORY_DAYS = 1095
+#: The export is a job. Roughly two minutes at the default interval, which is
+#: far longer than the few seconds it has taken in practice.
+EXPORT_POLL_LIMIT = 60
+
+GENERATE_EXPORT = (
+    "mutation WUE_GenerateUsageExportFile("
+    "$usageExportFileConfigurationInput: UsageExportFileConfigurationInput) {\n"
+    "  generateUsageExportFile(\n"
+    "    usageExportFileConfigurationInput: $usageExportFileConfigurationInput\n"
+    "  ) {\n    uuid\n    __typename\n  }\n}"
+)
+EXPORT_JOB = (
+    "query WUE_GetExportJob($jobUuid: ID!) {\n"
+    "  exportJob(jobUuid: $jobUuid) {\n"
+    "    uuid\n    result\n    isRunning\n    isFailed\n    isFinished\n    __typename\n  }\n}"
+)
+ACCOUNT_URN_QUERY = (
+    "query WUE_GetMetadata($selectedAccount: ID) {\n"
+    "  billingAccountByAuthContext(selectedAccount: $selectedAccount) {\n"
+    "    id\n    __typename\n  }\n}"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,6 +347,111 @@ class PgeSession:
             return False
         return True
 
+    # -- the usage platform, which is a different system entirely -------
+
+    def opower(self) -> tuple[str, str, str]:
+        """``(host, bearer token, account urn)`` for the usage platform.
+
+        Usage data does not live in Salesforce. It lives in Oracle Opower, behind
+        a GraphQL API on its own host with its own bearer token, and the utility
+        portal embeds a Visualforce page whose HTML carries all three. So they
+        are scraped from that page rather than configured: the token is
+        short-lived and the host is not ours to pin.
+        """
+        if self._client is None:
+            raise PortalError("session is not open; use PgeSession as a context manager")
+        response = self._client.get(GREEN_BUTTON_PATH)
+        if response.status_code != 200:
+            raise PortalError(
+                f"the usage page answered {response.status_code}; the session has probably expired",
+                step="opower",
+            )
+        page = response.text
+        host = OPOWER_HOST.search(page)
+        token = OPOWER_TOKEN.search(page)
+        if not host or not token:
+            raise PortalError(
+                "the usage page carries no Opower host and bearer token, so either the "
+                "session is not signed in or PG&E has changed the page "
+                "(see audit/pge/PORTAL.md)",
+                step="opower",
+            )
+        urn = OPOWER_URN.search(page)
+        return (
+            host.group(1),
+            token.group(1),
+            urn.group(1) if urn else self._discover_urn(host.group(1), token.group(1)),
+        )
+
+    def _discover_urn(self, host: str, token: str) -> str:
+        """Ask the platform which account this token is for.
+
+        The page does not always carry the account's urn, but every query is
+        scoped by it, so it has to come from somewhere. ``billingAccountByAuthContext``
+        derives it from the token itself, which is the one source that cannot
+        disagree with the credentials being used.
+        """
+        payload = self.graphql(host, token, "", "WUE_GetMetadata", ACCOUNT_URN_QUERY, {})
+        account = payload.get("billingAccountByAuthContext") or {}
+        urn = account.get("id") or account.get("urn")
+        if not urn:
+            raise PortalError(
+                "could not determine which account this session is for", step="opower"
+            )
+        return str(urn)
+
+    def graphql(
+        self, host: str, token: str, urn: str, operation: str, query: str, variables: Any
+    ) -> dict[str, Any]:
+        """One GraphQL call against the usage platform."""
+        if self._client is None:
+            raise PortalError("session is not open; use PgeSession as a context manager")
+        headers = {
+            "authorization": f"Bearer {token}",
+            "content-type": "application/json",
+            "accept": "application/json",
+            "x-requested-with": "XMLHttpRequest",
+        }
+        if urn:
+            headers["opower-selected-entities"] = urn
+        response = self._client.post(
+            f"https://{host}{GRAPHQL_PATH}",
+            headers=headers,
+            json={
+                "operationName": operation,
+                "query": query,
+                "variables": {**variables, "locale": "en-US"}
+                if isinstance(variables, dict)
+                else variables,
+            },
+        )
+        if response.status_code != 200:
+            raise PortalError(
+                f"{operation}: the usage platform answered {response.status_code}",
+                endpoint=operation,
+            )
+        body = response.json()
+        if body.get("errors"):
+            first = body["errors"][0]
+            raise PortalError(f"{operation}: {first.get('message')}", endpoint=operation)
+        return dict(body.get("data") or {})
+
+    def fetch_bytes(self, url: str) -> bytes:
+        """Fetch a pre-authenticated result URL.
+
+        The export lands in Oracle object storage behind a signed URL, so this
+        deliberately sends none of our headers or cookies with it.
+        """
+        import httpx
+
+        with httpx.Client(follow_redirects=True, timeout=TIMEOUT_SECONDS) as plain:
+            response = plain.get(url)
+        if response.status_code != 200:
+            raise PortalError(
+                f"the export file answered {response.status_code}", endpoint="green_button"
+            )
+        return bytes(response.content)
+
 
 def _unwrap(response: Any, endpoint: Endpoint) -> Any:
     """Pull the Apex return value out of an Aura response, or explain why not."""
@@ -352,6 +492,124 @@ def parse_green_button(text: str, layout: GreenButtonLayout | None = None) -> li
     return read_green_button(io.StringIO(text), layout)
 
 
+def time_interval(start: date, end: date) -> str:
+    """The half-open-looking interval Opower expects, in Pacific wall time.
+
+    ``2025-12-30T00:00:00-08:00/2026-01-29T23:59:59-08:00``. The offsets are the
+    ones in force on each end, so a cycle spanning a daylight-saving change
+    carries two different offsets -- which is exactly what the portal itself
+    sends, and why this is built from zoned datetimes rather than string
+    concatenation.
+    """
+    from ..timeutil import PACIFIC
+
+    first = datetime.combine(start, time(0, 0, 0), PACIFIC)
+    last = datetime.combine(end, time(23, 59, 59), PACIFIC)
+    return f"{first.isoformat()}/{last.isoformat()}"
+
+
+def _export_config(interval: str, urn: str, fmt: str = "CSV") -> dict[str, Any]:
+    """The export request the portal sends, minus its localisation strings.
+
+    The portal also sends ~80 ``messages`` entries carrying the CSV's column
+    headings. They are omitted: the file is parsed by column *position* and
+    recognised heading names, so supplying English defaults changes nothing, and
+    reproducing eighty translated strings would be eighty things to keep in step.
+    """
+    return {
+        "urns": [urn],
+        "utilityCode": "pge",
+        "format": fmt,
+        "timeInterval": interval,
+        "forceLegacyData": False,
+        # Three years, which is what the portal offers and how far back a
+        # historical bill can be re-derived from meter data.
+        "maxAgeOfDataInDays": MAX_HISTORY_DAYS,
+        "enableFinerResolutions": False,
+        "enableServiceAgreementAliasing": True,
+        "accountNicknameSource": "VMODEL",
+        "displayNameStrategy": "UTILITY_ACCOUNT_NICKNAME_AS_DISPLAY_NAME_STRATEGY",
+        "fileUtilityCode": "",
+        "hideBillingCosts": False,
+        "hideIntervalCosts": False,
+        "showAccountNickname": False,
+        "showAccountNumber": True,
+        "showDevice": False,
+        "showOnlyNetUsage": False,
+        "showServicePoint": False,
+        "messages": [],
+        "unitsOfMeasureAllowed": [],
+        "utilityServiceQuantityIdentifiersAllowed": [],
+    }
+
+
+def download_green_button(
+    session: PgeSession, start: date, end: date, *, fmt: str = "CSV", poll_seconds: float = 2.0
+) -> str:
+    """The Green Button CSV for ``[start, end]``, as text.
+
+    Returns text rather than a path so the caller decides whether it ever
+    reaches disk -- it carries the customer's name and address.
+
+    Three steps, because the portal makes it three: ask for a file, poll until
+    the job finishes, then fetch the pre-authenticated URL it hands back. The
+    file is a ZIP containing one CSV whose name says ``interval_data``: 15-minute
+    readings, despite the archive being called DailyUsageData.
+    """
+    host, token, urn = session.opower()
+    job = session.graphql(
+        host,
+        token,
+        urn,
+        "WUE_GenerateUsageExportFile",
+        GENERATE_EXPORT,
+        {"usageExportFileConfigurationInput": _export_config(time_interval(start, end), urn, fmt)},
+    )
+    uuid = (job.get("generateUsageExportFile") or {}).get("uuid")
+    if not uuid:
+        raise PortalError("the export request returned no job id", endpoint="green_button")
+
+    for _ in range(EXPORT_POLL_LIMIT):
+        state = session.graphql(
+            host,
+            token,
+            urn,
+            "WUE_GetExportJob",
+            EXPORT_JOB,
+            {"jobUuid": uuid, "forceLegacyData": True, "locale": "en-US"},
+        )
+        report = state.get("exportJob") or {}
+        if report.get("isFailed"):
+            raise PortalError(f"the export job {uuid} failed", endpoint="green_button")
+        if report.get("isFinished") and report.get("result"):
+            return _unzip_csv(session.fetch_bytes(str(report["result"])))
+        sleep(poll_seconds)
+
+    raise PortalError(
+        f"the export job {uuid} did not finish within {EXPORT_POLL_LIMIT * poll_seconds:.0f}s",
+        endpoint="green_button",
+    )
+
+
+def _unzip_csv(payload: bytes) -> str:
+    """The one CSV inside the exported archive."""
+    import io
+    import zipfile
+
+    if not payload.startswith(b"PK"):
+        # Served the CSV directly. Accepted rather than rejected: the shape of
+        # the response is the portal's business, and either is usable.
+        return payload.decode("utf-8-sig")
+    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+        names = [n for n in archive.namelist() if n.lower().endswith(".csv")]
+        if not names:
+            raise PortalError(
+                f"the export archive holds no CSV, only {archive.namelist()}",
+                endpoint="green_button",
+            )
+        return archive.read(names[0]).decode("utf-8-sig")
+
+
 def read_green_button_download(
     settings: PgeSettings,
     start: date,
@@ -362,13 +620,8 @@ def read_green_button_download(
     """Download and parse Green Button data for ``[start, end]``.
 
     Follows the ``read_*(settings, start, end, ...)`` shape the other sources
-    use. Dates rather than datetimes: the portal's own selector is a date range
-    and a billing cycle is date-bounded.
+    use. Dates rather than datetimes: a billing cycle is date-bounded, and the
+    portal's own selector is a date range.
     """
-    raise PortalError(
-        "the Green Button download action has not been captured yet. Every call to this "
-        "portal names an Apex class and method, and that pair can only be read off a live "
-        "session -- see audit/pge/PORTAL.md for the procedure. Until then, export the CSV "
-        "from the portal by hand and read it with `read_green_button`, which is unchanged.",
-        endpoint="green_button",
-    )
+    with PgeSession(settings) as session:
+        return parse_green_button(download_green_button(session, start, end), layout)

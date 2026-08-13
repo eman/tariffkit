@@ -24,8 +24,10 @@ from nem_rates.sources.pge import (
     PgeSession,
     PgeSettings,
     PortalError,
+    _export_config,
+    _unzip_csv,
     parse_green_button,
-    read_green_button_download,
+    time_interval,
 )
 
 CSV = """TYPE,DATE,START TIME,END TIME,IMPORT (kWh),EXPORT (kWh)
@@ -187,11 +189,43 @@ class TestGreenButton:
         path.write_text(CSV, encoding="utf-8")
         assert parse_green_button(CSV) == read_green_button(path)
 
-    def test_the_uncaptured_download_refuses_rather_than_guessing(self) -> None:
-        # Every call to this portal names an Apex class and method, and that
-        # pair can only be read off a live session. Inventing one would fail at
-        # runtime with a message about the portal rather than about us.
-        with pytest.raises(PortalError, match="has not been captured"):
-            read_green_button_download(
-                PgeSettings(username="u", password="p"), date(2026, 1, 1), date(2026, 1, 31)
-            )
+    def test_the_interval_carries_the_offset_in_force_at_each_end(self) -> None:
+        # The December cycle starts in PST and, in other years, can end in PDT.
+        # The portal sends the offset that applied on each end rather than one
+        # for the whole span, so this is built from zoned datetimes.
+        interval = time_interval(date(2025, 12, 30), date(2026, 1, 29))
+        assert interval == "2025-12-30T00:00:00-08:00/2026-01-29T23:59:59-08:00"
+
+        across = time_interval(date(2026, 3, 3), date(2026, 3, 31))
+        start, end = across.split("/")
+        assert start.endswith("-08:00") and end.endswith("-07:00")
+
+    def test_the_export_asks_for_the_window_and_account_it_was_given(self) -> None:
+        config = _export_config("A/B", "urn:acct", "CSV")
+        assert config["timeInterval"] == "A/B"
+        assert config["urns"] == ["urn:acct"]
+        assert config["format"] == "CSV"
+        assert config["utilityCode"] == "pge"
+
+    def test_a_zipped_export_yields_its_csv(self) -> None:
+        import io
+        import zipfile
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("pge_electric_usage_interval_data_1_2026.csv", CSV)
+        assert _unzip_csv(buffer.getvalue()) == CSV
+
+    def test_a_bare_csv_is_accepted_too(self) -> None:
+        # The response shape is the portal's business; either is usable.
+        assert _unzip_csv(CSV.encode("utf-8")) == CSV
+
+    def test_an_archive_without_a_csv_is_named_as_such(self) -> None:
+        import io
+        import zipfile
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("readme.txt", "nope")
+        with pytest.raises(PortalError, match="no CSV"):
+            _unzip_csv(buffer.getvalue())
