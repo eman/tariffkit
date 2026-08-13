@@ -137,7 +137,19 @@ filing already vendored, and its cells reconcile against the published totals.
 Unexplained.
 
 **Two EV2-A cycles, +0.23 and +0.12** on Distribution + Public Purpose
-Programs. The evidence points at PG&E's own allocation rather than at the
-tariff: on 2026-06 it charges a Base Services Charge of 25.39 and its breakdown
-accounts for 25.28 of it. A hypothesis until a third cycle agrees, so the
-mismatch stays visible.
+Programs. Not a wrong distribution rate, which is the first thing to suspect and
+the measurement rules out -- subtracting the Base Services Charge, which is
+exact to the cent on every cycle, the residual per kilowatt-hour varies sixfold
+across four cycles on the same schedule:
+
+| cycle | days | kWh | residual | per kWh |
+|---|---|---|---|---|
+| 2026-03-10 | 32 | 730.6 | 0.184 | 0.00025 |
+| 2026-04-07 | 29 | 41.1 | 0.020 | 0.00049 |
+| 2026-05-06 | 29 | 376.2 | 0.006 | 0.00002 |
+| 2026-06-05 | 32 | 71.6 | 0.109 | 0.00152 |
+
+A rate error would hold the last column constant. It does not, and the two
+cycles that miss are both 32 days while both 29-day cycles are within a
+rounding of exact -- so the next place to look is how the utility apportions a
+charge across a longer cycle, not the tariff.
