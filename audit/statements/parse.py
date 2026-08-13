@@ -218,15 +218,19 @@ def read_statement(path: str | Path) -> Statement:
         # one that does not has demonstrably not. Falling back to the first
         # reading keeps the failure reportable rather than raising, and it is
         # still gated -- `self_check` runs again before anything is priced.
-        best: Statement | None = None
+        scored: list[tuple[int, int, Statement]] = []
         for pages in readings(source):
             candidate = parse_statement(pages, source=source.name, recognised=True)
-            if not candidate.self_check():
-                return candidate
-            best = best or candidate
-        if best is None:
+            # Two criteria, in order. Adding up is the document's own test and
+            # comes first. Among readings that pass it, prefer the one whose
+            # labels are words: a row recognised as "s" carries its amount
+            # correctly and still cannot be matched to anything, so the section
+            # totals while a charge goes unclaimed.
+            scored.append((0 if candidate.self_check() else 1, _legible(candidate), candidate))
+        if not scored:
             raise StatementError(f"{source.name} produced no readable pages")
-        return best
+        scored.sort(key=lambda entry: (entry[0], entry[1]), reverse=True)
+        return scored[0][2]
     return parse_statement(pages, source=source.name)
 
 
@@ -273,6 +277,23 @@ def _summary_amount(summary: StatementSection, label: str) -> float | None:
     """One named line out of the running balance, or None if absent."""
     matches = summary.find(label)
     return matches[0].amount if matches else None
+
+
+def _legible(statement: Statement) -> int:
+    """How many of a statement's charge rows carry a label a rule can claim.
+
+    A count rather than a ratio, so a reading that finds more rows is not
+    penalised for it. Used only to choose between recognitions of the same
+    document, never to judge whether one is right.
+    """
+    from .mapping import rule_for
+
+    return sum(
+        1
+        for section in statement.sections
+        for line in section.charged
+        if rule_for(section.name, line.label) is not None
+    )
 
 
 def parse_statement(
@@ -524,7 +545,19 @@ def _line(line: str, section: Section, page: int, *, label: str = "") -> Stateme
     if len(fields) < 2:
         return None
 
+    derived = not label
     label = label or fields[0].strip(" .")
+    # A section is sliced at the column its heading starts in, and on a
+    # recognised page that column is an estimate. One character out to the left
+    # and the tail of the neighbouring prose column arrives as the first field:
+    # "...income-qualified households" becomes a label of "s", and the row's
+    # real label sits in the next field. No charge on a statement is named by
+    # one or two characters, so a fragment that short is dropped rather than
+    # believed -- the amount is read correctly either way, and the cost of
+    # believing it is a charge that reconciles against nothing.
+    if derived and len(label) <= 2 and not label.isdigit() and len(fields) >= 3:
+        fields = fields[1:]
+        label = fields[0].strip(" .")
     if not label or SKIP_LABELS.match(label):
         return None
 
