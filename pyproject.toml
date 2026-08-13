@@ -64,6 +64,11 @@ line-length = 100
 target-version = "py311"
 src = ["src", "tests"]
 
+[tool.ruff.lint.isort]
+# `src` above does not reach `audit/`, so without this ruff sorts it as a
+# third-party package and demands an import order no one would write by hand.
+known-first-party = ["nem_rates", "audit"]
+
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "RET", "SIM", "PTH", "RUF"]
 ignore = ["A003"]
@@ -79,7 +84,11 @@ ignore = ["A003"]
 python_version = "3.11"
 strict = true
 warn_unreachable = true
-files = ["src/nem_rates"]
+# `audit/` is checked as strictly as the package. It is not shipped, but it is a
+# real program written against a strict-typed library, and its whole purpose is
+# to be trusted when it reports a discrepancy. (`custom_components/` is excluded
+# instead because it follows Home Assistant's conventions, not this project's.)
+files = ["src/nem_rates", "audit"]
 
 [[tool.mypy.overrides]]
 module = ["pypdf.*"]

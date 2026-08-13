@@ -23,6 +23,10 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run mypy
       - run: uv run pytest --cov=nem_rates --cov-report=term-missing
+      # A second invocation rather than a `testpaths` entry: `audit/` is not in
+      # the sdist, and pytest errors on a testpath that does not exist, so
+      # listing it would break `pytest` on an unpacked sdist.
+      - run: uv run pytest audit/tests
 
   build:
     runs-on: ubuntu-latest
@@ -34,6 +38,13 @@ jobs:
         run: |
           python -m zipfile -l dist/*.whl | grep -q 'nem_rates/data/export/pge/nbt26.json.gz'
           python -m zipfile -l dist/*.whl | grep -q 'nem_rates/data/holidays.toml'
+      - name: The audit harness must not ship at all
+        # It is one account's statement parser and login. Pinned the same way
+        # the inclusions above are, so the exclusion cannot rot into an
+        # accident.
+        run: |
+          ! python -m zipfile -l dist/*.whl | grep -q '^audit/'
+          ! tar -tzf dist/*.tar.gz | grep -q '/audit/'
       - uses: actions/upload-artifact@v4
         with:
           name: dist
