@@ -37,15 +37,22 @@ from ..errors import StatementError
 #: in front of you.
 DPI = 300
 
-#: Tesseract's page segmentation mode. 6 = "assume a single uniform block of
-#: text", which keeps rows intact. The default tries to detect columns and
-#: reorders them, which destroys the left-to-right run of a charge row.
-PSM = "6"
+#: Tesseract's page segmentation mode. 11 is "sparse text": find words, attempt
+#: no layout analysis at all.
+#:
+#: That sounds like the wrong choice and is the right one, because the rows are
+#: reassembled here from word geometry anyway. Tesseract's own analysis fights
+#: that -- on a statement laid out as a table beside a sidebar, mode 6 silently
+#: drops whole rows. It lost the Peak charge from the 2025-09 delivery table,
+#: $104.43 of a $178.64 section, while the chart legend two inches lower
+#: recognised the same figure perfectly. Mode 11 reads that row completely.
+PSM = "11"
 
-#: Words closer together than this fraction of a character width are one field.
-#: The parser splits fields on two or more spaces, so the grid has to preserve
-#: the difference between a gap inside a label and a gap between columns.
-MIN_GAP = 2
+#: How much of a line's height two words may differ by and still be the same
+#: row. Sparse mode does no line grouping, so rows are clustered by vertical
+#: position here; a fraction rather than a constant because it has to hold at
+#: whatever resolution the page was rendered at.
+ROW_TOLERANCE = 0.6
 
 
 def available() -> bool:
@@ -67,8 +74,8 @@ def _render(source: Path, into: Path) -> list[Path]:
     return sorted(into.glob("page*.png"))
 
 
-def _words(image: Path) -> list[tuple[int, int, int, str]]:
-    """Recognised words as (line id, left, width, text), in reading order."""
+def _words(image: Path) -> list[tuple[int, int, int, int, str]]:
+    """Recognised words as (top, height, left, width, text)."""
     result = subprocess.run(
         ["tesseract", str(image), "stdout", "--psm", PSM, "tsv"],
         capture_output=True,
@@ -79,25 +86,31 @@ def _words(image: Path) -> list[tuple[int, int, int, str]]:
             f"recognition failed on {image.name}: {result.stderr.decode('utf-8', 'replace')[:200]}"
         )
 
-    rows: list[tuple[int, int, int, str]] = []
+    rows: list[tuple[int, int, int, int, str]] = []
     reader = csv.DictReader(result.stdout.decode("utf-8", "replace").splitlines(), delimiter="\t")
     for row in reader:
         text = (row.get("text") or "").strip()
         if not text:
             continue
         try:
-            # block/paragraph/line together identify one printed row; page_num
-            # is constant here because each image is one page.
-            line = (
-                int(row["block_num"]) * 100_000 + int(row["par_num"]) * 1_000 + int(row["line_num"])
+            # Geometry only. Sparse mode reports no meaningful block, paragraph
+            # or line numbering, and relying on any of it is what reordered rows
+            # across sections before.
+            rows.append(
+                (
+                    int(row["top"]),
+                    int(row["height"]),
+                    int(row["left"]),
+                    int(row["width"]),
+                    text,
+                )
             )
-            rows.append((line, int(row["left"]), int(row["width"]), text))
         except (KeyError, ValueError):
             continue
     return rows
 
 
-def _as_layout(words: list[tuple[int, int, int, str]]) -> str:
+def _as_layout(words: list[tuple[int, int, int, int, str]]) -> str:
     """Rebuild a character grid from word boxes.
 
     The parser reads column positions, not just words, so the horizontal
@@ -108,17 +121,26 @@ def _as_layout(words: list[tuple[int, int, int, str]]) -> str:
     if not words:
         return ""
 
-    widths = sorted(width / len(text) for _, _, width, text in words if text)
+    widths = sorted(width / len(text) for _, _, _, width, text in words if text)
     char_width = widths[len(widths) // 2] or 1.0
+    heights = sorted(height for _, height, _, _, _ in words)
+    band = (heights[len(heights) // 2] or 1) * ROW_TOLERANCE
 
-    lines: dict[int, list[tuple[int, str]]] = {}
-    for line, left, _, text in words:
-        lines.setdefault(line, []).append((round(left / char_width), text))
+    # Clustered down the page. Ordering by anything tesseract numbers rather
+    # than by position reorders rows across section boundaries, and the symptom
+    # is one section short by a charge while another is over by the same rows.
+    grouped: list[list[tuple[int, str]]] = []
+    anchor = None
+    for top, _, left, _, text in sorted(words, key=lambda w: (w[0], w[2])):
+        if anchor is None or top - anchor > band:
+            grouped.append([])
+            anchor = top
+        grouped[-1].append((round(left / char_width), text))
 
     out: list[str] = []
-    for line in sorted(lines):
+    for group in grouped:
         row = ""
-        for column, text in sorted(lines[line]):
+        for column, text in sorted(group):
             if column <= len(row):
                 # The estimate put this word at or inside the end of the last
                 # one. One space, never none: run together, "Off Peak" becomes
