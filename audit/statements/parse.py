@@ -582,7 +582,16 @@ def _line(line: str, section: Section, page: int, *, label: str = "") -> Stateme
     at = rest.index("@") if "@" in rest else _implied_at(rest)
     if at is not None:
         priced = rest[:at]
-        if len(priced) >= 2 and QUANTITY.match(priced[-2]):
+        # The quantity and its unit may be one field or two, the same way the
+        # "@" itself may or may not have survived. Reading only the two-field
+        # form leaves a recognised row with no quantity at all, which silently
+        # costs the reconciler its ability to re-price that row from the
+        # statement's own metered figures.
+        if priced and METERED_FIELD.match(priced[-1]):
+            amount_text, _, unit = priced[-1].partition(" ")
+            quantity = float(amount_text.replace(",", ""))
+            unit = unit.strip()
+        elif len(priced) >= 2 and QUANTITY.match(priced[-2]):
             quantity = float(priced[-2].replace(",", ""))
             unit = priced[-1]
         # The rate sits immediately after the "@", whether or not the symbol

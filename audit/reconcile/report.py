@@ -45,6 +45,21 @@ def render(result: Reconciliation, *, verbose: bool = False) -> str:
         out.append("")
         for comparison in _ordered(failures):
             out.append(_line(comparison))
+            verdict = comparison.rates_agree
+            if verdict is not None:
+                assert comparison.from_statement is not None and comparison.printed is not None
+                gap = comparison.from_statement - comparison.printed
+                out.append(
+                    f"        priced from the statement's own kWh: "
+                    f"{comparison.from_statement:,.2f} ({gap:+.2f}) -- "
+                    + (
+                        "the rates reproduce this line, so the difference is which "
+                        "hours the meter recorded"
+                        if verdict
+                        else "the rates do not reproduce this line, so better metering "
+                        "will not close it"
+                    )
+                )
             for key, value in sorted(comparison.parts.items()):
                 out.append(f"        {key:<38} {value:>10,.2f}")
 

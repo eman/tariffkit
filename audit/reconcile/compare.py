@@ -34,6 +34,7 @@ from nem_rates.config import Config
 
 from ..statements.mapping import MAP, LineRule, Side, claimed_components, rule_for, split_side
 from ..statements.model import Section, Statement
+from .attribution import fixed_from_statement, priced_from_statement
 from .tolerance import Tolerance
 
 
@@ -71,6 +72,10 @@ class Comparison:
     computed: float | None = None
     rule: LineRule | None = None
     parts: Mapping[str, float] = field(default_factory=dict)
+    #: The same rule priced from the quantities the statement itself printed,
+    #: when it prints enough to do so. Present only on a mismatch, where it
+    #: answers the one question a mismatch raises: the rates, or the energy?
+    from_statement: float | None = None
 
     @property
     def delta(self) -> float:
@@ -81,6 +86,19 @@ class Comparison:
     @property
     def ok(self) -> bool:
         return self.outcome is Outcome.MATCH
+
+    @property
+    def rates_agree(self) -> bool | None:
+        """Whether our rates reproduce this line from the statement's own kWh.
+
+        None when the statement prints nothing to price. True means the rates
+        are right and the disagreement is about which hours the energy arrived
+        in; False means the rates, the vintage or the map is wrong, and better
+        metering will not help.
+        """
+        if self.from_statement is None or self.printed is None:
+            return None
+        return abs(self.from_statement - self.printed) <= max(0.02, abs(self.printed) * 0.0005)
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +190,33 @@ class Reconciliation:
         }
 
 
+def _from_metered(rule: LineRule, metered: Mapping[str, float]) -> float | None:
+    """The rule's total, priced from the statement's own quantities.
+
+    None unless every component is one the statement gives enough to price, so
+    a partial answer is never presented as a whole one.
+    """
+    total = 0.0
+    for component in rule.components:
+        side, key = split_side(component, rule.side)
+        # Applied credits are namespaced, because "generation" is also a
+        # per-kWh component and reading one for the other would compare a
+        # charge against a credit.
+        lookup = f"applied:{key}" if side is Side.APPLIED else key
+        if lookup not in metered:
+            # A charge or credit the statement never printed was never billed:
+            # the Base Services Charge did not exist before 2026-03-01, and a
+            # cycle with no export earns no credit to apply. A per-kWh
+            # component absent from the statement is different -- that is
+            # something we cannot price, and a partial answer must not be
+            # presented as a whole one.
+            if side in (Side.APPLIED, Side.FIXED):
+                continue
+            return None
+        total += metered[lookup] * (-1.0 if side is Side.EXPORT else 1.0)
+    return total
+
+
 def applied_across(bills: Sequence[Bill]) -> dict[str, float]:
     """Credits applied, summed over the agreements that applied them."""
     totals = {"generation": 0.0, "delivery": 0.0, "bonus": 0.0}
@@ -218,6 +263,7 @@ def reconcile(
 ) -> Reconciliation:
     """Compare a computed bill against a parsed statement, line by line."""
     allowed = tolerance or Tolerance()
+    metered = {**priced_from_statement(statement, config), **fixed_from_statement(statement)}
     comparisons: list[Comparison] = []
     used: set[str] = set()
 
@@ -267,6 +313,11 @@ def reconcile(
             matched = allowed.line_ok(
                 printed, computed, len(rule.components), sum(abs(v) for v in parts.values())
             )
+            # Only asked when the answer matters. On an agreeing line it would
+            # be noise, and it costs a tariff lookup per time-of-use row.
+            independent = None
+            if not matched and metered:
+                independent = _from_metered(rule, metered)
             comparisons.append(
                 Comparison(
                     label,
@@ -276,6 +327,7 @@ def reconcile(
                     computed=computed,
                     rule=rule,
                     parts=parts,
+                    from_statement=independent,
                 )
             )
 

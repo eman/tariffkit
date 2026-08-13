@@ -120,110 +120,42 @@ year's computed total is $0.88 from the billed one across $3,104. Statements
 before November 2025 carry no text at all and are recovered by recognising the
 rendered pages -- see `statements/ocr.py`, and `pge/PORTAL.md` for why.
 
-Four cycles still carry findings. They are listed rather than tolerated,
-because a harness that widens a tolerance until it agrees is worth nothing.
+**Every remaining difference has one cause: which hours the meter recorded.**
+Not the rates, the vintages, the map, or the parser. The report says so on each
+mismatching line, because `reconcile/attribution.py` re-prices the line from the
+kilowatt-hours the statement itself printed, which removes the meter from the
+question:
 
-**MCE generation on the two 2025 summer cycles, about $0.36 each.** MCE
-publishes only its current rate card and files no advice letters, so the
-vintage that actually applied cannot be regenerated -- `regen cca --provider
-mce --for-date` fails outright. `audit doctor` reports the card as 943 and 1125
-days older than the cycles it prices, and the bill repeats it, so this arrives
-as a named data gap rather than as an unexplained discrepancy. It is the larger
-part of both cycles' difference.
+    Distribution + Public Purpose Programs     177.97    177.81    -0.16  MISMATCH
+        priced from the statement's own kWh: 177.96 (-0.01) -- the rates
+        reproduce this line, so the difference is which hours the meter recorded
 
-**Distribution on those same two cycles, about $0.16 each: which hours the
-energy arrived in.** Not the tariff, the parser, or the time-of-use rules --
-each was ruled out by measurement rather than assumed.
+Every mismatch in the year returns that verdict. The cycle totals agree with the
+statement -- 0.05 kWh on a 701 kWh month -- while the time-of-use splits differ,
+which is worth about two cents a kilowatt-hour where peak and off-peak
+distribution diverge.
 
-The rate data is exact: the cells reconcile against the published totals, the
-components sum to those totals to six decimals, and the statement prints
-`@ $0.50269` and `@ $0.62569`, which are the vendored figures. The cycle's total
-energy is right too, agreeing with the statement to 0.05 kWh. Every section of
-the parse sums exactly.
+The cause is instrumented. Sampling is regular at five minutes, but the series
+also carries outages -- on the 2025-10 cycle, four gaps over fifteen minutes
+totalling 73 hours, the longest 71.8. Spreading those evenly gives the peak
+window its share of the clock, five hours in twenty-four, rather than its share
+of the load: 75.1 kWh reconstructed across 72 hours puts 15.6 kWh in peak where
+the real shape puts about 22.4, a 6.8 kWh deficit against the 6.9 measured.
+Readings reconstructed across a gap wider than an hour are marked `estimated`
+and reported on the bill.
 
-What differs is the split. The statement bills 208.789 kWh at peak; the
-InfluxDB series yields 201.892. Applying *our own* time-of-use rules to the
-meter's own 15-minute registers, fetched as a Green Button export, gives
-209.110 -- so the rules are right. At the roughly two-cent spread between peak
-and off-peak distribution, the 6.9 kWh gap is the entire residual.
+**The stale MCE rate card is not a cause, which the same check established.**
+It is 940 to 1156 days older than the cycles it prices and the bill says so,
+but pricing the generation line from the statement's own kilowatt-hours
+reproduces it exactly -- 111.64 against 111.64. MCE evidently did not reprice in
+between. This had been recorded here as the larger part of two cycles'
+difference; it was not, and the check that decided it is now automatic rather
+than a hand-run script.
 
-**Both series come from the same physical meter**, the Rainforest device simply
-reading its register, so this is not two meters disagreeing. Nor is it a clock
-offset: aligning the two hourly profiles is unambiguously best at zero shift
-(31 kWh of absolute difference, against 200+ at one hour either way). What the
-profile shows is the InfluxDB series running 1-3 kWh per hour below the
-register through the evening -- hours 16 to 20 sum to exactly the -7.22 kWh the
-source check reports -- while the cycle total stays right. Around 31 kWh is
-reshuffled between hours and nets out.
-
-Instrumenting the gap distribution closed it. Sampling is regular at five
-minutes -- median 305s, 99th percentile 590s -- which cannot move energy across
-an hour boundary at all. But the series also contains a handful of outages: on
-the 2025-10 cycle, four gaps over fifteen minutes totalling 73 hours, the
-longest **71.8 hours**. Spreading those evenly gives the peak window its share
-of the clock, five hours in twenty-four, rather than its share of the load.
-
-The arithmetic closes: 75.1 kWh reconstructed across 72 hours puts 15.6 kWh in
-peak where the real daily shape puts about 22.4, a 6.8 kWh deficit against the
-6.9 measured.
-
-Nothing detected it, because spreading *fills* every interval -- the coverage
-check saw a complete series. Readings reconstructed across a gap wider than an
-hour are now marked `estimated`, and the bill says so:
-
-    72 interval(s) covering 72.0h and 75.1 kWh were reconstructed across gaps
-    in the source, so their time-of-use split is a guess even though the cycle
-    total is not.
-
-Confirmed by substitution, as a diagnostic and not as a change: taking the
-meter's own 15-minute registers for *only* the reconstructed hours moves these
-two cycles from -0.149 to +0.088 and from -0.164 to +0.018. The calculator is
-right; the input's shape over those hours is what is missing.
-
-That substitution is deliberately not what the tool does. The point here is to
-validate the bill calculator and fix defects in it, and a gap in the meter
-record is a sound reason for a computed bill to differ from a received one so
-long as the reason is stated -- which is what the warning is for. Repairing the
-input instead would make the harness agree by editing what it was given, which
-is the one thing that would make its agreement worthless.
-
-`compare_sources` now compares the peak split as well as the total, because
-totals cannot see it: on that cycle the two agree to 0.05 kWh on the cycle's
-energy and disagree by 7.22 kWh about when it arrived, which is the only place
-the money was.
-
-**Two EV2-A cycles, +0.23 and +0.12** on Distribution + Public Purpose
-Programs -- the same meter-attribution cause, not apportionment.
-
-Two hypotheses were tested and both failed. A wrong distribution rate: ruled
-out because, with the Base Services Charge subtracted (it is exact to the cent
-on every cycle), the residual per kilowatt-hour varies sixfold across four
-cycles on the same schedule, 0.00002 to 0.00152, where a rate error would hold
-it constant. Reconstructed intervals: ruled out because all four cycles carry
-several hundred hours of them and the two that reconcile carry the most.
-
-The decisive test is to price with our own rates but the *statement's* own
-printed kilowatt-hours, which removes the meter from the question:
-
-| cycle | with meter data | with the statement's kWh |
-|---|---|---|
-| 2026-03-10 | +0.184 | -0.027 |
-| 2026-06-05 | +0.109 | +0.001 |
-
-The calculator reproduces the printed line to a cent. What differs is which
-time-of-use period our interval data assigns the energy to -- the cycle totals
-agree, the splits do not.
-
-So every remaining difference across the year reduces to two causes, and
-neither is a defect in the bill calculator:
-
-* **Interval attribution** on four cycles. The meter record and our
-  reconstruction of it disagree about which hours energy arrived in, while
-  agreeing on the total. Reported on the bill wherever a gap made it a guess.
-* **An unavailable rate vintage** on two. MCE publishes only its current card
-  and files no advice letters; `audit doctor` reports the card's age before a
-  run.
-
-Both are stated rather than absorbed, which is the point: a computed bill that
-differs from a received one for a named and measured reason is a result. One
-that agrees because its inputs were adjusted until it did is not.
+Repairing the meter data would close the remaining $0.88, and is deliberately
+not done: this tool exists to validate the bill calculator, and a gap in the
+meter record is a sound reason for a computed bill to differ from a received
+one so long as the reason is stated. Substituting better inputs until the
+numbers agree would make the agreement worthless. (Measured, as a diagnostic
+only: taking the meter's own 15-minute registers for the reconstructed hours
+moves two cycles from -0.149 to +0.088 and -0.164 to +0.018.)
