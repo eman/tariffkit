@@ -219,6 +219,15 @@ class TestRefusesUnreadableInput:
 
 
 @pytest.mark.statements
+def _unreadable(pdf: Path) -> bool:
+    """Whether this PDF is one of the text-free Type 3 statements."""
+    from pypdf import PdfReader
+
+    from audit.statements.parse import _glyphs_are_spaces
+
+    return _glyphs_are_spaces(PdfReader(pdf))
+
+
 class TestRealStatements:
     """Against actual statements, wherever they already are.
 
@@ -239,7 +248,20 @@ class TestRealStatements:
         pdfs = self._pdfs()
         if not pdfs:
             pytest.skip("no statements available; set NEM_RATES_STATEMENT_DIR")
+
+        readable = 0
         for pdf in pdfs:
+            # PG&E's pre-November-2025 statements carry no recoverable text at
+            # all: Type 3 glyphs whose ToUnicode map calls most of them spaces.
+            # Skipped rather than asserted against, because no parser change
+            # can make them pass -- but skipped on that specific evidence, so a
+            # genuine parser regression still fails instead of being excused.
+            if _unreadable(pdf):
+                continue
+            readable += 1
             statement = read_statement(pdf)
             assert statement.self_check() == [], f"{pdf.name}: {statement.self_check()}"
             assert statement.amount_due > 0
+
+        if not readable:
+            pytest.skip("every statement present is one of the unreadable Type 3 ones")

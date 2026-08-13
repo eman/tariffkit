@@ -149,17 +149,52 @@ looks like it should work and still misses every older statement, and the
 failure surfaces as "no billing cycle found", which reads as a corrupt PDF
 rather than as an unrecognised layout.
 
-Two known gaps, both reported rather than papered over:
+### Statements before November 2025 contain no recoverable text
 
-* **2025 statements still fail their own self-check.** They now parse, but the
-  sections sum to more than the amount due (for 2025-11: delivery 181.19 plus
-  MCE generation 86.99 against 213.89 due). Something in that layout's
-  accounting is not yet understood, so `self_check` refuses to reconcile them.
-  That refusal is the design working -- reconciling anyway would report a
-  fabricated defect with total confidence.
-* **`PGE_20251003.pdf` has no usable text layer.** `extract_text` yields ~11.6
-  million characters, almost all whitespace, and no `Statement Date:` anywhere
-  in it. A different extraction mode may recover it; layout mode does not.
+Not a corrupt download, and not one bad file: **every** statement from at least
+2025-07 back is affected, which is why 2024-09 to 2025-10 cannot be audited at
+all. They are built from **Type 3 fonts** -- glyphs drawn as procedures -- and
+the `/ToUnicode` map that should say what each glyph means instead declares
+**~56% of them to be U+0020**. Measured:
+
+| statement | glyph mappings | mapped to space |
+|---|---|---|
+| 2025-08-05 | 5052 | 2812 (55.7%) |
+| 2025-09-05 | 5047 | 2807 (55.6%) |
+| 2025-10-03 | 4974 | 2769 (55.7%) |
+| 2025-11-05 | 264 | 8 (3.0%) |
+
+So extraction is working perfectly and faithfully returning spaces. That is the
+whole explanation for the ~11.6 million characters layout mode produces: over
+half the document really does claim to be whitespace, and the rest decodes to an
+arbitrary substitution (`&`, `!`, `"`, `#`...). **pypdf and poppler agree** --
+`pdftotext -layout` finds no `Statement Date:` either, so this is not a
+library-choice problem and trying another extractor is wasted effort. Only OCR
+of rendered pages could recover them.
+
+`_glyphs_are_spaces` detects this and says so, because "unreadable document" and
+"layout the parser has not been taught" need opposite responses, and the earlier
+message ("it is a scan... download it again from the portal") sent the reader
+after a fix that cannot work.
+
+### The 2025-11 and 2025-12 statements parse but do not self-check
+
+Their sections sum to more than the amount due -- 2025-11 prints delivery
+181.19 plus MCE generation 86.99 against 213.89 due. The cause is visible in
+the summary, which on this layout carries a line belonging to no section:
+
+    Amount Due on Previous Statement           359.66
+    Payment(s) Received Since Last Statement  -359.66
+    Previous Unpaid Balance                      0.00
+    Current PG&E Electric Delivery Charges     181.19
+    Electric Adjustments                       -58.23     <-- no section holds this
+    MCE Electric Generation Charges             86.99
+
+181.19 + 86.99 - 58.23 = 209.95, still 3.94 short of 213.89, so `Electric
+Adjustments` is necessary but not sufficient and the remainder is unexplained.
+Until it is, `self_check` refuses to reconcile these, which is the design
+working: pricing against a parse that does not add up would report a parser
+defect as a billing defect.
 
 ## Green Button is a different system entirely
 

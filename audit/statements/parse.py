@@ -154,7 +154,51 @@ def read_statement(path: str | Path) -> Statement:
             f"{source.name} has no text layer, so it is a scan or a print-to-PDF export "
             f"rather than the statement PG&E serves; download it again from the portal"
         )
+
+    if _glyphs_are_spaces(reader):
+        raise StatementError(
+            f"{source.name} cannot be read as text: it is one of PG&E's pre-November-2025 "
+            f"statements, which draw every character with a Type 3 font whose ToUnicode "
+            f"map declares most glyphs to be spaces. Extraction faithfully returns those "
+            f"spaces, so the text is unrecoverable by any reader -- pypdf and poppler "
+            f"agree. Re-downloading will not help; only OCR of the rendered pages would, "
+            f"and this parser deliberately does not guess"
+        )
     return parse_statement(pages, source=source.name)
+
+
+#: Above this share of glyphs mapping to U+0020, the document is not text.
+#: Measured: PG&E's 2025 Type 3 statements sit at ~56%, the readable ones at 3%.
+SPACE_GLYPH_SHARE = 0.25
+
+_BFCHAR = re.compile(r"<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]{4})>")
+
+
+def _glyphs_are_spaces(reader: object) -> bool:
+    """Whether the fonts claim most of their glyphs are spaces.
+
+    Distinguishes "this statement is in a layout nobody taught the parser" from
+    "this statement carries no readable text at all", which need completely
+    different responses -- the first is a parser gap, the second is not fixable
+    here at any effort.
+    """
+    total = blank = 0
+    for page in reader.pages:  # type: ignore[attr-defined]
+        resources = page.get("/Resources") or {}
+        for ref in (resources.get("/Font") or {}).values():
+            font = ref.get_object()
+            if "/ToUnicode" not in font:
+                continue
+            try:
+                cmap = font["/ToUnicode"].get_data().decode("latin-1", "replace")
+            except Exception:
+                # An unreadable CMap proves nothing either way, so it should
+                # not count toward the verdict.
+                continue
+            for _, unicode_point in _BFCHAR.findall(cmap):
+                total += 1
+                blank += unicode_point.lower() == "0020"
+    return total > 0 and blank / total > SPACE_GLYPH_SHARE
 
 
 def parse_statement(pages: Sequence[str], *, source: str = "") -> Statement:
