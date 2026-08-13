@@ -450,7 +450,7 @@ class PgeSession:
             return
         try:
             stored = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except OSError, ValueError:
             return
         if not isinstance(stored, list):
             # An older format, or something else entirely. A cached session is

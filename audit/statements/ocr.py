@@ -115,7 +115,7 @@ def _words(image: Path, psm: str = PSM) -> list[tuple[int, int, int, int, str]]:
                     text,
                 )
             )
-        except (KeyError, ValueError):
+        except KeyError, ValueError:
             continue
     return rows
 

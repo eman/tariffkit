@@ -98,7 +98,7 @@ WantedBy=multi-user.target
 ## Docker
 
 ```dockerfile
-FROM python:3.13-slim
+FROM python:3.14-slim
 RUN pip install --no-cache-dir 'nem-rates[web]'
 EXPOSE 8000
 CMD ["nem-rates", "serve", "--host", "0.0.0.0"]

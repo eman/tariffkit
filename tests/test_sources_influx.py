@@ -281,8 +281,8 @@ class TestReadCounters:
         assert str(row["time"]) in str(caught.value)
 
     def test_a_utc_suffix_parses(self, settings: influx.InfluxSettings, patch_post: Any) -> None:
-        # Python has accepted a trailing Z since 3.11, which is this project's
-        # floor; InfluxDB sends naive UTC, but either must work.
+        # Python has accepted a trailing Z since 3.11, well below this
+        # project's floor; InfluxDB sends naive UTC, but either must work.
         patch_post(
             {},
             payload=[

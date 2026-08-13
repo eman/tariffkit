@@ -2,7 +2,7 @@
 
 ## Build, test, and lint
 
-Use the same toolchain and command style as CI (`uv` + Python 3.11+).
+Use the same toolchain and command style as CI (`uv` + Python 3.14).
 
 ```bash
 # Install dev environment (all extras + test/lint/type tools)
