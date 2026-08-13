@@ -41,6 +41,10 @@ from .model import Section, Statement, StatementLine, StatementSection
 MONEY = re.compile(r"^-?\$?-?\d[\d,]*\.\d{2,6}$")
 #: A bare quantity, e.g. "982.126000".
 QUANTITY = re.compile(r"^\d[\d,]*\.?\d*$")
+#: A quantity and its unit in one field, e.g. "138.984000 kWh". Whether these
+#: arrive as one field or two depends on how wide the printed gap between them
+#: came out, and on a recognised page that is not predictable.
+METERED_FIELD = re.compile(r"^\d[\d,]*\.?\d*\s+(kwh|days)$", re.I)
 
 #: Where each section begins. Ordered: the first match on a page opens it, and
 #: the next heading anywhere closes it, so a section running onto the following
@@ -205,9 +209,24 @@ def read_statement(path: str | Path) -> Statement:
         # plausible amount, which is why `self_check` gates reconciliation: a
         # statement prints its totals twice and a misread almost always breaks
         # the arithmetic between them.
-        from .ocr import pages_via_ocr
+        from .ocr import readings
 
-        return parse_statement(pages_via_ocr(source), source=source.name, recognised=True)
+        # Keep the first reading that survives the statement's own checks. The
+        # criterion is the document's, not a preference: a bill prints its
+        # totals twice and its sections have to sum to them, so a reading that
+        # satisfies that has almost certainly read the figures correctly, and
+        # one that does not has demonstrably not. Falling back to the first
+        # reading keeps the failure reportable rather than raising, and it is
+        # still gated -- `self_check` runs again before anything is priced.
+        best: Statement | None = None
+        for pages in readings(source):
+            candidate = parse_statement(pages, source=source.name, recognised=True)
+            if not candidate.self_check():
+                return candidate
+            best = best or candidate
+        if best is None:
+            raise StatementError(f"{source.name} produced no readable pages")
+        return best
     return parse_statement(pages, source=source.name)
 
 
@@ -456,6 +475,31 @@ def _anchor(raw: str) -> tuple[Section, int] | None:
     return None
 
 
+def _implied_at(rest: list[str]) -> int | None:
+    """Where the "@" would be on a metered row that lost it.
+
+    Recognised statements drop the symbol -- it is small, and it sits in a gap.
+    The shape is still unmistakable: a quantity, its unit, then two amounts,
+    the rate and the charge. Without this the rate is read as the charge, so a
+    $86.96 line prints as $0.63 and the section quietly comes up short.
+
+    Returns the index the rate starts at, or None when the row is not that
+    shape. Deliberately strict: guessing here invents a charge.
+    """
+    for index, field in enumerate(rest):
+        # The quantity and its unit may be one field or two, depending on how
+        # wide the gap between them came out.
+        metered = bool(METERED_FIELD.match(field)) or (
+            index and QUANTITY.match(rest[index - 1]) and field.lower() in {"kwh", "days"}
+        )
+        if not metered:
+            continue
+        after = rest[index + 1 :]
+        if len([value for value in after if _money(value) is not None]) >= 2:
+            return index + 1
+    return None
+
+
 def _line(line: str, section: Section, page: int, *, label: str = "") -> StatementLine | None:
     """One row, if it carries an amount.
 
@@ -476,13 +520,16 @@ def _line(line: str, section: Section, page: int, *, label: str = "") -> Stateme
     quantity = rate = None
     unit = ""
     rest = fields[1:]
-    if "@" in rest:
-        at = rest.index("@")
+    at = rest.index("@") if "@" in rest else _implied_at(rest)
+    if at is not None:
         priced = rest[:at]
         if len(priced) >= 2 and QUANTITY.match(priced[-2]):
             quantity = float(priced[-2].replace(",", ""))
             unit = priced[-1]
-        rest = rest[at + 1 :]
+        # The rate sits immediately after the "@", whether or not the symbol
+        # itself survived. Skipping past it is the whole point: read as the
+        # amount, $0.62569 becomes a 63-cent charge where $86.96 was due.
+        rest = rest[at:] if "@" not in rest else rest[at + 1 :]
         if rest:
             rate = _money(rest[0])
             rest = rest[1:]

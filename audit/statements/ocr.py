@@ -26,6 +26,7 @@ import csv
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 from ..errors import StatementError
@@ -47,6 +48,15 @@ DPI = 300
 #: $104.43 of a $178.64 section, while the chart legend two inches lower
 #: recognised the same figure perfectly. Mode 11 reads that row completely.
 PSM = "11"
+
+#: Modes to try, in order. Recognition quality is not uniform across statements
+#: -- 11 reads rows 6 drops, and 6 occasionally resolves an amount column 11
+#: fragments -- and there is no way to tell in advance which will do better on a
+#: given page. So more than one is attempted and the *statement decides*: a bill
+#: prints its totals twice and its sections have to sum to them, which is an
+#: objective test the document supplies itself rather than a preference for
+#: whichever answer looks nicer.
+PSM_CANDIDATES = ("11", "6", "4")
 
 #: How much of a line's height two words may differ by and still be the same
 #: row. Sparse mode does no line grouping, so rows are clustered by vertical
@@ -74,10 +84,10 @@ def _render(source: Path, into: Path) -> list[Path]:
     return sorted(into.glob("page*.png"))
 
 
-def _words(image: Path) -> list[tuple[int, int, int, int, str]]:
+def _words(image: Path, psm: str = PSM) -> list[tuple[int, int, int, int, str]]:
     """Recognised words as (top, height, left, width, text)."""
     result = subprocess.run(
-        ["tesseract", str(image), "stdout", "--psm", PSM, "tsv"],
+        ["tesseract", str(image), "stdout", "--psm", psm, "tsv"],
         capture_output=True,
         check=False,
     )
@@ -154,8 +164,13 @@ def _as_layout(words: list[tuple[int, int, int, int, str]]) -> str:
     return "\n".join(out)
 
 
-def pages_via_ocr(path: str | Path) -> list[str]:
-    """Recognise a statement's pages as layout-preserved text."""
+def readings(path: str | Path) -> Iterator[list[str]]:
+    """Each candidate recognition of a statement's pages, best mode first.
+
+    Yields rather than returns so a caller can stop at the first reading that
+    satisfies the statement's own arithmetic, and pay for the slower modes only
+    when the first one does not.
+    """
     source = Path(path)
     if not available():
         raise StatementError(
@@ -167,4 +182,12 @@ def pages_via_ocr(path: str | Path) -> list[str]:
         images = _render(source, Path(scratch))
         if not images:
             raise StatementError(f"{source.name} produced no pages to recognise")
-        return [_as_layout(_words(image)) for image in images]
+        for psm in PSM_CANDIDATES:
+            yield [_as_layout(_words(image, psm)) for image in images]
+
+
+def pages_via_ocr(path: str | Path) -> list[str]:
+    """The first recognition of a statement's pages."""
+    for pages in readings(path):
+        return pages
+    raise StatementError(f"{Path(path).name} produced no pages to recognise")
