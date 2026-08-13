@@ -128,21 +128,104 @@ def _recognition() -> Check:
     )
 
 
-def _rate_data(oldest: date) -> Check:
-    """Whether a tariff snapshot exists back to the oldest cycle to be priced."""
+def _rate_data(path: Path, oldest: date) -> Check:
+    """Whether every schedule the account was on can be priced back to ``oldest``.
+
+    Checking one dataset was not enough. The tax vintage spans the whole window
+    on any account, so it passed while the schedule actually in force had no
+    snapshot -- which then surfaced mid-run as a priced-but-wrong cycle rather
+    than as missing data. Each epoch is asked for the tariff it names, on the
+    later of its own start and the oldest cycle wanted.
+    """
     from nem_rates.data import versioned
     from nem_rates.errors import DataError
 
+    from .account import AccountHistory
+
+    problems: list[str] = []
     try:
         versioned.load("tax/ca_energy_resources", oldest)
     except DataError as exc:
-        return Check("rate data", False, str(exc)[:160])
-    return Check("rate data", True, f"covers {oldest}")
+        problems.append(str(exc)[:100])
+
+    checked: list[str] = []
+    try:
+        history = AccountHistory.from_toml(path)
+    except Exception:
+        # Already reported by its own check; nothing to add here.
+        history = None
+
+    epochs = history.epochs if history else ()
+    for epoch in epochs:
+        # Epochs that ended before the window are not priced, so a missing
+        # snapshot for one is not a problem this run has.
+        later = [e.start for e in epochs if e.start > epoch.start]
+        if later and min(later) <= oldest:
+            continue
+        assert history is not None
+        config = epoch.apply(history.base)
+        when = max(epoch.start, oldest)
+        try:
+            versioned.load(f"tariff/{config.utility.lower()}/{_slug(config.tariff)}", when)
+            checked.append(config.tariff)
+        except DataError as exc:
+            problems.append(f"{config.tariff}: {str(exc)[:80]}")
+
+    if problems:
+        return Check("rate data", False, "; ".join(problems)[:200])
+    return Check("rate data", True, f"covers {oldest} for {', '.join(dict.fromkeys(checked))}")
+
+
+def _slug(tariff: str) -> str:
+    return tariff.lower().replace("-", "")
+
+
+def _cca_card(path: Path, oldest: date) -> Check:
+    """Whether the vendored CCA rate card is anywhere near the cycles priced.
+
+    Its own check because it is not an error and cannot be fixed by vendoring
+    when the provider publishes no archive -- MCE files no advice letters, so
+    superseded vintages are simply unavailable. Worth knowing before a run
+    rather than inferring it from a thirty-cent generation gap.
+    """
+    from nem_rates.cca import load_rate_card
+    from nem_rates.errors import DataError
+
+    from .account import AccountHistory
+
+    try:
+        history = AccountHistory.from_toml(path)
+    except Exception:
+        return Check("CCA rate card", True, "no account history to check against")
+
+    stale: list[str] = []
+    for epoch in history.epochs:
+        cca = epoch.apply(history.base).cca
+        if cca is None or cca.rate_card is None:
+            continue
+        try:
+            card = load_rate_card(cca.rate_card, max(epoch.start, oldest))
+        except DataError as exc:
+            return Check("CCA rate card", False, str(exc)[:160])
+        age = (max(epoch.start, oldest) - card.effective).days
+        if age > 400:
+            stale.append(
+                f"{cca.rate_card.upper()} card is {age} days older than the cycles it prices"
+            )
+    if stale:
+        return Check("CCA rate card", False, "; ".join(dict.fromkeys(stale))[:200], required=False)
+    return Check("CCA rate card", True, "current for the window")
 
 
 def run_checks(*, account: Path, oldest: date, contact: bool = True) -> list[Check]:
     """Every prerequisite, in the order a run needs them."""
-    checks = [_credentials(), _account(account), _recognition(), _rate_data(oldest)]
+    checks = [
+        _credentials(),
+        _account(account),
+        _recognition(),
+        _rate_data(account, oldest),
+        _cca_card(account, oldest),
+    ]
     if contact:
         # Ordered after the local checks so a missing .env is reported without
         # a network round trip, and so a portal failure is never the first
