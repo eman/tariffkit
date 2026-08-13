@@ -167,13 +167,64 @@ class TestProtocol:
         with pytest.raises(PortalError, match="unknown endpoint"):
             session.apex("teleport")
 
-    def test_a_live_session_is_detected_without_raising(self, tmp_path: Path) -> None:
-        client = FakeClient(
-            post=FakeResponse({"actions": [{"state": "SUCCESS", "returnValue": 1}]})
+    def test_being_a_guest_is_not_being_signed_in(self, tmp_path: Path) -> None:
+        # The probe is isGuestUserCheck, which answers the opposite question and
+        # succeeds for an anonymous visitor: {"returnValue": true} means "yes, a
+        # guest". Reading success as "signed in" skips login, and the first real
+        # request then fails with a 401 far from the cause.
+        guest = FakeClient(
+            post=FakeResponse(
+                {"actions": [{"state": "SUCCESS", "returnValue": {"returnValue": True}}]}
+            )
         )
-        assert session_with(client, tmp_path).signed_in() is True
+        assert session_with(guest, tmp_path).signed_in() is False
+
+        member = FakeClient(
+            post=FakeResponse(
+                {"actions": [{"state": "SUCCESS", "returnValue": {"returnValue": False}}]}
+            )
+        )
+        assert session_with(member, tmp_path).signed_in() is True
+
         dead = FakeClient(post=FakeResponse("<html>", content_type="text/html"))
         assert session_with(dead, tmp_path).signed_in() is False
+
+    def test_an_unrecognised_answer_counts_as_not_signed_in(self, tmp_path: Path) -> None:
+        # Signing in again is cheap; assuming a live session is not.
+        odd = FakeClient(post=FakeResponse({"actions": [{"state": "SUCCESS", "returnValue": 1}]}))
+        assert session_with(odd, tmp_path).signed_in() is False
+
+    def test_cookies_sharing_a_name_across_domains_survive(self, tmp_path: Path) -> None:
+        # dict(client.cookies) raises CookieConflict on these, and the portal
+        # sets several -- renderCtx among them.
+        import httpx
+
+        session = PgeSession(
+            PgeSettings(username="u", password="p", cookie_path=tmp_path / "c.json")
+        )
+        client = httpx.Client()
+        client.cookies.set("renderCtx", "a", domain="myaccount.pge.com", path="/")
+        client.cookies.set("renderCtx", "b", domain="www.pge.com", path="/")
+        session._client = client  # type: ignore[assignment]
+        session._save_cookies()
+        assert (tmp_path / "c.json").is_file()
+
+        reopened = PgeSession(
+            PgeSettings(username="u", password="p", cookie_path=tmp_path / "c.json")
+        )
+        reopened._client = httpx.Client()  # type: ignore[assignment]
+        reopened._load_cookies()
+        assert len(list(reopened._client.cookies.jar)) == 2  # type: ignore[union-attr]
+
+    def test_an_unreadable_cookie_cache_is_discarded_not_raised(self, tmp_path: Path) -> None:
+        import httpx
+
+        path = tmp_path / "c.json"
+        path.write_text('{"old": "format"}', encoding="utf-8")
+        session = PgeSession(PgeSettings(username="u", password="p", cookie_path=path))
+        session._client = httpx.Client()  # type: ignore[assignment]
+        session._load_cookies()
+        assert list(session._client.cookies.jar) == []  # type: ignore[union-attr]
 
 
 class TestEndpointRegistry:
