@@ -32,7 +32,10 @@ def render(result: Reconciliation, *, verbose: bool = False) -> str:
         f"{statement.period.start}..{statement.period.end} "
         f"({statement.period.days} days)  {result.config.tariff}{supplier}"
     )
-    out.append(f"  billed ${statement.amount_due:,.2f}   computed ${result.bill.total:,.2f}")
+    out.append(
+        f"  billed ${statement.electric_charges:,.2f} electric   "
+        f"computed ${result.cash_due:,.2f} due"
+    )
     if statement.subperiods:
         spans = ", ".join(f"{a}..{b}" for a, b in statement.subperiods)
         out.append(f"  the utility split this cycle at a rate change: {spans}")
@@ -115,9 +118,12 @@ def render_all(results: Sequence[Reconciliation], *, verbose: bool = False) -> s
 def render_summary(results: Sequence[Reconciliation], *, skipped: Sequence[str] = ()) -> str:
     """One line per cycle, for reading a year at a glance.
 
-    Compares electric charges rather than the amount due, because the amount
-    due includes gas and summary-level credits that nothing here prices. Against
-    the amount due, a cycle that reconciles line by line can show a $54 gap.
+    Compares electric charges against cash due, which is what the statement
+    asks for. Two adjustments, both for the same reason -- comparing unlike
+    figures reports errors that are not there. The amount due includes gas and
+    summary-level credits that nothing here prices, worth $54 on 2025-11; and
+    the computed total is gross of export credits the cycle earned but banked
+    rather than spent, worth $6 on 2026-08.
     """
     header = (
         f"{'period':<25}{'days':>5}  {'schedule':<14}"
@@ -129,7 +135,7 @@ def render_summary(results: Sequence[Reconciliation], *, skipped: Sequence[str] 
     for result in sorted(results, key=lambda r: r.statement.period.start):
         statement = result.statement
         billed = statement.electric_charges
-        computed = result.bill.total
+        computed = result.cash_due
         kwh = statement.billed_kwh or 0.0
         billed_total += billed
         computed_total += computed

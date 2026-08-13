@@ -113,6 +113,19 @@ class Reconciliation:
         return not self.failures and not any(d.significant for d in self.source_deltas)
 
     @property
+    def cash_due(self) -> float:
+        """What this cycle actually costs, after credits are applied.
+
+        Not ``bill.total``. That is gross of the export credits the cycle
+        *earned*, and once any of them bank rather than being spent, it is not
+        the number the statement asks for -- on 2026-08 the two are $19.44 and
+        $25.48, which reads as a six-dollar error on a cycle that reconciles
+        line by line. Before solar they are the same figure, so this is the
+        right comparison in both regimes rather than a special case.
+        """
+        return apply_credits(self.bill).cash_due
+
+    @property
     def unverified_rules(self) -> tuple[str, ...]:
         seen = {c.rule.label for c in self.comparisons if c.rule and not c.rule.confirmed}
         return tuple(sorted(seen))
