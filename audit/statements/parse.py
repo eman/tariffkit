@@ -70,13 +70,27 @@ TOTAL_ROW = re.compile(r"^ {0,10}Total\b", re.I)
 #: rate, such as the Base Services Charge and the baseline allowance.
 DEFERRED_LABEL = re.compile(r"^\s*\.\s")
 
+#: How far past a wrapped "Total ..." label to keep looking for its amount.
+#: Three is enough for the sidebar lines seen interleaved on the 2025 layout.
+TOTAL_WRAP_LINES = 3
+
 #: "12/30/2025 to 01/29/2026 (31 billing days)" -- the cycle.
+#:
+#: Both separators are real, and the older one is an *en dash*, not a hyphen:
+#: statements through 2025 separate the dates with an en dash (U+2013) while
+#: the redesign switched to "to". Matching only "to" rejects every older
+#: statement with "no
+#: billing cycle found", and matching a plain hyphen silently still misses them,
+#: which reads as a broken PDF rather than as a layout nobody taught this parser.
 CYCLE = re.compile(
-    r"(\d{2}/\d{2}/\d{4})\s+to\s+(\d{2}/\d{2}/\d{4})(?:\s*\((\d+)\s+billing\s+days\))?"
+    r"(\d{2}/\d{2}/\d{4})\s+(?:to|[-\u2013\u2014])\s+(\d{2}/\d{2}/\d{4})"
+    r"(?:\s*\((\d+)\s+billing\s+days\))?"
 )
 #: A sub-period block heading inside the delivery detail: the same shape as the
 #: cycle header, minus the day count, which is how the two are told apart.
-SUBPERIOD = re.compile(r"^\s*(\d{2}/\d{2}/\d{4})\s+to\s+(\d{2}/\d{2}/\d{4})(?:\s|$)")
+SUBPERIOD = re.compile(
+    r"^\s*(\d{2}/\d{2}/\d{4})\s+(?:to|[-\u2013\u2014])\s+(\d{2}/\d{2}/\d{4})(?:\s|$)"
+)
 
 STATEMENT_DATE = re.compile(r"Statement\s+Date:\s*(\d{2}/\d{2}/\d{4})")
 ACCOUNT = re.compile(r"Account\s+N(?:o|umber)[.:]?\s*(\d[\d-]+)")
@@ -199,6 +213,7 @@ def _sections(pages: Sequence[str]) -> tuple[StatementSection, ...]:
     current: Section | None = None
     column = 0
     pending_total: Section | None = None
+    pending_span = 0
     awaiting_label: StatementLine | None = None
 
     for index, page in enumerate(pages):
@@ -215,11 +230,24 @@ def _sections(pages: Sequence[str]) -> tuple[StatementSection, ...]:
 
             # The total's label sometimes wraps, leaving the amount on the row
             # below: "Total MCE Electric Generation" / "Charges   $134.54".
+            #
+            # Not necessarily the *next* row, though. On the older layout the
+            # right-hand sidebar interleaves its own lines between the two, so
+            # giving up after one row loses the total and the statement then
+            # fails its own checks with a whole section apparently missing.
+            # Bounded, because scanning on indefinitely would eventually adopt
+            # some unrelated amount as the section total.
             if pending_total is not None:
                 amount = _first_money(line)
                 if amount is not None:
                     totals[pending_total] = amount
-                pending_total = None
+                    pending_total = None
+                    pending_span = 0
+                    continue
+                pending_span += 1
+                if pending_span > TOTAL_WRAP_LINES:
+                    pending_total = None
+                    pending_span = 0
                 continue
 
             if current is None:
@@ -255,6 +283,7 @@ def _sections(pages: Sequence[str]) -> tuple[StatementSection, ...]:
                     current = None
                 else:
                     pending_total, current = current, None
+                    pending_span = 0
                 continue
 
             text[current].append(line)

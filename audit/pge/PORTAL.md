@@ -130,6 +130,37 @@ is unblocked independently of the list API: a shadow-DOM walk collecting
 pure Python. Treat those ids as session-sensitive — they look like tokens and
 should not be pasted into logs or tool output.
 
+## The statement layout changed inside the audited window
+
+`bill_history` lists 24 statements, September 2024 to August 2026, and they are
+not all the same document. Anything reconciling a multi-year range meets at
+least two layouts, so `audit run` reports a parse failure per statement and
+carries on rather than aborting the batch.
+
+What differs, as of the 2025→2026 redesign:
+
+| | through 2025 | 2026 |
+|---|---|---|
+| cycle and sub-period dates | `10/01/2025 – 10/28/2025`, separated by an **en dash** (U+2013) | `12/30/2025 to 01/29/2026` |
+| section total | label wraps, and the sidebar interleaves its own lines *between* the label and the amount | label and amount adjacent |
+
+Both are handled. The en dash is the one to remember: matching a plain hyphen
+looks like it should work and still misses every older statement, and the
+failure surfaces as "no billing cycle found", which reads as a corrupt PDF
+rather than as an unrecognised layout.
+
+Two known gaps, both reported rather than papered over:
+
+* **2025 statements still fail their own self-check.** They now parse, but the
+  sections sum to more than the amount due (for 2025-11: delivery 181.19 plus
+  MCE generation 86.99 against 213.89 due). Something in that layout's
+  accounting is not yet understood, so `self_check` refuses to reconcile them.
+  That refusal is the design working -- reconciling anyway would report a
+  fabricated defect with total confidence.
+* **`PGE_20251003.pdf` has no usable text layer.** `extract_text` yields ~11.6
+  million characters, almost all whitespace, and no `Statement Date:` anywhere
+  in it. A different extraction mode may recover it; layout mode does not.
+
 ## Green Button is a different system entirely
 
 Usage export is **not** Aura and not Salesforce. The usage page embeds a
