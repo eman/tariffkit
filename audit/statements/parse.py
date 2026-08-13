@@ -92,6 +92,12 @@ SUBPERIOD = re.compile(
     r"^\s*(\d{2}/\d{2}/\d{4})\s+(?:to|[-\u2013\u2014])\s+(\d{2}/\d{2}/\d{4})(?:\s|$)"
 )
 
+#: Gas, on a combined statement. Taken from the gas section's own total rather
+#: than from the summary: the summary prints "Current Gas Charges" with the
+#: amount in a column that extraction drops entirely, so the only place the
+#: number survives is the detail page.
+GAS_TOTAL = re.compile(r"Total\s+Gas\s+Charges\s+\$?(-?[\d,]+\.\d{2})")
+
 STATEMENT_DATE = re.compile(r"Statement\s+Date:\s*(\d{2}/\d{2}/\d{4})")
 ACCOUNT = re.compile(r"Account\s+N(?:o|umber)[.:]?\s*(\d[\d-]+)")
 USAGE = re.compile(r"Electric\s+Usage\s+This\s+Period:\s*([\d,]+\.?\d*)\s*kWh,?\s*(\d+)\s+billing")
@@ -201,6 +207,17 @@ def _glyphs_are_spaces(reader: object) -> bool:
     return total > 0 and blank / total > SPACE_GLYPH_SHARE
 
 
+def _scalar(text: str, pattern: re.Pattern[str]) -> float | None:
+    found = pattern.search(text)
+    return _money(found.group(1)) if found else None
+
+
+def _summary_amount(summary: StatementSection, label: str) -> float | None:
+    """One named line out of the running balance, or None if absent."""
+    matches = summary.find(label)
+    return matches[0].amount if matches else None
+
+
 def parse_statement(pages: Sequence[str], *, source: str = "") -> Statement:
     """Parse already-extracted page text. No file, no network, no clock."""
     joined = "\n".join(pages)
@@ -234,6 +251,8 @@ def parse_statement(pages: Sequence[str], *, source: str = "") -> Statement:
         account_masked=re.sub(r"\D", "", account.group(1))[-4:] if account else "",
         billed_days=int(cycle.group(3)) if cycle.group(3) else None,
         billed_kwh=float(usage.group(1).replace(",", "")) if usage else None,
+        gas_charges=_scalar(joined, GAS_TOTAL),
+        electric_adjustments=_summary_amount(summary, "Electric Adjustments"),
         sections=sections,
         rate_schedule=schedules[0].strip() if schedules else "",
         cca_name=cca.group("cca").strip() if cca else "",

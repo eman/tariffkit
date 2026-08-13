@@ -113,6 +113,14 @@ class Statement:
     account_masked: str = ""
     billed_days: int | None = None
     billed_kwh: float | None = None
+    #: Gas, on a combined statement. This account burned no therms and was still
+    #: billed a minimum transportation charge, so a zero-usage service is not a
+    #: zero-money one. Recorded to make the amount due add up and then ignored:
+    #: nothing here prices gas, so no computed component may claim it.
+    gas_charges: float | None = None
+    #: Summary-level electric adjustments, e.g. the California Climate Credit,
+    #: which belong to no detail section and are not per-cycle charges.
+    electric_adjustments: float | None = None
     sections: tuple[StatementSection, ...] = ()
     #: What the statement says about itself, used to catch a stale account
     #: configuration before it can produce a confident, fabricated finding.
@@ -189,10 +197,22 @@ class Statement:
             if s.name in (Section.PGE_DELIVERY, Section.CCA_GENERATION)
             and s.printed_total is not None
         ]
-        if parts and abs(sum(parts) - self.amount_due) > CENT:
+        # The identity is not "the electric sections add up to the bill". A PG&E
+        # statement is a combined one: it can carry gas, and it carries
+        # summary-level adjustments that belong to no detail section. Both are
+        # named on the statement, so both are added here rather than absorbed
+        # into a tolerance -- an unexplained residue should stay visible.
+        expected = sum(parts) + (self.electric_adjustments or 0.0) + (self.gas_charges or 0.0)
+        if parts and abs(expected - self.amount_due) > CENT:
+            extra = []
+            if self.electric_adjustments:
+                extra.append(f"adjustments {self.electric_adjustments:+.2f}")
+            if self.gas_charges:
+                extra.append(f"gas {self.gas_charges:+.2f}")
+            detail = f" (sections {sum(parts):.2f}, {', '.join(extra)})" if extra else ""
             problems.append(
-                f"section totals sum to {sum(parts):.2f} but the statement is due "
-                f"{self.amount_due:.2f}; a whole section is probably missing"
+                f"the statement's own parts sum to {expected:.2f} but it is due "
+                f"{self.amount_due:.2f}{detail}; a whole section is probably missing"
             )
 
         if self.billed_days is not None and self.billed_days != self.period.days:

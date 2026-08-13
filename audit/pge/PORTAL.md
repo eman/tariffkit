@@ -177,24 +177,35 @@ of rendered pages could recover them.
 message ("it is a scan... download it again from the portal") sent the reader
 after a fix that cannot work.
 
-### The 2025-11 and 2025-12 statements parse but do not self-check
+### A statement is not only electricity
 
-Their sections sum to more than the amount due -- 2025-11 prints delivery
-181.19 plus MCE generation 86.99 against 213.89 due. The cause is visible in
-the summary, which on this layout carries a line belonging to no section:
+The amount due was never "the electric sections added up". Two other things sit
+on it, and missing either one made 2025-11 and 2025-12 fail their own checks:
 
-    Amount Due on Previous Statement           359.66
-    Payment(s) Received Since Last Statement  -359.66
-    Previous Unpaid Balance                      0.00
     Current PG&E Electric Delivery Charges     181.19
-    Electric Adjustments                       -58.23     <-- no section holds this
+    Electric Adjustments                       -58.23   <-- California Climate Credit
     MCE Electric Generation Charges             86.99
+    Current Gas Charges                          3.94   <-- combined statement
+                                            ---------
+    Total Amount Due                           213.89
 
-181.19 + 86.99 - 58.23 = 209.95, still 3.94 short of 213.89, so `Electric
-Adjustments` is necessary but not sufficient and the remainder is unexplained.
-Until it is, `self_check` refuses to reconcile these, which is the design
-working: pricing against a parse that does not add up would report a parser
-defect as a billing defect.
+**Gas.** The account burned **0.0 therms** and was still billed $3.94, because
+gas carries a minimum transportation charge -- $0.13151/day over 30 days. A
+zero-usage service is not a zero-money one, which is exactly why "there is no
+gas here" was a comfortable assumption and a wrong one.
+
+Take the figure from the gas section's own `Total Gas Charges` line, **not**
+from the summary: the summary prints `Current Gas Charges` with its amount in a
+column that extraction drops entirely, so the label survives and the number does
+not.
+
+**Adjustments.** `Electric Adjustments` is the California Climate Credit,
+printed in the summary and belonging to no detail section.
+
+Both are recorded on `Statement` and added to the amount-due identity, and both
+are then excluded from reconciliation: nothing in this library prices gas, and
+the climate credit is not a per-cycle charge, so no computed component may claim
+either. With that, 2025-11 and 2025-12 reconcile clean.
 
 ## Green Button is a different system entirely
 
