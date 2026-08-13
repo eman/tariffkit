@@ -193,19 +193,37 @@ energy and disagree by 7.22 kWh about when it arrived, which is the only place
 the money was.
 
 **Two EV2-A cycles, +0.23 and +0.12** on Distribution + Public Purpose
-Programs. Not a wrong distribution rate, which is the first thing to suspect and
-the measurement rules out -- subtracting the Base Services Charge, which is
-exact to the cent on every cycle, the residual per kilowatt-hour varies sixfold
-across four cycles on the same schedule:
+Programs -- the same meter-attribution cause, not apportionment.
 
-| cycle | days | kWh | residual | per kWh |
-|---|---|---|---|---|
-| 2026-03-10 | 32 | 730.6 | 0.184 | 0.00025 |
-| 2026-04-07 | 29 | 41.1 | 0.020 | 0.00049 |
-| 2026-05-06 | 29 | 376.2 | 0.006 | 0.00002 |
-| 2026-06-05 | 32 | 71.6 | 0.109 | 0.00152 |
+Two hypotheses were tested and both failed. A wrong distribution rate: ruled
+out because, with the Base Services Charge subtracted (it is exact to the cent
+on every cycle), the residual per kilowatt-hour varies sixfold across four
+cycles on the same schedule, 0.00002 to 0.00152, where a rate error would hold
+it constant. Reconstructed intervals: ruled out because all four cycles carry
+several hundred hours of them and the two that reconcile carry the most.
 
-A rate error would hold the last column constant. It does not, and the two
-cycles that miss are both 32 days while both 29-day cycles are within a
-rounding of exact -- so the next place to look is how the utility apportions a
-charge across a longer cycle, not the tariff.
+The decisive test is to price with our own rates but the *statement's* own
+printed kilowatt-hours, which removes the meter from the question:
+
+| cycle | with meter data | with the statement's kWh |
+|---|---|---|
+| 2026-03-10 | +0.184 | -0.027 |
+| 2026-06-05 | +0.109 | +0.001 |
+
+The calculator reproduces the printed line to a cent. What differs is which
+time-of-use period our interval data assigns the energy to -- the cycle totals
+agree, the splits do not.
+
+So every remaining difference across the year reduces to two causes, and
+neither is a defect in the bill calculator:
+
+* **Interval attribution** on four cycles. The meter record and our
+  reconstruction of it disagree about which hours energy arrived in, while
+  agreeing on the total. Reported on the bill wherever a gap made it a guess.
+* **An unavailable rate vintage** on two. MCE publishes only its current card
+  and files no advice letters; `audit doctor` reports the card's age before a
+  run.
+
+Both are stated rather than absorbed, which is the point: a computed bill that
+differs from a received one for a named and measured reason is a result. One
+that agrees because its inputs were adjusted until it did is not.
