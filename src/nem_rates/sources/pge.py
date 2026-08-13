@@ -167,6 +167,31 @@ ENDPOINTS: Mapping[str, Endpoint] = {
     ),
 }
 
+#: The one-shot CSRF token cookie, minted under a fresh random name on every
+#: sign-in.
+TOKEN_COOKIE_PREFIX = "__Host-ERIC_PROD"
+
+
+def _prune(jar: Any) -> list[Any]:
+    """Everything worth keeping between runs, which excludes the token cookie.
+
+    Two separate failures come from persisting it, and caching it buys nothing
+    either way because it is single-use.
+
+    Spending it is the subtle one. The next run finds the *session* cookie
+    valid, so :meth:`PgeSession.signed_in` says yes and no sign-in happens --
+    but the token alongside it was already spent, and the portal re-issues one
+    only to a session that asks for it. The result is a session that is
+    genuinely live and cannot make a single authenticated call.
+
+    Hoarding them is the loud one. A jar that accumulates one per run grows by
+    ~340 bytes each time until the request headers no longer fit and the portal
+    answers 431 -- which reads as the portal breaking rather than as the client
+    slowly poisoning itself.
+    """
+    return [c for c in jar if not c.name.startswith(TOKEN_COOKIE_PREFIX)]
+
+
 #: Cookies the login page sets and then asks to have handed back. Reading them
 #: from the jar rather than inventing them is what makes the call look like the
 #: page's own.
@@ -298,8 +323,18 @@ def _bill_rows(payload: Any) -> list[dict[str, Any]]:
             return []
 
     def walk(node: Any, depth: int = 0) -> list[dict[str, Any]] | None:
-        if depth > 8:
+        if depth > 10:
             return None
+        # Integration Procedures nest JSON strings inside JSON strings -- the
+        # rows sit two decodes down, under a `returnValue` that decodes to an
+        # `IPResult` that is itself still a string. Decoding only the outer one
+        # walks straight past them and reports an empty history, which reads as
+        # "this account has no bills" rather than as a parsing failure.
+        if isinstance(node, str) and node[:1] in "{[":
+            try:
+                return walk(json.loads(node), depth + 1)
+            except ValueError:
+                return None
         if isinstance(node, list) and node and isinstance(node[0], dict):
             keys = " ".join(node[0]).lower()
             if any(w in keys for w in wanted):
@@ -442,7 +477,7 @@ class PgeSession:
         payload = json.dumps(
             [
                 {"name": c.name, "value": c.value or "", "domain": c.domain, "path": c.path}
-                for c in self._client.cookies.jar
+                for c in _prune(self._client.cookies.jar)
             ]
         )
         # 0600 via os.open: a session cookie is a bearer credential, and
@@ -450,6 +485,28 @@ class PgeSession:
         handle = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
         with os.fdopen(handle, "w", encoding="utf-8") as out:
             out.write(payload)
+
+    def refresh_token(self) -> str:
+        """Mint a fresh CSRF token without signing in again.
+
+        Any authenticated page load issues one. Separated from :meth:`login`
+        because the two failures are unrelated and the cures have very
+        different costs: a stale token is free to replace, whereas a re-login
+        risks a device check.
+        """
+        if self._client is None:
+            raise PortalError("session is not open; use PgeSession as a context manager")
+        # Bootstrap first, deliberately. It fetches the *login* page for the
+        # framework id, and doing that after minting a token invalidates the
+        # one just minted -- so leaving it to happen lazily inside `apex`
+        # produces a token that was valid when it was read and stale by the
+        # time it is sent.
+        if not self._fwuid:
+            self.bootstrap()
+        token = self._token_from(self._client.get("/myaccount/s/").text)
+        if token:
+            self._token = token
+        return self._token
 
     def bootstrap(self) -> tuple[str, str]:
         """Read the framework id and CSRF token off the portal.
@@ -546,9 +603,29 @@ class PgeSession:
         except InvalidSessionError as stale:
             # Salesforce rotates the CSRF token and returns the replacement in
             # the rejection itself. Retry once with it; a second failure is real.
-            if not stale.new_token or stale.new_token == self._token:
+            spent = self._token
+            replacement = stale.new_token
+            if not replacement or replacement == spent:
+                # No replacement offered, which does not mean the session died:
+                # a token can go stale while the session stays perfectly good,
+                # and any authenticated page load mints a fresh one. Re-read
+                # rather than give up, because the caller's only other move is
+                # a re-login -- and on this portal a needless re-login is a
+                # needless device check, which is the expensive failure.
+                replacement = self._token_from(self._client.get("/myaccount/s/").text)
+            if (not replacement or replacement == spent) and endpoint != "login":
+                # The token cookie is one-shot. A later run finds the session
+                # cookie still valid -- so `signed_in()` says yes -- while the
+                # token it was issued alongside has already been spent, and no
+                # page load re-mints one for a session that thinks it has it.
+                # Signing in again is the only way to be issued another. Safe
+                # to do unprompted *because* the device cookies are configured:
+                # the portal recognises the machine and does not challenge it.
+                self.login(force=True)
+                replacement = self._token
+            if not replacement or replacement == spent:
                 raise
-            self._token = stale.new_token
+            self._token = replacement
             retry = self._client.post(
                 AURA_PATH,
                 params={"r": 1, "aura.ApexAction.execute": 1},
@@ -561,7 +638,7 @@ class PgeSession:
             )
             return _unwrap(retry, known)
 
-    def bill_history(self, history_filter: str = "AllActivity") -> list[dict[str, Any]]:
+    def bill_history(self, history_filter: str = "BILL") -> list[dict[str, Any]]:
         """Every statement and payment the portal will list.
 
         Dispatched through OmniStudio rather than a plain Apex controller, which
@@ -582,9 +659,18 @@ class PgeSession:
                         "userProfile": "MyAcct Customer Community User",
                         "userTimeZoneName": "America/Los_Angeles",
                         "userCurrencyCode": "USD",
-                        # The portal's own "All Activity" filter. The service
-                        # rejects an empty value outright rather than defaulting.
-                        "historyFilter": history_filter,
+                        # Capital H, and it is load-bearing: the service reads
+                        # this exact key and rejects an empty value rather than
+                        # defaulting, so a lowercase `historyFilter` produces
+                        # "Invalid value '' for query parameter historyFilter"
+                        # -- an error about the *value* that is really about
+                        # the key.
+                        #
+                        # The value is an enum whose members are nothing like
+                        # the labels the page shows. "Bill Charges" in the UI
+                        # is `BILL` on the wire; `Payments` is `PAYMENTS`, and
+                        # there is no member for "All Activity" at all.
+                        "HistoryFilter": history_filter,
                     }
                 ),
                 "options": json.dumps({"ignoreCache": False, "useContinuation": False}),
@@ -642,7 +728,15 @@ class PgeSession:
         framework id. Skipping straight to the POST fails in a way that looks
         like bad credentials.
         """
-        if not force and self.signed_in():
+        # A resumed session is the common case, and it arrives with a valid
+        # session cookie and no token, because the token is one-shot and is
+        # deliberately not cached. Any authenticated page load mints another,
+        # so ask for one rather than signing in: submitting the login form
+        # while already signed in fails outright, since the login page then
+        # redirects to the community and the token it carries belongs to the
+        # community app rather than to `siteforce:loginApp2`, which is the app
+        # the form posts under.
+        if not force and self.signed_in() and (self._token or self.refresh_token()):
             return
         if self._client is None:
             raise PortalError("session is not open; use PgeSession as a context manager")
