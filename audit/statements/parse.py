@@ -588,7 +588,10 @@ def _line(line: str, section: Section, page: int, *, label: str = "") -> Stateme
         # costs the reconciler its ability to re-price that row from the
         # statement's own metered figures.
         if priced and METERED_FIELD.match(priced[-1]):
-            amount_text, _, unit = priced[-1].partition(" ")
+            # split(), not partition(" "): the pattern allows any whitespace, so
+            # a tab-separated "40.00\tkWh" matches and then partitions on a
+            # space that is not there, and float() raises out of the parse.
+            amount_text, unit = priced[-1].split(maxsplit=1)
             quantity = float(amount_text.replace(",", ""))
             unit = unit.strip()
         elif len(priced) >= 2 and QUANTITY.match(priced[-2]):

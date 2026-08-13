@@ -171,6 +171,8 @@ class Reconciliation:
                     "computed": c.computed,
                     "delta": c.delta,
                     "parts": dict(c.parts),
+                    "from_statement": c.from_statement,
+                    "rates_agree": c.rates_agree,
                     "rule_verified": bool(c.rule and c.rule.confirmed),
                 }
                 for c in self.comparisons
@@ -197,12 +199,13 @@ def _from_metered(rule: LineRule, metered: Mapping[str, float]) -> float | None:
     a partial answer is never presented as a whole one.
     """
     total = 0.0
+    priced = 0
     for component in rule.components:
         side, key = split_side(component, rule.side)
-        # Applied credits are namespaced, because "generation" is also a
-        # per-kWh component and reading one for the other would compare a
-        # charge against a credit.
-        lookup = f"applied:{key}" if side is Side.APPLIED else key
+        # Namespaced by side, because a key can mean different things on each:
+        # "generation" is a per-kWh charge, a credit earned, and an amount
+        # applied. Reading one for another compares a charge against a credit.
+        lookup = key if side is Side.IMPORT else f"{side}:{key}"
         if lookup not in metered:
             # A charge or credit the statement never printed was never billed:
             # the Base Services Charge did not exist before 2026-03-01, and a
@@ -214,7 +217,11 @@ def _from_metered(rule: LineRule, metered: Mapping[str, float]) -> float | None:
                 continue
             return None
         total += metered[lookup] * (-1.0 if side is Side.EXPORT else 1.0)
-    return total
+        priced += 1
+    # Nothing was actually priced, so there is no answer -- only components that
+    # were absent because they were never billed. Returning 0.0 here would be
+    # reported as a confident "the rates do not reproduce this line".
+    return total if priced else None
 
 
 def applied_across(bills: Sequence[Bill]) -> dict[str, float]:

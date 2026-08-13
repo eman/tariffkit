@@ -24,8 +24,8 @@ would make the harness agree with anything.
 
 from __future__ import annotations
 
-from datetime import datetime, time
-from typing import TYPE_CHECKING
+from collections.abc import Sequence
+from datetime import date, datetime, time, timedelta
 
 from nem_rates.config import Config
 from nem_rates.engine import RateEngine
@@ -33,9 +33,6 @@ from nem_rates.models import TouPeriod
 from nem_rates.timeutil import PACIFIC
 
 from ..statements.model import Section, Statement
-
-if TYPE_CHECKING:
-    from datetime import date
 
 #: Printed row labels that name a time-of-use period. The utility qualifies
 #: some with a season -- "Off Peak Summer" on the generation page -- which is
@@ -47,25 +44,55 @@ TOU_LABELS: dict[str, TouPeriod] = {
     "off peak": TouPeriod.OFF_PEAK,
 }
 
+#: The sub-heading the Solar Billing Plan prints export rows under. Once solar
+#: is interconnected the delivery page carries the same three time-of-use labels
+#: twice -- once for energy produced and once for energy delivered -- and they
+#: are opposite signs of the meter. Reading both as import doubles the
+#: reconstruction and turns the verdict on every solar mismatch upside down.
+EXPORT_BLOCK = "energy produced"
 
-def _tou(label: str) -> TouPeriod | None:
+
+def _tou(label: str) -> tuple[TouPeriod, str | None] | None:
+    """The period a printed label names, and the season if it names one."""
     folded = " ".join(label.lower().replace("-", " ").split())
-    for season in ("summer", "winter"):
-        folded = folded.removesuffix(f" {season}")
-    return TOU_LABELS.get(folded)
+    season = None
+    for candidate in ("summer", "winter"):
+        if folded.endswith(f" {candidate}"):
+            folded = folded.removesuffix(f" {candidate}")
+            season = candidate
+    period = TOU_LABELS.get(folded)
+    return (period, season) if period is not None else None
 
 
-def _moment_in(rates: RateEngine, day: date, period: TouPeriod) -> datetime | None:
-    """An instant on ``day`` that the tariff prices at ``period``.
+def _moment_in(
+    rates: RateEngine,
+    days: Sequence[date],
+    period: TouPeriod,
+    season: str | None,
+) -> datetime | None:
+    """An instant the tariff prices at ``period``, and at ``season`` if given.
 
     Found by asking the tariff rather than by hardcoding 4-9pm, so a schedule
     with different hours -- or a vintage that moved them -- needs no change here.
+
+    Several days are offered because a cycle can span the season boundary, and
+    the provider's page prints one row per season. Pricing a winter row on a
+    summer day is a rate error dressed as a reconciliation failure.
     """
-    for hour in range(24):
-        moment = datetime.combine(day, time(hour), PACIFIC)
-        if rates.tariff.period(moment) is period:
+    for day in days:
+        for hour in range(24):
+            moment = datetime.combine(day, time(hour), PACIFIC)
+            if rates.tariff.period(moment) is not period:
+                continue
+            if season is not None and str(rates.tariff.season(moment)) != season:
+                continue
             return moment
     return None
+
+
+def _days(statement: Statement) -> list[date]:
+    span = (statement.period.end - statement.period.start).days
+    return [statement.period.start + timedelta(days=offset) for offset in range(span + 1)]
 
 
 def priced_from_statement(statement: Statement, config: Config) -> dict[str, float]:
@@ -91,14 +118,21 @@ def priced_from_statement(statement: Statement, config: Config) -> dict[str, flo
             continue
         before = len(totals)
         for line in section.charged:
-            period = _tou(line.label)
-            if period is None or not line.kwh:
+            # Export rows carry the same labels as import rows and must not be
+            # added to an import reconstruction.
+            if line.block.strip().lower() == EXPORT_BLOCK:
                 continue
+            found = _tou(line.label)
+            if found is None or not line.kwh:
+                continue
+            period, season = found
             # The sub-period a row was billed under, when the utility split the
-            # cycle at a rate change; otherwise the cycle's own start. Which
-            # vintage applied is the whole point of the split.
-            day = line.subperiod[0] if line.subperiod else statement.period.start
-            moment = _moment_in(rates, day, period)
+            # cycle at a rate change -- which vintage applied is the whole point
+            # of that split. Otherwise any day of the cycle whose season matches
+            # the row, since the provider's page names the season rather than
+            # the dates.
+            days = [line.subperiod[0]] if line.subperiod else _days(statement)
+            moment = _moment_in(rates, days, period, season)
             if moment is None:
                 continue
             price = rates.tariff.price_at(moment)
@@ -116,13 +150,18 @@ def fixed_from_statement(statement: Statement) -> dict[str, float]:
     Read rather than recomputed. The Base Services Charge is a daily amount and
     has reconciled to the cent on every cycle, so re-deriving it here would only
     add a way to be wrong about something already agreed.
+
+    Keys carry the side they belong to, matching how a rule names them, because
+    the same word means different things on different sides.
     """
     out: dict[str, float] = {}
     for section in statement.sections:
         for line in section.charged:
             label = line.label.strip().lower()
             if label == "base services charge":
-                out["base_services_charge"] = out.get("base_services_charge", 0.0) + line.amount
+                out["fixed:base_services_charge"] = (
+                    out.get("fixed:base_services_charge", 0.0) + line.amount
+                )
             # Credits the statement says it applied this cycle, keyed to match
             # the side a rule names them under. Read, not recomputed: what was
             # applied is a ledger outcome, and the statement is the record of it.
