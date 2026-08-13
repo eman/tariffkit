@@ -20,7 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Sequence
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from nem_rates import __version__ as library_version
@@ -100,7 +100,19 @@ def build_parser() -> argparse.ArgumentParser:
         "service address, so they are deleted by default",
     )
 
-    sub.add_parser("doctor", help="check which portal endpoints still answer")
+    doctor = sub.add_parser(
+        "doctor", help="check everything an end-to-end run needs, before running it"
+    )
+    doctor.add_argument(
+        "--account",
+        type=Path,
+        default=Path("audit/account.toml"),
+        help="the account's dated history (default: audit/account.toml)",
+    )
+    doctor.add_argument("--since", type=_day, default=None, help="oldest cycle you intend to price")
+    doctor.add_argument(
+        "--offline", action="store_true", help="skip the checks that contact the portal and meter"
+    )
     return parser
 
 
@@ -143,7 +155,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 keep=args.keep_statements,
             )
         if args.command == "doctor":
-            return _doctor()
+            return _doctor(account=args.account, since=args.since, offline=args.offline)
     except AuditError as exc:
         print(f"error: {exc}")
         return EXIT_ERROR
@@ -208,14 +220,18 @@ def _run(
             )
 
 
-def _doctor() -> int:
-    """Say which portal endpoints have been confirmed, and whether they answer.
+def _doctor(*, account: Path, since: date | None = None, offline: bool = False) -> int:
+    """Report what an end-to-end run needs and what is missing.
 
-    The first question after any portal failure is whether the session expired
-    or the flow moved, and those need opposite responses. This answers it in one
-    command instead of a debugging session.
+    The first question after any failure is whether the session expired, the
+    flow moved, or something was never configured, and those need opposite
+    responses. Answering it costs one command rather than a debugging session --
+    and reporting every problem at once matters more than it sounds, because
+    fixing them one round trip at a time against a live portal is slow.
     """
-    from nem_rates.sources.pge import ENDPOINTS, PgeSession, PgeSettings, PortalError
+    from nem_rates.sources.pge import ENDPOINTS
+
+    from .preflight import run_checks
 
     print("endpoints this client knows:")
     for name, endpoint in sorted(ENDPOINTS.items()):
@@ -223,30 +239,22 @@ def _doctor() -> int:
         print(f"  {mark:>9}  {name:<14} {endpoint.classname}.{endpoint.method}")
     print()
 
-    try:
-        settings = PgeSettings.load()
-    except Exception as exc:
-        print(f"no credentials, so nothing was contacted: {exc}")
+    oldest = since or date.today() - timedelta(days=365)
+    checks = run_checks(account=account, oldest=oldest, contact=not offline)
+    width = max(len(check.name) for check in checks)
+    for check in checks:
+        print(f"  {check.mark:>8}  {check.name:<{width}}  {check.detail}")
+
+    blocking = [check for check in checks if not check.ok and check.required]
+    degraded = [check for check in checks if not check.ok and not check.required]
+    print()
+    if blocking:
+        print(f"{len(blocking)} of {len(checks)} checks block a run")
         return EXIT_ERROR
-
-    with PgeSession(settings) as session:
-        try:
-            fwuid, token = session.bootstrap()
-            print(f"  login page reachable, framework id present ({len(fwuid)} chars)")
-            print(f"  csrf token {'present' if token else 'absent (expected before sign-in)'}")
-        except PortalError as exc:
-            print(f"  login page: {exc}")
-            return EXIT_ERROR
-
-        live = session.signed_in()
-        print(f"  cached session: {'live' if live else 'not signed in'}")
-        if live:
-            try:
-                host, _, urn = session.opower()
-                print(f"  usage platform: {host}, account {urn[-12:]}")
-            except PortalError as exc:
-                print(f"  usage platform: {exc}")
-                return EXIT_ERROR
+    if degraded:
+        print(f"ready, with reduced coverage: {', '.join(c.name for c in degraded)}")
+        return EXIT_OK
+    print("ready")
     return EXIT_OK
 
 
