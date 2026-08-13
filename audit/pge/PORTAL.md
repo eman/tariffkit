@@ -46,6 +46,36 @@ when it is fetched and then expects handed back, so the page must be loaded
 before the POST. `uuid` is a fresh client-side UUID. The login form runs under
 `aura.app = siteforce:loginApp2`, not the authenticated `siteforce:communityApp`.
 
+### Device trust, which is not MFA
+
+`login` answers `retMessage: "verifymfa :"` when it does not recognise the
+device, along with a masked email and phone and `cookieExpiryDays: 180`. That
+wording is misleading. The account has **no** multi-factor authentication; the
+portal verifies *devices*, and a browser that was verified once carries the
+result for 180 days, which is why a person never sees a challenge.
+
+The device identity is the pair `LSKey-c$browsercookie` and
+`LSKey-c$validationCookie`. They are created by the login page's **own
+JavaScript**, so they never arrive over `Set-Cookie` and no amount of fetching
+will produce them — a scripted client that invents fresh values is simply a new
+device every run. Copy them once from a signed-in browser, on the console at
+`myaccount.pge.com`:
+
+```js
+Object.fromEntries(document.cookie.split(';')
+  .map(c => c.trim().split('='))
+  .filter(([k]) => k === 'LSKey-c$browsercookie' || k === 'LSKey-c$validationCookie'))
+```
+
+and put them in `.env` as `PGE_BROWSER_COOKIE` and `PGE_VALIDATION_COOKIE`. They
+are device identifiers, not credentials — the password is still required — but
+they belong in `.env` with everything else, not in a config file.
+
+Chasing this as though it were MFA is a real detour: the component does ship
+`MyAcct_Apex_CustomMFAController.handleChoiceofMFA` /
+`.verifySignInCode` / `.resendOTP`, so an OTP flow is implementable, but a
+correctly identified device never reaches it.
+
 To capture a login without recording the credential, hook **before** submitting
 and store only `operationName`, `classname`, `method` and `Object.keys(params)`
 — never the values — and persist to `localStorage`, because a successful login

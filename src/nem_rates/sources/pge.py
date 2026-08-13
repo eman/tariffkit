@@ -163,6 +163,18 @@ class PgeSettings:
     password: str = field(repr=False, default="")
     account_id: str = ""
     cookie_path: Path = DEFAULT_COOKIE_PATH
+    #: This machine's identity to the portal. Not a second factor: the account
+    #: has no MFA. The portal verifies *devices*, and a browser that has been
+    #: verified once carries the result for 180 days, which is why a person
+    #: never sees a challenge.
+    #:
+    #: These are created by the login page's own JavaScript, so they never
+    #: arrive over Set-Cookie and a scripted client cannot obtain them by
+    #: fetching anything. Left empty, every run looks like a brand-new device
+    #: and the portal asks to verify it. Copy them once from a signed-in
+    #: browser -- see audit/pge/PORTAL.md.
+    browser_cookie: str = field(repr=False, default="")
+    validation_cookie: str = field(repr=False, default="")
 
     @classmethod
     def load(
@@ -201,7 +213,12 @@ class PgeSettings:
             )
         cookie_path = Path(values.get("cookie_path", str(DEFAULT_COOKIE_PATH)))
         return cls(
-            username=username, password=password, account_id=account_id, cookie_path=cookie_path
+            username=username,
+            password=password,
+            account_id=account_id,
+            cookie_path=cookie_path,
+            browser_cookie=env.get("PGE_BROWSER_COOKIE", ""),
+            validation_cookie=env.get("PGE_VALIDATION_COOKIE", ""),
         )
 
 
@@ -212,6 +229,43 @@ class PortalError(DataError):
         super().__init__(message)
         self.endpoint = endpoint
         self.step = step
+
+
+def _check_device_trust(answer: Any, *, configured: bool) -> None:
+    """Turn the portal's device-verification prompt into a useful message.
+
+    The portal answers ``retMessage: "verifymfa :"`` when it does not recognise
+    the device. That wording is misleading: it is not a second factor and does
+    not mean the account has MFA enabled. It means this machine has never been
+    verified, and a browser only avoids it by carrying the result of an earlier
+    verification for 180 days.
+
+    Worth being precise about, because reading it as "MFA is on" sends you off
+    building a one-time-code flow for a challenge that a correctly identified
+    device never sees.
+    """
+    if not isinstance(answer, Mapping):
+        return
+    value = answer.get("returnValue")
+    message = str(value.get("retMessage", "")) if isinstance(value, Mapping) else ""
+    if "verifymfa" not in message.lower():
+        return
+    raise PortalError(
+        "the portal does not recognise this device"
+        + (
+            ", even with the configured PGE_BROWSER_COOKIE and PGE_VALIDATION_COOKIE; "
+            "they may have expired (the portal trusts a device for 180 days) or been "
+            "copied from a different browser profile"
+            if configured
+            else "; set PGE_BROWSER_COOKIE and PGE_VALIDATION_COOKIE from a signed-in "
+            "browser (see audit/pge/PORTAL.md). They are created by the login page's own "
+            "JavaScript, so no amount of fetching will produce them"
+        )
+        + ". This is device verification, not multi-factor authentication -- the account "
+        "needs no second factor, and a recognised device is never challenged.",
+        endpoint="login",
+        step="device-trust",
+    )
 
 
 class PgeSession:
@@ -417,22 +471,32 @@ class PgeSession:
             raise PortalError("session is not open; use PgeSession as a context manager")
 
         self.bootstrap()
-        jar = self._client.cookies
-        self.apex(
+
+        # Present this machine as the device it is. Configured values come from
+        # a browser that the portal already trusts; without them the portal
+        # cannot recognise the device and asks to verify it, which reads as an
+        # MFA prompt on an account that has no MFA.
+        browser = self.settings.browser_cookie or str(uuid4())
+        validation = self.settings.validation_cookie or str(uuid4())
+        for name, value in ((BROWSER_COOKIE, browser), (VALIDATION_COOKIE, validation)):
+            self._client.cookies.set(name, value, domain="myaccount.pge.com", path="/")
+
+        answer = self.apex(
             "login",
             {
                 "username": self.settings.username,
                 "password": self.settings.password,
                 "startUrl": "/myaccount/s/",
                 "uuid": str(uuid4()),
-                "browsercookie": jar.get(BROWSER_COOKIE, ""),
-                "validationCookie": jar.get(VALIDATION_COOKIE, ""),
+                "browsercookie": browser,
+                "validationCookie": validation,
             },
             page=LOGIN_PATH,
             app=LOGIN_APP,
         )
-        # The login response carries a redirect rather than a session flag, so
-        # the only honest confirmation is a call that needs authentication.
+        _check_device_trust(answer, configured=bool(self.settings.browser_cookie))
+        # The response carries a redirect rather than a session flag, so the
+        # only honest confirmation is a call that needs authentication.
         if not self.signed_in():
             raise PortalError(
                 "the sign-in call succeeded but the session is still anonymous; the "
