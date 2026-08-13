@@ -175,6 +175,18 @@ hour are now marked `estimated`, and the bill says so:
     in the source, so their time-of-use split is a guess even though the cycle
     total is not.
 
+Confirmed by substitution, as a diagnostic and not as a change: taking the
+meter's own 15-minute registers for *only* the reconstructed hours moves these
+two cycles from -0.149 to +0.088 and from -0.164 to +0.018. The calculator is
+right; the input's shape over those hours is what is missing.
+
+That substitution is deliberately not what the tool does. The point here is to
+validate the bill calculator and fix defects in it, and a gap in the meter
+record is a sound reason for a computed bill to differ from a received one so
+long as the reason is stated -- which is what the warning is for. Repairing the
+input instead would make the harness agree by editing what it was given, which
+is the one thing that would make its agreement worthless.
+
 `compare_sources` now compares the peak split as well as the total, because
 totals cannot see it: on that cycle the two agree to 0.05 kWh on the cycle's
 energy and disagree by 7.22 kWh about when it arrived, which is the only place
