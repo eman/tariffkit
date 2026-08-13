@@ -74,6 +74,11 @@ class StatementLine:
     #: Delivered" -- export and import. Without this they look like the section
     #: boundaries overlapping, and either the credit or the charge is dropped.
     block: str = ""
+    #: Which service agreement this row belongs to, 1-based. A statement issued
+    #: in a month the account changed tariff carries two of everything, with the
+    #: same labels in each, and they are different charges under different
+    #: schedules rather than a section read twice.
+    agreement: int = 1
     raw: str = ""
 
     @property
@@ -119,14 +124,15 @@ class Statement:
     account_masked: str = ""
     billed_days: int | None = None
     billed_kwh: float | None = None
+    #: How many service agreements the statement covers. More than one means the
+    #: account changed tariff mid-cycle and the utility priced each part
+    #: separately -- a count, never the identifiers themselves. Priced, not
+    #: refused: ``compute_segments`` handles it.
+    service_agreements: int = 1
     #: Gas, on a combined statement. This account burned no therms and was still
     #: billed a minimum transportation charge, so a zero-usage service is not a
     #: zero-money one. Recorded to make the amount due add up and then ignored:
     #: nothing here prices gas, so no computed component may claim it.
-    #: How many service agreements the statement covers. More than one means
-    #: the account changed tariff mid-cycle and the utility priced each part
-    #: separately -- a count, never the identifiers themselves.
-    service_agreements: int = 1
     gas_charges: float | None = None
     #: Summary-level electric adjustments, e.g. the California Climate Credit,
     #: which belong to no detail section and are not per-cycle charges.
@@ -135,6 +141,9 @@ class Statement:
     #: What the statement says about itself, used to catch a stale account
     #: configuration before it can produce a confident, fabricated finding.
     rate_schedule: str = ""
+    #: Every rate schedule the statement prints, in order and deduplicated. More
+    #: than one means the cycle was billed under more than one tariff.
+    printed_schedules: tuple[str, ...] = ()
     cca_name: str = ""
     cca_rate_schedule: str = ""
     baseline_territory: str = ""
@@ -183,18 +192,6 @@ class Statement:
         findings can be trusted.
         """
         problems: list[str] = []
-
-        # Reported alone, because everything else this statement fails is a
-        # consequence of it: two agreements print two delivery sections and two
-        # generation sections, so the totals disagree and every label appears
-        # twice. Listing ten derived complaints buries the one fact that
-        # explains them, and invites fixing the symptoms.
-        if self.service_agreements > 1:
-            return [
-                f"this statement covers {self.service_agreements} service agreements, so the "
-                f"utility priced it under more than one tariff; no single configuration "
-                f"describes it and it has to be checked by hand"
-            ]
 
         for section in self.sections:
             # The summary is a running balance -- prior balance, payments
@@ -256,9 +253,15 @@ class Statement:
                 f"{self.period.start}..{self.period.end} span {self.period.days}"
             )
 
-        seen: set[tuple[Section, str, tuple[date, date] | None, str]] = set()
+        seen: set[tuple[Section, str, tuple[date, date] | None, str, int]] = set()
         for line in self.lines():
-            key = (line.section, line.label.strip().lower(), line.subperiod, line.block)
+            key = (
+                line.section,
+                line.label.strip().lower(),
+                line.subperiod,
+                line.block,
+                line.agreement,
+            )
             if key in seen:
                 problems.append(
                     f"{line.section}: {line.label!r} appears twice in the same block, "

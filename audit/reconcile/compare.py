@@ -29,6 +29,7 @@ from enum import StrEnum
 from typing import Any
 
 from nem_rates.billing import Bill
+from nem_rates.billing.ledger import apply_credits
 from nem_rates.config import Config
 
 from ..statements.mapping import MAP, LineRule, Side, claimed_components, rule_for, split_side
@@ -50,6 +51,14 @@ class Outcome(StrEnum):
 NOT_PRINTED_SEPARATELY: Mapping[str, str] = {
     "generation": "on a CCA account the utility cancels its own generation with a "
     "Generation Credit, so neither side prints as a component",
+    # Export credits *earned* are ledger inputs, not charge lines. The statement
+    # prints only what was applied, and the two differ whenever credit banks --
+    # 9.63 earned against 3.63 applied on 2026-08-04. The applied figures are
+    # checked through `Side.APPLIED`; treating earned as an unmapped line would
+    # demand a printed line that does not exist.
+    "delivery": "an export credit earned; the statement prints credits applied, not earned",
+    "acc_plus": "the bonus export credit earned; only the applied amount is printed",
+    "cca_generation": "the CCA's export credit earned; only the applied amount is printed",
 }
 
 
@@ -147,11 +156,28 @@ class Reconciliation:
         }
 
 
+def applied_credits(bill: Bill) -> dict[str, float]:
+    """What the ledger spent this cycle, signed the way the statement prints it.
+
+    Negative, because the statement prints these as credits against charges and
+    a rule sums its components. Keeping the sign here rather than in each rule
+    means no rule has to remember to subtract.
+    """
+    entry = apply_credits(bill)
+    return {
+        "generation": -entry.applied.generation,
+        "delivery": -entry.applied.delivery,
+        "bonus": -entry.applied.bonus,
+    }
+
+
 def _side(bill: Bill, side: Side) -> Mapping[str, float]:
     if side is Side.IMPORT:
         return bill.import_components
     if side is Side.EXPORT:
         return bill.export_components
+    if side is Side.APPLIED:
+        return applied_credits(bill)
     return bill.fixed_components
 
 
@@ -228,8 +254,16 @@ def reconcile(
     # printed line can agree while the total is wrong.
     claimed = claimed_components()
     for side in Side:
+        # The applied side is a view of the ledger, not a set of components the
+        # bill owns, so scanning it would report the same money twice.
+        if side is Side.APPLIED:
+            continue
         for key, value in _side(bill, side).items():
-            if key in claimed or key in NOT_PRINTED_SEPARATELY or abs(value) < allowed.ignore_below:
+            if (
+                (side, key) in claimed
+                or key in NOT_PRINTED_SEPARATELY
+                or abs(value) < allowed.ignore_below
+            ):
                 continue
             comparisons.append(
                 Comparison(
@@ -255,8 +289,10 @@ def unclaimed_components(bill: Bill) -> dict[str, float]:
     claimed = claimed_components()
     found: dict[str, float] = {}
     for side in Side:
+        if side is Side.APPLIED:
+            continue
         for key, value in _side(bill, side).items():
-            if key not in claimed and key not in NOT_PRINTED_SEPARATELY:
+            if (side, key) not in claimed and key not in NOT_PRINTED_SEPARATELY:
                 found[key] = value
     return found
 

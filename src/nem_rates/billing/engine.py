@@ -12,8 +12,11 @@ belong in a ledger built on top of this.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from itertools import pairwise
 
+from ..config import Config
 from ..engine import RateEngine
 from ..errors import DataError
 from ..models import ImportPrice, Season, TouPeriod
@@ -322,3 +325,98 @@ def hourly(readings: Iterable[IntervalReading]) -> list[IntervalReading]:
         IntervalReading(start, imported=imp, exported=exp, duration=timedelta(hours=1))
         for start, (imp, exp) in sorted(merged.items())
     ]
+
+
+@dataclass(frozen=True, slots=True)
+class Segment:
+    """One stretch of a cycle, priced under its own configuration.
+
+    A cycle is not always billed under a single tariff. When an account changes
+    schedule mid-cycle -- or interconnects solar, which closes one service
+    agreement and opens another -- the utility prices each stretch separately
+    and prints them as separate blocks on one statement.
+    """
+
+    config: Config
+    period: BillingPeriod
+
+
+def compute_segments(
+    segments: Sequence[Segment],
+    readings: Iterable[IntervalReading],
+    *,
+    check: bool = True,
+) -> Bill:
+    """Price one cycle that more than one configuration governs.
+
+    Each segment is priced by its own engine over its own dates and the results
+    are added, because that is what the utility does: a mid-cycle schedule
+    change produces two blocks on one statement, not a blended rate.
+
+    Refusing this case and demanding a single ``Config`` was the wrong shape.
+    The months worth checking most are exactly the ones where something changed,
+    and a harness that skips them checks only the quiet months.
+    """
+    if not segments:
+        raise DataError("a bill needs at least one segment")
+
+    ordered = sorted(segments, key=lambda s: s.period.start)
+    for earlier, later in pairwise(ordered):
+        if later.period.start <= earlier.period.end:
+            raise DataError(
+                f"segments overlap: {earlier.period.start}..{earlier.period.end} and "
+                f"{later.period.start}..{later.period.end}. Overlapping segments would "
+                f"price the same day twice"
+            )
+
+    readings = list(readings)
+    whole = BillingPeriod(ordered[0].period.start, ordered[-1].period.end)
+
+    imports: dict[str, float] = {}
+    exports: dict[str, float] = {}
+    fixed: dict[str, float] = {}
+    buckets: dict[tuple[Season, TouPeriod], UsageBucket] = {}
+    warnings: list[str] = []
+    complete = True
+
+    for segment in ordered:
+        engine = BillEngine(RateEngine(segment.config))
+        part = engine.compute(readings, segment.period, check=check)
+
+        for target, source in (
+            (imports, part.import_components),
+            (exports, part.export_components),
+            (fixed, part.fixed_components),
+        ):
+            for key, value in source.items():
+                target[key] = target.get(key, 0.0) + value
+
+        for bucket in part.buckets:
+            slot = (bucket.season, bucket.period)
+            running = buckets.get(slot)
+            buckets[slot] = UsageBucket(
+                season=bucket.season,
+                period=bucket.period,
+                imported=(running.imported if running else 0.0) + bucket.imported,
+                exported=(running.exported if running else 0.0) + bucket.exported,
+                import_charge=(running.import_charge if running else 0.0) + bucket.import_charge,
+                export_credit=(running.export_credit if running else 0.0) + bucket.export_credit,
+            )
+
+        # Attributed, because "no tax vintage covers 3 days" is a different
+        # problem depending on which tariff was in force when it happened.
+        warnings.extend(
+            f"{segment.period.start}..{segment.period.end} ({segment.config.tariff}): {warning}"
+            for warning in part.warnings
+        )
+        complete = complete and part.complete
+
+    return Bill(
+        period=whole,
+        buckets=tuple(buckets.values()),
+        import_components=imports,
+        export_components=exports,
+        fixed_components=fixed,
+        warnings=tuple(warnings),
+        complete=complete,
+    )

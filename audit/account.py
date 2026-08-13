@@ -12,12 +12,15 @@ looks entirely plausible.
 So the account gets its own history: a base configuration and a list of epochs,
 each starting on a date and overriding part of it.
 
-Two decisions here are load-bearing, and both are refusals:
+A cycle that **straddles** an epoch boundary is split into segments and each is
+priced under its own configuration, which is what the utility itself does: a
+mid-cycle change prints as two blocks on one statement. This used to be refused
+outright on the grounds that no single ``Config`` priced it -- true, but the
+conclusion belonged in the engine, not in a refusal, and refusing skipped exactly
+the cycles worth checking hardest.
 
-* A cycle that **straddles** an epoch boundary raises rather than picking a side.
-  No single configuration priced it, and choosing one silently produces a
-  believable delta that gets filed as a rounding mystery -- the same reasoning
-  that makes ``versioned.load`` raise instead of borrowing a vintage.
+One decision here is load-bearing, and it is a refusal:
+
 * The statement is asked to **confirm** the epoch before anything is compared.
   A statement prints its own rate schedule, baseline territory and PCIA vintage,
   so a stale ``account.toml`` is detectable. Without that check a
@@ -31,11 +34,12 @@ import re
 import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
 from nem_rates.billing import BillingPeriod
+from nem_rates.billing.engine import Segment
 from nem_rates.config import CcaConfig, Config
 from nem_rates.errors import ConfigError
 from nem_rates.models import Supplier
@@ -53,6 +57,12 @@ from .statements import Statement
 PRINTED_SCHEDULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"EV\s*2-?A", re.I), "EV2-A"),
     (re.compile(r"E-?ELEC|Electric\s+Home", re.I), "E-ELEC"),
+    # The CCA prints the tariff code rather than the marketing name -- "ETOUC"
+    # against PG&E's "Time-of-Use (Peak Pricing 4 - 9 p.m. Every Day)", and
+    # "SBP EELEC" once on the Solar Billing Plan. Both name the same schedule,
+    # and leaving the code unrecognised makes every CCA statement report that
+    # its schedule could not be confirmed.
+    (re.compile(r"E-?TOU-?C", re.I), "E-TOU-C"),
     (re.compile(r"Time-of-Use.*4\s*-\s*9", re.I), "E-TOU-C"),
 )
 
@@ -132,12 +142,18 @@ class AccountHistory:
         during = [e for e in started if period.start < e.start <= period.end]
         return tuple((in_force[-1:] if in_force else []) + during)
 
-    def config_for(self, period: BillingPeriod) -> Config:
-        """The configuration that priced this whole cycle.
+    def segments_for(self, period: BillingPeriod) -> list[Segment]:
+        """The cycle broken into stretches, one per configuration in force.
 
-        Raises when the cycle spans a change, because no single configuration
-        did, and guessing produces a plausible number rather than an obvious
-        failure.
+        A cycle spanning an account change used to be refused here, on the
+        grounds that no single ``Config`` priced it. That was true and the wrong
+        conclusion: the utility prices each stretch separately and prints them
+        as separate blocks, so the fix belonged in the engine rather than in a
+        refusal. ``compute_segments`` does exactly that now.
+
+        Refusing also skipped precisely the cycles worth checking hardest -- the
+        ones where a schedule changed or solar was interconnected -- leaving a
+        harness that verified only the quiet months.
         """
         applicable = self.epochs_in(period)
         if not applicable:
@@ -146,38 +162,69 @@ class AccountHistory:
                 f"no account epoch covers {period.start}..{period.end}"
                 + (f"; the earliest begins {earliest}" if earliest else "; none are configured")
             )
-        if len(applicable) > 1:
-            changes = ", ".join(
-                f"{e.start}" + (f" ({e.note})" if e.note else "") for e in applicable[1:]
+
+        segments: list[Segment] = []
+        for index, epoch in enumerate(applicable):
+            start = max(epoch.start, period.start)
+            if index + 1 < len(applicable):
+                end = applicable[index + 1].start - timedelta(days=1)
+            else:
+                end = period.end
+            segments.append(
+                Segment(epoch.apply(self.base), BillingPeriod(start, min(end, period.end)))
             )
-            raise AccountError(
-                f"the cycle {period.start}..{period.end} spans an account change ({changes}), "
-                f"so no single configuration priced it; this statement has to be checked by hand"
-            )
-        return applicable[0].apply(self.base)
+        return segments
+
+    def config_for(self, period: BillingPeriod) -> Config:
+        """The configuration in force at the end of the cycle.
+
+        For everything that needs one description of the account rather than a
+        priced bill: which tariff to print, what to check the statement's own
+        wording against. Pricing goes through :meth:`segments_for`.
+        """
+        return self.segments_for(period)[-1].config
 
 
-def check_against_statement(config: Config, statement: Statement) -> list[str]:
+def check_against_statement(
+    config: Config, statement: Statement, *, segments: Sequence[Segment] = ()
+) -> list[str]:
     """Disagreements between the configured epoch and what the bill says it was.
 
     Returned rather than raised so a caller can report all of them at once. Every
     one means the harness was about to price the cycle as something it was not.
+
+    ``segments`` matters on a statement covering a mid-cycle change: it prints
+    one schedule per agreement, so comparing a single configured tariff against
+    the first one printed reports a disagreement on a correctly configured
+    account. Compared as sets, because the statement's ordering of its own
+    blocks is not something to depend on.
     """
     problems: list[str] = []
 
-    if statement.rate_schedule:
-        printed = schedule_from_printed(statement.rate_schedule)
-        if printed is None:
-            problems.append(
-                f"the statement's rate schedule {statement.rate_schedule!r} matches no known "
-                f"tariff, so the configured {config.tariff!r} cannot be confirmed; add it to "
-                f"PRINTED_SCHEDULES"
-            )
-        elif printed != config.tariff:
-            problems.append(
-                f"configured for {config.tariff} but the statement was billed on {printed} "
-                f"({statement.rate_schedule!r})"
-            )
+    configured = {s.config.tariff for s in segments} or {config.tariff}
+    printed_names = statement.printed_schedules or (
+        (statement.rate_schedule,) if statement.rate_schedule else ()
+    )
+    # Not every "Rate Schedule:" on the page is an electric tariff. A combined
+    # statement prints the gas schedule ("G1 XB Residential Service") and the
+    # Solar Billing Plan pages carry a prose description of the rate. Requiring
+    # every name to resolve reports those as unknown tariffs; requiring at least
+    # one keeps the check that matters, which is that what was recognised is
+    # what was configured.
+    recognised = {
+        tariff for tariff in (schedule_from_printed(name) for name in printed_names) if tariff
+    }
+    if printed_names and not recognised:
+        problems.append(
+            f"none of the statement's rate schedules {list(printed_names)} matches a known "
+            f"tariff, so the configured {sorted(configured)} cannot be confirmed; add it to "
+            f"PRINTED_SCHEDULES"
+        )
+    elif recognised and recognised != configured:
+        problems.append(
+            f"configured for {sorted(configured)} but the statement was billed on "
+            f"{sorted(recognised)}"
+        )
 
     supplied_by_cca = bool(statement.cca_name)
     if supplied_by_cca and config.supplier is not Supplier.CCA:

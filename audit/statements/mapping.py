@@ -45,6 +45,12 @@ class Side(StrEnum):
     IMPORT = "import"
     EXPORT = "export"
     FIXED = "fixed"
+    #: Credits *applied* this cycle, from the ledger, rather than credits
+    #: earned. The statement prints both and they are not the same number: a
+    #: cycle can earn $9.63 of CCA export credit and apply $3.63 of it, the rest
+    #: banking. Comparing an "Applied" line against what was earned reports a
+    #: mismatch on a bill that is correct.
+    APPLIED = "applied"
 
 
 def split_side(component: str, default: Side) -> tuple[Side, str]:
@@ -211,6 +217,8 @@ MAP: tuple[LineRule, ...] = (
             "new_system_generation",
             "public_purpose_programs",
             "fixed:base_services_charge",
+            "applied:delivery",
+            "applied:bonus",
         ),
         aliases=("Distribution", "Electric Public Purpose Programs"),
         combines="two printed lines taken together, because from 2026-03-01 the "
@@ -221,8 +229,15 @@ MAP: tuple[LineRule, ...] = (
         "published, so inventing one to separate the lines would be fitting the "
         "map to the answer; grouping them checks the same money without "
         "pretending to know how it was apportioned. New system generation is "
-        "here too: it recovers distribution-level costs and has no line.",
-        verified=ALL_THREE,
+        "here too: it recovers distribution-level costs and has no line. "
+        "Once solar is interconnected the breakdown is printed POST-credit: "
+        "the Solar Billing Plan nets applied export and bonus credits into "
+        "these same two lines rather than showing them separately, which is "
+        "the whole of the 7.97 this line was out by on 2026-08-04 "
+        "(6.25 + 1.71). Subtracting them here is safe on every earlier "
+        "statement because nothing is exported for credit before the "
+        "Permission To Operate date, so both terms are zero.",
+        verified=(*ALL_THREE, AUG),
     ),
     LineRule(
         "Conservation Incentive",
@@ -268,35 +283,30 @@ MAP: tuple[LineRule, ...] = (
         aliases=("MCE Cost Relief Credit",),
         verified=(APR,),
     ),
-    # Solar Billing Plan export compensation. Only appears once the system is
-    # interconnected, which for this account is 2026-06-03, so nothing before
-    # that statement exercises these at all.
-    #
-    # Named here despite not yet reconciling. An unmapped line and a mismatched
-    # one are different findings: unmapped says the harness does not know what
-    # the utility is charging for, which hides everything else about it. These
-    # correspondences are unambiguous by name and by sign, so claiming them
-    # turns three "no idea" rows into one arithmetic question.
-    LineRule(
-        "Energy Export Credits Applied",
-        Section.PGE_DELIVERY,
-        Side.EXPORT,
-        ("delivery",),
-        verified=(AUG,),
-    ),
-    LineRule(
-        "Energy Export Bonus Credits Applied",
-        Section.PGE_DELIVERY,
-        Side.EXPORT,
-        ("acc_plus",),
-        verified=(AUG,),
-    ),
+    # Solar Billing Plan export compensation, which only exists once the system
+    # is interconnected -- 2026-06-03 for this account.
     LineRule(
         "Solar Bonus Credit",
         Section.CCA_GENERATION,
         Side.EXPORT,
         ("cca_solar_bonus",),
         aliases=("MCE Solar Bonus Credit",),
+        verified=(AUG,),
+    ),
+    # Applied, not earned. The CCA earns export credit on everything it is sent
+    # and spends only what this cycle's generation charges can absorb -- 9.63
+    # earned against 3.63 applied on 2026-08-04, the rest banking. Comparing
+    # this line against what was earned reports a mismatch on a correct bill.
+    #
+    # The bonus line is grouped in rather than given a rule of its own: the CCA
+    # prints it and always at 0.00, because the bonus bucket is spent on the
+    # utility's side. Left unclaimed it reads as a line nobody understands.
+    LineRule(
+        "Energy Export Credits Applied",
+        Section.CCA_GENERATION,
+        Side.APPLIED,
+        ("generation",),
+        aliases=("Energy Export Bonus Credits Applied",),
         verified=(AUG,),
     ),
 )
@@ -306,7 +316,7 @@ def check_map(rules: tuple[LineRule, ...] = MAP) -> list[str]:
     """Violations of the map's own invariants."""
     problems: list[str] = []
 
-    seen: dict[str, str] = {}
+    seen: dict[tuple[Side, str], str] = {}
     claimed_labels: dict[str, str] = {}
     for rule in rules:
         for printed in (rule.label, *rule.aliases):
@@ -318,10 +328,11 @@ def check_map(rules: tuple[LineRule, ...] = MAP) -> list[str]:
                 )
             claimed_labels[folded] = rule.label
         for qualified in rule.components:
-            component = split_side(qualified, rule.side)[1]
+            component = split_side(qualified, rule.side)
             if component in seen:
                 problems.append(
-                    f"component {component!r} is claimed by both {seen[component]!r} and "
+                    f"component {component[1]!r} on the {component[0]} side is claimed by "
+                    f"both {seen[component]!r} and "
                     f"{rule.label!r}; one computed amount would be compared against two "
                     f"printed lines and the total would over-agree"
                 )
@@ -349,7 +360,15 @@ def rule_for(section: Section, label: str) -> LineRule | None:
     return None
 
 
-def claimed_components() -> frozenset[str]:
+def claimed_components() -> frozenset[tuple[Side, str]]:
+    """Every (side, key) a rule claims.
+
+    Side-aware on purpose. A key can exist on more than one side with different
+    meanings -- ``delivery`` is both an export credit earned and, as
+    ``applied:delivery``, the part of it spent this cycle. Comparing by name
+    alone let a rule claiming one silently account for the other, so a genuinely
+    unclaimed component reported as covered.
+    """
     return frozenset(
-        split_side(component, rule.side)[1] for rule in MAP for component in rule.components
+        split_side(component, rule.side) for rule in MAP for component in rule.components
     )

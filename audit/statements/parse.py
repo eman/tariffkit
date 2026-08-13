@@ -29,7 +29,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from nem_rates.billing import BillingPeriod
@@ -255,10 +255,28 @@ def parse_statement(pages: Sequence[str], *, source: str = "") -> Statement:
     if not stamp:
         raise StatementError(f"{source or 'statement'}: no statement date found")
 
-    cycle = CYCLE.search(joined)
-    if not cycle:
+    # Chained, not unioned. A statement prints more than one dated header and
+    # they are not all the electric cycle: a combined bill carries the gas cycle
+    # too, offset by a day (09/29-10/28 electric against 09/30-10/29 gas), and a
+    # statement covering two service agreements carries one header each
+    # (06/01-06/02 then 06/03-06/29). Taking the first header calls a 29-day
+    # cycle a 2-day one; taking the union swallows the gas cycle and calls a
+    # 30-day cycle 60 days. Following only headers that continue the previous
+    # one -- starting the day after it ended -- separates the two cases without
+    # needing to know which service each belongs to.
+    spans = sorted(
+        {(_parse_date(start), _parse_date(end), days) for start, end, days in CYCLE.findall(joined)}
+    )
+    if not spans:
         raise StatementError(f"{source or 'statement'}: no billing cycle found")
-    period = BillingPeriod(_parse_date(cycle.group(1)), _parse_date(cycle.group(2)))
+
+    dated = [s for s in spans if s[2]] or spans
+    chain = [dated[0]]
+    for span in dated[1:]:
+        if span[0] == chain[-1][1] + timedelta(days=1):
+            chain.append(span)
+    period = BillingPeriod(chain[0][0], chain[-1][1])
+    billed_days = sum(int(s[2]) for s in chain if s[2]) or None
 
     sections = _sections(pages)
 
@@ -278,13 +296,14 @@ def parse_statement(pages: Sequence[str], *, source: str = "") -> Statement:
         period=period,
         amount_due=summary.printed_total,
         account_masked=re.sub(r"\D", "", account.group(1))[-4:] if account else "",
-        billed_days=int(cycle.group(3)) if cycle.group(3) else None,
+        billed_days=billed_days,
         billed_kwh=float(usage.group(1).replace(",", "")) if usage else None,
         service_agreements=max(1, len(DELIVERY_PAGE.findall(joined))),
         gas_charges=_scalar(joined, GAS_TOTAL),
         electric_adjustments=_summary_amount(summary, "Electric Adjustments"),
         sections=sections,
         rate_schedule=schedules[0].strip() if schedules else "",
+        printed_schedules=tuple(dict.fromkeys(s.strip() for s in schedules if s.strip())),
         cca_name=cca.group("cca").strip() if cca else "",
         cca_rate_schedule=schedules[1].strip() if len(schedules) > 1 else "",
         baseline_territory=territory.group(1) if territory else "",
@@ -304,6 +323,12 @@ def _sections(pages: Sequence[str]) -> tuple[StatementSection, ...]:
     text: dict[Section, list[str]] = {}
     totals: dict[Section, float] = {}
     current: Section | None = None
+    #: How many times each section's heading has opened. A statement covering
+    #: two service agreements prints the delivery detail and the generation page
+    #: once per agreement, with identical labels in each; without this they look
+    #: like one section whose boundaries overlap.
+    opened_count: dict[Section, int] = {}
+    agreement = 0
     column = 0
     pending_total: Section | None = None
     pending_span = 0
@@ -315,6 +340,8 @@ def _sections(pages: Sequence[str]) -> tuple[StatementSection, ...]:
             if opened is not None:
                 current, column = opened
                 pending_total = None
+                opened_count[current] = opened_count.get(current, 0) + 1
+                agreement = opened_count[current]
                 found.setdefault(current, [])
                 text.setdefault(current, [])
                 continue
@@ -333,7 +360,7 @@ def _sections(pages: Sequence[str]) -> tuple[StatementSection, ...]:
             if pending_total is not None:
                 amount = _first_money(line)
                 if amount is not None:
-                    totals[pending_total] = amount
+                    totals[pending_total] = totals.get(pending_total, 0.0) + amount
                     pending_total = None
                     pending_span = 0
                     continue
@@ -352,7 +379,7 @@ def _sections(pages: Sequence[str]) -> tuple[StatementSection, ...]:
                 fields = _fields(line)
                 label = fields[0].strip() if fields else ""
                 if label:
-                    found[current].append(replace(awaiting_label, label=label))
+                    found[current].append(replace(awaiting_label, label=label, agreement=agreement))
                 awaiting_label = None
                 continue
 
@@ -372,7 +399,11 @@ def _sections(pages: Sequence[str]) -> tuple[StatementSection, ...]:
             if TOTAL_ROW.match(line) or SBP_TOTAL.match(line):
                 amount = _first_money(line)
                 if amount is not None:
-                    totals[current] = amount
+                    # Added, not replaced. Each service agreement prints its own
+                    # total, and together they are the cycle's -- 3.59 + 21.89
+                    # on 2026-07-07. Overwriting keeps only the last and reports
+                    # the section as short by the whole of the first.
+                    totals[current] = totals.get(current, 0.0) + amount
                     current = None
                 else:
                     pending_total, current = current, None
@@ -382,7 +413,7 @@ def _sections(pages: Sequence[str]) -> tuple[StatementSection, ...]:
             text[current].append(line)
             parsed = _line(line, current, index)
             if parsed is not None:
-                found[current].append(parsed)
+                found[current].append(replace(parsed, agreement=agreement))
 
     return tuple(
         StatementSection(

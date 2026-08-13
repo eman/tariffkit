@@ -259,8 +259,7 @@ def _reconcile(
     as_json: bool,
     green_button: bool = False,
 ) -> int:
-    from nem_rates.billing import BillEngine
-    from nem_rates.engine import RateEngine
+    from nem_rates.billing.engine import compute_segments
     from nem_rates.sources.influx import InfluxSettings, read_counters
 
     from .account import AccountHistory, check_against_statement
@@ -299,8 +298,9 @@ def _reconcile(
             worst = EXIT_ERROR
             continue
 
-        config = history.config_for(statement.period)
-        stale = check_against_statement(config, statement)
+        segments = history.segments_for(statement.period)
+        config = segments[-1].config
+        stale = check_against_statement(config, statement, segments=segments)
         if stale:
             print(f"{path.name}: the configured account does not describe this statement")
             for problem in stale:
@@ -324,7 +324,7 @@ def _reconcile(
                 PgeSettings.load(), statement.period.start, statement.period.end
             )
 
-        bill = BillEngine(RateEngine(config)).compute(readings, statement.period)
+        bill = compute_segments(segments, readings)
         results.append(
             reconcile(
                 statement,

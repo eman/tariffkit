@@ -87,16 +87,19 @@ class TestConfigForACycle:
         config = history.config_for(BillingPeriod(date(2026, 4, 1), date(2026, 4, 29)))
         assert config.tariff == "EV2-A"
 
-    def test_a_cycle_spanning_a_change_is_refused(self, history: AccountHistory) -> None:
-        # The account changed mid-cycle, so no single configuration priced it.
-        # Picking one produces a plausible delta that reads as a rounding
-        # mystery rather than as the misconfiguration it is.
-        with pytest.raises(AccountError) as caught:
-            history.config_for(BillingPeriod(date(2026, 2, 20), date(2026, 3, 20)))
-        message = str(caught.value)
-        assert "spans an account change" in message
-        assert "2026-03-01" in message
-        assert "moved to EV2-A" in message
+    def test_a_cycle_spanning_a_change_is_split_not_refused(self, history: AccountHistory) -> None:
+        # The account changed mid-cycle, so two configurations priced it -- one
+        # each side of the change, which is what the utility itself does. This
+        # used to raise; refusing skipped exactly the cycles worth checking
+        # hardest and left only the quiet months verified.
+        segments = history.segments_for(BillingPeriod(date(2026, 2, 20), date(2026, 3, 20)))
+        assert [(s.period.start, s.period.end) for s in segments] == [
+            (date(2026, 2, 20), date(2026, 2, 28)),
+            (date(2026, 3, 1), date(2026, 3, 20)),
+        ]
+        # Different tariffs, and the segments tile the cycle without overlap.
+        assert segments[0].config.tariff != segments[1].config.tariff
+        assert sum(s.period.days for s in segments) == 29
 
     def test_a_cycle_before_every_epoch_is_refused(self, history: AccountHistory) -> None:
         with pytest.raises(AccountError, match="no account epoch covers"):
@@ -139,7 +142,7 @@ class TestStatementConfirmsTheEpoch:
         statement = parse_statement(load())
         config = history.config_for(statement.period).with_(tariff="EV2-A")
         (problem,) = check_against_statement(config, statement)
-        assert "configured for EV2-A" in problem and "E-TOU-C" in problem
+        assert "'EV2-A'" in problem and "'E-TOU-C'" in problem
 
     def test_the_wrong_pcia_vintage_is_caught(self, history: AccountHistory) -> None:
         # The statement prints its own vintage, and the PCIA differs threefold
@@ -165,11 +168,16 @@ class TestStatementConfirmsTheEpoch:
     ) -> None:
         # A check that cannot be performed must not look like a check that
         # passed.
+        # Both names, because the statement prints the utility's marketing name
+        # and the CCA's tariff code, and either one being recognised means the
+        # check *can* be performed.
         pages = [
-            page.replace("Time-of-Use (Peak Pricing 4 - 9 p.m. Every Day)", "Mystery Rate Plan")
+            page.replace(
+                "Time-of-Use (Peak Pricing 4 - 9 p.m. Every Day)", "Mystery Rate Plan"
+            ).replace("ETOUC", "MYSTERY")
             for page in load()
         ]
         statement = parse_statement(pages)
         config = history.config_for(statement.period)
         (problem,) = check_against_statement(config, statement)
-        assert "matches no known tariff" in problem
+        assert "matches a known tariff" in problem
