@@ -38,13 +38,12 @@ from datetime import date
 from pathlib import Path
 
 from . import accplus, cca, filings, nsc, tariff, tax
-from .emit import Result
+from .emit import DEFAULT_CACHE, Result
 from .fetch import fetch
 from .providers import CCAS, TAXES, UTILITIES, Cca, Source, Tax, Utility
 from .sheets import ExtractionError
 
 #: Where downloaded documents are kept between runs.
-DEFAULT_CACHE = Path.home() / ".cache" / "nem-rates" / "regen"
 
 #: Datasets :func:`run` can build. Each maps to an entry in ``JOB_BUILDERS``.
 DATASETS = ("tariff", "accplus", "nsc", "cca", "tax")

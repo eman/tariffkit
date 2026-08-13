@@ -19,6 +19,11 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+#: Where every regenerator caches what it downloads. Outside the repo tree on
+#: purpose: these are hundreds of megabytes of somebody else's documents, and a
+#: cache inside the working tree survives only as long as nobody widens a
+#: gitignore rule.
+DEFAULT_CACHE = Path.home() / ".cache" / "nem-rates" / "regen"
 
 
 def fmt(value: Any) -> str:

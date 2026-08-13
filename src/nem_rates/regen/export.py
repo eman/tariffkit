@@ -30,8 +30,15 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = REPO_ROOT / "src" / "nem_rates" / "data"
+from .emit import DATA_DIR, DEFAULT_CACHE, REPO_ROOT
+
+# Shared with the other regenerators rather than redefined. This module used
+# to carry its own pair, correct while it lived at tools/regen_data.py -- two
+# parents really was the repo root there -- and silently wrong once it moved
+# two levels deeper into the package. DATA_DIR then pointed at
+# src/nem_rates/src/nem_rates/data, so every file read as missing, --check
+# reported the whole dataset stale on every run, and a write created a nested
+# tree beside the real one instead of updating it.
 EXPORT_DIR = DATA_DIR / "export" / "pge"
 
 SOURCE_URL = "https://www.pge.com/assets/pge/docs/vanities/PGE-Solar-Billing-Plan-Export-Rates.zip"
@@ -330,7 +337,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--cache",
         type=Path,
-        default=REPO_ROOT / ".cache" / "PGE-Solar-Billing-Plan-Export-Rates.zip",
+        default=DEFAULT_CACHE / "PGE-Solar-Billing-Plan-Export-Rates.zip",
     )
     args = parser.parse_args(argv)
 
