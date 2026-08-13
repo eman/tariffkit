@@ -120,6 +120,9 @@ class Endpoint:
     name: str
     classname: str
     method: str
+    #: Managed-package classes need their namespace in its own field. Glued onto
+    #: the class name the portal answers "No apex action available".
+    namespace: str = ""
     #: Whether this was observed answering, rather than inferred. An inferred
     #: endpoint is not a bug, but a failure against one means "check this first".
     captured: bool = False
@@ -142,6 +145,16 @@ ENDPOINTS: Mapping[str, Endpoint] = {
         "httpCalloutDownloadBill",
         captured=True,
         note="takes billidfrombillhistory; returns the PDF base64-encoded in JSON",
+    ),
+    "bill_history": Endpoint(
+        "bill_history",
+        "BusinessProcessDisplayController",
+        "GenericInvoke2NoCont",
+        namespace="vlocity_cmt",
+        captured=True,
+        note="the bill list is an OmniStudio Integration Procedure, not an Apex "
+        "controller, which is why no amount of grepping for a Bill*List class "
+        "finds it. Dispatches sClassName/sMethodName with a JSON string input.",
     ),
     "login": Endpoint(
         "login",
@@ -260,6 +273,50 @@ class InvalidSessionError(PortalError):
     def __init__(self, message: str, *, endpoint: str = "", new_token: str = "") -> None:
         super().__init__(message, endpoint=endpoint)
         self.new_token = new_token
+
+
+def _bill_rows(payload: Any) -> list[dict[str, Any]]:
+    """Pull the statement rows out of an Integration Procedure's reply.
+
+    The shape is nested and version-dependent, so this walks for the first list
+    of records that looks like bills rather than hard-coding a path that a
+    release note could invalidate.
+    """
+    wanted = ("billpdf", "invoice", "amount", "billdate", "statement", "duedate", "billid")
+
+    # Integration Procedures return their payload as a JSON *string*, so the
+    # structure to search for is one decode further in than it looks.
+    if isinstance(payload, Mapping) and isinstance(payload.get("returnValue"), str):
+        try:
+            payload = json.loads(payload["returnValue"])
+        except ValueError:
+            return []
+    elif isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except ValueError:
+            return []
+
+    def walk(node: Any, depth: int = 0) -> list[dict[str, Any]] | None:
+        if depth > 8:
+            return None
+        if isinstance(node, list) and node and isinstance(node[0], dict):
+            keys = " ".join(node[0]).lower()
+            if any(w in keys for w in wanted):
+                return [r for r in node if isinstance(r, dict)]
+        if isinstance(node, Mapping):
+            for value in node.values():
+                found = walk(value, depth + 1)
+                if found:
+                    return found
+        elif isinstance(node, list):
+            for value in node:
+                found = walk(value, depth + 1)
+                if found:
+                    return found
+        return None
+
+    return walk(payload) or []
 
 
 def _frontdoor(answer: Any) -> str:
@@ -464,7 +521,7 @@ class PgeSession:
                     "descriptor": APEX_ACTION,
                     "callingDescriptor": "UNKNOWN",
                     "params": {
-                        "namespace": "",
+                        "namespace": known.namespace,
                         "classname": known.classname,
                         "method": known.method,
                         "params": dict(params or {}),
@@ -503,6 +560,38 @@ class PgeSession:
                 },
             )
             return _unwrap(retry, known)
+
+    def bill_history(self, history_filter: str = "AllActivity") -> list[dict[str, Any]]:
+        """Every statement and payment the portal will list.
+
+        Dispatched through OmniStudio rather than a plain Apex controller, which
+        is why searching the page's JavaScript for a bill-list class finds
+        nothing: the list is an Integration Procedure named in the payload.
+        """
+        if self._client is None:
+            raise PortalError("session is not open; use PgeSession as a context manager")
+        account = self.settings.account_id or ""
+        payload = self.apex(
+            "bill_history",
+            {
+                "sClassName": "vlocity_cmt.IntegrationProcedureService",
+                "sMethodName": "MyAcct_IP_GetBillPayHistoryData",
+                "input": json.dumps(
+                    {
+                        "billingAccount": account,
+                        "userProfile": "MyAcct Customer Community User",
+                        "userTimeZoneName": "America/Los_Angeles",
+                        "userCurrencyCode": "USD",
+                        # The portal's own "All Activity" filter. The service
+                        # rejects an empty value outright rather than defaulting.
+                        "historyFilter": history_filter,
+                    }
+                ),
+                "options": json.dumps({"ignoreCache": False, "useContinuation": False}),
+            },
+            page="/myaccount/s/bill-and-payment-history",
+        )
+        return _bill_rows(payload)
 
     def signed_in(self) -> bool:
         """Whether the session is authenticated.
