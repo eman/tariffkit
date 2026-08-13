@@ -267,7 +267,7 @@ def _reconcile(
     as_json: bool,
     green_button: bool = False,
 ) -> int:
-    from nem_rates.billing.engine import compute_segments
+    from nem_rates.billing.engine import compute_segments, price_segments
     from nem_rates.sources.influx import InfluxSettings, read_counters
 
     from .account import AccountHistory, check_against_statement
@@ -332,6 +332,7 @@ def _reconcile(
                 PgeSettings.load(), statement.period.start, statement.period.end
             )
 
+        parts = price_segments(segments, readings)
         bill = compute_segments(segments, readings)
         results.append(
             reconcile(
@@ -339,6 +340,7 @@ def _reconcile(
                 bill,
                 config,
                 source_deltas=compare_sources(sources, statement),
+                segment_bills=parts,
             )
         )
 

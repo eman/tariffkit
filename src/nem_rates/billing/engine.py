@@ -367,6 +367,20 @@ def hourly(readings: Iterable[IntervalReading]) -> list[IntervalReading]:
     ]
 
 
+def _ordered_segments(segments: Sequence[Segment]) -> list[Segment]:
+    if not segments:
+        raise DataError("a bill needs at least one segment")
+    ordered = sorted(segments, key=lambda s: s.period.start)
+    for earlier, later in pairwise(ordered):
+        if later.period.start <= earlier.period.end:
+            raise DataError(
+                f"segments overlap: {earlier.period.start}..{earlier.period.end} and "
+                f"{later.period.start}..{later.period.end}. Overlapping segments would "
+                f"price the same day twice"
+            )
+    return ordered
+
+
 @dataclass(frozen=True, slots=True)
 class Segment:
     """One stretch of a cycle, priced under its own configuration.
@@ -379,6 +393,31 @@ class Segment:
 
     config: Config
     period: BillingPeriod
+
+
+def price_segments(
+    segments: Sequence[Segment],
+    readings: Iterable[IntervalReading],
+    *,
+    check: bool = True,
+) -> list[Bill]:
+    """One bill per segment, unmerged.
+
+    Kept separate from :func:`compute_segments` because export credits do not
+    cross a service agreement. A cycle where solar was interconnected carries a
+    closed agreement and a new one, and the utility applies the new agreement's
+    export credits only against its own charges -- on 2026-07-07 it spends 2.18
+    against the Solar Billing Plan's charges and nothing against the closed
+    agreement's 0.94, which predates Permission To Operate and has no export
+    arrangement at all. A ledger run over the merged bill spends them against
+    both and overstates what was applied.
+    """
+    ordered = _ordered_segments(segments)
+    readings = list(readings)
+    return [
+        BillEngine(RateEngine(segment.config)).compute(readings, segment.period, check=check)
+        for segment in ordered
+    ]
 
 
 def compute_segments(
@@ -397,18 +436,7 @@ def compute_segments(
     The months worth checking most are exactly the ones where something changed,
     and a harness that skips them checks only the quiet months.
     """
-    if not segments:
-        raise DataError("a bill needs at least one segment")
-
-    ordered = sorted(segments, key=lambda s: s.period.start)
-    for earlier, later in pairwise(ordered):
-        if later.period.start <= earlier.period.end:
-            raise DataError(
-                f"segments overlap: {earlier.period.start}..{earlier.period.end} and "
-                f"{later.period.start}..{later.period.end}. Overlapping segments would "
-                f"price the same day twice"
-            )
-
+    ordered = _ordered_segments(segments)
     readings = list(readings)
     whole = BillingPeriod(ordered[0].period.start, ordered[-1].period.end)
 
@@ -419,10 +447,7 @@ def compute_segments(
     warnings: list[str] = []
     complete = True
 
-    for segment in ordered:
-        engine = BillEngine(RateEngine(segment.config))
-        part = engine.compute(readings, segment.period, check=check)
-
+    for segment, part in zip(ordered, price_segments(ordered, readings, check=check), strict=True):
         for target, source in (
             (imports, part.import_components),
             (exports, part.export_components),

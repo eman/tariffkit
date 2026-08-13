@@ -103,6 +103,9 @@ class Reconciliation:
     comparisons: tuple[Comparison, ...] = ()
     source_deltas: tuple[SourceDelta, ...] = ()
     notes: tuple[str, ...] = ()
+    #: The cycle's bills, one per service agreement. Credits are applied within
+    #: each rather than across their sum, because that is what the utility does.
+    segment_bills: tuple[Bill, ...] = ()
 
     @property
     def failures(self) -> tuple[Comparison, ...]:
@@ -123,7 +126,7 @@ class Reconciliation:
         line by line. Before solar they are the same figure, so this is the
         right comparison in both regimes rather than a special case.
         """
-        return apply_credits(self.bill).cash_due
+        return sum(apply_credits(part).cash_due for part in self.segment_bills or (self.bill,))
 
     @property
     def unverified_rules(self) -> tuple[str, ...]:
@@ -169,6 +172,15 @@ class Reconciliation:
         }
 
 
+def applied_across(bills: Sequence[Bill]) -> dict[str, float]:
+    """Credits applied, summed over the agreements that applied them."""
+    totals = {"generation": 0.0, "delivery": 0.0, "bonus": 0.0}
+    for bill in bills:
+        for key, value in applied_credits(bill).items():
+            totals[key] += value
+    return totals
+
+
 def applied_credits(bill: Bill) -> dict[str, float]:
     """What the ledger spent this cycle, signed the way the statement prints it.
 
@@ -202,6 +214,7 @@ def reconcile(
     tolerance: Tolerance | None = None,
     source_deltas: Sequence[SourceDelta] = (),
     notes: Sequence[str] = (),
+    segment_bills: Sequence[Bill] = (),
 ) -> Reconciliation:
     """Compare a computed bill against a parsed statement, line by line."""
     allowed = tolerance or Tolerance()
@@ -235,7 +248,10 @@ def reconcile(
             parts: dict[str, float] = {}
             for component in rule.components:
                 side, key = split_side(component, rule.side)
-                value = _side(bill, side).get(key)
+                if side is Side.APPLIED and segment_bills:
+                    value = applied_across(segment_bills).get(key)
+                else:
+                    value = _side(bill, side).get(key)
                 if value is not None:
                     parts[key] = value
             used.update(split_side(c, rule.side)[1] for c in rule.components)
@@ -294,6 +310,7 @@ def reconcile(
         comparisons=tuple(comparisons),
         source_deltas=tuple(source_deltas),
         notes=tuple(notes),
+        segment_bills=tuple(segment_bills),
     )
 
 
