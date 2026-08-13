@@ -90,14 +90,27 @@ def compare_sources(
         )
 
     if statement.billed_kwh is not None:
+        # A statement covering more than one service agreement prints usage per
+        # agreement, and once solar is interconnected one of those figures is a
+        # net that can be negative. Neither is a whole-cycle quantity, so
+        # comparing it against a whole-cycle meter reading measures the parsing,
+        # not the meter -- it reported the 2026-06 cycle as 23.59 kWh adrift on
+        # a bill that reconciles to the cent. Reported either way; asserted as a
+        # disagreement only when the figure covers the whole cycle.
+        whole_cycle = statement.service_agreements == 1
         deltas.append(
             SourceDelta(
                 left="statement",
                 right=primary,
                 imported_delta=statement.billed_kwh - base_import,
                 exported_delta=0.0,
-                note="what the utility says it billed",
-                significant=not allowed.kwh_ok(statement.billed_kwh, base_import),
+                note=(
+                    "what the utility says it billed"
+                    if whole_cycle
+                    else f"usage printed for one of {statement.service_agreements} service "
+                    f"agreements, so it does not describe the whole cycle"
+                ),
+                significant=(whole_cycle and not allowed.kwh_ok(statement.billed_kwh, base_import)),
             )
         )
     return deltas

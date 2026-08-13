@@ -229,12 +229,18 @@ def charges_by_bucket(
     recovery bond credit -- reduces its bucket rather than creating charge to
     offset elsewhere, which is how the statement prints it.
 
-    Fixed charges are treated as non-offsettable. The Base Services Charge is a
-    daily amount for grid access rather than for energy, and no reconciled
-    statement has shown a credit reaching it.
+    Fixed charges are offsettable, but only by the bonus bucket. This was the
+    other way round on the evidence then available -- "no reconciled statement
+    has shown a credit reaching it" -- and the 2026-07-07 statement falsified
+    it: it applies $1.59 of bonus credit where the energy charges alone leave
+    room for $0.92, and PG&E's own wording is that the bonus offsets anything
+    not explicitly non-bypassable. The Base Services Charge is not
+    non-bypassable; the charges printed as Non-Bypassable Charges are, and they
+    stay out of reach.
     """
     offsettable: dict[CreditBucket, float] = dict.fromkeys(CreditBucket, 0.0)
-    non_offsettable = sum(bill.fixed_components.values())
+    non_offsettable = 0.0
+    offsettable[CreditBucket.BONUS] += sum(bill.fixed_components.values())
 
     for name, value in bill.import_components.items():
         bucket = CHARGE_BUCKETS.get(name)
