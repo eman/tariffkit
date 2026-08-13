@@ -85,3 +85,66 @@ while the total is wrong — and a genuine mismatch.
 Experience Cloud community with no REST endpoints, where even a bill PDF comes
 back base64 inside an Aura JSON response. Read it before writing anything that
 talks to it.
+
+## Running it
+
+```bash
+uv run python -m audit run --since 2025-11-01 --until 2026-08-31
+```
+
+Lists every statement the portal holds for that range, downloads each, prices
+the matching interval data, reconciles it line by line, and prints a table with
+one row per cycle. Useful flags:
+
+| flag | what it does |
+|---|---|
+| `--verbose` | show agreeing lines too, not just failures |
+| `--json` | machine-readable output instead of the report |
+| `--green-button` | also download PG&E's own interval export and compare the two meters |
+| `--keep-statements` | leave the downloaded PDFs in `.cache/pge/statements/` |
+| `--read-hour N` | move the cycle boundary off midnight |
+| `--account PATH` | a different account history (default `audit/account.toml`) |
+
+Statements are deleted after the run unless `--keep-statements`. One carries the
+service address, the account number, and a remittance scanline with the account
+embedded, so keeping a pile of them is not a side effect a billing check should
+have without being asked.
+
+Exit codes are load-bearing: `0` all reconciled, `1` a real disagreement, `2`
+the check could not be performed.
+
+## What does not reconcile yet
+
+Current state over 2025-11 to 2026-08: **10 cycles available, 9 priced, 6
+reconciled clean**. The rest are listed here rather than tolerated, because a
+harness that quietly widens a tolerance until it agrees is worth nothing.
+
+**Statements before November 2025 cannot be read at all**, so a full twelve
+months is not reachable from PDFs. They use Type 3 fonts whose `ToUnicode` map
+declares ~56% of glyphs to be U+0020; pypdf and poppler agree, and only OCR
+would recover them. See `pge/PORTAL.md`.
+
+**2026-07 covers two service agreements** — EV2A closed and E-ELEC opened when
+solar was interconnected on 2026-06-03 — so no single `Config` prices it. It is
+refused rather than guessed, the same way `versioned.load` refuses to borrow a
+vintage.
+
+**The Solar Billing Plan cycle (2026-08) is out by +7.97 on Distribution +
+Public Purpose Programs**, and the cause is known: `6.25 + 1.71 = 7.96`, the two
+export credits. That statement's unbundled breakdown *nets* export credits into
+the delivery categories, while the reconciler also maps them to their own
+delivery-detail lines, so the same dollars are counted twice. Fixing it means
+teaching the map that the breakdown is post-credit under SBP.
+
+Its two remaining unmapped lines are a real modelling gap, not a missing rule:
+under a CCA on the Solar Billing Plan, export credits appear **twice**, once
+from PG&E and once from MCE, and this library models only the utility side.
+
+**Two cycles are out by a rounding-sized amount on the same line** — 2026-03 by
++0.18 and 2026-06 by +0.11 — while every other line on them reconciles to the
+cent. The evidence points at PG&E's own allocation rather than at the tariff: on
+2026-06 the utility charges a Base Services Charge of 25.39 and its breakdown
+accounts for 25.28 of it (Distribution 21.04 less our 5.70 of distribution, plus
+Public Purpose Programs 10.38 less our 0.44), leaving exactly the 0.11. The
+allocation across printed categories does not sum to the charge. That is a
+hypothesis until a third cycle confirms it, so the mismatch is left visible.
