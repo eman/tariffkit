@@ -156,12 +156,24 @@ register through the evening -- hours 16 to 20 sum to exactly the -7.22 kWh the
 source check reports -- while the cycle total stays right. Around 31 kWh is
 reshuffled between hours and nets out.
 
-That is an artefact of reconstructing intervals from cumulative counter
-samples. Sampling is regular at five minutes, which cannot move energy across
-an hour boundary on its own, so the remaining suspect is occasional gaps spread
-pro rata across the hours they span. `_per_interval` already spreads rather
-than crediting the later interval, which was worth 3.4 kWh of peak export when
-it was fixed; this is the same class of error one level down.
+Instrumenting the gap distribution closed it. Sampling is regular at five
+minutes -- median 305s, 99th percentile 590s -- which cannot move energy across
+an hour boundary at all. But the series also contains a handful of outages: on
+the 2025-10 cycle, four gaps over fifteen minutes totalling 73 hours, the
+longest **71.8 hours**. Spreading those evenly gives the peak window its share
+of the clock, five hours in twenty-four, rather than its share of the load.
+
+The arithmetic closes: 75.1 kWh reconstructed across 72 hours puts 15.6 kWh in
+peak where the real daily shape puts about 22.4, a 6.8 kWh deficit against the
+6.9 measured.
+
+Nothing detected it, because spreading *fills* every interval -- the coverage
+check saw a complete series. Readings reconstructed across a gap wider than an
+hour are now marked `estimated`, and the bill says so:
+
+    72 interval(s) covering 72.0h and 75.1 kWh were reconstructed across gaps
+    in the source, so their time-of-use split is a guess even though the cycle
+    total is not.
 
 `compare_sources` now compares the peak split as well as the total, because
 totals cannot see it: on that cycle the two agree to 0.05 kWh on the cycle's

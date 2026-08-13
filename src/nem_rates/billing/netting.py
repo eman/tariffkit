@@ -59,6 +59,17 @@ def check_coverage(readings: Sequence[IntervalReading], period: BillingPeriod) -
     if overlaps:
         yield f"{len(overlaps)} overlapping interval(s); first at {overlaps[0].isoformat()}"
 
+    guessed = [r for r in ordered if r.estimated]
+    if guessed:
+        energy = sum(r.imported + r.exported for r in guessed)
+        hours = sum((r.duration for r in guessed), timedelta()).total_seconds() / 3600
+        yield (
+            f"{len(guessed)} interval(s) covering {hours:.1f}h and {energy:.1f} kWh were "
+            f"reconstructed across gaps in the source, so their time-of-use split is a "
+            f"guess even though the cycle total is not. Spreading a long gap evenly gives "
+            f"peak hours their share of the clock rather than their share of the load"
+        )
+
     both = [r for r in ordered if r.imported and r.exported]
     if both:
         # Deliberately does not tell the reader to net. It used to, and the

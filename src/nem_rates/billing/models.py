@@ -26,6 +26,14 @@ class IntervalReading:
     imported: float = 0.0
     exported: float = 0.0
     duration: timedelta = timedelta(hours=1)
+    #: True when this interval's energy was reconstructed across a gap in the
+    #: source rather than measured over the interval itself. The total stays
+    #: right -- a cumulative counter only depends on its endpoints -- but the
+    #: shape does not, and the shape is what a time-of-use tariff prices. A
+    #: three-day outage spread evenly gives peak hours 5/24 of the energy where
+    #: the real day gives them nearly a third, which is a real dollar on a
+    #: cycle whose total is exact to 0.05 kWh.
+    estimated: bool = False
 
     def __post_init__(self) -> None:
         if self.imported < 0 or self.exported < 0:
