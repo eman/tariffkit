@@ -61,10 +61,19 @@ def check_coverage(readings: Sequence[IntervalReading], period: BillingPeriod) -
 
     both = [r for r in ordered if r.imported and r.exported]
     if both:
+        # Deliberately does not tell the reader to net. It used to, and the
+        # advice is wrong for the commonest source: a meter's own import and
+        # export registers are already netted at the meter's interval, and
+        # aggregating them to a coarser one legitimately leaves both non-zero.
+        # Netting again is double-netting, which the tariff does not do --
+        # measured against a real Solar Billing Plan statement it moved the
+        # cycle from three cents out to forty. Only independently metered gross
+        # sources, an inverter or a CT clamp, want `IntervalReading.from_gross`.
         yield (
-            f"{len(both)} interval(s) report both import and export; the meter "
-            f"nets within an interval, so this suggests gross data that was not "
-            f"netted (use IntervalReading.from_gross)"
+            f"{len(both)} interval(s) report both import and export. Expected when "
+            f"already-netted meter registers are aggregated to a coarser interval; "
+            f"a sign of un-netted gross data only if these are inverter or CT "
+            f"readings, which want IntervalReading.from_gross"
         )
 
 

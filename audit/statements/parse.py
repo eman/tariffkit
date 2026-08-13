@@ -314,7 +314,18 @@ def parse_statement(
     if summary is None or summary.printed_total is None:
         raise StatementError(f"{source or 'statement'}: no total amount due found")
 
-    usage = USAGE.search(joined)
+    # Summed over distinct blocks, not the first found. A statement covering
+    # two service agreements states usage once per agreement -- 2 days then 27
+    # -- and taking the first reports the cycle as having used a fraction of
+    # what it did, which surfaces as the meter and the statement disagreeing by
+    # hundreds of kilowatt-hours. Deduplicated because the utility's page and
+    # the CCA's page each print the same figures.
+    # Keyed on the parsed value, not the printed text: the same figure appears
+    # as "621.046" in one place and "621.046000" in another, and deduplicating
+    # the strings keeps both and doubles the cycle's usage.
+    usage_blocks = {
+        (round(float(kwh.replace(",", "")), 3), int(days)) for kwh, days in USAGE.findall(joined)
+    }
     account = ACCOUNT.search(joined)
     schedules = RATE_SCHEDULE.findall(joined)
     territory = BASELINE_TERRITORY.search(joined)
@@ -327,7 +338,11 @@ def parse_statement(
         amount_due=summary.printed_total,
         account_masked=re.sub(r"\D", "", account.group(1))[-4:] if account else "",
         billed_days=billed_days,
-        billed_kwh=float(usage.group(1).replace(",", "")) if usage else None,
+        billed_kwh=(
+            sum(kwh for kwh, _ in usage_blocks) or None
+            if usage_blocks
+            else None
+        ),
         service_agreements=max(1, len(DELIVERY_PAGE.findall(joined))),
         gas_charges=_scalar(joined, GAS_TOTAL),
         electric_adjustments=_summary_amount(summary, "Electric Adjustments"),

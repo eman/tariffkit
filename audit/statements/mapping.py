@@ -357,6 +357,20 @@ def rule_for(section: Section, label: str) -> LineRule | None:
             return rule
         if any(wanted == normalize_label(alias) for alias in rule.aliases):
             return rule
+
+    # Second pass, and only for a line the generation provider prefixes with
+    # its own name: "MCE Solar Bonus Credit" against the rule's "Solar Bonus
+    # Credit". The prefix is not stable -- the same line has been read as "MEA"
+    # -- and enumerating spellings of a provider's initials as aliases is a
+    # losing game. Anchored at the end and bounded to a short prefix, so it
+    # cannot quietly swallow an unrelated longer line.
+    for rule in MAP:
+        if rule.section is not section:
+            continue
+        for candidate in (rule.label, *rule.aliases):
+            folded = normalize_label(candidate)
+            if wanted.endswith(f" {folded}") and len(wanted) - len(folded) <= 5:
+                return rule
     return None
 
 
