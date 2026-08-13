@@ -23,6 +23,10 @@ from nem_rates.timeutil import PACIFIC
 from .reconcile import SourceDelta, Tolerance
 from .statements import Statement
 
+#: Most a two-decimal reading can lose per interval. The utility's own export
+#: rounds each one, so a long cycle accumulates a predictable shortfall.
+ROUNDING_PER_INTERVAL = 0.005
+
 
 def window(period: BillingPeriod, *, read_hour: int = 0) -> tuple[datetime, datetime]:
     """The half-open instant range a billing period covers.
@@ -62,7 +66,13 @@ def compare_sources(
             continue
         other_import, other_export = totals(series)
         low = other_import <= base_import
-        expected_low = name == "green_button" and low
+        # Two-decimal rounding can only lose so much: at most half a hundredth
+        # per interval, so 2,880 quarter-hours caps out near 14 kWh. Bounding
+        # the exemption matters -- unbounded, "Green Button reads low" would
+        # excuse a shortfall of any size, including a genuinely missing day,
+        # which is the exact failure this comparison exists to catch.
+        budget = ROUNDING_PER_INTERVAL * len(series)
+        expected_low = name == "green_button" and low and (base_import - other_import) <= budget
         deltas.append(
             SourceDelta(
                 left=name,
