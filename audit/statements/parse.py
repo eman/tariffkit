@@ -47,7 +47,15 @@ QUANTITY = re.compile(r"^\d[\d,]*\.?\d*$")
 #: page keeps collecting rows without needing to know it did.
 ANCHORS: tuple[tuple[Section, re.Pattern[str]], ...] = (
     (Section.SUMMARY, re.compile(r"Your Account Summary")),
-    (Section.PGE_DELIVERY, re.compile(r"Details of PG&E Electric Delivery Charges")),
+    # Two headings, one section. Once solar is interconnected the account moves
+    # to the Solar Billing Plan and the utility retitles this page -- so a
+    # parser that knows only the first heading silently finds no delivery
+    # detail at all on every post-PTO statement, and reports the whole section
+    # as missing rather than as renamed.
+    (
+        Section.PGE_DELIVERY,
+        re.compile(r"Details of PG&E (?:Electric Delivery|Solar Billing Plan) Charges"),
+    ),
     (
         Section.CCA_GENERATION,
         re.compile(r"Details of (?P<cca>[A-Z][A-Za-z& ]+?) Electric Generation"),
@@ -79,9 +87,9 @@ TOTAL_WRAP_LINES = 3
 #: Both separators are real, and the older one is an *en dash*, not a hyphen:
 #: statements through 2025 separate the dates with an en dash (U+2013) while
 #: the redesign switched to "to". Matching only "to" rejects every older
-#: statement with "no
-#: billing cycle found", and matching a plain hyphen silently still misses them,
-#: which reads as a broken PDF rather than as a layout nobody taught this parser.
+#: statement with "no billing cycle found", and matching a plain hyphen still
+#: misses them, which reads as a broken PDF rather than as a layout nobody
+#: taught this parser.
 CYCLE = re.compile(
     r"(\d{2}/\d{2}/\d{4})\s+(?:to|[-\u2013\u2014])\s+(\d{2}/\d{2}/\d{4})"
     r"(?:\s*\((\d+)\s+billing\s+days\))?"
@@ -92,11 +100,32 @@ SUBPERIOD = re.compile(
     r"^\s*(\d{2}/\d{2}/\d{4})\s+(?:to|[-\u2013\u2014])\s+(\d{2}/\d{2}/\d{4})(?:\s|$)"
 )
 
+#: Sub-headings that qualify the rows beneath them. They carry no amount of
+#: their own, which is how they are told apart from charges.
+#: Not anchored at the end: the right-hand sidebar bleeds a stray character
+#: onto these rows, so requiring the line to contain nothing else never matches.
+#: Carrying no amount is the real test, and it is applied separately.
+BLOCK_HEADING = re.compile(
+    r"^\s*(Energy Produced|Energy Delivered|Other Charges, Credits and Taxes)\b"
+)
+
+#: What the Solar Billing Plan calls its section total. It does not begin with
+#: "Total", so the usual row never matches and the section is left with no
+#: printed total to check its rows against.
+SBP_TOTAL = re.compile(r"^\s*Solar Billing Plan Charges\s")
+
 #: Gas, on a combined statement. Taken from the gas section's own total rather
 #: than from the summary: the summary prints "Current Gas Charges" with the
 #: amount in a column that extraction drops entirely, so the only place the
 #: number survives is the detail page.
 GAS_TOTAL = re.compile(r"Total\s+Gas\s+Charges\s+\$?(-?[\d,]+\.\d{2})")
+
+#: How many tariffs priced this statement, counted by delivery detail pages
+#: rather than by "Service Agreement ID:" rows -- every statement carries at
+#: least two of those, one for PG&E and one for the CCA, so counting them calls
+#: an ordinary CCA statement a split one. A second *delivery* page is the thing
+#: that only happens when the account changed tariff mid-cycle.
+DELIVERY_PAGE = ANCHORS[1][1]
 
 STATEMENT_DATE = re.compile(r"Statement\s+Date:\s*(\d{2}/\d{2}/\d{4})")
 ACCOUNT = re.compile(r"Account\s+N(?:o|umber)[.:]?\s*(\d[\d-]+)")
@@ -251,6 +280,7 @@ def parse_statement(pages: Sequence[str], *, source: str = "") -> Statement:
         account_masked=re.sub(r"\D", "", account.group(1))[-4:] if account else "",
         billed_days=int(cycle.group(3)) if cycle.group(3) else None,
         billed_kwh=float(usage.group(1).replace(",", "")) if usage else None,
+        service_agreements=max(1, len(DELIVERY_PAGE.findall(joined))),
         gas_charges=_scalar(joined, GAS_TOTAL),
         electric_adjustments=_summary_amount(summary, "Electric Adjustments"),
         sections=sections,
@@ -339,7 +369,7 @@ def _sections(pages: Sequence[str]) -> tuple[StatementSection, ...]:
                         awaiting_label = deferred
                 continue
 
-            if TOTAL_ROW.match(line):
+            if TOTAL_ROW.match(line) or SBP_TOTAL.match(line):
                 amount = _first_money(line)
                 if amount is not None:
                     totals[current] = amount
@@ -357,7 +387,7 @@ def _sections(pages: Sequence[str]) -> tuple[StatementSection, ...]:
     return tuple(
         StatementSection(
             name=name,
-            lines=tuple(_with_subperiods(found[name], text[name], name)),
+            lines=tuple(_with_blocks(_with_subperiods(found[name], text[name], name), text[name])),
             printed_total=totals.get(name),
         )
         for name in Section
@@ -428,6 +458,32 @@ def _line(line: str, section: Section, page: int, *, label: str = "") -> Stateme
                 raw=line.rstrip(),
             )
     return None
+
+
+def _with_blocks(lines: Sequence[StatementLine], text: Sequence[str]) -> list[StatementLine]:
+    """Tag rows with the sub-heading they sit under.
+
+    Needed once solar is interconnected: the Solar Billing Plan prints the same
+    three time-of-use labels twice, under "Energy Produced" and under "Energy
+    Delivered". They are export and import, and telling them apart is the
+    difference between a credit and a charge.
+    """
+    heads: list[tuple[int, str]] = []
+    for index, raw in enumerate(text):
+        head = BLOCK_HEADING.match(raw)
+        if head and _first_money(raw) is None:
+            heads.append((index, head.group(1).strip()))
+    if not heads:
+        return list(lines)
+
+    tagged: list[StatementLine] = []
+    cursor = 0
+    for position, raw in enumerate(text):
+        if cursor < len(lines) and lines[cursor].raw == raw.rstrip():
+            under = next((h for p, h in reversed(heads) if p < position), "")
+            tagged.append(replace(lines[cursor], block=under))
+            cursor += 1
+    return tagged if len(tagged) == len(lines) else list(lines)
 
 
 def _with_subperiods(
