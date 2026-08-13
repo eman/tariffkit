@@ -32,6 +32,8 @@ how to re-capture it when PG&E changes something.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 import re
@@ -678,6 +680,43 @@ class PgeSession:
             page="/myaccount/s/bill-and-payment-history",
         )
         return _bill_rows(payload)
+
+    def download_bill(self, bill_id: str) -> bytes:
+        """One statement, as PDF bytes.
+
+        There is no URL for this. The portal returns the whole document
+        base64-encoded inside a JSON reply and the page builds a ``blob:`` link
+        client-side, so "sign in and GET the PDF" has nothing to GET -- the
+        download is itself an Aura action.
+        """
+        payload = self.apex(
+            "bill_pdf",
+            {"billidfrombillhistory": bill_id},
+            page="/myaccount/s/bill-and-payment-history",
+        )
+        # This action answers with the document wrapped one level deeper than
+        # the others, so accept either shape rather than assume.
+        if isinstance(payload, Mapping) and isinstance(payload.get("returnValue"), Mapping):
+            payload = payload["returnValue"]
+        encoded = payload.get("imageData") if isinstance(payload, Mapping) else None
+        if not encoded:
+            raise PortalError("the portal returned no document for this bill", endpoint="bill_pdf")
+        try:
+            pdf = base64.b64decode(encoded)
+        except (ValueError, binascii.Error) as bad:
+            raise PortalError(
+                "the portal's document was not valid base64", endpoint="bill_pdf"
+            ) from bad
+        # Check the magic rather than trust the reply: a session that has
+        # quietly expired hands back an HTML sign-in page with a 200, and
+        # writing that to a .pdf turns a portal problem into a parser problem
+        # several steps downstream.
+        if not pdf.startswith(b"%PDF"):
+            raise PortalError(
+                "the portal returned something that is not a PDF; the session may have expired",
+                endpoint="bill_pdf",
+            )
+        return pdf
 
     def signed_in(self) -> bool:
         """Whether the session is authenticated.

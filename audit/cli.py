@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Sequence
+from datetime import date
 from pathlib import Path
 
 from nem_rates import __version__ as library_version
@@ -73,8 +74,41 @@ def build_parser() -> argparse.ArgumentParser:
         help="also download the utility's own interval export and compare the two meters",
     )
 
+    run = sub.add_parser("run", help="download every statement the portal lists and reconcile it")
+    run.add_argument(
+        "--since", type=_day, default=None, help="earliest statement date (YYYY-MM-DD)"
+    )
+    run.add_argument("--until", type=_day, default=None, help="latest statement date (YYYY-MM-DD)")
+    run.add_argument(
+        "--account",
+        type=Path,
+        default=Path("audit/account.toml"),
+        help="the account's dated history (default: audit/account.toml)",
+    )
+    run.add_argument("--read-hour", type=int, default=0)
+    run.add_argument("--verbose", action="store_true", help="show agreeing lines too")
+    run.add_argument("--json", action="store_true", help="machine-readable output")
+    run.add_argument(
+        "--green-button",
+        action="store_true",
+        help="also download the utility's own interval export and compare the two meters",
+    )
+    run.add_argument(
+        "--keep-statements",
+        action="store_true",
+        help="leave the downloaded PDFs on disk; they carry the account number and "
+        "service address, so they are deleted by default",
+    )
+
     sub.add_parser("doctor", help="check which portal endpoints still answer")
     return parser
+
+
+def _day(text: str) -> date:
+    try:
+        return date.fromisoformat(text)
+    except ValueError as bad:
+        raise argparse.ArgumentTypeError(f"expected a date like 2025-10-01, got {text!r}") from bad
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -97,6 +131,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 as_json=args.json,
                 green_button=args.green_button,
             )
+        if args.command == "run":
+            return _run(
+                since=args.since,
+                until=args.until,
+                account=args.account,
+                read_hour=args.read_hour,
+                verbose=args.verbose,
+                as_json=args.json,
+                green_button=args.green_button,
+                keep=args.keep_statements,
+            )
         if args.command == "doctor":
             return _doctor()
     except AuditError as exc:
@@ -105,6 +150,62 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser.print_help()
     return EXIT_OK
+
+
+def _run(
+    *,
+    since: date | None,
+    until: date | None,
+    account: Path,
+    read_hour: int,
+    verbose: bool,
+    as_json: bool,
+    green_button: bool,
+    keep: bool,
+) -> int:
+    """Ask the portal what statements exist, then reconcile each of them."""
+    from contextlib import ExitStack
+
+    from nem_rates.sources.pge import PgeSession, PgeSettings
+
+    from .run import DEFAULT_CACHE, downloaded, fetch_refs, select
+
+    settings = PgeSettings.load()
+    with PgeSession(settings) as session:
+        session.login()
+        refs = select(fetch_refs(session), since=since, until=until)
+        if not refs:
+            print("no statements in that range")
+            return EXIT_ERROR
+
+        if not as_json:
+            span = f"{refs[0].label} to {refs[-1].label}"
+            print(f"{len(refs)} statements to check, {span}\n")
+
+        # Downloaded together so the portal work is done and the session can be
+        # dropped before any pricing starts -- a slow reconciliation should not
+        # be holding an authenticated session open.
+        with ExitStack() as stack:
+            paths = []
+            for ref in refs:
+                try:
+                    paths.append(
+                        stack.enter_context(
+                            downloaded(session, ref, cache=DEFAULT_CACHE, keep=keep)
+                        )
+                    )
+                except AuditError as exc:
+                    print(f"{ref.label}: {exc}")
+            if not paths:
+                return EXIT_ERROR
+            return _reconcile(
+                paths,
+                account=account,
+                read_hour=read_hour,
+                verbose=verbose,
+                as_json=as_json,
+                green_button=green_button,
+            )
 
 
 def _doctor() -> int:
@@ -173,7 +274,16 @@ def _reconcile(
     results = []
     worst = EXIT_OK
     for path in paths:
-        statement = read_statement(path)
+        # Per statement, not per run. PG&E has redesigned the statement at least
+        # once inside the window this tool covers, so a batch spanning years
+        # will meet a layout the parser does not know -- and letting that abort
+        # the run means one old PDF suppresses every check after it.
+        try:
+            statement = read_statement(path)
+        except AuditError as exc:
+            print(f"{path.name}: {exc}")
+            worst = EXIT_ERROR
+            continue
 
         # A parse that does not add up cannot be compared against anything: the
         # difference would be reported as a billing defect when it is a reading
