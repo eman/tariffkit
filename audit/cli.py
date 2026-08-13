@@ -67,6 +67,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     check.add_argument("--verbose", action="store_true", help="show agreeing lines too")
     check.add_argument("--json", action="store_true", help="machine-readable output")
+    check.add_argument(
+        "--green-button",
+        action="store_true",
+        help="also download the utility's own interval export and compare the two meters",
+    )
+
+    sub.add_parser("doctor", help="check which portal endpoints still answer")
     return parser
 
 
@@ -88,12 +95,57 @@ def main(argv: Sequence[str] | None = None) -> int:
                 read_hour=args.read_hour,
                 verbose=args.verbose,
                 as_json=args.json,
+                green_button=args.green_button,
             )
+        if args.command == "doctor":
+            return _doctor()
     except AuditError as exc:
         print(f"error: {exc}")
         return EXIT_ERROR
 
     parser.print_help()
+    return EXIT_OK
+
+
+def _doctor() -> int:
+    """Say which portal endpoints have been confirmed, and whether they answer.
+
+    The first question after any portal failure is whether the session expired
+    or the flow moved, and those need opposite responses. This answers it in one
+    command instead of a debugging session.
+    """
+    from nem_rates.sources.pge import ENDPOINTS, PgeSession, PgeSettings, PortalError
+
+    print("endpoints this client knows:")
+    for name, endpoint in sorted(ENDPOINTS.items()):
+        mark = "confirmed" if endpoint.captured else "INFERRED"
+        print(f"  {mark:>9}  {name:<14} {endpoint.classname}.{endpoint.method}")
+    print()
+
+    try:
+        settings = PgeSettings.load()
+    except Exception as exc:
+        print(f"no credentials, so nothing was contacted: {exc}")
+        return EXIT_ERROR
+
+    with PgeSession(settings) as session:
+        try:
+            fwuid, token = session.bootstrap()
+            print(f"  login page reachable, framework id present ({len(fwuid)} chars)")
+            print(f"  csrf token {'present' if token else 'absent (expected before sign-in)'}")
+        except PortalError as exc:
+            print(f"  login page: {exc}")
+            return EXIT_ERROR
+
+        live = session.signed_in()
+        print(f"  cached session: {'live' if live else 'not signed in'}")
+        if live:
+            try:
+                host, _, urn = session.opower()
+                print(f"  usage platform: {host}, account {urn[-12:]}")
+            except PortalError as exc:
+                print(f"  usage platform: {exc}")
+                return EXIT_ERROR
     return EXIT_OK
 
 
@@ -104,6 +156,7 @@ def _reconcile(
     read_hour: int,
     verbose: bool,
     as_json: bool,
+    green_button: bool = False,
 ) -> int:
     from nem_rates.billing import BillEngine
     from nem_rates.engine import RateEngine
@@ -144,13 +197,26 @@ def _reconcile(
 
         start, end = window(statement.period, read_hour=read_hour)
         readings = read_counters(settings, start, end)
+        sources = {"influx": readings}
+
+        if green_button:
+            # The utility's own record of the same period. Worth the extra
+            # request because one meter cannot tell you it is incomplete: PG&E's
+            # export was once missing a whole day, and only a second source
+            # showed it.
+            from nem_rates.sources.pge import PgeSettings, read_green_button_download
+
+            sources["green_button"] = read_green_button_download(
+                PgeSettings.load(), statement.period.start, statement.period.end
+            )
+
         bill = BillEngine(RateEngine(config)).compute(readings, statement.period)
         results.append(
             reconcile(
                 statement,
                 bill,
                 config,
-                source_deltas=compare_sources({"influx": readings}, statement),
+                source_deltas=compare_sources(sources, statement),
             )
         )
 

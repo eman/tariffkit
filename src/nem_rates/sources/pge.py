@@ -41,6 +41,7 @@ from datetime import date, datetime, time
 from pathlib import Path
 from time import sleep
 from typing import Any
+from uuid import uuid4
 
 from ..billing import IntervalReading
 from ..errors import ConfigError, DataError
@@ -135,14 +136,23 @@ ENDPOINTS: Mapping[str, Endpoint] = {
     ),
     "login": Endpoint(
         "login",
-        "LightningLoginFormController",
+        "MyAcct_customLoginLWCController",
         "login",
-        captured=False,
-        note="Salesforce's stock login controller for Experience Cloud. NOT yet "
-        "observed on this portal -- PG&E may use their own. `audit doctor` "
-        "reports which endpoints have been confirmed.",
+        captured=True,
+        note="PG&E's own controller, not Salesforce's stock LightningLoginFormController. "
+        "Takes username, password, startUrl, uuid, browsercookie and validationCookie; "
+        "the last two are cookies the login page sets before the form is submitted.",
     ),
 }
+
+#: Cookies the login page sets and then asks to have handed back. Reading them
+#: from the jar rather than inventing them is what makes the call look like the
+#: page's own.
+BROWSER_COOKIE = "LSKey-c$browsercookie"
+VALIDATION_COOKIE = "LSKey-c$validationCookie"
+#: The login form runs in its own Lightning app, not the authenticated one.
+LOGIN_APP = "siteforce:loginApp2"
+COMMUNITY_APP = "siteforce:communityApp"
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,7 +303,7 @@ class PgeSession:
         self._token = token.group(1) if token else ""
         return self._fwuid, self._token
 
-    def context(self, app: str = "siteforce:communityApp") -> str:
+    def context(self, app: str = COMMUNITY_APP) -> str:
         if not self._fwuid:
             self.bootstrap()
         return json.dumps({"mode": "PROD", "fwuid": self._fwuid, "app": app, "loaded": {}})
@@ -301,7 +311,12 @@ class PgeSession:
     # -- the one call everything else is made of -----------------------
 
     def apex(
-        self, endpoint: str, params: Mapping[str, Any] | None = None, *, page: str = "/myaccount/s/"
+        self,
+        endpoint: str,
+        params: Mapping[str, Any] | None = None,
+        *,
+        page: str = "/myaccount/s/",
+        app: str = COMMUNITY_APP,
     ) -> Any:
         """Invoke one Apex action and return its ``returnValue``."""
         if self._client is None:
@@ -332,7 +347,7 @@ class PgeSession:
             params={"r": 1, "aura.ApexAction.execute": 1},
             data={
                 "message": json.dumps(message),
-                "aura.context": self.context(),
+                "aura.context": self.context(app),
                 "aura.pageURI": page,
                 "aura.token": self._token,
             },
@@ -346,6 +361,45 @@ class PgeSession:
         except PortalError:
             return False
         return True
+
+    def login(self, *, force: bool = False) -> None:
+        """Sign in, unless a cached session is already live.
+
+        The portal's own controller, not Salesforce's stock one, and it wants
+        two cookies back that the login page sets when it is fetched -- so the
+        page has to be loaded first, which :meth:`bootstrap` does anyway for the
+        framework id. Skipping straight to the POST fails in a way that looks
+        like bad credentials.
+        """
+        if not force and self.signed_in():
+            return
+        if self._client is None:
+            raise PortalError("session is not open; use PgeSession as a context manager")
+
+        self.bootstrap()
+        jar = self._client.cookies
+        self.apex(
+            "login",
+            {
+                "username": self.settings.username,
+                "password": self.settings.password,
+                "startUrl": "/myaccount/s/",
+                "uuid": str(uuid4()),
+                "browsercookie": jar.get(BROWSER_COOKIE, ""),
+                "validationCookie": jar.get(VALIDATION_COOKIE, ""),
+            },
+            page=LOGIN_PATH,
+            app=LOGIN_APP,
+        )
+        # The login response carries a redirect rather than a session flag, so
+        # the only honest confirmation is a call that needs authentication.
+        if not self.signed_in():
+            raise PortalError(
+                "the sign-in call succeeded but the session is still anonymous; the "
+                "credentials may be wrong, or the portal may have added a step",
+                endpoint="login",
+                step="login",
+            )
 
     # -- the usage platform, which is a different system entirely -------
 
@@ -624,4 +678,5 @@ def read_green_button_download(
     portal's own selector is a date range.
     """
     with PgeSession(settings) as session:
+        session.login()
         return parse_green_button(download_green_button(session, start, end), layout)

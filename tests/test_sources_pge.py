@@ -146,13 +146,21 @@ class TestProtocol:
         with pytest.raises(PortalError, match="no such bill"):
             session.apex("bill_pdf", {"billidfrombillhistory": "nope"})
 
-    def test_an_unconfirmed_endpoint_says_so_when_it_fails(self, tmp_path: Path) -> None:
+    def test_an_unconfirmed_endpoint_says_so_when_it_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         # An endpoint inferred rather than observed is not a bug, but a failure
-        # against one should point at itself first.
+        # against one should point at itself first. Every shipped endpoint has
+        # since been confirmed, so this uses a made-up one.
+        from nem_rates.sources import pge
+
+        monkeypatch.setattr(
+            pge, "ENDPOINTS", {**pge.ENDPOINTS, "guess": pge.Endpoint("guess", "C", "m")}
+        )
         client = FakeClient(post=FakeResponse("<html>", content_type="text/html"))
         session = session_with(client, tmp_path)
         with pytest.raises(PortalError, match="never been confirmed"):
-            session.apex("login", {"username": "u", "password": "p"})
+            session.apex("guess")
 
     def test_an_unknown_endpoint_is_refused(self, tmp_path: Path) -> None:
         session = session_with(FakeClient(), tmp_path)
@@ -172,11 +180,15 @@ class TestEndpointRegistry:
     def test_every_endpoint_records_whether_it_was_observed(self) -> None:
         # The registry is the memory of what was actually seen, so a future
         # reader can tell a confirmed action from an educated guess.
-        assert {name for name, e in ENDPOINTS.items() if e.captured} >= {
-            "session_check",
-            "bill_pdf",
-        }
-        assert ENDPOINTS["login"].captured is False
+        assert all(endpoint.captured for endpoint in ENDPOINTS.values())
+
+    def test_the_login_controller_is_the_utilitys_own(self) -> None:
+        # Worth pinning, because the obvious guess is wrong: this is not
+        # Salesforce's stock LightningLoginFormController, and a client written
+        # against that one fails looking like bad credentials.
+        login = ENDPOINTS["login"]
+        assert login.classname == "MyAcct_customLoginLWCController"
+        assert "not Salesforce's stock" in login.note
 
 
 class TestGreenButton:

@@ -36,6 +36,20 @@ the page at session start, never hardcoded. `aura.token` likewise.
 |---|---|---|
 | Session/guest check | `MyAcct_SessionValidatorController.isGuestUserCheck` | — |
 | Download one bill PDF | `MyAcct_DownloadBillPdf.httpCalloutDownloadBill` | `billidfrombillhistory` |
+| Sign in | `MyAcct_customLoginLWCController.login` | `username`, `password`, `startUrl`, `uuid`, `browsercookie`, `validationCookie` |
+
+Sign-in is **PG&E's own controller**, not Salesforce's stock
+`LightningLoginFormController` — a client written against that one fails looking
+like bad credentials. `browsercookie` and `validationCookie` are cookies
+(`LSKey-c$browsercookie`, `LSKey-c$validationCookie`) that the login page sets
+when it is fetched and then expects handed back, so the page must be loaded
+before the POST. `uuid` is a fresh client-side UUID. The login form runs under
+`aura.app = siteforce:loginApp2`, not the authenticated `siteforce:communityApp`.
+
+To capture a login without recording the credential, hook **before** submitting
+and store only `operationName`, `classname`, `method` and `Object.keys(params)`
+— never the values — and persist to `localStorage`, because a successful login
+navigates and destroys anything held in a page variable.
 
 **The bill list** is still uncaptured. It is fetched once when
 `/s/bill-and-payment-history` loads and paginates client-side, so hooking XHR
