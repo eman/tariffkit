@@ -119,9 +119,12 @@ class TestParsedStatement:
         ]
 
     def test_a_per_day_charge_keeps_its_rate_not_its_rate_as_its_amount(self, statement) -> None:  # type: ignore[no-untyped-def]
-        (charge,) = statement.section(Section.PGE_BREAKDOWN).find("Base Services Charge")
-        assert charge.amount == pytest.approx(24.60)
+        # Billed "31 days @ $0.79343". Anchoring on the word "kWh" instead of on
+        # the "@" read the rate as the amount and lost $23. Note the breakdown
+        # does not print this line at all -- the utility spreads it across
+        # Distribution and Public Purpose Programs.
         (metered,) = statement.section(Section.PGE_DELIVERY).find("Base Services Charge")
+        assert metered.amount == pytest.approx(24.60)
         assert (metered.quantity, metered.unit) == (31.0, "days")
         assert metered.rate == pytest.approx(0.79343)
         # Days are not energy, so this row contributes no kWh.
@@ -177,7 +180,7 @@ class TestSelfCheckCatchesMisparses:
     def test_a_dropped_row_is_caught(self) -> None:
         # The exact failure the gate exists for: one row silently absent, so the
         # section is short by its amount and every remaining line still agrees.
-        pages = [re.sub(r"^(.*)Distribution +80\.00$", "", page, flags=re.M) for page in load()]
+        pages = [re.sub(r"^(.*)Distribution +94\.60$", "", page, flags=re.M) for page in load()]
         problems = parse_statement(pages).self_check()
         assert any("pge_breakdown" in problem for problem in problems)
 

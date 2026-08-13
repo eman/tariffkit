@@ -7,6 +7,8 @@ the dispatch happens to return.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from audit import __version__
@@ -46,3 +48,16 @@ class TestParser:
         with pytest.raises(SystemExit) as caught:
             build_parser().parse_args(["--nonsense"])
         assert caught.value.code == 2
+
+    def test_a_check_that_could_not_run_exits_two_not_one(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # "I could not check" and "your numbers disagree" call for opposite
+        # responses. An AuditError escaping to Python gives exit 1, which reads
+        # as a billing discrepancy that was never actually found.
+        code = main(
+            ["reconcile", str(tmp_path / "nope.pdf"), "--account", str(tmp_path / "a.toml")]
+        )
+        assert code == EXIT_ERROR
+        assert code != EXIT_MISMATCH
+        assert "error:" in capsys.readouterr().out

@@ -23,7 +23,7 @@ Rate Schedule:  Time-of-Use (Peak Pricing 4 - 9 p.m. Every Day)
 .                             31        days       @   $0.79343                           $24.60
 Base Services Charge                                                                                                  Baseline Territory                    X
  12/30/2025 to 12/31/2025
-.                                                                    40.00       kWh          (2 days       20.0 kWh/day)
+.                             40.00       kWh          (2 days       20.0 kWh/day)
 Baseline Allowance                                                                                  x
 Energy Charges
   Peak                        20.000000        kWh        @   $0.50000                    $10.00                      To program your smart device, scan the
@@ -34,7 +34,7 @@ Power Charge Indifference Adjustment                                            
 Franchise Fee Surcharge                                                                     0.10                      Meter #                    99999999
                                                                                                                       Total Usage                        1000.000
  01/01/2026 to 01/29/2026
-.                                                                   290.00       kWh          (29 days       20.0 kWh/day)
+.                             290.00       kWh          (29 days       20.0 kWh/day)
 Baseline Allowance                                                                                  x
 Energy Charges
   Peak                        60.000000        kWh        @   $0.50000                    $30.00                      To program your smart device, scan the
@@ -62,8 +62,8 @@ Charges                                                                         
  PG&E offers a monthly discount on electric bills for income-qualified             Your Electric Charges Breakdown  (from page 2)
  households of three or more persons. To see if you qualify, please call           Conservation Incentive                                                  $7.88
  1-800-PGE-5000 or apply online at www.pge.com/fera.                               Transmission                                                            20.00
- Electric power line safety: PG&E cares about your safety. Be aware of             Distribution                                                            80.00
- your surroundings and keep yourself, tools, equipment and antennas at             Electric Public Purpose Programs                                        12.00
+ Electric power line safety: PG&E cares about your safety. Be aware of             Distribution                                                            94.60
+ your surroundings and keep yourself, tools, equipment and antennas at             Electric Public Purpose Programs                                        22.00
  least 10 feet away from overhead power lines. If you see an electric              Nuclear Decommissioning                                                 -0.05
  power line fall to the ground, keep yourself and others away. Call 911.           Wildfire Fund Charge                                                     2.00
  Visit www.pge.com/MyEnergy for a detailed bill comparison.                        Recovery Bond Charge                                                     3.00
@@ -71,7 +71,6 @@ Charges                                                                         
                                                                                    Wildfire Hardening Charge                                                1.00
                                                                                    Competition Transition Charges (CTC)                                     0.15
                                                                                    Energy Cost Recovery Amount                                              0.02
-                                                                                   Base Services Charge                                                    24.60
                                                                                    PCIA                                                                    10.00
                                                                                    Taxes and Other                                                          1.00
                                                                                    Total Electric Charges                                                $158.60

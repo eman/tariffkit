@@ -50,6 +50,23 @@ def build_parser() -> argparse.ArgumentParser:
     read = sub.add_parser("parse", help="read a statement PDF and print what it says")
     read.add_argument("pdf", nargs="+", type=Path)
     read.add_argument("--json", action="store_true", help="machine-readable output")
+
+    check = sub.add_parser("reconcile", help="compare computed bills against statements")
+    check.add_argument("pdf", nargs="+", type=Path)
+    check.add_argument(
+        "--account",
+        type=Path,
+        default=Path("audit/account.toml"),
+        help="the account's dated history (default: audit/account.toml)",
+    )
+    check.add_argument(
+        "--read-hour",
+        type=int,
+        default=0,
+        help="hour of day the meter is read; the cycle boundary is not midnight",
+    )
+    check.add_argument("--verbose", action="store_true", help="show agreeing lines too")
+    check.add_argument("--json", action="store_true", help="machine-readable output")
     return parser
 
 
@@ -57,11 +74,94 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if args.command == "parse":
-        return _parse(args.pdf, as_json=args.json)
+    # Every AuditError means the check did not happen, and that has to leave a
+    # different exit code from "the numbers disagree". Letting one escape gives
+    # Python's own exit 1, which reads as a billing discrepancy -- the exact
+    # conflation these codes exist to prevent.
+    try:
+        if args.command == "parse":
+            return _parse(args.pdf, as_json=args.json)
+        if args.command == "reconcile":
+            return _reconcile(
+                args.pdf,
+                account=args.account,
+                read_hour=args.read_hour,
+                verbose=args.verbose,
+                as_json=args.json,
+            )
+    except AuditError as exc:
+        print(f"error: {exc}")
+        return EXIT_ERROR
 
     parser.print_help()
     return EXIT_OK
+
+
+def _reconcile(
+    paths: Sequence[Path],
+    *,
+    account: Path,
+    read_hour: int,
+    verbose: bool,
+    as_json: bool,
+) -> int:
+    from nem_rates.billing import BillEngine
+    from nem_rates.engine import RateEngine
+    from nem_rates.sources.influx import InfluxSettings, read_counters
+
+    from .account import AccountHistory, check_against_statement
+    from .reconcile import reconcile, render_all
+    from .sources import compare_sources, window
+    from .statements import read_statement
+
+    history = AccountHistory.from_toml(account)
+    settings = InfluxSettings.load()
+
+    results = []
+    worst = EXIT_OK
+    for path in paths:
+        statement = read_statement(path)
+
+        # A parse that does not add up cannot be compared against anything: the
+        # difference would be reported as a billing defect when it is a reading
+        # defect, which is the one thing that would make this harness worthless.
+        problems = statement.self_check()
+        if problems:
+            print(f"{path.name}: the statement did not survive its own checks")
+            for problem in problems:
+                print(f"  {problem}")
+            worst = EXIT_ERROR
+            continue
+
+        config = history.config_for(statement.period)
+        stale = check_against_statement(config, statement)
+        if stale:
+            print(f"{path.name}: the configured account does not describe this statement")
+            for problem in stale:
+                print(f"  {problem}")
+            worst = EXIT_ERROR
+            continue
+
+        start, end = window(statement.period, read_hour=read_hour)
+        readings = read_counters(settings, start, end)
+        bill = BillEngine(RateEngine(config)).compute(readings, statement.period)
+        results.append(
+            reconcile(
+                statement,
+                bill,
+                config,
+                source_deltas=compare_sources({"influx": readings}, statement),
+            )
+        )
+
+    if as_json:
+        print(json.dumps([result.to_dict() for result in results], indent=2))
+    elif results:
+        print(render_all(results, verbose=verbose))
+
+    if any(not result.ok for result in results):
+        worst = max(worst, EXIT_MISMATCH)
+    return worst
 
 
 def _parse(paths: Sequence[Path], *, as_json: bool) -> int:
