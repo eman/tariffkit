@@ -76,7 +76,10 @@ GREEN_BUTTON_PATH = "/myaccount/apex/myAcct_VF_GreenButton"
 GRAPHQL_PATH = "/ei/edge/apis/dsm-graphql-v1/cws/graphql"
 
 OPOWER_HOST = re.compile(r"https://([a-z0-9][a-z0-9.-]*\.opower\.com)")
-OPOWER_TOKEN = re.compile(r"\"(eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]+)\"")
+#: Not anchored on quotes: the Visualforce shell embeds the bearer unquoted,
+#: while the rendered page quotes it. Matching the JWT's own shape works for
+#: both and does not care how the page chose to spell it.
+OPOWER_TOKEN = re.compile(r"(eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})")
 OPOWER_URN = re.compile(r"(urn:opower:v1:account:[a-z]+:uuid:[0-9a-f-]+)")
 
 #: How far back the platform will export. Its own answer, not our choice.
@@ -175,6 +178,13 @@ class PgeSettings:
     #: browser -- see audit/pge/PORTAL.md.
     browser_cookie: str = field(repr=False, default="")
     validation_cookie: str = field(repr=False, default="")
+    #: Which account the usage platform answers for, e.g.
+    #: ``urn:opower:v1:account:pge:uuid:...``. Every usage query is scoped by it,
+    #: and the portal publishes it nowhere a client can read: the page hands it
+    #: to the embedded widget. Read it once from a signed-in browser (see
+    #: audit/pge/PORTAL.md), or leave it unset and let the platform try to derive
+    #: it from the token.
+    account_urn: str = ""
 
     @classmethod
     def load(
@@ -219,6 +229,7 @@ class PgeSettings:
             cookie_path=cookie_path,
             browser_cookie=env.get("PGE_BROWSER_COOKIE", ""),
             validation_cookie=env.get("PGE_VALIDATION_COOKIE", ""),
+            account_urn=env.get("PGE_ACCOUNT_URN", ""),
         )
 
 
@@ -229,6 +240,28 @@ class PortalError(DataError):
         super().__init__(message)
         self.endpoint = endpoint
         self.step = step
+
+
+class InvalidSessionError(PortalError):
+    """The CSRF token is stale.
+
+    Its own type because the answer is specific and recoverable -- re-read the
+    token and try again -- rather than the generic "something about the portal
+    changed".
+    """
+
+
+def _frontdoor(answer: Any) -> str:
+    """The session-handoff URL a successful sign-in returns, if there is one.
+
+    Salesforce hands back a ``/secur/frontdoor.jsp`` link carrying a one-time
+    code rather than setting the session cookie on the POST itself.
+    """
+    if not isinstance(answer, Mapping):
+        return ""
+    value = answer.get("returnValue")
+    message = str(value.get("retMessage", "")) if isinstance(value, Mapping) else ""
+    return message if message.startswith("http") else ""
 
 
 def _check_device_trust(answer: Any, *, configured: bool) -> None:
@@ -438,6 +471,19 @@ class PgeSession:
         makes every anonymous session look live, so login is skipped and the
         first real request fails with a 401 far from the cause.
         """
+        if self._client is None:
+            return False
+        # An HTTP probe rather than an Aura call. The authenticated community
+        # does not publish a CSRF token in its page, so every Aura call after
+        # sign-in needs a token this client cannot obtain -- and none of the
+        # work it actually does needs one. What distinguishes the two states is
+        # which Lightning app the portal serves.
+        landing = self._client.get("/myaccount/s/")
+        if landing.status_code != 200:
+            return False
+        if COMMUNITY_APP in landing.text and LOGIN_APP not in landing.text:
+            return True
+
         try:
             answer = self.apex("session_check")
         except PortalError:
@@ -495,6 +541,22 @@ class PgeSession:
             app=LOGIN_APP,
         )
         _check_device_trust(answer, configured=bool(self.settings.browser_cookie))
+
+        # The call does not itself establish the session. It returns a
+        # Salesforce frontdoor URL, and *following* that is what sets the
+        # session cookie -- so a login that stops at a successful POST leaves an
+        # anonymous client holding a success message.
+        door = _frontdoor(answer)
+        if door:
+            self._client.get(door)
+            # The authenticated community issues its own CSRF token, and the
+            # one scraped from the login page stops being valid the moment the
+            # session exists. Re-read it, or every later call comes back as
+            # aura:invalidSession.
+            landing = self._client.get("/myaccount/s/")
+            found = TOKEN.search(landing.text)
+            if found:
+                self._token = found.group(1)
         # The response carries a redirect rather than a session flag, so the
         # only honest confirmation is a call that needs authentication.
         if not self.signed_in():
@@ -534,12 +596,14 @@ class PgeSession:
                 "(see audit/pge/PORTAL.md)",
                 step="opower",
             )
+        # Configured first: the platform does not publish the account urn
+        # anywhere a client can read, because the page hands it to the widget.
+        if self.settings.account_urn:
+            return host.group(1), token.group(1), self.settings.account_urn
         urn = OPOWER_URN.search(page)
-        return (
-            host.group(1),
-            token.group(1),
-            urn.group(1) if urn else self._discover_urn(host.group(1), token.group(1)),
-        )
+        if urn:
+            return host.group(1), token.group(1), urn.group(1)
+        return host.group(1), token.group(1), self._discover_urn(host.group(1), token.group(1))
 
     def _discover_urn(self, host: str, token: str) -> str:
         """Ask the platform which account this token is for.
@@ -625,7 +689,30 @@ def _unwrap(response: Any, endpoint: Endpoint) -> Any:
             f"{hint} (see audit/pge/PORTAL.md)",
             endpoint=endpoint.name,
         )
-    body = response.json()
+    # Aura prefixes its JSON with an anti-hijacking guard ("*/" or "while(1);")
+    # on some responses and not others, so the payload starts at the first
+    # brace rather than at byte zero.
+    text = response.text
+    brace = text.find("{")
+    if brace < 0:
+        raise PortalError(
+            f"{endpoint.name}: the response carried no JSON body", endpoint=endpoint.name
+        )
+    try:
+        body = json.loads(text[brace:])
+    except ValueError as exc:
+        raise PortalError(
+            f"{endpoint.name}: unreadable response: {exc}", endpoint=endpoint.name
+        ) from exc
+
+    # A stale CSRF token comes back as an event, not an error, and the
+    # replacement travels with it.
+    event = body.get("event") or {}
+    if "invalidSession" in str(event.get("descriptor", "")):
+        raise InvalidSessionError(
+            f"{endpoint.name}: the session token is stale", endpoint=endpoint.name
+        )
+
     actions = body.get("actions") or []
     if not actions:
         raise PortalError(f"{endpoint.name}: no actions in the response", endpoint=endpoint.name)
