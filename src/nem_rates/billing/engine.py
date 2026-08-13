@@ -167,7 +167,7 @@ class BillEngine:
     def _energy_surcharge(
         self, readings: Sequence[IntervalReading], period: BillingPeriod
     ) -> tuple[float, list[date]]:
-        """California's Energy Resources Surcharge on energy consumed.
+        r"""California's Energy Resources Surcharge on energy consumed.
 
         A state tax rather than a utility tariff, so it is charged whoever
         supplies the generation. A statement prints it as "Energy Commission
@@ -175,8 +175,18 @@ class BillEngine:
         which is how it went unmodelled while every line on the utility's pages
         reconciled.
 
-        Rated per kilowatt-hour imported, by the vintage in force on each day, so
-        a cycle spanning a January rate change is charged correctly.
+        Rated per kilowatt-hour *consumed*, by the vintage in force on each day,
+        so a cycle spanning a January rate change is charged correctly.
+
+        Consumed, not imported, and the difference only appears once exports
+        earn something. Two statements pin it down. On 2026-03-10 the site
+        exported 36 kWh before Permission To Operate and was taxed on the full
+        731 kWh imported -- \$0.22, to the cent. On 2026-08-04 it exported after
+        PTO and was taxed on nothing at all despite importing 39 kWh. So an
+        export offsets the tax base exactly when the tariff compensates it,
+        which is the same test that decides whether it earns a credit. Floored
+        per day: a day that exports more than it imports owes no tax and does
+        not bank a negative against the next one.
 
         Returns the charge and the days no vintage covered. Those days are not
         charged, and the caller says so and marks the bill incomplete: a bill
@@ -188,11 +198,14 @@ class BillEngine:
         total = 0.0
         remaining: dict[date, float] = {}
         for reading in readings:
-            remaining[to_pacific(reading.start).date()] = (
-                remaining.get(to_pacific(reading.start).date(), 0.0) + reading.imported
-            )
+            day = to_pacific(reading.start).date()
+            consumed = reading.imported
+            if reading.exported and self._compensated(hour_floor(to_pacific(reading.start))):
+                consumed -= reading.exported
+            remaining[day] = remaining.get(day, 0.0) + consumed
         uncovered: list[date] = []
-        for day, imported in sorted(remaining.items()):
+        for day, net in sorted(remaining.items()):
+            imported = max(net, 0.0)
             if not imported:
                 continue
             try:
