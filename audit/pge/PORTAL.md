@@ -81,10 +81,54 @@ and store only `operationName`, `classname`, `method` and `Object.keys(params)`
 — never the values — and persist to `localStorage`, because a successful login
 navigates and destroys anything held in a page variable.
 
-**The bill list** is still uncaptured. It is fetched once when
-`/s/bill-and-payment-history` loads and paginates client-side, so hooking XHR
-after load never sees it. Install the hook below and reload with devtools open,
-or use a `document_start` content script.
+### The bill list, and why hooking it is hard
+
+The call is:
+
+```
+vlocity_cmt.BusinessProcessDisplayController.GenericInvoke2NoCont
+  sClassName:  vlocity_cmt.IntegrationProcedureService
+  sMethodName: MyAcct_IP_GetBillPayHistoryData
+  input, options: JSON strings        → ~37 KB response
+```
+
+Calling it from Python currently fails with `Invalid value '' for query
+parameter historyFilter. is not a valid enum value`. The *value* is not the
+problem — the input **key** that feeds `historyFilter` is still unknown, so the
+parameter arrives empty. `All Activity`, `Bill Charges` and `Payments` are the
+three enum values the UI offers.
+
+Two things make capturing that key harder than it looks, both verified
+2026-08-12:
+
+1. **The call only fires on a full page load.** The account picker and the
+   Filter dropdown both re-render from data already in memory; neither
+   refetches. Changing the filter, clearing and reselecting the account, and
+   in-app navigation back to the page all produced zero new requests for it.
+2. **Patching `XMLHttpRequest.prototype` does not intercept Aura.** Two
+   separate reasons stack up. Injected tooling usually runs in an *isolated
+   world*, where the patch is invisible to the page; and injecting a `<script>`
+   into the main world is *still* not enough, because Aura takes its XHR from a
+   pristine same-origin iframe rather than from `window`. Measured directly:
+   27 POSTs to `/sfsites/aura` completed while a main-world prototype hook
+   recorded none of them. To hook it, patch each frame in `window.frames`, not
+   just `window` — or read bodies out of devtools/CDP instead, since the
+   request-listing tool here reports URLs and status only, not payloads.
+
+**The bill id does not require any of this.** Each rendered row carries it
+directly:
+
+```js
+// inside the LWC's shadow root: c-myacct_lwc_viewbillandpaymenthistory_updated
+document.querySelectorAll('a.pdf-link')  // → data-id="<opaque base64-ish token>"
+```
+
+That `data-id` *is* `billidfrombillhistory`, the one argument
+`MyAcct_DownloadBillPdf.httpCalloutDownloadBill` needs. So statement download
+is unblocked independently of the list API: a shadow-DOM walk collecting
+`(date, amount, data-id)` yields the whole history, and everything after that is
+pure Python. Treat those ids as session-sensitive — they look like tokens and
+should not be pasted into logs or tool output.
 
 ## Green Button is a different system entirely
 
