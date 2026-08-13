@@ -45,8 +45,13 @@ QUANTITY = re.compile(r"^\d[\d,]*\.?\d*$")
 #: Where each section begins. Ordered: the first match on a page opens it, and
 #: the next heading anywhere closes it, so a section running onto the following
 #: page keeps collecting rows without needing to know it did.
+#: Whitespace between words is written ``\s+`` throughout, never a literal
+#: space. Recognised pages space words by pixel geometry, so "Your Account
+#: Summary" comes back as "Your   Account    Summary" -- and an anchor that
+#: assumes single spaces silently matches nothing on every recognised
+#: statement, which presents as "no total amount due found".
 ANCHORS: tuple[tuple[Section, re.Pattern[str]], ...] = (
-    (Section.SUMMARY, re.compile(r"Your Account Summary")),
+    (Section.SUMMARY, re.compile(r"Your\s+Account\s+Summary")),
     # Two headings, one section. Once solar is interconnected the account moves
     # to the Solar Billing Plan and the utility retitles this page -- so a
     # parser that knows only the first heading silently finds no delivery
@@ -54,13 +59,15 @@ ANCHORS: tuple[tuple[Section, re.Pattern[str]], ...] = (
     # as missing rather than as renamed.
     (
         Section.PGE_DELIVERY,
-        re.compile(r"Details of PG&E (?:Electric Delivery|Solar Billing Plan) Charges"),
+        re.compile(
+            r"Details\s+of\s+PG&E\s+(?:Electric\s+Delivery|Solar\s+Billing\s+Plan)\s+Charges"
+        ),
     ),
     (
         Section.CCA_GENERATION,
-        re.compile(r"Details of (?P<cca>[A-Z][A-Za-z& ]+?) Electric Generation"),
+        re.compile(r"Details\s+of\s+(?P<cca>[A-Z][A-Za-z& ]+?)\s+Electric\s+Generation"),
     ),
-    (Section.PGE_BREAKDOWN, re.compile(r"Your Electric Charges Breakdown")),
+    (Section.PGE_BREAKDOWN, re.compile(r"Your\s+Electric\s+Charges\s+Breakdown")),
 )
 
 #: The row that ends a section by stating its total. Everything below it on the
@@ -112,7 +119,7 @@ BLOCK_HEADING = re.compile(
 #: What the Solar Billing Plan calls its section total. It does not begin with
 #: "Total", so the usual row never matches and the section is left with no
 #: printed total to check its rows against.
-SBP_TOTAL = re.compile(r"^\s*Solar Billing Plan Charges\s")
+SBP_TOTAL = re.compile(r"^\s*Solar\s+Billing\s+Plan\s+Charges\s")
 
 #: Gas, on a combined statement. Taken from the gas section's own total rather
 #: than from the summary: the summary prints "Current Gas Charges" with the
@@ -191,14 +198,16 @@ def read_statement(path: str | Path) -> Statement:
         )
 
     if _glyphs_are_spaces(reader):
-        raise StatementError(
-            f"{source.name} cannot be read as text: it is one of PG&E's pre-November-2025 "
-            f"statements, which draw every character with a Type 3 font whose ToUnicode "
-            f"map declares most glyphs to be spaces. Extraction faithfully returns those "
-            f"spaces, so the text is unrecoverable by any reader -- pypdf and poppler "
-            f"agree. Re-downloading will not help; only OCR of the rendered pages would, "
-            f"and this parser deliberately does not guess"
-        )
+        # PG&E's pre-November-2025 statements draw every character with a Type 3
+        # font whose ToUnicode map calls most glyphs spaces, so extraction
+        # returns exactly that and no reader does better. The pixels are the
+        # only honest source left. Recognition can misread a digit into a
+        # plausible amount, which is why `self_check` gates reconciliation: a
+        # statement prints its totals twice and a misread almost always breaks
+        # the arithmetic between them.
+        from .ocr import pages_via_ocr
+
+        return parse_statement(pages_via_ocr(source), source=source.name, recognised=True)
     return parse_statement(pages, source=source.name)
 
 
@@ -247,7 +256,9 @@ def _summary_amount(summary: StatementSection, label: str) -> float | None:
     return matches[0].amount if matches else None
 
 
-def parse_statement(pages: Sequence[str], *, source: str = "") -> Statement:
+def parse_statement(
+    pages: Sequence[str], *, source: str = "", recognised: bool = False
+) -> Statement:
     """Parse already-extracted page text. No file, no network, no clock."""
     joined = "\n".join(pages)
 
@@ -309,6 +320,7 @@ def parse_statement(pages: Sequence[str], *, source: str = "") -> Statement:
         baseline_territory=territory.group(1) if territory else "",
         pcia_vintage=int(vintage.group(1)) if vintage else None,
         source=source,
+        recognised=recognised,
     )
 
 

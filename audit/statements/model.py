@@ -149,6 +149,11 @@ class Statement:
     baseline_territory: str = ""
     pcia_vintage: int | None = None
     source: str = ""
+    #: True when the text came from recognising rendered pages rather than from
+    #: the PDF's own text layer. Recorded because a misread digit is a plausible
+    #: amount rather than an obvious failure, so a reader deserves to know which
+    #: figures were read and which were recognised.
+    recognised: bool = False
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
     def section(self, name: Section) -> StatementSection | None:
