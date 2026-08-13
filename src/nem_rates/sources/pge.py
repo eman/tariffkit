@@ -260,15 +260,36 @@ class PgeSession:
             stored = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return
-        for name, value in stored.items():
-            self._client.cookies.set(name, value, domain="myaccount.pge.com")
+        if not isinstance(stored, list):
+            # An older format, or something else entirely. A cached session is
+            # only an optimisation, so an unreadable cache is discarded rather
+            # than raised over: the next call signs in again.
+            return
+        for entry in stored:
+            if not isinstance(entry, dict) or "name" not in entry:
+                continue
+            self._client.cookies.set(
+                str(entry["name"]),
+                str(entry.get("value", "")),
+                domain=str(entry.get("domain", "")),
+                path=str(entry.get("path", "/")),
+            )
 
     def _save_cookies(self) -> None:
         if self._client is None:
             return
         path = self.settings.cookie_path
         path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps(dict(self._client.cookies))
+        # Keyed by name *and* domain and path, not name alone: the portal sets
+        # several cookies that share a name across domains (renderCtx among
+        # them), and collapsing them to a dict raises rather than silently
+        # picking one.
+        payload = json.dumps(
+            [
+                {"name": c.name, "value": c.value or "", "domain": c.domain, "path": c.path}
+                for c in self._client.cookies.jar
+            ]
+        )
         # 0600 via os.open: a session cookie is a bearer credential, and
         # Path.write_text would leave it world-readable under a lax umask.
         handle = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
@@ -355,12 +376,31 @@ class PgeSession:
         return _unwrap(response, known)
 
     def signed_in(self) -> bool:
-        """Whether the cached session is still live."""
+        """Whether the session is authenticated.
+
+        The probe is ``isGuestUserCheck``, which answers the *opposite*
+        question: it succeeds for an anonymous visitor too, and reports that
+        they are a guest. Treating a successful call as proof of being signed in
+        makes every anonymous session look live, so login is skipped and the
+        first real request fails with a 401 far from the cause.
+        """
         try:
-            self.apex("session_check")
+            answer = self.apex("session_check")
         except PortalError:
             return False
-        return True
+        # Observed shape: {"returnValue": true, "cacheable": false}, where true
+        # means "yes, a guest". Other spellings are accepted because this is one
+        # utility's controller and the field could be renamed.
+        if isinstance(answer, Mapping):
+            for key in ("returnValue", "isGuestUser", "isGuest", "guest"):
+                if key in answer:
+                    return not bool(answer[key])
+            return False
+        if isinstance(answer, bool):
+            return not answer
+        # An unrecognised answer is treated as "not signed in": signing in again
+        # is cheap, while assuming a live session fails later and further away.
+        return False
 
     def login(self, *, force: bool = False) -> None:
         """Sign in, unless a cached session is already live.
