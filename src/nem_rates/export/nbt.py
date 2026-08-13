@@ -2,7 +2,7 @@
 
 PG&E's published file is 20 years of hourly rows, but every value repeats across
 a 576-cell matrix per year (12 months x 2 day types x 24 hours) per component.
-``tools/regen_data.py`` collapses it; this module reads the collapsed form, so a
+``nem_rates.regen.export`` collapses it; this module reads the collapsed form, so a
 lookup is a few list indexes rather than a scan of 350,640 rows.
 """
 
@@ -65,7 +65,7 @@ class NbtExportRates:
     def exact_through(self) -> int:
         """Last year verified to reproduce every upstream row exactly.
 
-        Established by ``tools/regen_data.py`` against all 350,640 source rows,
+        Established by ``nem_rates.regen.export`` against all 350,640 source rows,
         not asserted by hand.
         """
         return int(self._payload["exact_through"])

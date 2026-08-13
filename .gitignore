@@ -22,7 +22,8 @@ audit/account.toml
 .coverage
 htmlcov/
 
-# Upstream source archives fetched by tools/regen_data.py — large, not vendored.
+# Upstream archives and documents fetched by `nem-rates regen` — large, not
+# vendored. Also where downloaded statements and Green Button exports land.
 # The normalized outputs under src/nem_rates/data/ ARE committed.
 /.cache/
 *.zip
