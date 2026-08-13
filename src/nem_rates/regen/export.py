@@ -30,7 +30,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from .emit import DATA_DIR, REPO_ROOT
+from .emit import DATA_DIR, DEFAULT_CACHE, REPO_ROOT
 
 # Shared with the other regenerators rather than redefined. This module used
 # to carry its own pair, correct while it lived at tools/regen_data.py -- two
@@ -337,7 +337,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--cache",
         type=Path,
-        default=REPO_ROOT / ".cache" / "PGE-Solar-Billing-Plan-Export-Rates.zip",
+        default=DEFAULT_CACHE / "PGE-Solar-Billing-Plan-Export-Rates.zip",
     )
     args = parser.parse_args(argv)
 

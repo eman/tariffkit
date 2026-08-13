@@ -37,8 +37,16 @@ jobs:
         id: retail
         if: always()
         run: uv run nem-rates regen --check
+      # Gated on the two comparisons, not on `failure()`. Any job failure --
+      # a flaky download of a 35 MB archive, a uv hiccup, a full runner --
+      # would otherwise file "rate data is out of date" when nothing is stale;
+      # and because the dedupe below returns early while an open rate-data
+      # issue exists, one such false alarm left open silences every real one
+      # after it.
       - name: Open an issue when upstream has moved
-        if: failure()
+        if: >-
+          always() && (steps.export.outcome == 'failure'
+          || steps.retail.outcome == 'failure')
         uses: actions/github-script@v7
         with:
           script: |
@@ -58,8 +66,8 @@ jobs:
               body: [
                 'The scheduled check found upstream rate data differing from what is vendored.',
                 '',
-                `- export rates (\`regen_data.py\`): **${{ steps.export.outcome }}**`,
-                `- retail tariffs (\`regen_tariff.py\`): **${{ steps.retail.outcome }}**`,
+                `- export rates (\`nem_rates.regen.export\`): **${{ steps.export.outcome }}**`,
+                `- retail tariffs (\`nem-rates regen\`): **${{ steps.retail.outcome }}**`,
                 '',
                 'To refresh whichever failed:',
                 '```bash',
