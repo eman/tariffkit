@@ -268,6 +268,21 @@ def _glyphs_are_spaces(reader: object) -> bool:
     return total > 0 and blank / total > SPACE_GLYPH_SHARE
 
 
+def _delivery_pages(pages: Sequence[str]) -> int:
+    """How many delivery detail pages the statement opens.
+
+    Counted as headings, not as occurrences. The same words appear mid-sentence
+    in the statement's own prose -- "See the 'Generation Credit' on the 'Details
+    of PG&E Electric Delivery Charges' page" -- and counting that made an
+    ordinary single-agreement statement look like a split one, which silently
+    suppressed its meter cross-check. A heading begins its line; a
+    cross-reference does not.
+    """
+    return sum(
+        1 for page in pages for line in page.splitlines() if DELIVERY_PAGE.match(line.lstrip())
+    )
+
+
 def _scalar(text: str, pattern: re.Pattern[str]) -> float | None:
     found = pattern.search(text)
     return _money(found.group(1)) if found else None
@@ -360,7 +375,7 @@ def parse_statement(
         account_masked=re.sub(r"\D", "", account.group(1))[-4:] if account else "",
         billed_days=billed_days,
         billed_kwh=(sum(kwh for kwh, _ in usage_blocks) or None if usage_blocks else None),
-        service_agreements=max(1, len(DELIVERY_PAGE.findall(joined))),
+        service_agreements=max(1, _delivery_pages(pages)),
         gas_charges=_scalar(joined, GAS_TOTAL),
         electric_adjustments=_summary_amount(summary, "Electric Adjustments"),
         sections=sections,
