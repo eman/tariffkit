@@ -247,15 +247,21 @@ class BillEngine:
     def _fixed_charges(self, period: BillingPeriod) -> dict[str, float]:
         """Charges billed per day rather than per kWh.
 
-        Priced from the tariff in force at the start of the cycle. A rate change
-        mid-cycle is not prorated; PG&E does prorate, so a cycle spanning one
-        would be slightly off.
+        Priced day by day, because the utility prorates and a daily charge can
+        begin mid-cycle. AB 205's Base Services Charge began on 2026-03-01, and
+        the January-to-March cycle that spans it is billed 30 days at nothing
+        and 2 days at the new rate. Pricing the whole cycle from the tariff in
+        force on its first day charges nothing at all for those two days, which
+        is a real dollar and change on a statement that otherwise reconciles to
+        the cent -- small enough to look like rounding, which is what makes it
+        worth getting right rather than tolerating.
         """
-        moment = datetime(
-            period.start.year, period.start.month, period.start.day, 12, tzinfo=PACIFIC
-        )
-        daily = self.rates.tariff.daily_fixed_charge(moment)
-        return {"base_services_charge": daily * period.days}
+        total = 0.0
+        for offset in range(period.days):
+            day = period.start + timedelta(days=offset)
+            moment = datetime(day.year, day.month, day.day, 12, tzinfo=PACIFIC)
+            total += self.rates.tariff.daily_fixed_charge(moment)
+        return {"base_services_charge": total}
 
     def marginal_rates(
         self, readings: Sequence[IntervalReading]

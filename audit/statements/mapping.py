@@ -109,6 +109,9 @@ def normalize_label(raw: str) -> str:
 DEC = date(2026, 1, 7)
 JAN = date(2026, 2, 5)
 APR = date(2026, 5, 6)
+#: The first statement priced under the Solar Billing Plan, and so the only one
+#: that exercises any of the export-credit rules at all.
+AUG = date(2026, 8, 4)
 #: Lines every statement prints, on both schedules.
 ALL_THREE = (DEC, JAN, APR)
 #: Baseline schedules only; EV2-A has no baseline allowance to credit.
@@ -264,6 +267,37 @@ MAP: tuple[LineRule, ...] = (
         ("cca_cost_relief_credit",),
         aliases=("MCE Cost Relief Credit",),
         verified=(APR,),
+    ),
+    # Solar Billing Plan export compensation. Only appears once the system is
+    # interconnected, which for this account is 2026-06-03, so nothing before
+    # that statement exercises these at all.
+    #
+    # Named here despite not yet reconciling. An unmapped line and a mismatched
+    # one are different findings: unmapped says the harness does not know what
+    # the utility is charging for, which hides everything else about it. These
+    # correspondences are unambiguous by name and by sign, so claiming them
+    # turns three "no idea" rows into one arithmetic question.
+    LineRule(
+        "Energy Export Credits Applied",
+        Section.PGE_DELIVERY,
+        Side.EXPORT,
+        ("delivery",),
+        verified=(AUG,),
+    ),
+    LineRule(
+        "Energy Export Bonus Credits Applied",
+        Section.PGE_DELIVERY,
+        Side.EXPORT,
+        ("acc_plus",),
+        verified=(AUG,),
+    ),
+    LineRule(
+        "Solar Bonus Credit",
+        Section.CCA_GENERATION,
+        Side.EXPORT,
+        ("cca_solar_bonus",),
+        aliases=("MCE Solar Bonus Credit",),
+        verified=(AUG,),
     ),
 )
 
