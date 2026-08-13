@@ -338,11 +338,7 @@ def parse_statement(
         amount_due=summary.printed_total,
         account_masked=re.sub(r"\D", "", account.group(1))[-4:] if account else "",
         billed_days=billed_days,
-        billed_kwh=(
-            sum(kwh for kwh, _ in usage_blocks) or None
-            if usage_blocks
-            else None
-        ),
+        billed_kwh=(sum(kwh for kwh, _ in usage_blocks) or None if usage_blocks else None),
         service_agreements=max(1, len(DELIVERY_PAGE.findall(joined))),
         gas_charges=_scalar(joined, GAS_TOTAL),
         electric_adjustments=_summary_amount(summary, "Electric Adjustments"),
