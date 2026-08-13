@@ -14,11 +14,11 @@ disagreeing with the total the statement itself prints, is a real signal.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, time, timedelta
 
 from nem_rates.billing import BillingPeriod, IntervalReading
-from nem_rates.timeutil import PACIFIC
+from nem_rates.timeutil import PACIFIC, hour_floor, to_pacific
 
 from .reconcile import SourceDelta, Tolerance
 from .statements import Statement
@@ -46,14 +46,32 @@ def totals(readings: Sequence[IntervalReading]) -> tuple[float, float]:
     return sum(r.imported for r in readings), sum(r.exported for r in readings)
 
 
+def peak_share(
+    readings: Sequence[IntervalReading], classify: Callable[[datetime], object]
+) -> float:
+    """Imported energy the tariff prices at its peak rate."""
+    return sum(
+        r.imported for r in readings if str(classify(hour_floor(to_pacific(r.start)))) == "peak"
+    )
+
+
 def compare_sources(
     readings: Mapping[str, Sequence[IntervalReading]],
     statement: Statement,
     *,
     primary: str = "influx",
     tolerance: Tolerance | None = None,
+    classify: Callable[[datetime], object] | None = None,
 ) -> list[SourceDelta]:
-    """How the available measurements of one cycle disagree."""
+    """How the available measurements of one cycle disagree.
+
+    Totals are not enough, which took a real statement to learn. Two sources
+    agreed on a cycle's 701 kWh to within 0.2% and disagreed by 6.9 kWh about
+    which hours it arrived in -- and since peak energy costs about two cents
+    more per kilowatt-hour to deliver, that is real money on a bill that
+    otherwise reconciles. Passing ``classify`` compares the split as well, which
+    is the only way a totals check could have caught it.
+    """
     allowed = tolerance or Tolerance()
     deltas: list[SourceDelta] = []
     if primary not in readings:
@@ -88,6 +106,26 @@ def compare_sources(
                 significant=not expected_low and not allowed.kwh_ok(other_import, base_import),
             )
         )
+
+    if classify is not None:
+        base_peak = peak_share(readings[primary], classify)
+        for name, series in readings.items():
+            if name == primary:
+                continue
+            other_peak = peak_share(series, classify)
+            # Judged against the same allowance as a total, because the money
+            # rides on the difference between the two rates, not on the size of
+            # either bucket.
+            deltas.append(
+                SourceDelta(
+                    left=f"{name} peak",
+                    right=f"{primary} peak",
+                    imported_delta=other_peak - base_peak,
+                    exported_delta=0.0,
+                    note="which hours the energy arrived in, where the two rates differ",
+                    significant=not allowed.kwh_ok(other_peak, base_peak),
+                )
+            )
 
     if statement.billed_kwh is not None:
         # A statement covering more than one service agreement prints usage per

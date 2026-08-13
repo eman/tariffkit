@@ -268,6 +268,7 @@ def _reconcile(
     green_button: bool = False,
 ) -> int:
     from nem_rates.billing.engine import compute_segments, price_segments
+    from nem_rates.engine import RateEngine
     from nem_rates.sources.influx import InfluxSettings, read_counters
 
     from .account import AccountHistory, check_against_statement
@@ -339,7 +340,9 @@ def _reconcile(
                 statement,
                 bill,
                 config,
-                source_deltas=compare_sources(sources, statement),
+                source_deltas=compare_sources(
+                    sources, statement, classify=RateEngine(config).tariff.period
+                ),
                 segment_bills=parts,
             )
         )

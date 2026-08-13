@@ -131,10 +131,31 @@ days older than the cycles it prices, and the bill repeats it, so this arrives
 as a named data gap rather than as an unexplained discrepancy. It is the larger
 part of both cycles' difference.
 
-**Distribution on those same two cycles, about $0.16 each.** Not a stale
-vintage: `regen tariff --provider etouc --for-date 2025-07-01` resolves to the
-filing already vendored, and its cells reconcile against the published totals.
-Unexplained.
+**Distribution on those same two cycles, about $0.16 each: which hours the
+energy arrived in.** Not the tariff, the parser, or the time-of-use rules --
+each was ruled out rather than assumed.
+
+The rate data is exact: the cells reconcile against the published totals, the
+components sum to the cell totals to six decimals, and the statement itself
+prints `@ $0.50269` and `@ $0.62569`, which are the vendored figures. The
+cycle's total energy is right too, agreeing with the statement to 0.05 kWh.
+
+What differs is the split. The statement bills 208.789 kWh at peak; our meter
+data yields 201.892. Applying *our own* time-of-use rules to *PG&E's own*
+interval export gives 209.110 -- so the rules are right and the meter data
+attributes about 6.9 kWh to different hours than the utility's meter does. At
+the roughly two-cent spread between peak and off-peak distribution, that is the
+entire residual.
+
+Pricing from the utility's export instead is not a fix: its window
+over-collects about 1.6 kWh, which lands the same line +0.36 out rather than
+-0.15. So the residual is bounded by how closely an independent meter can
+reproduce a utility's interval attribution -- about 0.2% on a $178 line -- and
+is not a defect in the model.
+
+`compare_sources` now compares the peak split as well as the total, because
+totals alone cannot see this: on that cycle the two sources agree to 0.2% on
+801 kWh and disagree by 6.9 kWh about when it arrived.
 
 **Two EV2-A cycles, +0.23 and +0.12** on Distribution + Public Purpose
 Programs. Not a wrong distribution rate, which is the first thing to suspect and
