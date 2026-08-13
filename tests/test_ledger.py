@@ -82,8 +82,18 @@ class TestPgeBank:
     def test_non_bypassable_charges_are_not_offsettable(self) -> None:
         """Not even by the bonus credit -- that is what non-bypassable means."""
         _, non_offsettable, _ = charges_by_bucket(pge_bill())
-        # PPP + wildfire fund + CTC, plus PCIA, franchise fee and the fixed charge.
-        assert non_offsettable == pytest.approx(0.24 + 0.23 + 0.01 + 1.39 + 0.02 + 23.01)
+        # PPP + wildfire fund + CTC, plus PCIA and the franchise fee.
+        assert non_offsettable == pytest.approx(0.24 + 0.23 + 0.01 + 1.39 + 0.02)
+
+    def test_the_fixed_charge_is_reachable_by_the_bonus_credit(self) -> None:
+        # It was modelled as out of reach until a statement said otherwise. The
+        # 2026-07-07 bill applies $1.59 of bonus credit where the energy charges
+        # alone leave room for $0.92, and PG&E's wording is that the bonus
+        # offsets anything not explicitly non-bypassable. A daily charge for
+        # grid access is not that.
+        offsettable, non_offsettable, _ = charges_by_bucket(pge_bill())
+        assert offsettable[CreditBucket.BONUS] >= 23.01
+        assert non_offsettable < 23.01
 
 
 class TestMceBank:

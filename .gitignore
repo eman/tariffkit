@@ -8,13 +8,22 @@ dist/
 venv/
 .env
 
+# One real account's tariff history. audit/account.example.toml is the template.
+audit/account.toml
+
+# Statements carry a name, an address, an account number and a year of usage.
+# They are read wherever they already sit and never committed; the audit tests
+# use synthetic fixtures instead. Downloads land in .cache/, ignored above.
+*.pdf
+
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
 htmlcov/
 
-# Upstream source archives fetched by tools/regen_data.py — large, not vendored.
+# Upstream archives and documents fetched by `nem-rates regen` — large, not
+# vendored. Also where downloaded statements and Green Button exports land.
 # The normalized outputs under src/nem_rates/data/ ARE committed.
 /.cache/
 *.zip

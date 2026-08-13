@@ -33,10 +33,11 @@ fetch = ["httpx>=0.27"]
 ha = ["websockets>=12"]
 # InfluxDB 3 is queried over its HTTP SQL API.
 influx = ["httpx>=0.27"]
+pge = ["httpx>=0.27"]
 # Rebuilding the vendored rate data reads the publishers' PDFs. Not needed to
 # price anything: the library itself never opens a PDF.
 regen = ["pypdf>=4.0"]
-all = ["nem-rates[cli,mqtt,web,fetch,ha,influx,regen]"]
+all = ["nem-rates[cli,mqtt,web,fetch,ha,influx,pge,regen]"]
 dev = [
     "nem-rates[all]",
     "pytest>=8.0",
@@ -64,6 +65,11 @@ line-length = 100
 target-version = "py311"
 src = ["src", "tests"]
 
+[tool.ruff.lint.isort]
+# `src` above does not reach `audit/`, so without this ruff sorts it as a
+# third-party package and demands an import order no one would write by hand.
+known-first-party = ["nem_rates", "audit"]
+
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "RET", "SIM", "PTH", "RUF"]
 ignore = ["A003"]
@@ -79,7 +85,11 @@ ignore = ["A003"]
 python_version = "3.11"
 strict = true
 warn_unreachable = true
-files = ["src/nem_rates"]
+# `audit/` is checked as strictly as the package. It is not shipped, but it is a
+# real program written against a strict-typed library, and its whole purpose is
+# to be trusted when it reports a discrepancy. (`custom_components/` is excluded
+# instead because it follows Home Assistant's conventions, not this project's.)
+files = ["src/nem_rates", "audit"]
 
 [[tool.mypy.overrides]]
 module = ["pypdf.*"]
@@ -95,4 +105,8 @@ no_implicit_reexport = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
-markers = ["slowdata: requires the full upstream PG&E dataset"]
+markers = [
+  "slowdata: requires the full upstream PG&E dataset",
+  "statements: reads real statement PDFs, which are never committed",
+  "live: signs in to the PG&E portal; never run in CI",
+]

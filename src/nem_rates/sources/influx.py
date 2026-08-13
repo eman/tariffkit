@@ -229,9 +229,19 @@ def _samples(
     return out
 
 
+#: A sample gap wider than this makes the *shape* of what it spans a guess.
+#: Spreading it evenly is still the best available estimate of the total, which
+#: a cumulative counter fixes exactly at the endpoints, but the split between
+#: intervals stops being measured and starts being assumed. Chosen at one hour
+#: because that is the granularity a time-of-use tariff prices at: a gap inside
+#: one interval cannot move energy across a rate boundary, and a gap spanning
+#: several can.
+SMEARED_GAP = timedelta(hours=1)
+
+
 def _per_interval(
     samples: list[tuple[datetime, float]], start: datetime, end: datetime, step: timedelta
-) -> dict[datetime, float]:
+) -> tuple[dict[datetime, float], set[datetime]]:
     """Counter advance per interval, spread across the span it accrued over.
 
     A sample says only that the counter advanced by some amount *since the
@@ -258,9 +268,10 @@ def _per_interval(
         edges.append(cursor)
         cursor += step
     if not edges:
-        return {}
+        return {}, set()
 
     totals = dict.fromkeys(edges, 0.0)
+    smeared: set[datetime] = set()
     previous: tuple[datetime, float] | None = None
     for moment, value in samples:
         instant = moment.astimezone(UTC)
@@ -282,8 +293,10 @@ def _per_interval(
                 break
             upper = min(instant, edges[index] + step)
             totals[edges[index]] += advance * (upper - lower).total_seconds() / span
+            if instant - was_at > SMEARED_GAP:
+                smeared.add(edges[index])
             lower = upper
-    return totals
+    return totals, smeared
 
 
 def read_counters(
@@ -319,14 +332,16 @@ def read_counters(
             f"no samples for {settings.import_entity} / {settings.export_entity} "
             f"between {start.isoformat()} and {end.isoformat()}"
         )
-    imported = _per_interval(import_samples, start, end, resolution)
-    exported = _per_interval(export_samples, start, end, resolution)
+    imported, smeared_in = _per_interval(import_samples, start, end, resolution)
+    exported, smeared_out = _per_interval(export_samples, start, end, resolution)
+    smeared = smeared_in | smeared_out
     return [
         IntervalReading(
             start=to_pacific(edge),
             imported=max(imported.get(edge, 0.0), 0.0),
             exported=max(exported.get(edge, 0.0), 0.0),
             duration=resolution,
+            estimated=edge in smeared,
         )
         for edge in sorted(set(imported) | set(exported))
     ]

@@ -12,8 +12,12 @@ belong in a ledger built on top of this.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from itertools import pairwise
 
+from ..cca import load_rate_card
+from ..config import Config
 from ..engine import RateEngine
 from ..errors import DataError
 from ..models import ImportPrice, Season, TouPeriod
@@ -128,6 +132,10 @@ class BillEngine:
                 f"so the total is understated. Run `nem-rates regen tax`."
             )
 
+        stale = self._stale_rate_card(period)
+        if stale:
+            warnings.append(stale)
+
         credit = self._baseline_credit(in_period, period)
         if credit:
             import_components["baseline_credit"] = credit
@@ -159,7 +167,7 @@ class BillEngine:
     def _energy_surcharge(
         self, readings: Sequence[IntervalReading], period: BillingPeriod
     ) -> tuple[float, list[date]]:
-        """California's Energy Resources Surcharge on energy consumed.
+        r"""California's Energy Resources Surcharge on energy consumed.
 
         A state tax rather than a utility tariff, so it is charged whoever
         supplies the generation. A statement prints it as "Energy Commission
@@ -167,8 +175,18 @@ class BillEngine:
         which is how it went unmodelled while every line on the utility's pages
         reconciled.
 
-        Rated per kilowatt-hour imported, by the vintage in force on each day, so
-        a cycle spanning a January rate change is charged correctly.
+        Rated per kilowatt-hour *consumed*, by the vintage in force on each day,
+        so a cycle spanning a January rate change is charged correctly.
+
+        Consumed, not imported, and the difference only appears once exports
+        earn something. Two statements pin it down. On 2026-03-10 the site
+        exported 36 kWh before Permission To Operate and was taxed on the full
+        731 kWh imported -- \$0.22, to the cent. On 2026-08-04 it exported after
+        PTO and was taxed on nothing at all despite importing 39 kWh. So an
+        export offsets the tax base exactly when the tariff compensates it,
+        which is the same test that decides whether it earns a credit. Floored
+        per day: a day that exports more than it imports owes no tax and does
+        not bank a negative against the next one.
 
         Returns the charge and the days no vintage covered. Those days are not
         charged, and the caller says so and marks the bill incomplete: a bill
@@ -180,11 +198,14 @@ class BillEngine:
         total = 0.0
         remaining: dict[date, float] = {}
         for reading in readings:
-            remaining[to_pacific(reading.start).date()] = (
-                remaining.get(to_pacific(reading.start).date(), 0.0) + reading.imported
-            )
+            day = to_pacific(reading.start).date()
+            consumed = reading.imported
+            if reading.exported and self._compensated(hour_floor(to_pacific(reading.start))):
+                consumed -= reading.exported
+            remaining[day] = remaining.get(day, 0.0) + consumed
         uncovered: list[date] = []
-        for day, imported in sorted(remaining.items()):
+        for day, net in sorted(remaining.items()):
+            imported = max(net, 0.0)
             if not imported:
                 continue
             try:
@@ -196,6 +217,41 @@ class BillEngine:
                 continue
             total += imported * rate
         return total, uncovered
+
+    #: How far a CCA rate card may predate a cycle before it is worth saying so.
+    #: A CCA reprices at least annually, so a card more than a year older than
+    #: the energy it is pricing is being *borrowed*, not merely still in force.
+    STALE_CARD = timedelta(days=400)
+
+    def _stale_rate_card(self, period: BillingPeriod) -> str:
+        """Whether the CCA generation was priced from a much older rate card.
+
+        `versioned.load` takes the latest vintage on or before the date, which
+        is right for a tariff -- a rate stays in force until superseded. It is
+        indistinguishable, though, from "nobody vendored the vintage that was
+        actually in force", and the two are worlds apart: the first is correct,
+        the second silently prices 2025 energy at 2023 rates.
+
+        This cannot tell them apart either. It can say how old the card is and
+        let the reader judge, which is the whole difference between a number
+        that is wrong and a number that is wrong and says nothing.
+        """
+        cca = self.rates.config.cca
+        if cca is None or cca.rate_card is None or cca.generation_rates:
+            return ""
+        try:
+            card = load_rate_card(cca.rate_card, period.end)
+        except DataError:
+            return ""
+        age = period.end - card.effective
+        if age <= self.STALE_CARD:
+            return ""
+        return (
+            f"{cca.rate_card.upper()} generation priced from the rate card effective "
+            f"{card.effective}, {age.days} days before this cycle ended. Either the "
+            f"provider did not reprice in between, or the vintage that applied was "
+            f"never vendored -- and nothing here can tell those apart"
+        )
 
     def _baseline_credit(self, readings: Sequence[IntervalReading], period: BillingPeriod) -> float:
         """Credit on imports falling within the cycle's baseline allowance.
@@ -247,15 +303,21 @@ class BillEngine:
     def _fixed_charges(self, period: BillingPeriod) -> dict[str, float]:
         """Charges billed per day rather than per kWh.
 
-        Priced from the tariff in force at the start of the cycle. A rate change
-        mid-cycle is not prorated; PG&E does prorate, so a cycle spanning one
-        would be slightly off.
+        Priced day by day, because the utility prorates and a daily charge can
+        begin mid-cycle. AB 205's Base Services Charge began on 2026-03-01, and
+        the January-to-March cycle that spans it is billed 30 days at nothing
+        and 2 days at the new rate. Pricing the whole cycle from the tariff in
+        force on its first day charges nothing at all for those two days, which
+        is a real dollar and change on a statement that otherwise reconciles to
+        the cent -- small enough to look like rounding, which is what makes it
+        worth getting right rather than tolerating.
         """
-        moment = datetime(
-            period.start.year, period.start.month, period.start.day, 12, tzinfo=PACIFIC
-        )
-        daily = self.rates.tariff.daily_fixed_charge(moment)
-        return {"base_services_charge": daily * period.days}
+        total = 0.0
+        for offset in range(period.days):
+            day = period.start + timedelta(days=offset)
+            moment = datetime(day.year, day.month, day.day, 12, tzinfo=PACIFIC)
+            total += self.rates.tariff.daily_fixed_charge(moment)
+        return {"base_services_charge": total}
 
     def marginal_rates(
         self, readings: Sequence[IntervalReading]
@@ -316,3 +378,123 @@ def hourly(readings: Iterable[IntervalReading]) -> list[IntervalReading]:
         IntervalReading(start, imported=imp, exported=exp, duration=timedelta(hours=1))
         for start, (imp, exp) in sorted(merged.items())
     ]
+
+
+def _ordered_segments(segments: Sequence[Segment]) -> list[Segment]:
+    if not segments:
+        raise DataError("a bill needs at least one segment")
+    ordered = sorted(segments, key=lambda s: s.period.start)
+    for earlier, later in pairwise(ordered):
+        if later.period.start <= earlier.period.end:
+            raise DataError(
+                f"segments overlap: {earlier.period.start}..{earlier.period.end} and "
+                f"{later.period.start}..{later.period.end}. Overlapping segments would "
+                f"price the same day twice"
+            )
+    return ordered
+
+
+@dataclass(frozen=True, slots=True)
+class Segment:
+    """One stretch of a cycle, priced under its own configuration.
+
+    A cycle is not always billed under a single tariff. When an account changes
+    schedule mid-cycle -- or interconnects solar, which closes one service
+    agreement and opens another -- the utility prices each stretch separately
+    and prints them as separate blocks on one statement.
+    """
+
+    config: Config
+    period: BillingPeriod
+
+
+def price_segments(
+    segments: Sequence[Segment],
+    readings: Iterable[IntervalReading],
+    *,
+    check: bool = True,
+) -> list[Bill]:
+    """One bill per segment, unmerged.
+
+    Kept separate from :func:`compute_segments` because export credits do not
+    cross a service agreement. A cycle where solar was interconnected carries a
+    closed agreement and a new one, and the utility applies the new agreement's
+    export credits only against its own charges -- on 2026-07-07 it spends 2.18
+    against the Solar Billing Plan's charges and nothing against the closed
+    agreement's 0.94, which predates Permission To Operate and has no export
+    arrangement at all. A ledger run over the merged bill spends them against
+    both and overstates what was applied.
+    """
+    ordered = _ordered_segments(segments)
+    readings = list(readings)
+    return [
+        BillEngine(RateEngine(segment.config)).compute(readings, segment.period, check=check)
+        for segment in ordered
+    ]
+
+
+def compute_segments(
+    segments: Sequence[Segment],
+    readings: Iterable[IntervalReading],
+    *,
+    check: bool = True,
+) -> Bill:
+    """Price one cycle that more than one configuration governs.
+
+    Each segment is priced by its own engine over its own dates and the results
+    are added, because that is what the utility does: a mid-cycle schedule
+    change produces two blocks on one statement, not a blended rate.
+
+    Refusing this case and demanding a single ``Config`` was the wrong shape.
+    The months worth checking most are exactly the ones where something changed,
+    and a harness that skips them checks only the quiet months.
+    """
+    ordered = _ordered_segments(segments)
+    readings = list(readings)
+    whole = BillingPeriod(ordered[0].period.start, ordered[-1].period.end)
+
+    imports: dict[str, float] = {}
+    exports: dict[str, float] = {}
+    fixed: dict[str, float] = {}
+    buckets: dict[tuple[Season, TouPeriod], UsageBucket] = {}
+    warnings: list[str] = []
+    complete = True
+
+    for segment, part in zip(ordered, price_segments(ordered, readings, check=check), strict=True):
+        for target, source in (
+            (imports, part.import_components),
+            (exports, part.export_components),
+            (fixed, part.fixed_components),
+        ):
+            for key, value in source.items():
+                target[key] = target.get(key, 0.0) + value
+
+        for bucket in part.buckets:
+            slot = (bucket.season, bucket.period)
+            running = buckets.get(slot)
+            buckets[slot] = UsageBucket(
+                season=bucket.season,
+                period=bucket.period,
+                imported=(running.imported if running else 0.0) + bucket.imported,
+                exported=(running.exported if running else 0.0) + bucket.exported,
+                import_charge=(running.import_charge if running else 0.0) + bucket.import_charge,
+                export_credit=(running.export_credit if running else 0.0) + bucket.export_credit,
+            )
+
+        # Attributed, because "no tax vintage covers 3 days" is a different
+        # problem depending on which tariff was in force when it happened.
+        warnings.extend(
+            f"{segment.period.start}..{segment.period.end} ({segment.config.tariff}): {warning}"
+            for warning in part.warnings
+        )
+        complete = complete and part.complete
+
+    return Bill(
+        period=whole,
+        buckets=tuple(buckets.values()),
+        import_components=imports,
+        export_components=exports,
+        fixed_components=fixed,
+        warnings=tuple(warnings),
+        complete=complete,
+    )

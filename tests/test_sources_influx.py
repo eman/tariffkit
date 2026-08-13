@@ -9,7 +9,7 @@ that keeps a sparse sample from shoving energy forward over a TOU boundary.
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -341,3 +341,61 @@ class TestReadCounters:
     def test_nonpositive_resolution_is_rejected(self, settings: influx.InfluxSettings) -> None:
         with pytest.raises(ConfigError, match="positive"):
             influx.read_counters(settings, at(0), at(1), resolution=timedelta(0))
+
+
+class TestSmearedGaps:
+    """A gap wide enough to cross a rate boundary is marked, not hidden.
+
+    The total over a window is exact whatever the sampling, because a cumulative
+    counter only depends on its endpoints. The *shape* is not, and a time-of-use
+    tariff prices the shape. Spreading a three-day outage evenly gives peak
+    hours their share of the clock -- five in twenty-four -- rather than their
+    share of the load, which on a real cycle was 6.9 kWh in the wrong bucket and
+    about $0.15 on a bill whose total was exact to 0.05 kWh.
+
+    Nothing detected it, because spreading *fills* every interval: the coverage
+    check saw a complete series.
+    """
+
+    @staticmethod
+    def _samples(spacing: timedelta, count: int, rate: float) -> list[tuple[datetime, float]]:
+        start = datetime(2026, 3, 2, tzinfo=UTC)
+        return [
+            (start + spacing * i, rate * (spacing.total_seconds() / 3600) * i) for i in range(count)
+        ]
+
+    def test_dense_sampling_is_not_marked(self) -> None:
+        from nem_rates.sources.influx import _per_interval
+
+        samples = self._samples(timedelta(minutes=5), 25, rate=1.0)
+        start = samples[0][0]
+        _, smeared = _per_interval(samples, start, start + timedelta(hours=2), timedelta(hours=1))
+        assert smeared == set()
+
+    def test_a_multi_hour_gap_marks_every_interval_it_spans(self) -> None:
+        from nem_rates.sources.influx import _per_interval
+
+        start = datetime(2026, 3, 2, tzinfo=UTC)
+        samples = [(start, 0.0), (start + timedelta(hours=4), 8.0)]
+        totals, smeared = _per_interval(
+            samples, start, start + timedelta(hours=4), timedelta(hours=1)
+        )
+        # The energy is still all there -- only its distribution is a guess.
+        assert sum(totals.values()) == pytest.approx(8.0)
+        assert len(smeared) == 4
+
+    def test_the_coverage_check_reports_it(self) -> None:
+        from nem_rates.billing import BillingPeriod, IntervalReading
+        from nem_rates.billing.netting import check_coverage
+
+        period = BillingPeriod(date(2026, 3, 2), date(2026, 3, 2))
+        readings = [
+            IntervalReading(
+                start=datetime(2026, 3, 2, hour, tzinfo=UTC),
+                imported=1.0,
+                estimated=hour < 4,
+            )
+            for hour in range(24)
+        ]
+        problems = list(check_coverage(readings, period))
+        assert any("reconstructed across gaps" in problem for problem in problems)
