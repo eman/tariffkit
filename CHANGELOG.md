@@ -5,6 +5,17 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+- **Python 3.14 is now the minimum.** Support for 3.11, 3.12 and 3.13 is
+  dropped, and the CI matrix that spanned them is replaced by a single 3.14 job
+  -- it had never tested the version this is developed on, so a regression could
+  only be caught on versions nobody runs.
+
+  For Home Assistant users this raises the floor to **2026.3.0**, the first
+  release built on Python 3.14; `hacs.json` is updated to match. On an earlier
+  Home Assistant the integration installs and then fails setup, because pip
+  cannot satisfy the requirement.
+
 ### Added
 - **`nem-rates regen tax`** and the California Energy Resources (Electrical
   Energy) Surcharge, read from CDTFA's numbered notices. A state tax rather than
