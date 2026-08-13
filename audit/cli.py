@@ -264,7 +264,7 @@ def _reconcile(
     from nem_rates.sources.influx import InfluxSettings, read_counters
 
     from .account import AccountHistory, check_against_statement
-    from .reconcile import reconcile, render_all
+    from .reconcile import reconcile, render_all, render_summary
     from .sources import compare_sources, window
     from .statements import read_statement
 
@@ -272,6 +272,7 @@ def _reconcile(
     settings = InfluxSettings.load()
 
     results = []
+    skipped: list[str] = []
     worst = EXIT_OK
     for path in paths:
         # Per statement, not per run. PG&E has redesigned the statement at least
@@ -282,6 +283,7 @@ def _reconcile(
             statement = read_statement(path)
         except AuditError as exc:
             print(f"{path.name}: {exc}")
+            skipped.append(f"{path.name}: {exc}")
             worst = EXIT_ERROR
             continue
 
@@ -293,6 +295,7 @@ def _reconcile(
             print(f"{path.name}: the statement did not survive its own checks")
             for problem in problems:
                 print(f"  {problem}")
+            skipped.append(f"{path.name}: {problems[0]}")
             worst = EXIT_ERROR
             continue
 
@@ -302,6 +305,7 @@ def _reconcile(
             print(f"{path.name}: the configured account does not describe this statement")
             for problem in stale:
                 print(f"  {problem}")
+            skipped.append(f"{path.name}: {stale[0]}")
             worst = EXIT_ERROR
             continue
 
@@ -334,6 +338,8 @@ def _reconcile(
         print(json.dumps([result.to_dict() for result in results], indent=2))
     elif results:
         print(render_all(results, verbose=verbose))
+        print()
+        print(render_summary(results, skipped=skipped))
 
     if any(not result.ok for result in results):
         worst = max(worst, EXIT_MISMATCH)

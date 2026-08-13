@@ -110,3 +110,65 @@ def render_all(results: Sequence[Reconciliation], *, verbose: bool = False) -> s
     reconciled = sum(1 for result in results if result.ok)
     blocks.append(f"\n{reconciled}/{len(results)} statement(s) reconciled")
     return "\n\n".join(blocks)
+
+
+def render_summary(results: Sequence[Reconciliation], *, skipped: Sequence[str] = ()) -> str:
+    """One line per cycle, for reading a year at a glance.
+
+    Compares electric charges rather than the amount due, because the amount
+    due includes gas and summary-level credits that nothing here prices. Against
+    the amount due, a cycle that reconciles line by line can show a $54 gap.
+    """
+    header = (
+        f"{'period':<25}{'days':>5}  {'schedule':<14}"
+        f"{'billed':>10}{'computed':>10}{'delta':>9}  {'kWh':>8}  verdict"
+    )
+    rows = [header, "-" * len(header)]
+
+    billed_total = computed_total = kwh_total = 0.0
+    for result in sorted(results, key=lambda r: r.statement.period.start):
+        statement = result.statement
+        billed = statement.electric_charges
+        computed = result.bill.total
+        kwh = statement.billed_kwh or 0.0
+        billed_total += billed
+        computed_total += computed
+        kwh_total += kwh
+
+        supplier = ""
+        if result.config.cca is not None:
+            supplier = f"/{result.config.cca.name or result.config.cca.rate_card}"
+        schedule = f"{result.config.tariff}{supplier}"
+
+        if result.ok:
+            verdict = "ok"
+        else:
+            counts = []
+            mismatches = sum(1 for c in result.failures if c.outcome is Outcome.MISMATCH)
+            unmapped = len(result.failures) - mismatches
+            if mismatches:
+                counts.append(f"{mismatches} mismatch")
+            if unmapped:
+                counts.append(f"{unmapped} unmapped")
+            verdict = ", ".join(counts) or "failed"
+
+        span = f"{statement.period.start}..{statement.period.end:%m-%d}"
+        rows.append(
+            f"{span:<25}"
+            f"{statement.period.days:>5}  {schedule:<14}"
+            f"{billed:>10,.2f}{computed:>10,.2f}{computed - billed:>+9.2f}  {kwh:>8,.0f}  {verdict}"
+        )
+
+    rows.append("-" * len(header))
+    rows.append(
+        f"{f'{len(results)} cycles':<25}{'':>5}  {'':<14}"
+        f"{billed_total:>10,.2f}{computed_total:>10,.2f}"
+        f"{computed_total - billed_total:>+9.2f}  {kwh_total:>8,.0f}  "
+        f"{sum(1 for r in results if r.ok)}/{len(results)} reconciled"
+    )
+    # Named, not merely counted. A statement that was never priced is not a
+    # statement that agreed, and a summary that quietly omits it reads as
+    # fuller coverage than there was.
+    for note in skipped:
+        rows.append(f"  not checked: {note}")
+    return "\n".join(rows)

@@ -161,6 +161,19 @@ class Statement:
                 seen.append(line.subperiod)
         return tuple(seen)
 
+    @property
+    def electric_charges(self) -> float:
+        """The part of the bill this library is actually pricing.
+
+        The amount due is not comparable to a computed total: it carries gas,
+        and it carries summary-level credits like the California Climate Credit
+        that are not per-cycle charges. On 2025-11 those two make the difference
+        between $213.89 and $268.13 -- a statement that reconciles line by line
+        while the headline figures look $54 apart, which reads as a failure and
+        is not one.
+        """
+        return self.amount_due - (self.gas_charges or 0.0) - (self.electric_adjustments or 0.0)
+
     def self_check(self) -> list[str]:
         """Problems with the parse itself, independent of any computed bill.
 

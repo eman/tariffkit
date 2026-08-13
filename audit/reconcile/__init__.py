@@ -10,7 +10,7 @@ from .compare import (
     reconcile,
     unclaimed_components,
 )
-from .report import render, render_all
+from .report import render, render_all, render_summary
 from .tolerance import Tolerance
 
 __all__ = [
@@ -22,5 +22,6 @@ __all__ = [
     "reconcile",
     "render",
     "render_all",
+    "render_summary",
     "unclaimed_components",
 ]
