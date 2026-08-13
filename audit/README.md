@@ -115,32 +115,29 @@ the check could not be performed.
 
 ## What does not reconcile yet
 
-Over 2025-08 to 2026-08: **13 cycles, all priced, 7 reconciled clean**, and the
-year's computed total is $1.81 from the billed one across $3,104. The rest are
-listed here rather than tolerated, because a harness that widens a tolerance
-until it agrees is worth nothing.
+Over 2025-08 to 2026-08: **13 cycles, all priced, 9 reconciled clean**, and the
+year's computed total is $0.88 from the billed one across $3,104. Statements
+before November 2025 carry no text at all and are recovered by recognising the
+rendered pages -- see `statements/ocr.py`, and `pge/PORTAL.md` for why.
 
-**Statements before November 2025 carry no text at all** -- Type 3 glyphs whose
-ToUnicode map calls most of them spaces -- and are recovered by rendering and
-recognising the pages. See `statements/ocr.py`. Recognition is gated by
-`self_check`: a bill prints its totals twice, so a misread digit almost always
-breaks the arithmetic between the two, and a reading that does not add up is
-never priced.
+Four cycles still carry findings. They are listed rather than tolerated,
+because a harness that widens a tolerance until it agrees is worth nothing.
 
-**MCE generation on 2025 summer cycles is priced from a 2023 rate card.** MCE
-publishes only its current card and files no advice letters, so superseded
-vintages cannot be regenerated. `versioned.load` takes the latest vintage on or
-before the date, which is right for a tariff and indistinguishable from "the
-vintage that applied was never vendored". The bill now says which it is doing
-and how old the card is; it is worth about $0.36 on a $111 generation line, and
-it is the larger part of the two 2025 summer mismatches.
+**MCE generation on the two 2025 summer cycles, about $0.36 each.** MCE
+publishes only its current rate card and files no advice letters, so the
+vintage that actually applied cannot be regenerated -- `regen cca --provider
+mce --for-date` fails outright. `audit doctor` reports the card as 943 and 1125
+days older than the cycles it prices, and the bill repeats it, so this arrives
+as a named data gap rather than as an unexplained discrepancy. It is the larger
+part of both cycles' difference.
 
-**Two EV2-A cycles are out by +0.23 and +0.12** on Distribution + Public Purpose
-Programs. The evidence points at PG&E's own allocation: on 2026-06 it charges a
-Base Services Charge of 25.39 and its breakdown accounts for 25.28 of it. A
-hypothesis until a third cycle agrees, so the mismatch is left visible.
+**Distribution on those same two cycles, about $0.16 each.** Not a stale
+vintage: `regen tariff --provider etouc --for-date 2025-07-01` resolves to the
+filing already vendored, and its cells reconcile against the published totals.
+Unexplained.
 
-**The two Solar Billing Plan cycles are out by -0.94 and -0.03.** The last cent
-on 2026-08 is the Energy Commission Tax: the statement bills it on net
-consumption, which was zero, while the engine bills it on metered imports.
-Visible only now that there is export to net against.
+**Two EV2-A cycles, +0.23 and +0.12** on Distribution + Public Purpose
+Programs. The evidence points at PG&E's own allocation rather than at the
+tariff: on 2026-06 it charges a Base Services Charge of 25.39 and its breakdown
+accounts for 25.28 of it. A hypothesis until a third cycle agrees, so the
+mismatch stays visible.
