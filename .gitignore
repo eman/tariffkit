@@ -11,6 +11,11 @@ venv/
 # One real account's tariff history. audit/account.example.toml is the template.
 audit/account.toml
 
+# Statements carry a name, an address, an account number and a year of usage.
+# They are read wherever they already sit and never committed; the audit tests
+# use synthetic fixtures instead. Downloads land in .cache/, ignored above.
+*.pdf
+
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

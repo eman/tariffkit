@@ -104,4 +104,8 @@ no_implicit_reexport = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
-markers = ["slowdata: requires the full upstream PG&E dataset"]
+markers = [
+  "slowdata: requires the full upstream PG&E dataset",
+  "statements: reads real statement PDFs, which are never committed",
+  "live: signs in to the PG&E portal; never run in CI",
+]
