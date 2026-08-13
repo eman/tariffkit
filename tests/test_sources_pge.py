@@ -1,0 +1,197 @@
+"""The portal client, against a faked transport.
+
+Nothing here touches the network or a credential. What is worth pinning is the
+protocol shape -- the portal is Salesforce Aura, not REST, and every call is one
+POST naming an Apex class and method -- and the handling of the ways it fails,
+since a session that has quietly expired returns a login page with status 200.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import date
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+pytest.importorskip("httpx")
+
+from nem_rates.errors import ConfigError
+from nem_rates.sources.pge import (
+    APEX_ACTION,
+    ENDPOINTS,
+    PgeSession,
+    PgeSettings,
+    PortalError,
+    parse_green_button,
+    read_green_button_download,
+)
+
+CSV = """TYPE,DATE,START TIME,END TIME,IMPORT (kWh),EXPORT (kWh)
+Electric usage,2026-01-01,00:00,00:59,1.5,0.0
+Electric usage,2026-01-01,01:00,01:59,2.5,0.0
+"""
+
+
+class FakeResponse:
+    def __init__(self, payload: Any, status: int = 200, content_type: str = "application/json"):
+        self.status_code = status
+        self.headers = {"content-type": content_type}
+        self._payload = payload
+        self.text = payload if isinstance(payload, str) else json.dumps(payload)
+
+    def json(self) -> Any:
+        if isinstance(self._payload, str):
+            raise ValueError("not json")
+        return self._payload
+
+
+class FakeClient:
+    """Stands in for httpx.Client, recording what was sent."""
+
+    def __init__(self, login_page: str = "", post: FakeResponse | None = None) -> None:
+        self.login_page = login_page or '{"fwuid":"ABC123","token":"' + "t" * 30 + '"}'
+        self.post_response = post
+        self.posts: list[dict[str, Any]] = []
+        self.cookies: dict[str, str] = {}
+
+    def get(self, path: str, **kwargs: Any) -> FakeResponse:
+        return FakeResponse(self.login_page, content_type="text/html")
+
+    def post(self, path: str, **kwargs: Any) -> FakeResponse:
+        self.posts.append({"path": path, **kwargs})
+        assert self.post_response is not None
+        return self.post_response
+
+    def close(self) -> None:
+        pass
+
+
+def session_with(client: FakeClient, tmp_path: Path) -> PgeSession:
+    settings = PgeSettings(username="u", password="p", cookie_path=tmp_path / "cookies.json")
+    session = PgeSession(settings)
+    session._client = client  # type: ignore[assignment]
+    return session
+
+
+class TestSettings:
+    def test_credentials_come_from_the_environment(self, monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        monkeypatch.setenv("PGE_USERNAME", "someone@example.invalid")
+        monkeypatch.setenv("PGE_PASSWORD", "hunter2")
+        settings = PgeSettings.load(dotenv_path=tmp_path / "absent.env")
+        assert settings.username == "someone@example.invalid"
+
+    def test_a_missing_credential_says_where_to_put_it(self, monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        monkeypatch.delenv("PGE_USERNAME", raising=False)
+        monkeypatch.delenv("PGE_PASSWORD", raising=False)
+        with pytest.raises(ConfigError, match="PGE_USERNAME"):
+            PgeSettings.load(dotenv_path=tmp_path / "absent.env")
+
+    def test_the_password_stays_out_of_the_repr(self) -> None:
+        # dataclass frames are rendered in tracebacks, so a password in the
+        # repr ends up in any bug report that includes one.
+        settings = PgeSettings(username="u", password="s3cret")
+        assert "s3cret" not in repr(settings)
+
+
+class TestProtocol:
+    def test_the_framework_id_is_read_fresh_from_the_portal(self, tmp_path: Path) -> None:
+        # fwuid changes on each Salesforce release; a stored one fails in a way
+        # that looks like a broken endpoint rather than a stale constant.
+        session = session_with(FakeClient(), tmp_path)
+        fwuid, token = session.bootstrap()
+        assert fwuid == "ABC123"
+        assert len(token) >= 20
+
+    def test_a_login_page_without_a_bootstrap_is_named_as_such(self, tmp_path: Path) -> None:
+        session = session_with(FakeClient(login_page="<html>maintenance</html>"), tmp_path)
+        with pytest.raises(PortalError, match="not the Aura bootstrap"):
+            session.bootstrap()
+
+    def test_an_apex_call_names_a_class_and_method(self, tmp_path: Path) -> None:
+        client = FakeClient(
+            post=FakeResponse({"actions": [{"state": "SUCCESS", "returnValue": {"ok": 1}}]})
+        )
+        session = session_with(client, tmp_path)
+        assert session.apex("bill_pdf", {"billidfrombillhistory": "abc"}) == {"ok": 1}
+
+        sent = client.posts[0]["data"]
+        message = json.loads(sent["message"])
+        action = message["actions"][0]
+        assert action["descriptor"] == APEX_ACTION
+        assert action["params"]["classname"] == "MyAcct_DownloadBillPdf"
+        assert action["params"]["method"] == "httpCalloutDownloadBill"
+        assert action["params"]["params"] == {"billidfrombillhistory": "abc"}
+        # The context and CSRF token travel with every call.
+        assert json.loads(sent["aura.context"])["fwuid"] == "ABC123"
+        assert sent["aura.token"]
+
+    def test_html_where_json_was_expected_is_explained(self, tmp_path: Path) -> None:
+        # The shape of an expired session: status 200, but a login page.
+        client = FakeClient(post=FakeResponse("<html>sign in</html>", content_type="text/html"))
+        session = session_with(client, tmp_path)
+        with pytest.raises(PortalError, match="expected JSON"):
+            session.apex("session_check")
+
+    def test_an_apex_error_is_surfaced(self, tmp_path: Path) -> None:
+        client = FakeClient(
+            post=FakeResponse(
+                {"actions": [{"state": "ERROR", "error": [{"message": "no such bill"}]}]}
+            )
+        )
+        session = session_with(client, tmp_path)
+        with pytest.raises(PortalError, match="no such bill"):
+            session.apex("bill_pdf", {"billidfrombillhistory": "nope"})
+
+    def test_an_unconfirmed_endpoint_says_so_when_it_fails(self, tmp_path: Path) -> None:
+        # An endpoint inferred rather than observed is not a bug, but a failure
+        # against one should point at itself first.
+        client = FakeClient(post=FakeResponse("<html>", content_type="text/html"))
+        session = session_with(client, tmp_path)
+        with pytest.raises(PortalError, match="never been confirmed"):
+            session.apex("login", {"username": "u", "password": "p"})
+
+    def test_an_unknown_endpoint_is_refused(self, tmp_path: Path) -> None:
+        session = session_with(FakeClient(), tmp_path)
+        with pytest.raises(PortalError, match="unknown endpoint"):
+            session.apex("teleport")
+
+    def test_a_live_session_is_detected_without_raising(self, tmp_path: Path) -> None:
+        client = FakeClient(
+            post=FakeResponse({"actions": [{"state": "SUCCESS", "returnValue": 1}]})
+        )
+        assert session_with(client, tmp_path).signed_in() is True
+        dead = FakeClient(post=FakeResponse("<html>", content_type="text/html"))
+        assert session_with(dead, tmp_path).signed_in() is False
+
+
+class TestEndpointRegistry:
+    def test_every_endpoint_records_whether_it_was_observed(self) -> None:
+        # The registry is the memory of what was actually seen, so a future
+        # reader can tell a confirmed action from an educated guess.
+        assert {name for name, e in ENDPOINTS.items() if e.captured} >= {
+            "session_check",
+            "bill_pdf",
+        }
+        assert ENDPOINTS["login"].captured is False
+
+
+class TestGreenButton:
+    def test_downloaded_text_parses_exactly_like_a_file(self, tmp_path: Path) -> None:
+        # The whole reason the download is a separate concern from the format:
+        # there must be exactly one parser, and this is what pins that.
+        from nem_rates.sources import read_green_button
+
+        path = tmp_path / "gb.csv"
+        path.write_text(CSV, encoding="utf-8")
+        assert parse_green_button(CSV) == read_green_button(path)
+
+    def test_the_uncaptured_download_refuses_rather_than_guessing(self) -> None:
+        # Every call to this portal names an Apex class and method, and that
+        # pair can only be read off a live session. Inventing one would fail at
+        # runtime with a message about the portal rather than about us.
+        with pytest.raises(PortalError, match="has not been captured"):
+            read_green_button_download(
+                PgeSettings(username="u", password="p"), date(2026, 1, 1), date(2026, 1, 31)
+            )

@@ -485,6 +485,9 @@ influx = [
 mqtt = [
     { name = "paho-mqtt" },
 ]
+pge = [
+    { name = "httpx" },
+]
 regen = [
     { name = "pypdf" },
 ]
@@ -499,9 +502,10 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "httpx", marker = "extra == 'fetch'", specifier = ">=0.27" },
     { name = "httpx", marker = "extra == 'influx'", specifier = ">=0.27" },
+    { name = "httpx", marker = "extra == 'pge'", specifier = ">=0.27" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "nem-rates", extras = ["all"], marker = "extra == 'dev'" },
-    { name = "nem-rates", extras = ["cli", "mqtt", "web", "fetch", "ha", "influx", "regen"], marker = "extra == 'all'" },
+    { name = "nem-rates", extras = ["cli", "mqtt", "web", "fetch", "ha", "influx", "pge", "regen"], marker = "extra == 'all'" },
     { name = "paho-mqtt", marker = "extra == 'mqtt'", specifier = ">=2.0" },
     { name = "pypdf", marker = "extra == 'regen'", specifier = ">=4.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
@@ -510,7 +514,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'web'", specifier = ">=0.29" },
     { name = "websockets", marker = "extra == 'ha'", specifier = ">=12" },
 ]
-provides-extras = ["cli", "mqtt", "web", "fetch", "ha", "influx", "regen", "all", "dev"]
+provides-extras = ["cli", "mqtt", "web", "fetch", "ha", "influx", "pge", "regen", "all", "dev"]
 
 [[package]]
 name = "packaging"

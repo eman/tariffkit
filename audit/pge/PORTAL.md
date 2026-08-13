@@ -37,10 +37,27 @@ the page at session start, never hardcoded. `aura.token` likewise.
 | Session/guest check | `MyAcct_SessionValidatorController.isGuestUserCheck` | — |
 | Download one bill PDF | `MyAcct_DownloadBillPdf.httpCalloutDownloadBill` | `billidfrombillhistory` |
 
-The bill *list* action was not captured: the table is fetched once on page load
-and paginates client-side, so hooking XHR after load never sees it. To capture
-it, install the hook (below) and then reload with the devtools open, or use a
-`document_start` content script.
+Two actions are still missing, both for the same reason — the hook has to be
+installed *before* the call happens, and both happen at moments that are awkward
+to get in front of.
+
+**The bill list.** Fetched once when `/s/bill-and-payment-history` loads, then
+paginated client-side, so hooking XHR after load never sees it. Install the hook
+below and reload with devtools open, or use a `document_start` content script.
+
+**Green Button download.** On `/s/usageandconsumption-homepage`, scroll to
+"Download your data" and click the Green Button control. Findings so far:
+
+* Opening the panel issues **no server call at all** — it is pure client state.
+  The request only happens when the date range is submitted, so the hook must
+  survive until then, and clicking "Download my data" alone captures nothing.
+* The panel's controls are not reachable from the page's DOM, including a
+  recursive walk through open shadow roots across all ~4,300 nodes. It is a
+  Lightning Web Component with a closed shadow root, so it has to be driven by
+  real clicks rather than by script.
+* The only iframe on the page is Medallia's feedback widget, not the usage tool.
+
+So: open the panel, install the hook, *then* pick a date range and submit.
 
 ## The finding that matters
 
