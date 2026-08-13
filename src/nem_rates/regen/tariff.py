@@ -764,7 +764,7 @@ def _pcia_from_earlier_filing(
     for _, entry in reversed(earlier):
         try:
             pages = pages_for_schedule(read_pages(root / f"{entry.number}.pdf"), sheet)
-        except (ExtractionError, FileNotFoundError, OSError):
+        except ExtractionError, FileNotFoundError, OSError:
             continue
         table = extract_pcia(pages)
         if table:
@@ -831,7 +831,7 @@ def _franchise_fees(
             found = franchise.extract(pages)
             if found:
                 return found, entry.number
-        except (ExtractionError, FileNotFoundError, OSError):
+        except ExtractionError, FileNotFoundError, OSError:
             pass
 
     try:
@@ -847,7 +847,7 @@ def _franchise_fees(
             ),
             "the current E-FFS sheet",
         )
-    except (ExtractionError, OSError):
+    except ExtractionError, OSError:
         # Not fatal, and that includes an unwritable cache: the retail rates are
         # the point of this dataset and the previous snapshot's fees are still
         # the last known-good ones, so a full disk should not stop a rate

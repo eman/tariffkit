@@ -8,17 +8,16 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - run: uv python install ${{ matrix.python-version }}
-      - run: uv sync --all-extras --python ${{ matrix.python-version }}
+      # One version, matching `requires-python`. The matrix used to span 3.11
+      # to 3.13 and never tested the version actually developed against, so a
+      # regression could only be found on a version nobody runs.
+      - run: uv python install 3.14
+      - run: uv sync --all-extras --python 3.14
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy

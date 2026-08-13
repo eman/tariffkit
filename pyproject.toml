@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Real-time and forecast import/export electricity prices for PG&E E-ELEC under NEM 3.0 (Net Billing Tariff)"
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 keywords = ["pge", "nem3", "net-billing-tariff", "solar", "battery", "home-assistant", "energy", "tariff"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -16,9 +16,7 @@ classifiers = [
     "Intended Audience :: End Users/Desktop",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Home Automation",
     "Typing :: Typed",
 ]
@@ -62,7 +60,7 @@ include = ["/src", "/tests", "/README.md", "/LICENSE", "/CHANGELOG.md"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py314"
 src = ["src", "tests"]
 
 [tool.ruff.lint.isort]
@@ -82,7 +80,7 @@ ignore = ["A003"]
 "custom_components/*" = ["A002", "N805"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.14"
 strict = true
 warn_unreachable = true
 # `audit/` is checked as strictly as the package. It is not shipped, but it is a
