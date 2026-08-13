@@ -115,36 +115,32 @@ the check could not be performed.
 
 ## What does not reconcile yet
 
-Current state over 2025-11 to 2026-08: **10 cycles available, 9 priced, 6
-reconciled clean**. The rest are listed here rather than tolerated, because a
-harness that quietly widens a tolerance until it agrees is worth nothing.
+Over 2025-08 to 2026-08: **13 cycles, all priced, 7 reconciled clean**, and the
+year's computed total is $1.81 from the billed one across $3,104. The rest are
+listed here rather than tolerated, because a harness that widens a tolerance
+until it agrees is worth nothing.
 
-**Statements before November 2025 cannot be read at all**, so a full twelve
-months is not reachable from PDFs. They use Type 3 fonts whose `ToUnicode` map
-declares ~56% of glyphs to be U+0020; pypdf and poppler agree, and only OCR
-would recover them. See `pge/PORTAL.md`.
+**Statements before November 2025 carry no text at all** -- Type 3 glyphs whose
+ToUnicode map calls most of them spaces -- and are recovered by rendering and
+recognising the pages. See `statements/ocr.py`. Recognition is gated by
+`self_check`: a bill prints its totals twice, so a misread digit almost always
+breaks the arithmetic between the two, and a reading that does not add up is
+never priced.
 
-**2026-07 covers two service agreements** — EV2A closed and E-ELEC opened when
-solar was interconnected on 2026-06-03 — so no single `Config` prices it. It is
-refused rather than guessed, the same way `versioned.load` refuses to borrow a
-vintage.
+**MCE generation on 2025 summer cycles is priced from a 2023 rate card.** MCE
+publishes only its current card and files no advice letters, so superseded
+vintages cannot be regenerated. `versioned.load` takes the latest vintage on or
+before the date, which is right for a tariff and indistinguishable from "the
+vintage that applied was never vendored". The bill now says which it is doing
+and how old the card is; it is worth about $0.36 on a $111 generation line, and
+it is the larger part of the two 2025 summer mismatches.
 
-**The Solar Billing Plan cycle (2026-08) is out by +7.97 on Distribution +
-Public Purpose Programs**, and the cause is known: `6.25 + 1.71 = 7.96`, the two
-export credits. That statement's unbundled breakdown *nets* export credits into
-the delivery categories, while the reconciler also maps them to their own
-delivery-detail lines, so the same dollars are counted twice. Fixing it means
-teaching the map that the breakdown is post-credit under SBP.
+**Two EV2-A cycles are out by +0.23 and +0.12** on Distribution + Public Purpose
+Programs. The evidence points at PG&E's own allocation: on 2026-06 it charges a
+Base Services Charge of 25.39 and its breakdown accounts for 25.28 of it. A
+hypothesis until a third cycle agrees, so the mismatch is left visible.
 
-Its two remaining unmapped lines are a real modelling gap, not a missing rule:
-under a CCA on the Solar Billing Plan, export credits appear **twice**, once
-from PG&E and once from MCE, and this library models only the utility side.
-
-**Two cycles are out by a rounding-sized amount on the same line** — 2026-03 by
-+0.18 and 2026-06 by +0.11 — while every other line on them reconciles to the
-cent. The evidence points at PG&E's own allocation rather than at the tariff: on
-2026-06 the utility charges a Base Services Charge of 25.39 and its breakdown
-accounts for 25.28 of it (Distribution 21.04 less our 5.70 of distribution, plus
-Public Purpose Programs 10.38 less our 0.44), leaving exactly the 0.11. The
-allocation across printed categories does not sum to the charge. That is a
-hypothesis until a third cycle confirms it, so the mismatch is left visible.
+**The two Solar Billing Plan cycles are out by -0.94 and -0.03.** The last cent
+on 2026-08 is the Energy Commission Tax: the statement bills it on net
+consumption, which was zero, while the engine bills it on metered imports.
+Visible only now that there is export to net against.

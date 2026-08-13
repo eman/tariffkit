@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from itertools import pairwise
 
+from ..cca import load_rate_card
 from ..config import Config
 from ..engine import RateEngine
 from ..errors import DataError
@@ -131,6 +132,10 @@ class BillEngine:
                 f"so the total is understated. Run `nem-rates regen tax`."
             )
 
+        stale = self._stale_rate_card(period)
+        if stale:
+            warnings.append(stale)
+
         credit = self._baseline_credit(in_period, period)
         if credit:
             import_components["baseline_credit"] = credit
@@ -199,6 +204,41 @@ class BillEngine:
                 continue
             total += imported * rate
         return total, uncovered
+
+    #: How far a CCA rate card may predate a cycle before it is worth saying so.
+    #: A CCA reprices at least annually, so a card more than a year older than
+    #: the energy it is pricing is being *borrowed*, not merely still in force.
+    STALE_CARD = timedelta(days=400)
+
+    def _stale_rate_card(self, period: BillingPeriod) -> str:
+        """Whether the CCA generation was priced from a much older rate card.
+
+        `versioned.load` takes the latest vintage on or before the date, which
+        is right for a tariff -- a rate stays in force until superseded. It is
+        indistinguishable, though, from "nobody vendored the vintage that was
+        actually in force", and the two are worlds apart: the first is correct,
+        the second silently prices 2025 energy at 2023 rates.
+
+        This cannot tell them apart either. It can say how old the card is and
+        let the reader judge, which is the whole difference between a number
+        that is wrong and a number that is wrong and says nothing.
+        """
+        cca = self.rates.config.cca
+        if cca is None or cca.rate_card is None or cca.generation_rates:
+            return ""
+        try:
+            card = load_rate_card(cca.rate_card, period.end)
+        except DataError:
+            return ""
+        age = period.end - card.effective
+        if age <= self.STALE_CARD:
+            return ""
+        return (
+            f"{cca.rate_card.upper()} generation priced from the rate card effective "
+            f"{card.effective}, {age.days} days before this cycle ended. Either the "
+            f"provider did not reprice in between, or the vintage that applied was "
+            f"never vendored -- and nothing here can tell those apart"
+        )
 
     def _baseline_credit(self, readings: Sequence[IntervalReading], period: BillingPeriod) -> float:
         """Credit on imports falling within the cycle's baseline allowance.
