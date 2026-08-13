@@ -213,7 +213,7 @@ class RetailTariff:
             if str(period) in rates:
                 components["cca_generation"] = float(rates[str(period)])
             elif cca.rate_card is not None:
-                card = load_rate_card(cca.rate_card)
+                card = load_rate_card(cca.rate_card, moment.date())
                 components["cca_generation"] = card.generation(
                     self.config.tariff, str(season), str(period), cca.option
                 )
@@ -257,8 +257,15 @@ class RetailTariff:
 
         The CARE/FERA reduction is already baked into the tier 1 and tier 2
         amounts, so the percentage discount is not applied again here.
+
+        Zero when the vintage being priced has no such charge. AB 205's charge
+        began on 2026-03-01; before it, E-TOU-C and EV2-A had no daily fixed
+        charge at all, and E-ELEC had a single flat per-meter rate. A snapshot
+        from then carries no table, and that absence is the correct answer
+        rather than a missing-data error.
         """
         snapshot = self.snapshot_for(moment)
-        return float(
-            snapshot.raw["base_services_charge"][f"tier_{self.config.base_services_charge_tier}"]
-        )
+        table = snapshot.raw.get("base_services_charge")
+        if not table:
+            return 0.0
+        return float(table[f"tier_{self.config.base_services_charge_tier}"])

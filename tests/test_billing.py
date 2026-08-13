@@ -140,8 +140,10 @@ class TestStatementReconciliation:
         assert bill.exported_kwh == pytest.approx(180.68)
 
     def test_totals_sum_consistently(self, bill) -> None:  # type: ignore[no-untyped-def]
+        # Taxes are per-kWh but are not energy charges: a statement prints them
+        # on their own line and does not total them with the energy lines.
         assert bill.total == pytest.approx(
-            bill.energy_charges + bill.export_credits + bill.fixed_charges
+            bill.energy_charges + bill.taxes + bill.export_credits + bill.fixed_charges
         )
 
     def test_pricing_confidence_is_separate_from_coverage(self, bill) -> None:  # type: ignore[no-untyped-def]
@@ -348,3 +350,171 @@ class TestGreenButtonRoundTrip:
         bill = engine().compute(readings, BillingPeriod(date(2026, 7, 6), date(2026, 7, 6)))
         assert bill.imported_kwh == pytest.approx(24.0)
         assert bill.energy_charges > 0
+
+
+class TestPeriodsWithoutExports:
+    """A cycle before interconnection has no net-billing arrangement.
+
+    PG&E's own export for the December 2025 cycle carries zero exported kWh in
+    all 2,880 intervals -- there was no export channel to meter. Demanding an
+    export rate for such a period refuses to price a bill over a question the
+    data never asks, and export-rate matrices only start at the customer's own
+    NBT vintage year.
+    """
+
+    def readings(self) -> list[IntervalReading]:
+        start = datetime(2025, 12, 30, tzinfo=PACIFIC)
+        return [
+            IntervalReading(
+                start=start + timedelta(hours=h),
+                imported=1.0,
+                exported=0.0,
+                duration=timedelta(hours=1),
+            )
+            for h in range(48)
+        ]
+
+    def test_a_cycle_with_no_exports_prices_before_the_export_vintage(self) -> None:
+        bill = engine().compute(
+            self.readings(), BillingPeriod(date(2025, 12, 30), date(2025, 12, 31)), check=False
+        )
+        assert sum(b.imported for b in bill.buckets) == pytest.approx(48.0)
+        assert bill.energy_charges > 0
+
+    def test_no_export_components_are_invented(self) -> None:
+        bill = engine().compute(
+            self.readings(), BillingPeriod(date(2025, 12, 30), date(2025, 12, 31)), check=False
+        )
+        assert bill.export_components == {}
+        assert all(b.exported == 0 for b in bill.buckets)
+
+
+class TestBaselineCreditAcrossARateChange:
+    """The credit rate is a daily quantity and can change inside a cycle.
+
+    The December 2025 statement prints exactly that: 19.40 kWh at $0.10084 for
+    its two December days and 281.30 kWh at $0.09566 for its twenty-nine January
+    ones. Reading one rate for the whole cycle applied December's to all 300.70
+    kWh and overstated the credit by $1.45.
+    """
+
+    def config(self) -> Config:
+        return Config(tariff="E-TOU-C", baseline_territory="X", baseline_code="basic")
+
+    def readings(self) -> list[IntervalReading]:
+        start = datetime(2025, 12, 30, tzinfo=PACIFIC)
+        return [
+            IntervalReading(
+                start=start + timedelta(hours=h),
+                imported=2.0,
+                exported=0.0,
+                duration=timedelta(hours=1),
+            )
+            for h in range(24 * 31)
+        ]
+
+    def test_each_day_is_credited_at_its_own_rate(self) -> None:
+        bill = BillEngine(RateEngine(self.config())).compute(
+            self.readings(), BillingPeriod(date(2025, 12, 30), date(2026, 1, 29)), check=False
+        )
+        credit = bill.import_components["baseline_credit"]
+        # 2 days x 9.7 @ 0.10084 + 29 days x 9.7 @ 0.09566
+        expected = -(2 * 9.7 * 0.10084 + 29 * 9.7 * 0.09566)
+        assert credit == pytest.approx(expected, abs=0.01)
+
+    def test_a_single_rate_for_the_cycle_would_be_wrong(self) -> None:
+        bill = BillEngine(RateEngine(self.config())).compute(
+            self.readings(), BillingPeriod(date(2025, 12, 30), date(2026, 1, 29)), check=False
+        )
+        naive = -(31 * 9.7 * 0.10084)  # December's rate applied throughout
+        assert abs(bill.import_components["baseline_credit"] - naive) > 1.0
+
+    def test_usage_below_the_allowance_caps_the_credit(self) -> None:
+        few = self.readings()[:24]  # one day of 2 kWh/h = 48 kWh
+        bill = BillEngine(RateEngine(self.config())).compute(
+            few, BillingPeriod(date(2025, 12, 30), date(2026, 1, 29)), check=False
+        )
+        # 48 kWh against a 300.7 kWh allowance: credited on 48, not 300.7. The
+        # 48 still spans days on both sides of the rate change, so it is not all
+        # at December's rate -- two days at 9.7 kWh @ 0.10084, the rest @ 0.09566.
+        expected = -(2 * 9.7 * 0.10084 + (48 - 2 * 9.7) * 0.09566)
+        assert bill.import_components["baseline_credit"] == pytest.approx(expected, abs=0.01)
+
+
+class TestEnergyCommissionTax:
+    """A statutory per-kWh surcharge, billed on the generation provider's page.
+
+    On a CCA account that is the CCA's page, which is how it went unmodelled
+    while every line on the utility's pages reconciled to the cent.
+    """
+
+    def readings(self) -> list[IntervalReading]:
+        start = datetime(2026, 1, 5, tzinfo=PACIFIC)
+        return [
+            IntervalReading(
+                start=start + timedelta(hours=h),
+                imported=10.0,
+                exported=0.0,
+                duration=timedelta(hours=1),
+            )
+            for h in range(24)
+        ]
+
+    def test_charged_per_kwh_imported(self) -> None:
+        bill = engine().compute(
+            self.readings(), BillingPeriod(date(2026, 1, 5), date(2026, 1, 5)), check=False
+        )
+        assert bill.import_components["energy_commission_tax"] == pytest.approx(240 * 0.0003)
+
+    def test_it_is_not_an_energy_charge(self) -> None:
+        # The July 2026 statement's six energy lines total $8.90 and its Energy
+        # Commission Tax prints separately, so this must not inflate that figure.
+        bill = engine().compute(
+            self.readings(), BillingPeriod(date(2026, 1, 5), date(2026, 1, 5)), check=False
+        )
+        assert "energy_commission_tax" not in {
+            k for k in bill.import_components if k in {"generation", "distribution"}
+        }
+        assert bill.energy_charges < sum(bill.import_components.values())
+
+    def test_but_it_is_in_the_total(self) -> None:
+        bill = engine().compute(
+            self.readings(), BillingPeriod(date(2026, 1, 5), date(2026, 1, 5)), check=False
+        )
+        assert bill.total == pytest.approx(
+            bill.energy_charges
+            + bill.import_components["energy_commission_tax"]
+            + bill.export_credits
+            + bill.fixed_charges
+        )
+
+    def test_days_with_no_tax_vintage_are_reported_not_dropped(self) -> None:
+        """A bill that quietly omits a tax is the plausible-but-wrong kind.
+
+        Exercised directly rather than through ``compute``: the tax and tariff
+        datasets both start 2025-01-01 today, so no date reaches the tax gap
+        without failing on the tariff first. That alignment is a coincidence of
+        what is vendored rather than a guarantee, so the behaviour is pinned
+        here even though nothing currently routes to it.
+        """
+        start = datetime(2020, 1, 5, tzinfo=PACIFIC)
+        readings = [
+            IntervalReading(
+                start=start + timedelta(hours=h),
+                imported=10.0,
+                exported=0.0,
+                duration=timedelta(hours=1),
+            )
+            for h in range(24)
+        ]
+        charge, uncovered = engine()._energy_surcharge(
+            readings, BillingPeriod(date(2020, 1, 5), date(2020, 1, 5))
+        )
+        assert charge == 0.0
+        assert uncovered == [date(2020, 1, 5)]
+
+    def test_a_covered_period_is_not_flagged(self) -> None:
+        bill = engine().compute(
+            self.readings(), BillingPeriod(date(2026, 1, 5), date(2026, 1, 5)), check=False
+        )
+        assert not any("energy surcharge vintage" in w for w in bill.warnings)

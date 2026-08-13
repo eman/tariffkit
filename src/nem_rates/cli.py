@@ -102,7 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
         "dataset",
         nargs="?",
         default="all",
-        choices=("all", "tariff", "accplus", "nsc", "cca", "export"),
+        choices=("all", "tariff", "accplus", "nsc", "cca", "tax", "export"),
         help="which dataset to rebuild (default: all)",
     )
     regen.add_argument(
@@ -121,12 +121,41 @@ def build_parser() -> argparse.ArgumentParser:
         help="report whether the vendored data is stale without writing anything",
     )
     regen.add_argument("--refresh", action="store_true", help="ignore the download cache")
+    regen.add_argument(
+        "--for-date",
+        type=date.fromisoformat,
+        metavar="YYYY-MM-DD",
+        help="rebuild the tariff vintage that was in force on this date, finding the "
+        "filing that adopted it",
+    )
+    regen.add_argument(
+        "--scan",
+        metavar="LO-HI",
+        help="advice-letter number range to index when resolving --for-date "
+        "(default 7500-7900); the index is cached",
+    )
+    regen.add_argument(
+        "--advice-letter",
+        metavar="NUMBER",
+        help="rebuild a superseded tariff vintage from the filing that adopted it "
+        "(e.g. 7797-E); the tariff book only serves what is current",
+    )
 
     serve = sub.add_parser("serve", help="run the REST API")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
 
     return parser
+
+
+def _scan_range(raw: str | None) -> tuple[int, int] | None:
+    """Parse a "LO-HI" advice-letter range."""
+    if not raw:
+        return None
+    lo, _, hi = raw.partition("-")
+    if not hi.isdigit() or not lo.isdigit():
+        raise ConfigError(f"--scan wants a range like 7500-7900, got {raw!r}")
+    return int(lo), int(hi)
 
 
 def _midnight(day: date) -> datetime:
@@ -356,6 +385,9 @@ def main(argv: list[str] | None = None) -> int:
                     pdf=args.pdf,
                     check=args.check,
                     refresh=args.refresh,
+                    advice_letter=args.advice_letter,
+                    for_date=args.for_date,
+                    scan=_scan_range(args.scan),
                 ):
                     outcome.report()
                     changed |= outcome.changed

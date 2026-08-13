@@ -16,7 +16,7 @@ import pytest
 
 pytest.importorskip("pypdf")
 
-from nem_rates.regen import accplus, cca, franchise, nsc, providers, sheets
+from nem_rates.regen import accplus, cca, franchise, nsc, providers, sheets, tax
 from nem_rates.regen import tariff as rt
 from nem_rates.regen.sheets import ExtractionError
 
@@ -260,7 +260,12 @@ def test_every_vendored_snapshot_still_reconciles() -> None:
             for period, components in by_period.items():
                 got = sum(components.values()) + flat
                 want = data["totals"][season][period]
-                assert got == pytest.approx(want, abs=5e-6), f"{path.name} {season}.{period}"
+                # One unit in the last published decimal: the sheet rounds its
+                # total independently of the components, so a vintage can miss
+                # by an ulp. See regen.tariff.ROUNDING_TOLERANCE.
+                assert got == pytest.approx(want, abs=rt.ROUNDING_TOLERANCE), (
+                    f"{path.relative_to(root)} {season}.{period}"
+                )
 
 
 # Verbatim from MCE's residential rate card.
@@ -595,9 +600,285 @@ class TestUnparseableCardIsStillWatched:
         import tomllib
 
         raw = tomllib.loads(
-            (Path(__file__).resolve().parent.parent / "src/nem_rates/data/cca/mce.toml").read_text(
-                encoding="utf-8"
-            )
+            (
+                Path(__file__).resolve().parent.parent
+                / "src/nem_rates/data/cca/mce/2026-04-01.toml"
+            ).read_text(encoding="utf-8")
         )
         assert len(str(raw.get("source_sha256", ""))) == 64
         assert raw.get("source_read_on")
+
+
+PCIA_TABLE = """Vintage Power Charge Indifference Adjustment (per kWh) Rate
+2009 Vintage $0.02973 (I)
+2024 Vintage $0.05066 (I)
+2025 Vintage ($0.01011) (I)
+2026 Vintage ($0.01011) (N) (L)U 39Oakland, California
+Revised Cal. P.U.C. Sheet No. 61121-E
+"""
+
+
+class TestPciaVintages:
+    def test_the_last_row_is_read_even_when_the_page_header_runs_into_it(self) -> None:
+        # "2026 Vintage ($0.01011) (N) (L)U 39Oakland, California" -- the figures
+        # are not at end of line, and dropping the newest vintage is the worst
+        # one to lose.
+        got = rt.extract_pcia([sheet(PCIA_TABLE)])
+        assert got[2026] == -0.01011
+
+    def test_parenthesised_vintages_are_negative(self) -> None:
+        got = rt.extract_pcia([sheet(PCIA_TABLE)])
+        assert got[2025] == -0.01011
+        assert got[2009] == 0.02973
+
+    def test_a_sheet_without_the_table_yields_nothing(self) -> None:
+        # Carried forward by the caller rather than invented here.
+        assert rt.extract_pcia([sheet("no vintage table on this sheet")]) == {}
+
+
+class TestScheduleNarrowing:
+    def test_an_advice_letter_is_narrowed_to_one_schedule(self) -> None:
+        pages = [
+            sheet("ELECTRIC SCHEDULE E-ELEC Sheet 2\nSummer Usage $0.1 $0.2 $0.3"),
+            sheet("ELECTRIC SCHEDULE E-TOU-C Sheet 2\nSummer (all usage) $0.4 $0.5"),
+        ]
+        assert len(rt.pages_for_schedule(pages, "E-ELEC")) == 1
+
+    def test_a_schedule_the_filing_did_not_revise_says_what_it_carries(self) -> None:
+        # A filing revises only some schedules, so this is a normal answer.
+        pages = [sheet("ELECTRIC SCHEDULE E-TOU-C Sheet 2\nSummer (all usage) $0.4 $0.5")]
+        with pytest.raises(ExtractionError, match="E-TOU-C"):
+            rt.pages_for_schedule(pages, "EV2")
+
+
+class TestBaseServicesChargeShapes:
+    def test_the_tiered_form(self) -> None:
+        got = rt.extract_base_services_charge([sheet(EELEC_TOTALS, number=2)])
+        assert got == {"tier_1": 0.19713, "tier_2": 0.39688, "tier_3": 0.79343}
+
+    def test_the_flat_pre_ab205_form_becomes_three_equal_tiers(self) -> None:
+        # Before AB 205's charge began on 2026-03-01, E-ELEC had one flat rate
+        # for everyone; recording it as equal tiers keeps consumers era-agnostic.
+        flat = "TOTAL BUNDLED RATES\nBase Services Charge ($ per meter per day) $0.49281\n"
+        assert rt.extract_base_services_charge([sheet(flat, number=2)]) == {
+            "tier_1": 0.49281,
+            "tier_2": 0.49281,
+            "tier_3": 0.49281,
+        }
+
+    def test_absence_is_an_answer_not_a_failure(self) -> None:
+        # E-TOU-C and EV2-A had no daily fixed charge at all before AB 205.
+        assert rt.extract_base_services_charge([sheet("no charge table here")]) == {}
+
+
+class TestVintagedTablesComeFromTheirOwnEra:
+    """PCIA and the franchise fee are republished only when they change.
+
+    Both live in documents with their own vintages -- the PCIA on the schedule's
+    own sheet, the franchise fee in Schedule E-FFS -- and a filing that does not
+    touch them simply omits them. Reading the current version for a historical
+    snapshot put January 2026's values on a December 2025 cycle: 0.03492 against
+    the 0.01161 billed for PCIA, 0.00060 against 0.00105 for the surcharge.
+    """
+
+    def vintage(self, slug: str, effective: str) -> dict:
+        import tomllib
+
+        path = (
+            Path(__file__).resolve().parent.parent
+            / f"src/nem_rates/data/tariff/pge/{slug}/{effective}.toml"
+        )
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+
+    @pytest.mark.parametrize("slug", ["eelec", "etouc", "ev2a"])
+    def test_the_2025_vintages_carry_the_2025_pcia(self, slug: str) -> None:
+        for effective in ("2025-01-01", "2025-03-01", "2025-09-01"):
+            raw = self.vintage(slug, effective)
+            assert raw["cca"]["pcia_vintages"]["2011"] == pytest.approx(0.01161), effective
+
+    @pytest.mark.parametrize("slug", ["eelec", "etouc", "ev2a"])
+    def test_the_2026_vintages_carry_the_2026_pcia(self, slug: str) -> None:
+        for effective in ("2026-01-01", "2026-03-01"):
+            raw = self.vintage(slug, effective)
+            assert raw["cca"]["pcia_vintages"]["2011"] == pytest.approx(0.03492), effective
+
+    @pytest.mark.parametrize("slug", ["eelec", "etouc", "ev2a"])
+    def test_the_franchise_fee_follows_its_own_schedule(self, slug: str) -> None:
+        # Billed 0.00105 for the December 2025 segment, 0.00060 for January.
+        assert self.vintage(slug, "2025-09-01")["cca"]["franchise_fee_vintages"][
+            "2011"
+        ] == pytest.approx(0.00105)
+        assert self.vintage(slug, "2026-01-01")["cca"]["franchise_fee_vintages"][
+            "2011"
+        ] == pytest.approx(0.00060)
+
+
+# Verbatim from CDTFA notice L-1020.
+CDTFA_NOTICE = """DECEMBER 2025 L-1020
+2026 Energy Resources (Electrical Energy) Surcharge Rate
+The California Energy Commission (CEC) set the electrical energy surcharge rate
+for the 2026 calendar year to remain at three-tenths mill ($.0003) per
+kilowatt-hour. In the future, we will only send you a notice when the rate
+changes.
+"""
+
+
+class TestEnergySurcharge:
+    def test_the_year_and_rate_are_read(self) -> None:
+        assert tax.extract([sheet(CDTFA_NOTICE)]) == (2026, 0.0003)
+
+    def test_an_implausible_rate_is_an_error(self) -> None:
+        broken = CDTFA_NOTICE.replace("$.0003", "$3.0")
+        with pytest.raises(ExtractionError, match="plausible"):
+            tax.extract([sheet(broken)])
+
+    def test_a_reworded_notice_is_an_error_rather_than_a_guess(self) -> None:
+        with pytest.raises(ExtractionError, match="expected form"):
+            tax.extract([sheet("some other CDTFA notice entirely")])
+
+    def test_the_rendered_file_is_loadable_as_a_vintage(self) -> None:
+        body = tax.render(providers.CA_ENERGY_RESOURCES, 2026, 0.0003, "L-1020")
+        assert tax.verify_against_library(body, 2026, 0.0003) == []
+
+    def test_a_rendered_file_that_disagrees_is_caught(self) -> None:
+        body = tax.render(providers.CA_ENERGY_RESOURCES, 2026, 0.0003, "L-1020")
+        assert tax.verify_against_library(body, 2026, 0.0004) != []
+
+    @pytest.mark.parametrize("year", [2025, 2026])
+    def test_both_vintages_are_vendored(self, year: int) -> None:
+        # CDTFA issues a notice only when the rate changes, so the notices are
+        # exactly the vintages that exist.
+        import tomllib
+
+        path = (
+            Path(__file__).resolve().parent.parent
+            / f"src/nem_rates/data/tax/ca_energy_resources/{year}-01-01.toml"
+        )
+        assert tomllib.loads(path.read_text(encoding="utf-8"))["rate"] == pytest.approx(0.0003)
+
+
+class TestFilingScanWidening:
+    """Reaching back for a date older than the default scan.
+
+    The caller knows the date it wants priced; it has no way to know which
+    advice letter numbers that lands on, which is the whole reason `--for-date`
+    exists. So a date that falls outside the default range has to widen on its
+    own rather than telling the user to guess a number range.
+    """
+
+    def _stub(
+        self, monkeypatch: pytest.MonkeyPatch, *, target: int | None
+    ) -> list[tuple[int, int, bool]]:
+        """Stand in for the network. Returns the (lo, hi, refresh) of each pass."""
+        from nem_rates.regen import filings
+
+        passes: list[tuple[int, int, bool]] = []
+        index: dict[str, filings.Filing] = {}
+
+        def build_index(
+            util: object,
+            lo: int,
+            hi: int,
+            root: object,
+            *,
+            refresh: bool = False,
+            report: object = print,
+        ) -> dict[str, filings.Filing]:
+            passes.append((lo, hi, refresh))
+            if refresh:
+                index.clear()
+            for number in range(lo, hi + 1):
+                index[f"{number}-E"] = filings.Filing(f"{number}-E", 0, {})
+            return dict(index)
+
+        def filing_for(
+            util: object, sheet: str, on: date, indexed: dict[str, filings.Filing]
+        ) -> filings.Filing | None:
+            if target is None or f"{target}-E" not in indexed:
+                return None
+            return filings.Filing(f"{target}-E", 0, {sheet.upper(): "2024-01-01"})
+
+        monkeypatch.setattr(filings, "load_index", lambda root, key: {})
+        monkeypatch.setattr(filings, "build_index", build_index)
+        monkeypatch.setattr(filings, "filing_for", filing_for)
+        return passes
+
+    def test_it_reaches_back_until_it_finds_the_filing(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from nem_rates import regen
+
+        passes = self._stub(monkeypatch, target=7250)
+        found = regen._filing_for_date("eelec", date(2024, 6, 1), tmp_path, None, False)
+
+        assert found == "7250-E"
+        # Contiguous and disjoint, walking backwards from the default range.
+        assert [(lo, hi) for lo, hi, _ in passes] == [(7500, 7900), (7300, 7499), (7100, 7299)]
+
+    def test_it_stops_at_the_bound_and_says_how_far_it_got(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # A date the utility never filed for has to stop somewhere rather than
+        # walking back to advice letter one.
+        from nem_rates import regen
+
+        passes = self._stub(monkeypatch, target=None)
+        with pytest.raises(ExtractionError) as caught:
+            regen._filing_for_date("eelec", date(2015, 1, 1), tmp_path, None, False)
+
+        assert len(passes) == 1 + regen.MAX_SCAN_WIDENINGS
+        message = str(caught.value)
+        assert (
+            f"reached back to {regen.DEFAULT_SCAN[0] - regen.MAX_SCAN_WIDENINGS * regen.SCAN_STEP}"
+            in message
+        )
+        assert f"{regen.MAX_SCAN_WIDENINGS} widening(s)" in message
+        assert "--scan" in message
+
+    def test_an_explicit_scan_is_honoured_rather_than_widened_past(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Passing --scan is the caller pinning a range; searching outside it
+        # anyway would defeat the point of having passed it.
+        from nem_rates import regen
+
+        passes = self._stub(monkeypatch, target=None)
+        with pytest.raises(ExtractionError, match="pinned to 7000-7100"):
+            regen._filing_for_date("eelec", date(2015, 1, 1), tmp_path, (7000, 7100), False)
+
+        assert [(lo, hi) for lo, hi, _ in passes] == [(7000, 7100)]
+
+    def test_refresh_applies_only_to_the_first_pass(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # A widening probes numbers the index has never held, so re-fetching
+        # with refresh set would discard the block just indexed instead of
+        # adding to it -- and the search would never accumulate enough to hit.
+        from nem_rates import regen
+
+        passes = self._stub(monkeypatch, target=7250)
+        regen._filing_for_date("eelec", date(2024, 6, 1), tmp_path, None, True)
+
+        assert [refresh for _, _, refresh in passes] == [True, False, False]
+
+
+class TestRegistryOmissions:
+    """A provider registered without the document that publishes its rate."""
+
+    def test_a_tax_with_no_notices_says_what_is_missing(self) -> None:
+        # `regen tax` falls back to latest_notice when no --notice is passed, so
+        # a bare IndexError here would surface far from the omission causing it.
+        bare = providers.Tax(
+            key="nowhere",
+            name="A surcharge nobody filed a notice for",
+            jurisdiction="XX",
+            notice_url="https://example.invalid/{notice}.pdf",
+        )
+        with pytest.raises(ExtractionError) as caught:
+            _ = bare.latest_notice
+        message = str(caught.value)
+        assert "lists no notices" in message
+        assert "--notice" in message
+
+    def test_a_registered_tax_still_resolves_its_latest(self) -> None:
+        assert providers.CA_ENERGY_RESOURCES.latest_notice == "L-1020"

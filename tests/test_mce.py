@@ -17,6 +17,9 @@ from nem_rates.errors import DataError
 from nem_rates.tariff.retail import RetailTariff, load_snapshot
 from nem_rates.timeutil import PACIFIC
 
+#: A date the vendored MCE card is in force for; cards resolve by date.
+CARD_DATE = date(2026, 7, 15)
+
 # Derived from the billed dollar amounts over the period's 23.589 kWh.
 BILLED_KWH = 23.589
 PCIA_RATE = 0.82 / BILLED_KWH
@@ -54,7 +57,7 @@ def test_cost_relief_credit_matches_the_bill() -> None:
 
 def test_cost_relief_credit_expires_at_the_end_of_2026() -> None:
     """It is explicitly time-limited; leaving it on would understate 2027."""
-    card = load_rate_card("mce")
+    card = load_rate_card("mce", CARD_DATE)
     assert card.cost_relief_credit(date(2026, 12, 31)) == pytest.approx(-0.00620)
     assert card.cost_relief_credit(date(2027, 1, 1)) == 0.0
 
@@ -71,7 +74,7 @@ def test_mce_generation_is_at_parity_with_pge_today(schedule: str) -> None:
     If this breaks, MCE has repriced and mce.toml needs regenerating; it is not
     a bug in the engine. Checked per schedule, since MCE prices each separately.
     """
-    card = load_rate_card("mce")
+    card = load_rate_card("mce", CARD_DATE)
     snapshot = load_snapshot("PGE", schedule, date(2026, 6, 1))
     for season, periods in snapshot.raw["energy"].items():
         for period, components in periods.items():
@@ -82,7 +85,7 @@ def test_mce_generation_is_at_parity_with_pge_today(schedule: str) -> None:
 
 def test_rate_card_covers_each_schedule_separately() -> None:
     """Borrowing one schedule's card for another is a ~2x error, not a rounding."""
-    card = load_rate_card("mce")
+    card = load_rate_card("mce", CARD_DATE)
     eelec = card.generation("E-ELEC", "winter", "off_peak")
     etouc = card.generation("E-TOU-C", "winter", "off_peak")
     assert eelec == pytest.approx(0.06754)
@@ -92,16 +95,16 @@ def test_rate_card_covers_each_schedule_separately() -> None:
 
 def test_uncovered_schedule_raises_rather_than_falling_back() -> None:
     with pytest.raises(DataError, match="no generation rates for schedule"):
-        load_rate_card("mce").generation("E-TOU-D", "winter", "off_peak")
+        load_rate_card("mce", CARD_DATE).generation("E-TOU-D", "winter", "off_peak")
 
 
 def test_etouc_has_no_part_peak_on_the_rate_card_either() -> None:
     with pytest.raises(DataError, match="no E-TOU-C generation rate"):
-        load_rate_card("mce").generation("E-TOU-C", "winter", "part_peak")
+        load_rate_card("mce", CARD_DATE).generation("E-TOU-C", "winter", "part_peak")
 
 
 def test_deep_green_costs_a_penny_and_a_quarter_more() -> None:
-    card = load_rate_card("mce")
+    card = load_rate_card("mce", CARD_DATE)
     light = card.generation("E-ELEC", "summer", "off_peak", "light_green")
     deep = card.generation("E-ELEC", "summer", "off_peak", "deep_green")
     assert deep - light == pytest.approx(0.0125)
@@ -109,7 +112,7 @@ def test_deep_green_costs_a_penny_and_a_quarter_more() -> None:
 
 def test_unknown_product_option_raises() -> None:
     with pytest.raises(Exception, match="unknown product option"):
-        load_rate_card("mce").generation("E-ELEC", "summer", "peak", "medium_green")
+        load_rate_card("mce", CARD_DATE).generation("E-ELEC", "summer", "peak", "medium_green")
 
 
 class TestBillReconciliation:
@@ -180,7 +183,7 @@ class TestExport:
         statement within 0.3% -- inside the rounding of the bill's own displayed
         dollars. So exports are no longer flagged as an estimate.
         """
-        assert load_rate_card("mce").export_credit_verified is True
+        assert load_rate_card("mce", CARD_DATE).export_credit_verified is True
         assert RateEngine(config()).price_at(at(19, month=9)).export_price.complete is True
 
     @pytest.mark.parametrize(

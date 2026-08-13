@@ -307,3 +307,19 @@ def test_describe_reports_provenance(engine: RateEngine) -> None:
     assert info["tariff_effective"] == "2026-03-01"
     assert info["tariff_advice_letter"] == "7846-E"
     assert info["lock_end"] == "2035-06-02"
+
+
+def test_a_string_supplier_becomes_the_enum() -> None:
+    """Supplier is a StrEnum, so "cca" compares equal to Supplier.CCA but is not
+    it -- and every branch that matters tests identity. Constructing Config with
+    a string therefore priced a CCA customer as bundled, silently.
+    """
+    from nem_rates.config import CcaConfig
+
+    config = Config(supplier="cca", cca=CcaConfig(name="MCE", rate_card="mce"))  # type: ignore[arg-type]
+    assert config.supplier is Supplier.CCA
+
+
+def test_an_unknown_supplier_is_rejected() -> None:
+    with pytest.raises(ValueError, match="not a valid Supplier"):
+        Config(supplier="nonsense")  # type: ignore[arg-type]

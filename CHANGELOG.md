@@ -6,6 +6,83 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **`nem-rates regen tax`** and the California Energy Resources (Electrical
+  Energy) Surcharge, read from CDTFA's numbered notices. A state tax rather than
+  a utility tariff -- imposed whoever supplies the generation -- and billed on
+  the generation provider's page, which on a CCA account is the CCA's. That is
+  how it went unmodelled while every line on the utility's pages reconciled to
+  the cent, and it was the whole of the remaining 29c on a real statement.
+  CDTFA issues a notice only when the rate changes, so the notices are exactly
+  the vintages that exist: L-971 for 2025, L-1020 for 2026.
+- `--for-date` widens its search backwards on its own instead of asking for a
+  `--scan` range nobody can guess. Filings are numbered sequentially across
+  everything a utility files, so how far back a date sits is something the index
+  discovers rather than something the caller knows.
+- `Bill.taxes`, kept out of `Bill.energy_charges` because a statement prints
+  taxes on their own line and does not total them with the energy lines -- the
+  July 2026 statement's six energy lines come to $8.90 with its Energy
+  Commission Tax separate -- but included in `Bill.total`, because they are
+  owed.
+
+The December 2025 / January 2026 statement now reconciles to **0.003%**:
+$468.42 modelled against $468.41 billed.
+
+### Added
+- **Historical rate vintages, reconciled against a real statement.** PG&E tariff
+  snapshots now run 2025-01-01, 2025-03-01, 2025-09-01, 2026-01-01 and
+  2026-03-01, and MCE's rate card has a pre-repricing vintage, so cycles back to
+  early 2025 price with the rates that were actually in force.
+  `nem-rates regen tariff --for-date` finds the filing that adopted a vintage by
+  indexing the utility's advice letters, rather than needing its number.
+- Tables published on their own schedule are resolved by date too: the vintaged
+  PCIA from the filing that last restated it, the franchise fee surcharge from
+  the E-FFS version in force. Both are republished only when they change, so
+  reading the current one for a historical snapshot silently applied today's
+  values to an old cycle.
+
+### Fixed
+- **The baseline credit is applied per day at each day's own rate.** It had been
+  read once at the cycle start, which put December's rate on all 300.70 kWh of a
+  cycle the statement splits at 19.40 kWh @ $0.10084 and 281.30 @ $0.09566.
+- Export compensation starts at Permission To Operate; before it, exports earn
+  nothing whatever the meter recorded, and the bill says how much was
+  uncompensated.
+- `Config(supplier="cca")` now coerces to the enum. `Supplier` is a `StrEnum`,
+  so the string compared equal but failed the identity tests every branch uses,
+  and a CCA customer was priced as bundled -- silently, with plausible numbers.
+- Vintage data is carried forward only from earlier vintages, never later ones.
+  Backfilling had inherited the *current* snapshot's tables, giving a 2025 cycle
+  2026's PCIA and MCE's 2023 card a cost relief credit that did not exist until
+  2026.
+
+The December 2025 / January 2026 statement now reconciles on all fourteen of its
+lines to within five cents, and on the total to 0.06%.
+
+### Added
+- **`nem-rates regen tariff --advice-letter NUMBER`** rebuilds a superseded rate
+  vintage from the filing that adopted it. The tariff book only ever serves what
+  is current, so this is the only way to recover history — and without it the
+  library could not price January or February 2026 at all. All three PG&E
+  schedules are backfilled to 2026-01-01 (Advice 7797-E), each reconciling
+  against that filing's own published totals.
+- Vintages differ in shape, not only in value, and the extractor now handles the
+  differences rather than assuming today's layout: the base services charge is
+  absent on most schedules before AB 205 began it on 2026-03-01 and flat rather
+  than tiered on E-ELEC, PCIA rows are spelled `2009 Vintage` in a filing and
+  `2009` in the book, and a sheet's own header identifies which schedule it
+  belongs to so one filing can be narrowed to one schedule.
+- `daily_fixed_charge` returns zero for a vintage that had no such charge, which
+  is the right answer rather than a missing-data error.
+
+### Fixed
+- The PCIA vintage table is read with its own row pattern rather than one that
+  needs the figures at end of line. The last row runs into the next page's
+  header — `2026 Vintage ($0.01011) (N) (L)U 39Oakland, California` — so a
+  trailing match dropped the newest vintage, which is the worst one to lose. It
+  had been masked: extraction previously failed outright and the values were
+  silently carried forward from the prior snapshot.
+
+### Added
 - **A CCA card that cannot be parsed is still watched.** The vendored file records
   a checksum of the document its values were read from, so the weekly check
   downloads the card and reports whether the publisher has moved. Detection never

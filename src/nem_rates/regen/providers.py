@@ -23,6 +23,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .sheets import ExtractionError
+
+#: Where a utility files a rate change. An advice letter carries the sheets it
+#: revises, so it is how a superseded vintage is recovered: the tariff book only
+#: ever serves what is current.
+ADVICE_LETTER_URL = "https://www.pge.com/tariffs/assets/pdf/adviceletter/ELEC_{number}.pdf"
+
 #: Sent when fetching. Some publishers reject the default urllib agent outright.
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -62,6 +69,16 @@ class Utility:
     franchise_fees: Source | None = None
     #: The Net Surplus Compensation series, published as a standing table.
     nsc_rates: Source | None = None
+    #: Template for one of this utility's advice-letter filings, if it publishes
+    #: them at a predictable address. ``{number}`` is e.g. "7797-E".
+    advice_letter_url: str = ""
+    #: Slug -> how the sheet header spells the schedule, where that differs from
+    #: the tariff name. PG&E bills "EV2-A" but heads its sheets "EV2".
+    sheet_aliases: dict[str, str] = field(default_factory=dict)
+
+    def sheet_name(self, slug: str) -> str:
+        """How this schedule identifies itself in a sheet header."""
+        return self.sheet_aliases.get(slug, self.schedule_names[slug])
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +119,8 @@ PGE = Utility(
         "https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-FFS.pdf"
     ),
     nsc_rates=Source("https://www.pge.com/assets/pge/docs/clean-energy/solar/AB920-RateTable.pdf"),
+    advice_letter_url=ADVICE_LETTER_URL,
+    sheet_aliases={"ev2a": "EV2"},
 )
 
 MCE = Cca(
@@ -121,7 +140,56 @@ MCE = Cca(
     ),
 )
 
+
+@dataclass(frozen=True, slots=True)
+class Tax:
+    """A statutory per-kWh surcharge, published by a tax authority.
+
+    Neither a utility nor a CCA: it is imposed on energy consumed regardless of
+    who supplies it, and is published as a numbered notice rather than a tariff
+    sheet. Registered here so it is regenerated and watched like everything else
+    rather than being the one number nobody looks at.
+    """
+
+    key: str
+    name: str
+    jurisdiction: str
+    #: Where a numbered notice lives. ``{notice}`` is e.g. "l1020".
+    notice_url: str
+    #: Every notice known to state this rate, oldest first. CDTFA issues one
+    #: only when the rate changes, so this is the list of vintages that exist --
+    #: adding a year is a registry edit, the same shape as adding a schedule.
+    notices: tuple[str, ...] = ()
+
+    @property
+    def latest_notice(self) -> str:
+        if not self.notices:
+            # Reached by adding a surcharge to the registry and not the notice
+            # that publishes its rate. `regen tax` falls back to this when no
+            # --notice is passed, so the bare IndexError would surface far from
+            # the omission that caused it.
+            raise ExtractionError(
+                f"{self.key} lists no notices, so there is nothing to regenerate from; "
+                f"add the notice number to its 'notices' in regen/providers.py, "
+                f"or pass --notice to name one directly"
+            )
+        return self.notices[-1]
+
+    def url_for(self, notice: str) -> str:
+        """Where a notice lives. CDTFA prints "L-1020" but files it as l1020."""
+        return self.notice_url.format(notice=notice.lower().replace("-", ""))
+
+
+CA_ENERGY_RESOURCES = Tax(
+    key="ca_energy_resources",
+    name="California Energy Resources (Electrical Energy) Surcharge",
+    jurisdiction="CA",
+    notice_url="https://cdtfa.ca.gov/formspubs/{notice}.pdf",
+    notices=("L-971", "L-1020"),
+)
+
 UTILITIES: dict[str, Utility] = {PGE.key: PGE}
+TAXES: dict[str, Tax] = {CA_ENERGY_RESOURCES.key: CA_ENERGY_RESOURCES}
 CCAS: dict[str, Cca] = {MCE.key: MCE}
 
 

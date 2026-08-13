@@ -125,6 +125,24 @@ def extract_generation(
     return found, skipped
 
 
+#: "MCE Deep Green Premium / All Usage* as above plus $0.0125/kWh"
+DEEP_GREEN = re.compile(r"Deep Green Premium.{0,120}?plus\s*\$([0-9.]+)\s*/?\s*kWh", re.I | re.S)
+
+
+def extract_options(pages: list[Page]) -> dict[str, float]:
+    """Service options and what each adds per kWh.
+
+    Read rather than carried forward: the premium moves. The 2023 card charges
+    $0.01/kWh for Deep Green where the 2026 one charges $0.0125, so inheriting
+    it across vintages would misprice whichever end you inherited from.
+    """
+    text = " ".join(page.text for page in pages)
+    match = DEEP_GREEN.search(text)
+    if not match:
+        return {}
+    return {"light_green": 0.0, "deep_green": float(match.group(1))}
+
+
 def verify(generation: dict[str, dict[str, dict[str, float]]]) -> list[str]:
     """Both seasons for every schedule, and a period set that agrees between them."""
     problems: list[str] = []
@@ -183,6 +201,7 @@ def render(
     previous: dict[str, object],
     names: dict[str, str],
     digest: str = "",
+    options: dict[str, float] | None = None,
 ) -> str:
     lines = [
         f"# {provider.name} ({provider.key.upper()}) residential generation rates.",
@@ -218,6 +237,22 @@ def render(
         f'source_sha256 = "{digest or previous.get("source_sha256", "")}"',
         f'source_read_on = "{previous.get("source_read_on", date.today().isoformat())}"',
     ]
+    # Everything a card states outside the rate table -- the cost relief credit,
+    # the service options, the export terms -- comes from the CCA's tariff rather
+    # than this table, so it is carried forward rather than dropped. Regenerating
+    # the rates must not silently discard the rest of the card.
+    options = options or {}
+    if options:
+        lines.append("\n[options]")
+        for key, value in options.items():
+            lines.append(f"{key} = {fmt(value)}")
+    for section in ("cost_relief_credit", "export"):
+        block = previous.get(section)
+        if isinstance(block, dict):
+            lines.append(f"\n[{section}]")
+            for key, value in block.items():
+                lines.append(f"{key} = {fmt(value)}")
+
     for slug in sorted(generation):
         for season in ("summer", "winter"):
             periods = generation[slug].get(season, {})
@@ -233,15 +268,17 @@ def render(
 def regenerate(provider: Cca, pdf: Path, *, check: bool) -> Result:
     import tomllib
 
-    target = DATA_DIR / "cca" / f"{provider.key}.toml"
-    previous = tomllib.loads(target.read_text(encoding="utf-8")) if target.exists() else {}
+    directory = DATA_DIR / "cca" / provider.key
+    existing = sorted(directory.glob("*.toml")) if directory.is_dir() else []
+    vintages = [tomllib.loads(e.read_text(encoding="utf-8")) for e in existing]
     digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
 
     try:
         pages = read_pages(pdf)
         generation, skipped = extract_generation(pages, provider.schedule_aliases)
     except ExtractionError as exc:
-        return _watch_by_checksum(provider, digest, previous, exc)
+        newest_raw = max(vintages, key=lambda v: str(v["effective"])) if vintages else {}
+        return _watch_by_checksum(provider, digest, newest_raw, exc)
     problems = verify(generation)
 
     messages: list[str] = []
@@ -258,10 +295,22 @@ def regenerate(provider: Cca, pdf: Path, *, check: bool) -> Result:
     messages.append(f"{counted} rates across {len(generation)} schedule(s)")
     messages += parity_note(generation, provider.utility)
 
-    effective = next(
-        (p.effective for p in pages if p.effective),
-        date.fromisoformat(str(previous.get("effective", date.today()))),
-    )
+    # The card states when it took force; fall back to the newest vintage on
+    # disk only when it does not.
+    newest = max((str(v["effective"]) for v in vintages), default=date.today().isoformat())
+    effective = next((p.effective for p in pages if p.effective), date.fromisoformat(newest))
+    # Carry non-rate sections forward from the past only. Inheriting from a
+    # later card gave the 2023 vintage a cost relief credit that did not exist
+    # until 2026 -- the card does not mention one and the December 2025
+    # statement does not charge one, so it was $5.97 of invented credit.
+    earlier = [v for v in vintages if str(v.get("effective", "")) < effective.isoformat()]
+    previous = max(earlier, key=lambda v: str(v["effective"])) if earlier else {}
+    if vintages and not earlier:
+        messages.append(
+            "oldest vintage: no earlier card to carry terms from, so the cost relief "
+            "credit and export sections are omitted. Add what this card states."
+        )
+
     from .providers import utility as get_utility
 
     body = render(
@@ -271,8 +320,14 @@ def regenerate(provider: Cca, pdf: Path, *, check: bool) -> Result:
         previous,
         get_utility(provider.utility).schedule_names,
         digest,
+        extract_options(pages),
     )
-    return write_or_check(provider.key, target, body, check=check, messages=messages)
+    # Dated from the card's own statement of when it took force, so a historical
+    # card lands beside the current one rather than overwriting it.
+    target = directory / f"{effective.isoformat()}.toml"
+    return write_or_check(
+        f"{provider.key} {effective}", target, body, check=check, messages=messages
+    )
 
 
 def _watch_by_checksum(

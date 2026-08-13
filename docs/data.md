@@ -24,6 +24,7 @@ python -m nem_rates.regen.export --download   # the 843 MB export archive
 | `accplus` | the export tariff's adder table | the library reads back every adder it wrote |
 | `nsc` | the published Net Surplus Compensation series | the library reads back every month it wrote |
 | `cca` | a CCA's generation rate card | both seasons present, period sets agreeing between them |
+| `tax` | a tax authority's rate notice | the rendered file loads as a vintage and states what was read |
 
 Every vendored file maps to one of these:
 
@@ -31,9 +32,10 @@ Every vendored file maps to one of these:
 |---|---|
 | `tariff/<utility>/<schedule>/*.toml` | `tariff` |
 | `export/<utility>/nbt*.json.gz`, `holidays.toml`, `manifest.json` | `export` |
-| `export/<utility>/acc_plus.toml` | `accplus` |
+| `export/<utility>/acc_plus/*.toml` | `accplus` |
 | `nsc/<utility>.toml` | `nsc` |
-| `cca/<provider>.toml` | `cca` |
+| `cca/<provider>/*.toml` | `cca` |
+| `tax/<surcharge>/*.toml` | `tax` |
 
 The check matters more than the extraction. A generator writes key names and the
 library reads them back with a second, independent set of literals — two
@@ -178,6 +180,51 @@ fee vintages (Schedule E-FFS, a different document) are **carried forward from
 the previous snapshot**. A structural change is still a human edit, and should
 be.
 
+### Tables with their own publication cycle
+
+The vintaged PCIA and the franchise fee surcharge are republished only when they
+change -- the PCIA annually with the ERRA update, the surcharge in Schedule
+E-FFS -- so a rate change that does not touch them simply omits them. Reading
+the current version for a historical snapshot applies today's values to an old
+cycle, which is worth about 3c/kWh on the PCIA.
+
+Both are therefore resolved through the filing index rather than taken from
+whatever is newest, and each run says where the values came from:
+
+```
+pge/etouc: 17 franchise fee vintages read from 7469-E
+pge/etouc: PCIA table read from 7469-E, the last filing to restate it
+```
+
+### Rebuilding a superseded vintage
+
+The tariff book only ever serves what is in force now, so history comes from the
+filing that adopted it:
+
+```bash
+nem-rates regen tariff --advice-letter 7797-E
+```
+
+An advice letter carries every sheet the utility revised that day — 255 pages
+across 40-odd schedules for a general rate change — and each sheet states which
+schedule it belongs to, so the same extractor works once the filing is narrowed
+by those headers. The reconciliation check applies unchanged, because the filing
+carries the totals too.
+
+Vintages differ in shape as well as in value, and the extractor handles the ones
+seen so far rather than assuming today's layout:
+
+| | Jan 2026 (7797-E) | Mar 2026 (7846-E) |
+|---|---|---|
+| Base services charge | E-ELEC: one flat rate. E-TOU-C, EV2-A: **none** | three income tiers |
+| Public purpose programs | 0.02829 | 0.00614 |
+| PCIA rows | `2009 Vintage $0.02973` | `2009 $0.02973` |
+
+AB 205's Base Services Charge began 2026-03-01 and moved public-purpose costs
+into the daily fixed charge, which is why that component fell by more than two
+cents. A snapshot with no charge omits the section, and `daily_fixed_charge`
+returns zero for it — the correct answer, not missing data.
+
 ### Sheets revise independently
 
 A tariff book is a compilation and its pages carry their own advice letters. On
@@ -195,8 +242,8 @@ generator exists to remove.
 
 ## ACC Plus and CCA rate cards: automated
 
-`export/<utility>/acc_plus.toml` comes from the utility's export tariff, and
-`cca/<provider>.toml` from that CCA's residential rate card.
+`export/<utility>/acc_plus/*.toml` comes from the utility's export tariff, and
+`cca/<provider>/*.toml` from that CCA's residential rate card.
 
 A CCA supplies generation only, so its card is one rate per schedule, season and
 time-of-use period. Every MCE value currently equals PG&E's generation component

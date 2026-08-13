@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -88,9 +88,17 @@ def test_season_boundaries(
 def test_dates_before_the_earliest_vendored_sheet_refuse_to_price(
     tariff: RetailTariff,
 ) -> None:
-    """Better to raise than to back-date a snapshot onto an earlier month."""
+    """Better to raise than to back-date a snapshot onto an earlier month.
+
+    The earliest vintage moves as history is backfilled, so this asks the data
+    where its own edge is rather than naming a date that keeps going stale.
+    """
+    from nem_rates.data import versioned
+
+    earliest = versioned.versions("tariff/pge/eelec")[0].effective
+    before = earliest - timedelta(days=1)
     with pytest.raises(Exception, match="no snapshot effective"):
-        tariff.price_at(pt(2026, 2, 28, 12))
+        tariff.price_at(pt(before.year, before.month, before.day, 12))
 
 
 def test_summer_peak_price(tariff: RetailTariff) -> None:

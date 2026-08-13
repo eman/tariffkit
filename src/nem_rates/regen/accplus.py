@@ -100,10 +100,15 @@ def extract(pages: list[Page]) -> dict[str, dict[int, float]]:
 
 
 def verify_against_library(body: str, extracted: dict[str, dict[int, float]]) -> list[str]:
-    """The library must read back every adder this file claims to publish."""
-    import importlib
+    """The library must read back every adder this file claims to publish.
 
-    nbt = importlib.import_module("nem_rates.export.nbt")
+    Checked by pricing through ``NbtExportRates``, not by looking for a constant
+    by name: the point is that the consumer can still find and read these
+    values, and a rename should not pass while a schema change fails.
+    """
+    from ..config import Config
+    from ..export import nbt
+
     raw = tomllib.loads(body)
     problems: list[str] = []
     for segment, by_year in sorted(extracted.items()):
@@ -115,8 +120,21 @@ def verify_against_library(body: str, extracted: dict[str, dict[int, float]]) ->
             got = table.get(str(year), table.get(year))
             if got is None or abs(float(got) - value) > 1e-9:
                 problems.append(f"{segment} {year}: rendered {got!r}, extracted {value}")
-    if not hasattr(nbt, "ACC_PLUS_FILE"):
-        problems.append("nem_rates.export.nbt no longer names the ACC Plus data file")
+
+    # And the consumer must agree, for a year the table covers.
+    for segment, by_year in sorted(extracted.items()):
+        year = sorted(by_year)[0]
+        try:
+            rates = nbt.NbtExportRates(
+                Config(interconnection_year=year, acc_plus_segment=segment)  # type: ignore[arg-type]
+            )
+            if abs(rates.acc_plus - by_year[year]) > 1e-9:
+                problems.append(
+                    f"{segment} {year}: the library reads {rates.acc_plus}, "
+                    f"extracted {by_year[year]}"
+                )
+        except Exception as exc:
+            problems.append(f"{segment} {year}: the library could not read it back: {exc}")
     return problems
 
 
@@ -142,6 +160,7 @@ def render(provider: Utility, adders: dict[str, dict[int, float]], source_url: s
         "# closure.",
         "",
         "schema = 1",
+        f'effective = "{_effective_of(provider)}"',
         'unit = "USD/kWh"',
         f'source = "{provider.name} Schedule NBT"',
     ]
@@ -153,13 +172,37 @@ def render(provider: Utility, adders: dict[str, dict[int, float]], source_url: s
     return "\n".join(lines) + "\n"
 
 
+def _effective_of(provider: Utility) -> str:
+    """The date this adder table took force.
+
+    The sheet does not print one -- it is a standing table in Schedule NBT -- so
+    the existing vintage's date is kept and a new one is a deliberate human act.
+    Guessing a date from the run's clock would silently re-date the table every
+    time it was regenerated.
+    """
+    import tomllib
+
+    directory = DATA_DIR / "export" / provider.key / "acc_plus"
+    existing = sorted(directory.glob("*.toml")) if directory.is_dir() else []
+    if existing:
+        return str(tomllib.loads(existing[-1].read_text(encoding="utf-8"))["effective"])
+    raise ExtractionError(
+        f"no existing {provider.key} ACC Plus vintage to date this against. The "
+        f"tariff does not print an effective date for this table, so create the "
+        f"first vintage by hand with the date it took force."
+    )
+
+
 def regenerate(provider: Utility, pdf: Path, *, check: bool) -> Result:
     if provider.export_adder is None:
         raise ExtractionError(f"{provider.key} publishes no export adder tariff")
     adders = extract(read_pages(pdf))
     counted = sum(len(v) for v in adders.values())
     body = render(provider, adders, provider.export_adder.url)
-    target = DATA_DIR / "export" / provider.key / "acc_plus.toml"
+    # Effective-dated: a revision sits beside its predecessor rather than
+    # overwriting it, so a bill from before the revision still prices.
+    effective = _effective_of(provider)
+    target = DATA_DIR / "export" / provider.key / "acc_plus" / f"{effective}.toml"
     return write_or_check(
         f"{provider.key}/accplus",
         target,

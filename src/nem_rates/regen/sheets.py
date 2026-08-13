@@ -158,12 +158,24 @@ def _require_text_layer(path: Path, pages: list[Page], raw_pages: Sequence[Any])
 
 
 def parse_effective(text: str) -> date | None:
-    """The effective date a page states, in either published spelling."""
+    """The effective date a page states, in either published spelling.
+
+    Returns ``None`` when what was matched is not a real date. Text extraction
+    on a scanned or overlapping page produces things like "June 51, 2025", and a
+    single such page in a 250-page filing must not take down a whole index --
+    the page simply does not contribute a date.
+    """
     if match := EFFECTIVE.search(text):
-        return datetime.strptime(match.group(1), "%B %d, %Y").date()
+        try:
+            return datetime.strptime(match.group(1), "%B %d, %Y").date()
+        except ValueError:
+            return None
     if match := EFFECTIVE_SHORT.search(text):
         month, day, year = (int(g) for g in match.groups())
-        return date(year + 2000 if year < 100 else year, month, day)
+        try:
+            return date(year + 2000 if year < 100 else year, month, day)
+        except ValueError:
+            return None
     return None
 
 

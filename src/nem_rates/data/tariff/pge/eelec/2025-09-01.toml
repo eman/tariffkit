@@ -10,12 +10,7 @@
 # advice letter and effective date. The snapshot is dated from the sheet
 # carrying the unbundled rate table, which is when these values took
 # force -- not the latest date in the book. Sheets read:
-#     Sheet 1: Advice 7846-E, effective 2026-03-01
-#     Sheet 2: Advice 7921-E, effective 2026-06-01
-#     Sheet 3: Advice 7846-E, effective 2026-03-01
-#     Sheet 4: Advice 7846-E, effective 2026-03-01
-#     Sheet 5: Advice 7846-E, effective 2026-03-01
-#     Sheet 6: Advice 7846-E, effective 2026-03-01
+#     Sheet 2: Advice 7684-E, effective 2025-09-01
 #
 # The unbundled components below sum exactly to the published totals in
 # [totals]; regeneration refuses to write unless they do, which is what
@@ -24,8 +19,8 @@
 schema = 1
 utility = "PGE"
 tariff = "E-ELEC"
-effective = "2026-03-01"
-advice_letter = "7846-E"
+effective = "2025-09-01"
+advice_letter = "7684-E"
 source_url = "https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-ELEC.pdf"
 currency = "USD/kWh"
 
@@ -44,44 +39,44 @@ part_peak = [[15, 16], [21, 24]]
 # Season- and period-dependent components.
 
 [energy.summer.peak]
-generation = 0.26299
-distribution = 0.23199
+generation = 0.31659
+distribution = 0.231
 
 [energy.summer.part_peak]
-generation = 0.16388
-distribution = 0.16922
+generation = 0.21748
+distribution = 0.16823
 
 [energy.summer.off_peak]
-generation = 0.11878
-distribution = 0.15764
+generation = 0.17238
+distribution = 0.15665
 
 [energy.winter.peak]
-generation = 0.10086
-distribution = 0.16261
+generation = 0.15446
+distribution = 0.16162
 
 [energy.winter.part_peak]
-generation = 0.08089
-distribution = 0.16049
+generation = 0.13449
+distribution = 0.1595
 
 [energy.winter.off_peak]
-generation = 0.06754
-distribution = 0.15998
+generation = 0.12114
+distribution = 0.15899
 
 # Flat riders applied to all usage in every period and season.
 [adders]
-transmission = 0.04638
-transmission_rate_adjustments = 0.00453
-reliability_services = 0.00013
-public_purpose_programs = 0.00614
-nuclear_decommissioning = -0.00002
-competition_transition_charges = 0.00027
-energy_cost_recovery = 0.00002
-wildfire_fund_charge = 0.00591
-new_system_generation = 0.0
-wildfire_hardening = 0.00391
-recovery_bond_charge = 0.00857
-recovery_bond_credit = -0.00857
-bundled_pcia = -0.01011
+transmission = 0.05122
+transmission_rate_adjustments = -0.01213
+reliability_services = 0.00032
+public_purpose_programs = 0.02644
+nuclear_decommissioning = -0.00024
+competition_transition_charges = -0.00072
+energy_cost_recovery = 0.00001
+wildfire_fund_charge = 0.00595
+new_system_generation = 0.00574
+wildfire_hardening = 0.00339
+recovery_bond_charge = 0.00778
+recovery_bond_credit = -0.00778
+bundled_pcia = -0.02327
 
 # Riders a CCA or Direct Access customer does not pay, because PG&E is not
 # supplying their generation.
@@ -91,54 +86,52 @@ drop_components = ["generation", "bundled_pcia"]
 # Vintaged PCIA a CCA/DA customer pays instead of the bundled PCIA, keyed
 # by the year their generation service began.
 [cca.pcia_vintages]
-2009 = 0.02973
-2010 = 0.03366
-2011 = 0.03492
-2012 = 0.03676
-2013 = 0.03708
-2014 = 0.03686
-2015 = 0.0368
-2016 = 0.03687
-2017 = 0.03661
-2018 = 0.03679
-2019 = 0.03725
-2020 = 0.03632
-2021 = 0.05264
-2022 = 0.05272
-2023 = 0.0538
-2024 = 0.05066
-2025 = -0.01011
-2026 = -0.01011
+2009 = 0.01071
+2010 = 0.01149
+2011 = 0.01161
+2012 = 0.01169
+2013 = 0.01125
+2014 = 0.01119
+2015 = 0.01111
+2016 = 0.0111
+2017 = 0.01073
+2018 = 0.0067
+2019 = 0.00337
+2020 = 0.00324
+2021 = -0.01908
+2022 = -0.01926
+2023 = -0.02202
+2024 = -0.02756
+2025 = -0.02327
 
 # Franchise fee surcharge, which a CCA/DA customer pays and a bundled one
 # does not. Published in a separate schedule (E-FFS) and read from it,
 # because carrying it forward would let that schedule be reissued without
 # anything noticing -- it is live rate data on every CCA price.
 [cca.franchise_fee_vintages]
-2009 = 0.00064
-2010 = 0.00061
-2011 = 0.0006
-2012 = 0.00059
-2013 = 0.00059
-2014 = 0.00059
-2015 = 0.00059
-2016 = 0.00059
-2017 = 0.00059
-2018 = 0.00059
-2019 = 0.00059
-2020 = 0.00059
-2021 = 0.00048
-2022 = 0.00048
-2023 = 0.00047
-2024 = 0.00049
-2025 = 0.00093
-2026 = 0.00093
+2009 = 0.00105
+2010 = 0.00105
+2011 = 0.00105
+2012 = 0.00104
+2013 = 0.00105
+2014 = 0.00105
+2015 = 0.00105
+2016 = 0.00105
+2017 = 0.00105
+2018 = 0.00108
+2019 = 0.00111
+2020 = 0.00111
+2021 = 0.00127
+2022 = 0.00127
+2023 = 0.00129
+2024 = 0.00133
+2025 = 0.0013
 
 [base_services_charge]
 unit = "USD/day"
-tier_1 = 0.19713
-tier_2 = 0.39688
-tier_3 = 0.79343
+tier_1 = 0.49281
+tier_2 = 0.49281
+tier_3 = 0.49281
 
 [discounts]
 care = 0.35
@@ -147,11 +140,11 @@ care_excludes = ["wildfire_fund_charge"]
 
 # The sheet's own published totals; the components above sum to these.
 [totals.summer]
-peak = 0.55214
-part_peak = 0.39026
-off_peak = 0.33358
+peak = 0.6043
+part_peak = 0.44242
+off_peak = 0.38574
 
 [totals.winter]
-peak = 0.32063
-part_peak = 0.29854
-off_peak = 0.28468
+peak = 0.37279
+part_peak = 0.3507
+off_peak = 0.33684

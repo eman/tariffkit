@@ -18,6 +18,11 @@
 # closure.
 
 schema = 1
+# When this version of the adder table took force. The Net Billing Tariff opened
+# on 2023-04-15 and the five-year step-down has been published unchanged since,
+# so there is one vintage -- but it is dated, because a revision must be able to
+# sit beside it rather than overwrite it.
+effective = "2023-04-15"
 unit = "USD/kWh"
 source = "Pacific Gas and Electric Schedule NBT"
 

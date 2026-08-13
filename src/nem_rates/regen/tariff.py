@@ -52,6 +52,7 @@ from . import franchise
 from .emit import DATA_DIR, Result, fmt, write_or_check
 from .providers import Utility
 from .sheets import (
+    SHEET_HEADER,
     TRAILING_CELLS,
     ExtractionError,
     Page,
@@ -236,30 +237,51 @@ def extract_totals(sheets: list[Page], periods: list[str]) -> dict[str, dict[str
 
 
 def extract_base_services_charge(sheets: list[Page]) -> dict[str, float]:
-    """Total base services charge per income tier, $/customer/day."""
+    """Base services charge, $/customer/day, by income tier.
+
+    Two published shapes, because the charge itself changed. When AB 205's charge
+    began on 2026-03-01 it came with three income tiers; the flat per-meter
+    charge that preceded it has one rate for everyone. A vintage with the flat
+    form is recorded as three equal tiers rather than as a special case, so
+    nothing downstream has to know which era it came from.
+    """
     for sheet in sheets:
-        if "Base Services Charge Rates ($" not in sheet.text:
-            continue
         found: dict[str, float] = {}
+        if "Base Services Charge Rates ($" in sheet.text:
+            for label, values in rate_lines(sheet.text):
+                m = re.fullmatch(r"income tier (\d)", clean_label(label))
+                if m and values:
+                    found[f"tier_{m.group(1)}"] = values[0]
+            if len(found) == 3:
+                return found
         for label, values in rate_lines(sheet.text):
-            m = re.fullmatch(r"income tier (\d)", clean_label(label))
-            if m and values:
-                found[f"tier_{m.group(1)}"] = values[0]
-        if len(found) == 3:
-            return found
-    raise ExtractionError("no Base Services Charge tier table found")
+            if clean_label(label).startswith("base services charge") and values:
+                flat = values[0]
+                return {"tier_1": flat, "tier_2": flat, "tier_3": flat}
+    # Absent, not unreadable: most schedules had no daily fixed charge before
+    # AB 205's began on 2026-03-01, so an empty table is the right answer for an
+    # earlier vintage and the snapshot simply omits the section.
+    return {}
 
 
 def extract_pcia(sheets: list[Page]) -> dict[int, float]:
-    """Vintaged PCIA by year, from the sheet that publishes the vintage table."""
+    """Vintaged PCIA by year, from the sheet that publishes the vintage table.
+
+    Read with its own row pattern rather than through :func:`rate_lines`, which
+    wants the figures at end of line. The last row of this table runs straight
+    into the next page's header -- "2026 Vintage ($0.01011) (N) (L)U 39Oakland,
+    California" -- so a trailing match drops it, and dropping the newest vintage
+    is the worst one to lose.
+    """
+    row = re.compile(r"\b(20\d{2})\s+Vintage\b[^0-9$(]*(\(?\$[0-9.]+\)?)", re.I)
     for sheet in sheets:
         if "Vintage Power Charge Indifference Adjustment" not in sheet.text:
             continue
         found: dict[int, float] = {}
-        for label, values in rate_lines(sheet.text):
-            m = re.fullmatch(r"(20\d{2})", label.strip())
-            if m and values:
-                found[int(m.group(1))] = values[0]
+        for year, money in row.findall(sheet.text):
+            values = cells(money)
+            if values:
+                found[int(year)] = values[0]
         if found:
             return found
     return {}
@@ -369,6 +391,14 @@ def require_provenance(data: Extracted) -> None:
         )
 
 
+#: Rates are published to five decimals, and the total is rounded independently
+#: of the components, so a sum can miss it by one unit in the last place. That is
+#: the source's arithmetic, not a misread: a parser reads the digits that are
+#: printed, so it cannot be off by exactly one ulp the way a typist can. Anything
+#: larger is a real disagreement.
+ROUNDING_TOLERANCE = 1.5e-5
+
+
 def verify(data: Extracted) -> list[str]:
     """Every season/period must reconcile the components against the total.
 
@@ -385,11 +415,31 @@ def verify(data: Extracted) -> list[str]:
             want = data.totals.get(season, {}).get(period)
             if want is None:
                 problems.append(f"{season}.{period}: no published total to check against")
-            elif abs(got - want) > 5e-6:
+            elif abs(got - want) > ROUNDING_TOLERANCE:
                 problems.append(
                     f"{season}.{period}: components sum to {got:.5f}, sheet says {want:.5f}"
                 )
     return problems
+
+
+def rounding_notes(data: Extracted) -> list[str]:
+    """Cells that reconcile only within the published rounding.
+
+    Reported rather than silently accepted: a vintage where several cells miss
+    by an ulp is still fine, but it is worth seeing, because a systematic drift
+    would show up here first.
+    """
+    flat = sum(data.adders.values())
+    off = []
+    for season, by_period in sorted(data.energy.items()):
+        for period, components in sorted(by_period.items()):
+            want = data.totals.get(season, {}).get(period)
+            if want is None:
+                continue
+            delta = sum(components.values()) + flat - want
+            if 1e-9 < abs(delta) <= ROUNDING_TOLERANCE:
+                off.append(f"{season}.{period} ({delta:+.5f})")
+    return off
 
 
 def render(
@@ -511,9 +561,17 @@ def render(
     for year, value in sorted(fees.items()):
         lines.append(f"{year} = {fmt(value)}")
 
-    lines += ["", "[base_services_charge]", 'unit = "USD/day"']
-    for key in ("tier_1", "tier_2", "tier_3"):
-        lines.append(f"{key} = {fmt(data.base_services_charge[key])}")
+    if data.base_services_charge:
+        lines += ["", "[base_services_charge]", 'unit = "USD/day"']
+        for key in ("tier_1", "tier_2", "tier_3"):
+            lines.append(f"{key} = {fmt(data.base_services_charge[key])}")
+    else:
+        lines += [
+            "",
+            "# No daily fixed charge on this schedule at this vintage. AB 205's Base",
+            "# Services Charge began 2026-03-01; before it these schedules had none,",
+            "# so the section is absent rather than zeroed.",
+        ]
 
     if previous.get("discounts"):
         lines += ["", "[discounts]"]
@@ -570,7 +628,7 @@ def price_through_the_loader(slug: str, body: str, data: Extracted, provider: Ut
         except Exception as exc:
             problems.append(f"{season}: the library could not price the generated file: {exc}")
             continue
-        if abs(got - want) > 5e-6:
+        if abs(got - want) > ROUNDING_TOLERANCE:
             problems.append(
                 f"{season} peak: the library prices the generated file at {got:.5f}, "
                 f"but the sheet publishes {want:.5f}"
@@ -579,7 +637,13 @@ def price_through_the_loader(slug: str, body: str, data: Extracted, provider: Ut
 
 
 def regenerate(
-    provider: Utility, slug: str, pdf: Path, *, check: bool, cache: Path | None = None
+    provider: Utility,
+    slug: str,
+    pdf: Path,
+    *,
+    check: bool,
+    cache: Path | None = None,
+    refresh: bool = False,
 ) -> Result:
     """Rebuild one schedule's snapshot from ``pdf``.
 
@@ -588,7 +652,13 @@ def regenerate(
     carried forward -- those are live rate data on every CCA price, and carrying
     them meant E-FFS could be reissued with nothing noticing.
     """
-    data = extract(read_pages(pdf))
+    pages = read_pages(pdf)
+    # An advice-letter filing covers many schedules; a tariff sheet covers one.
+    # Narrowing by the sheets' own headers makes both work through one path.
+    name = provider.sheet_name(slug)
+    if len({m.group(1).upper() for p in pages if (m := SHEET_HEADER.search(p.text))}) > 1:
+        pages = pages_for_schedule(pages, name)
+    data = extract(pages)
     require_provenance(data)
     problems = verify(data)
     if problems:
@@ -602,20 +672,35 @@ def regenerate(
             ),
         )
 
-    fees = _franchise_fees(provider, cache)
     effective = pick_effective(data)
+    fees, fees_from = _franchise_fees(provider, cache, effective, refresh=refresh)
     directory = DATA_DIR / "tariff" / provider.key / slug
-    existing = sorted(directory.glob("*.toml")) if directory.is_dir() else []
-    previous = tomllib.loads(existing[-1].read_text(encoding="utf-8")) if existing else {}
+    previous = _predecessor(directory, effective)
     body = render(slug, data, previous, effective, provider, fees)
 
     checked = sum(len(v) for v in data.energy.values())
     notes = [f"{checked} season/period cells reconcile against the published totals"]
+    if rounded := rounding_notes(data):
+        notes.append(
+            f"{len(rounded)} of them only within the sheet's own rounding: {', '.join(rounded)}"
+        )
     notes.append(
-        f"{len(fees)} franchise fee vintages read from E-FFS"
+        f"{len(fees)} franchise fee vintages read from {fees_from}"
         if fees
         else "franchise fees carried forward: E-FFS could not be read"
     )
+    if not data.pcia_vintages:
+        # The filing does not restate it, so find the one that did rather than
+        # inheriting from whichever snapshot happens to sit next to this one.
+        found, source = _pcia_from_earlier_filing(provider, slug, effective, cache)
+        if found:
+            data.pcia_vintages.update(found)
+            notes.append(f"PCIA table read from {source}, the last filing to restate it")
+        else:
+            notes.append(
+                "PCIA table carried forward: no indexed filing restates it, so the "
+                "values come from the preceding vintage rather than from a sheet"
+            )
     return write_or_check(
         f"{provider.key}/{slug}",
         directory / f"{effective.isoformat()}.toml",
@@ -626,19 +711,145 @@ def regenerate(
     )
 
 
-def _franchise_fees(provider: Utility, cache: Path | None) -> dict[int, float]:
-    """Read E-FFS, or return empty so the caller falls back and says so."""
-    if provider.franchise_fees is None:
+def pages_for_schedule(pages: list[Page], tariff_name: str) -> list[Page]:
+    """Only the pages whose own sheet header names this schedule.
+
+    A tariff-book PDF is one schedule, so this is a no-op there. An advice-letter
+    filing is hundreds of pages covering every schedule the utility revised at
+    once, and each sheet states which it belongs to -- so the same extractor
+    works on both once the filing is narrowed to the schedule being rebuilt.
+    """
+    wanted = tariff_name.upper()
+    mine = [
+        page
+        for page in pages
+        if (match := SHEET_HEADER.search(page.text)) and match.group(1).upper() == wanted
+    ]
+    if not mine:
+        seen = sorted({m.group(1).upper() for p in pages if (m := SHEET_HEADER.search(p.text))})
+        raise ExtractionError(
+            f"no sheets for {tariff_name} in this document; it carries "
+            f"{', '.join(seen) if seen else 'no identifiable schedules'}"
+        )
+    return mine
+
+
+def _pcia_from_earlier_filing(
+    provider: Utility, slug: str, effective: date, cache: Path | None
+) -> tuple[dict[int, float], str]:
+    """Find the filing that last set the vintaged PCIA before ``effective``.
+
+    The table is republished when it changes -- annually, with the ERRA update --
+    and simply omitted from filings that do not touch it. So a rate change in
+    September carries no PCIA at all, and taking the value from the neighbouring
+    snapshot only works if snapshots happen to be built oldest-first. Looking it
+    up instead makes the answer independent of the order things were generated
+    in, which is the difference between a rule and a coincidence.
+
+    Returns the table and the filing it came from, or empty and "" when the
+    index has nothing earlier to offer.
+    """
+    from . import filings
+
+    root = (cache or Path.home() / ".cache" / "nem-rates" / "regen") / "al"
+    indexed = filings.load_index(root, provider.key)
+    if not indexed:
+        return {}, ""
+    sheet = provider.sheet_name(slug)
+    earlier = sorted(
+        (when, entry)
+        for entry in indexed.values()
+        if (when := entry.effective_for(sheet)) and when <= effective
+    )
+    for _, entry in reversed(earlier):
+        try:
+            pages = pages_for_schedule(read_pages(root / f"{entry.number}.pdf"), sheet)
+        except (ExtractionError, FileNotFoundError, OSError):
+            continue
+        table = extract_pcia(pages)
+        if table:
+            return table, entry.number
+    return {}, ""
+
+
+def _predecessor(directory: Path, effective: date) -> dict[str, Any]:
+    """The snapshot in force immediately before ``effective``.
+
+    Carried-forward values must come from the past, never the future. Taking
+    whatever happened to be newest on disk meant backfilling an older vintage
+    inherited the *current* one's structure -- and silently its PCIA table, when
+    a filing did not restate it. The September 2025 vintage came out with
+    January 2026's vintaged PCIA of 0.03492 against the 0.01163 the bill
+    actually charged, which is a threefold error on that line.
+    """
+    if not directory.is_dir():
         return {}
+    earlier: list[tuple[date, dict[str, Any]]] = []
+    for entry in directory.glob("*.toml"):
+        raw = tomllib.loads(entry.read_text(encoding="utf-8"))
+        when = date.fromisoformat(str(raw["effective"]))
+        if when < effective:
+            earlier.append((when, raw))
+    if earlier:
+        return max(earlier, key=lambda pair: pair[0])[1]
+    # Nothing older exists. Structure has to come from somewhere, so the nearest
+    # later vintage is used -- but only for the shape, and the caller reports
+    # which tables were carried rather than read.
+    later = sorted(
+        (date.fromisoformat(str(raw["effective"])), raw)
+        for raw in (tomllib.loads(e.read_text(encoding="utf-8")) for e in directory.glob("*.toml"))
+    )
+    return later[0][1] if later else {}
+
+
+def _franchise_fees(
+    provider: Utility, cache: Path | None, effective: date, *, refresh: bool = False
+) -> tuple[dict[int, float], str]:
+    """The franchise fee surcharge in force at ``effective``, and where from.
+
+    E-FFS is its own schedule with its own vintages, so reading the current one
+    for a historical snapshot is the same mistake as inheriting a PCIA table
+    from the future -- and it was: the December 2025 segment of a real bill was
+    charged 0.00106 where today's sheet says 0.00060.
+
+    So the filing index is asked which filing last set E-FFS on or before the
+    date, exactly as for the PCIA. Only when the index has nothing does this
+    fall back to the standalone schedule, which is by definition the current
+    one, and the caller says so.
+    """
+    if provider.franchise_fees is None:
+        return {}, ""
+    from . import filings
     from .fetch import fetch
 
     root = cache or Path.home() / ".cache" / "nem-rates" / "regen"
+    indexed = filings.load_index(root / "al", provider.key)
+    entry = filings.filing_for(provider, "E-FFS", effective, indexed) if indexed else None
+    if entry is not None:
+        try:
+            pages = pages_for_schedule(read_pages(root / "al" / f"{entry.number}.pdf"), "E-FFS")
+            found = franchise.extract(pages)
+            if found:
+                return found, entry.number
+        except (ExtractionError, FileNotFoundError, OSError):
+            pass
+
     try:
-        return franchise.extract(
-            read_pages(fetch(provider.franchise_fees, root / f"{provider.key}-effs.pdf"))
+        return (
+            franchise.extract(
+                read_pages(
+                    fetch(
+                        provider.franchise_fees,
+                        root / f"{provider.key}-effs.pdf",
+                        refresh=refresh,
+                    )
+                )
+            ),
+            "the current E-FFS sheet",
         )
-    except ExtractionError:
-        # Not fatal: the retail rates are the point of this dataset, and the
-        # previous snapshot's fees are still the last known-good ones. The
-        # caller reports that they were carried rather than read.
-        return {}
+    except (ExtractionError, OSError):
+        # Not fatal, and that includes an unwritable cache: the retail rates are
+        # the point of this dataset and the previous snapshot's fees are still
+        # the last known-good ones, so a full disk should not stop a rate
+        # change being vendored.
+        return {}, ""
