@@ -66,8 +66,8 @@ class MqttPublisher:
     def _configure(self, client: Any) -> Any:
         """Apply auth, TLS, and the last will.
 
-        Kept separate from construction so tests can inject a fake client and
-        still exercise this, rather than stubbing it out along with the client.
+        Kept separate from construction to allow dependency injection of the client
+        while still exercising this logic.
         """
         if self.settings.username:
             client.username_pw_set(self.settings.username, self.settings.password)

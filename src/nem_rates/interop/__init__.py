@@ -2,7 +2,7 @@
 
 Each submodule targets one consumer's documented format. They are pure functions
 over a :class:`~nem_rates.models.PriceCurve` so both the Home Assistant component
-and the MQTT publisher can share them, and so they are testable without either.
+and the MQTT publisher can share them, decoupling them from specific integrations.
 """
 
 from .emhass import forecast_lists, forecast_payload

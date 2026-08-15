@@ -242,9 +242,7 @@ class Bill:
 
         Separate from ``energy_charges`` because they are not charges for energy
         and a statement does not total them with the energy lines -- but they are
-        owed, so they are in ``total``. Splitting them out of ``energy_charges``
-        without adding them here dropped them from the bill entirely, which is
-        what the round-trip test now pins.
+        owed, so they are in ``total``.
         """
         return sum(
             value for name, value in self.import_components.items() if name in TAX_COMPONENTS
