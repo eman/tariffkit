@@ -17,8 +17,8 @@ classified by which bucket may offset it.
 CCA's, each with its own balance and its own charges to offset. A :class:`Bill`
 merges both providers, so applying this to one straight off the billing engine
 gives an approximation -- the two banks spend in an order a merged view cannot
-reproduce. Feed one provider's charges and credits to get an exact answer; the
-tests do that for each half of a real statement.
+reproduce. Feed one provider's charges and credits to get an exact answer; this
+must be done for each half of a real statement.
 
 Scope: this models carryover within a year. Closing a year -- the annual
 true-up, and Net Surplus Compensation -- lives in

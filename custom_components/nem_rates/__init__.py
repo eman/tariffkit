@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+
+_vendored = Path(__file__).parent / "vendored"
+if str(_vendored) not in sys.path:
+    sys.path.insert(0, str(_vendored))
 
 from .const import DOMAIN
 from .coordinator import NemRatesCoordinator
