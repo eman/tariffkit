@@ -46,7 +46,9 @@ from typing import Any
 from uuid import uuid4
 
 from ..billing import IntervalReading
+from ..config import default_config_path
 from ..errors import ConfigError, DataError
+from ..secrets import get_secret
 from .greenbutton import GreenButtonLayout, read_green_button
 from .homeassistant import load_dotenv
 
@@ -245,18 +247,23 @@ class PgeSettings:
         file is the kind of thing that gets copied into a bug report.
         """
         values: dict[str, str] = {}
-        if config_path:
+        path = Path(config_path) if config_path else default_config_path()
+        if path.is_file():
             import tomllib
 
-            raw = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))
+            raw = tomllib.loads(path.read_text(encoding="utf-8"))
             table = raw.get("pge", {})
             for key in ("account_id", "cookie_path"):
                 if key in table:
                     values[key] = str(table[key])
 
         env = {**load_dotenv(dotenv_path), **os.environ}
-        username = overrides.get("username") or env.get("PGE_USERNAME", "")
-        password = overrides.get("password") or env.get("PGE_PASSWORD", "")
+        username = (
+            overrides.get("username") or env.get("PGE_USERNAME") or get_secret("pge.username") or ""
+        )
+        password = (
+            overrides.get("password") or env.get("PGE_PASSWORD") or get_secret("pge.password") or ""
+        )
         account_id = (
             overrides.get("account_id")
             or env.get("PGE_ACCOUNT_ID", "")
@@ -264,18 +271,20 @@ class PgeSettings:
         )
         if not username or not password:
             raise ConfigError(
-                "PG&E credentials not found; set PGE_USERNAME and PGE_PASSWORD in .env "
-                "or the environment (never in a config file)"
+                "PG&E credentials not found; store pge.username and pge.password with "
+                "`tariffkit credentials set`, or set PGE_USERNAME and PGE_PASSWORD"
             )
-        cookie_path = Path(values.get("cookie_path", str(DEFAULT_COOKIE_PATH)))
+        cookie_path = Path(values.get("cookie_path", str(DEFAULT_COOKIE_PATH))).expanduser()
         return cls(
             username=username,
             password=password,
             account_id=account_id,
             cookie_path=cookie_path,
-            browser_cookie=env.get("PGE_BROWSER_COOKIE", ""),
-            validation_cookie=env.get("PGE_VALIDATION_COOKIE", ""),
-            account_urn=env.get("PGE_ACCOUNT_URN", ""),
+            browser_cookie=env.get("PGE_BROWSER_COOKIE") or get_secret("pge.browser_cookie") or "",
+            validation_cookie=env.get("PGE_VALIDATION_COOKIE")
+            or get_secret("pge.validation_cookie")
+            or "",
+            account_urn=env.get("PGE_ACCOUNT_URN") or get_secret("pge.account_urn") or "",
         )
 
 

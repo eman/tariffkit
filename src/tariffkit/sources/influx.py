@@ -37,6 +37,7 @@ from typing import Any
 from ..billing.models import IntervalReading
 from ..config import default_config_path
 from ..errors import ConfigError, DataError
+from ..secrets import get_secret
 from ..timeutil import to_pacific
 from .homeassistant import load_dotenv
 
@@ -107,6 +108,8 @@ class InfluxSettings:
         ):
             if value := env.get(name):
                 values[key] = value
+        if "token" not in values and (token := get_secret("influxdb.token")):
+            values["token"] = token
         values.update({k: v for k, v in overrides.items() if v})
 
         missing = [k for k in ("host", "database", "token") if not values.get(k)]
@@ -114,7 +117,8 @@ class InfluxSettings:
             raise ConfigError(
                 f"InfluxDB {', '.join(missing)} not set; put INFLUXDB3_HOST, "
                 f"INFLUXDB3_DATABASE and INFLUXDB3_AUTH_TOKEN in "
-                f"{Path(dotenv_path)} or the environment"
+                f"{Path(dotenv_path)}, the environment, or store influxdb.token with "
+                f"`tariffkit credentials set`"
             )
         return cls(
             host=values["host"],

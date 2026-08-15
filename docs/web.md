@@ -33,6 +33,32 @@ curl -s 'localhost:8000/v1/forecast?hours=24' | jq '.points[] | {start, export: 
 A naive timestamp returns 422 rather than being guessed at. A timestamp outside
 the vendored data returns 404.
 
+### Request-scoped configuration
+
+POST to the same pricing paths when a caller needs to price a different service
+agreement without changing server state:
+
+```bash
+curl -s localhost:8000/v1/price/at \
+  -H 'content-type: application/json' \
+  -d '{
+    "ts": "2026-09-15T19:00:00-07:00",
+    "config": {
+      "tariff": "EV2-A",
+      "supplier": "cca",
+      "interconnection_year": 2026,
+      "pto_date": "2026-06-03",
+      "cca": {"name": "MCE", "rate_card": "mce", "pcia_vintage": 2011}
+    }
+  }'
+```
+
+`POST /v1/price/now`, `POST /v1/price/at`, `POST /v1/forecast`, and
+`POST /v1/meta` accept the same `config` object as `Config.from_dict()`.
+Configuration is validated, used for that request, and discarded. Unknown keys
+return 422, so credentials cannot accidentally be accepted or persisted by the
+pricing service.
+
 ## Response shape
 
 ```json
@@ -111,11 +137,11 @@ docker run -p 8000:8000 \
   tariffkit
 ```
 
-The config file must be mounted: `TARIFFKIT_*` variables cannot express CCA
-settings, so `-e TARIFFKIT_SUPPLIER=cca` alone will fail to start.
+Mount the config file or provide `TARIFFKIT_CCA_JSON` for complete CCA settings.
 
 ## Security
 
 There is no authentication. Bind to localhost, or put it behind a reverse proxy
 or firewall. It exposes your rate plan and interconnection details, and it is
-read-only, but it is not written to face the internet.
+read-only, but it is not written to face the internet. Request bodies must never
+contain credentials; this API has no credential-backed operation.

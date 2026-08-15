@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import getpass
 import json
 import logging
 import sys
@@ -16,6 +17,7 @@ from .config import Config
 from .engine import RateEngine
 from .errors import ConfigError, TariffKitError
 from .models import PriceCurve, PricePoint
+from .secrets import SECRET_NAMES, configured_secrets, delete_secret, set_secret
 from .timeutil import PACIFIC, to_pacific
 
 
@@ -28,6 +30,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, help="path to a config TOML file")
     parser.add_argument("-v", "--verbose", action="store_true", help="log to stderr")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    credentials = sub.add_parser(
+        "credentials",
+        help="store credentials in the operating-system keyring",
+    )
+    credential_commands = credentials.add_subparsers(dest="credential_command", required=True)
+    credential_set = credential_commands.add_parser("set", help="prompt for and store a secret")
+    credential_set.add_argument("name", choices=SECRET_NAMES)
+    credential_delete = credential_commands.add_parser("delete", help="delete a stored secret")
+    credential_delete.add_argument("name", choices=SECRET_NAMES)
+    credential_commands.add_parser("list", help="list configured names without values")
 
     now = sub.add_parser("now", help="current import and export price")
     now.add_argument("--json", action="store_true", help="emit JSON")
@@ -79,17 +92,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     mqtt = sub.add_parser("mqtt", help="publish to MQTT every hour")
-    mqtt.add_argument("--broker", required=True)
-    mqtt.add_argument("--port", type=int, default=1883)
+    mqtt.add_argument("--broker")
+    mqtt.add_argument("--port", type=int)
     mqtt.add_argument("--username")
-    mqtt.add_argument("--password")
-    mqtt.add_argument("--topic-prefix", default="tariffkit")
-    mqtt.add_argument("--forecast-hours", type=int, default=48)
-    mqtt.add_argument("--tls", action="store_true")
+    mqtt.add_argument("--topic-prefix")
+    mqtt.add_argument("--forecast-hours", type=int)
+    mqtt.add_argument("--tls", action="store_true", default=None)
     mqtt.add_argument(
         "--no-discovery",
         dest="discovery",
         action="store_false",
+        default=None,
         help="skip Home Assistant discovery config",
     )
     mqtt.add_argument("--once", action="store_true", help="publish once and exit")
@@ -222,6 +235,18 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
+        if args.command == "credentials":
+            if args.credential_command == "set":
+                set_secret(args.name, getpass.getpass(f"{args.name}: "))
+                print(f"stored {args.name}")
+            elif args.credential_command == "delete":
+                delete_secret(args.name)
+                print(f"deleted {args.name}")
+            else:
+                for name in configured_secrets():
+                    print(name)
+            return 0
+
         config = Config.load(args.config)
         engine = RateEngine(config)
 
@@ -316,11 +341,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "mqtt":
             from .mqtt import MqttPublisher, MqttSettings
 
-            settings = MqttSettings(
+            settings = MqttSettings.load(
+                config_path=args.config,
                 broker=args.broker,
                 port=args.port,
                 username=args.username,
-                password=args.password,
                 topic_prefix=args.topic_prefix,
                 discovery=args.discovery,
                 forecast_hours=args.forecast_hours,

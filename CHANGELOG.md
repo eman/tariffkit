@@ -31,6 +31,18 @@ All notable changes to this project are documented here. This project follows
   cannot satisfy the requirement.
 
 ### Added
+- **Persistent private configuration across every active surface.** The CLI
+  continues to load tariff, PTO, CCA, source, and MQTT settings from the XDG
+  config file, while `tariffkit credentials` stores long-lived source and MQTT
+  credentials in the operating-system keyring without putting values in argv or
+  printing them. Environment injection remains available for containers.
+- **Request-scoped REST pricing configuration.** POST variants of meta, current,
+  point-in-time, and forecast endpoints accept a validated `Config` object for
+  one request and reject unknown keys, including credentials.
+- **Complete Home Assistant tariff setup.** Config entries now cover the rate
+  plan, baseline, vendored or custom CCA generation, PCIA overrides, PTO, and
+  forecast settings. The integration does not collect credentials because its
+  runtime is local and credential-free.
 - **`nem-rates regen tax`** and the California Energy Resources (Electrical
   Energy) Surcharge, read from CDTFA's numbered notices. A state tax rather than
   a utility tariff -- imposed whoever supplies the generation -- and billed on

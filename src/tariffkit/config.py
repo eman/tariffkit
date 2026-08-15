@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tomllib
 from dataclasses import dataclass, field, replace
@@ -159,18 +160,58 @@ class Config:
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> Config:
         data = dict(raw)
-        if "cca" in data and isinstance(data["cca"], dict):
-            data["cca"] = CcaConfig(**data["cca"])
-        if "supplier" in data:
-            data["supplier"] = Supplier(data["supplier"])
-        for key in ("pto_date",):
-            value = data.get(key)
-            if isinstance(value, str):
-                data[key] = date.fromisoformat(value)
         unknown = set(data) - {f.name for f in cls.__dataclass_fields__.values()}
         if unknown:
             raise ConfigError(f"unknown config keys: {sorted(unknown)}")
-        return cls(**data)
+        try:
+            cca_value = data.get("cca")
+            if isinstance(cca_value, dict):
+                cca_raw = cca_value
+                unknown_cca = set(cca_raw) - {
+                    f.name for f in CcaConfig.__dataclass_fields__.values()
+                }
+                if unknown_cca:
+                    raise ConfigError(f"unknown CCA config keys: {sorted(unknown_cca)}")
+                data["cca"] = CcaConfig(**cca_raw)
+            elif cca_value is not None and not isinstance(cca_value, CcaConfig):
+                raise ConfigError("cca must be an object")
+            if "supplier" in data:
+                data["supplier"] = Supplier(data["supplier"])
+            value = data.get("pto_date")
+            if isinstance(value, str):
+                data["pto_date"] = date.fromisoformat(value)
+            return cls(**data)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(f"invalid config: {exc}") from exc
+
+    def to_dict(self) -> dict[str, Any]:
+        """A JSON-compatible representation suitable for API request bodies."""
+        data: dict[str, Any] = {
+            "utility": self.utility,
+            "tariff": self.tariff,
+            "supplier": self.supplier.value,
+            "interconnection_year": self.interconnection_year,
+            "pto_date": self.pto_date.isoformat() if self.pto_date else None,
+            "vintage": self.vintage,
+            "acc_plus_segment": self.acc_plus_segment,
+            "discount": self.discount,
+            "base_services_charge_tier": self.base_services_charge_tier,
+            "baseline_territory": self.baseline_territory,
+            "baseline_code": self.baseline_code,
+            "nsc_rate": self.nsc_rate,
+        }
+        if self.cca is not None:
+            data["cca"] = {
+                "name": self.cca.name,
+                "rate_card": self.cca.rate_card,
+                "option": self.cca.option,
+                "pcia_vintage": self.cca.pcia_vintage,
+                "pcia_rate": self.cca.pcia_rate,
+                "franchise_fee_surcharge": self.cca.franchise_fee_surcharge,
+                "generation_rates": self.cca.generation_rates,
+                "export_generation_rate": self.cca.export_generation_rate,
+            }
+        return data
 
     @classmethod
     def from_toml(cls, path: str | Path) -> Config:
@@ -182,6 +223,10 @@ class Config:
         """Overlay ``TARIFFKIT_*`` environment variables onto ``base``."""
         config = base or cls()
         overrides: dict[str, Any] = {}
+        if value := os.environ.get("TARIFFKIT_UTILITY"):
+            overrides["utility"] = value
+        if value := os.environ.get("TARIFFKIT_TARIFF"):
+            overrides["tariff"] = value
         if value := os.environ.get("TARIFFKIT_SUPPLIER"):
             overrides["supplier"] = Supplier(value)
         if value := os.environ.get("TARIFFKIT_VINTAGE"):
@@ -196,8 +241,23 @@ class Config:
             overrides["discount"] = value
         if value := os.environ.get("TARIFFKIT_BSC_TIER"):
             overrides["base_services_charge_tier"] = int(value)
+        if value := os.environ.get("TARIFFKIT_BASELINE_TERRITORY"):
+            overrides["baseline_territory"] = value
+        if value := os.environ.get("TARIFFKIT_BASELINE_CODE"):
+            overrides["baseline_code"] = value
         if value := os.environ.get("TARIFFKIT_NSC_RATE"):
             overrides["nsc_rate"] = float(value)
+        if value := os.environ.get("TARIFFKIT_CCA_JSON"):
+            try:
+                cca_raw = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise ConfigError("TARIFFKIT_CCA_JSON is not valid JSON") from exc
+            if not isinstance(cca_raw, dict):
+                raise ConfigError("TARIFFKIT_CCA_JSON must be a JSON object")
+            unknown_cca = set(cca_raw) - {f.name for f in CcaConfig.__dataclass_fields__.values()}
+            if unknown_cca:
+                raise ConfigError(f"unknown CCA config keys: {sorted(unknown_cca)}")
+            overrides["cca"] = CcaConfig(**cca_raw)
         return replace(config, **overrides) if overrides else config
 
     @classmethod

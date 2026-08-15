@@ -17,16 +17,23 @@ from tariffkit.timeutil import now_pacific
 
 from .const import (
     CONF_ACC_PLUS_SEGMENT,
+    CONF_BASELINE_CODE,
+    CONF_BASELINE_TERRITORY,
     CONF_BSC_TIER,
     CONF_CCA_EXPORT_RATE,
     CONF_CCA_FRANCHISE_FEE,
+    CONF_CCA_GENERATION_RATES,
     CONF_CCA_NAME,
+    CONF_CCA_OPTION,
+    CONF_CCA_PCIA_RATE,
     CONF_CCA_PCIA_VINTAGE,
+    CONF_CCA_RATE_CARD,
     CONF_DISCOUNT,
     CONF_FORECAST_HOURS,
     CONF_INTERCONNECTION_YEAR,
     CONF_PTO_DATE,
     CONF_SUPPLIER,
+    CONF_TARIFF,
     DEFAULT_FORECAST_HOURS,
     DOMAIN,
 )
@@ -41,18 +48,25 @@ def config_from_entry(data: dict[str, Any]) -> Config:
     if supplier is Supplier.CCA:
         cca = CcaConfig(
             name=data.get(CONF_CCA_NAME, ""),
+            rate_card=data.get(CONF_CCA_RATE_CARD) or None,
+            option=data.get(CONF_CCA_OPTION, "light_green"),
             pcia_vintage=data.get(CONF_CCA_PCIA_VINTAGE),
+            pcia_rate=data.get(CONF_CCA_PCIA_RATE),
             franchise_fee_surcharge=data.get(CONF_CCA_FRANCHISE_FEE),
+            generation_rates=data.get(CONF_CCA_GENERATION_RATES, {}),
             export_generation_rate=data.get(CONF_CCA_EXPORT_RATE),
         )
     pto = data.get(CONF_PTO_DATE)
     return Config(
         supplier=supplier,
+        tariff=data.get(CONF_TARIFF, "E-ELEC"),
         interconnection_year=data.get(CONF_INTERCONNECTION_YEAR),
         pto_date=date.fromisoformat(pto) if isinstance(pto, str) else pto,
         acc_plus_segment=data.get(CONF_ACC_PLUS_SEGMENT, "residential"),
         discount=data.get(CONF_DISCOUNT, "none"),
         base_services_charge_tier=data.get(CONF_BSC_TIER, 3),
+        baseline_territory=data.get(CONF_BASELINE_TERRITORY) or None,
+        baseline_code=data.get(CONF_BASELINE_CODE, "basic"),
         cca=cca,
     )
 

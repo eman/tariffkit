@@ -5,17 +5,24 @@ from __future__ import annotations
 DOMAIN = "tariffkit"
 
 CONF_SUPPLIER = "supplier"
+CONF_TARIFF = "tariff"
 CONF_INTERCONNECTION_YEAR = "interconnection_year"
 CONF_PTO_DATE = "pto_date"
 CONF_ACC_PLUS_SEGMENT = "acc_plus_segment"
 CONF_BSC_TIER = "base_services_charge_tier"
 CONF_DISCOUNT = "discount"
+CONF_BASELINE_TERRITORY = "baseline_territory"
+CONF_BASELINE_CODE = "baseline_code"
 CONF_FORECAST_HOURS = "forecast_hours"
 
 CONF_CCA_NAME = "cca_name"
+CONF_CCA_RATE_CARD = "cca_rate_card"
+CONF_CCA_OPTION = "cca_option"
 CONF_CCA_PCIA_VINTAGE = "cca_pcia_vintage"
+CONF_CCA_PCIA_RATE = "cca_pcia_rate"
 CONF_CCA_FRANCHISE_FEE = "cca_franchise_fee_surcharge"
 CONF_CCA_EXPORT_RATE = "cca_export_generation_rate"
+CONF_CCA_GENERATION_RATES = "cca_generation_rates"
 
 DEFAULT_FORECAST_HOURS = 48
 

@@ -14,16 +14,23 @@ from tariffkit.errors import TariffKitError
 
 from .const import (
     CONF_ACC_PLUS_SEGMENT,
+    CONF_BASELINE_CODE,
+    CONF_BASELINE_TERRITORY,
     CONF_BSC_TIER,
     CONF_CCA_EXPORT_RATE,
     CONF_CCA_FRANCHISE_FEE,
+    CONF_CCA_GENERATION_RATES,
     CONF_CCA_NAME,
+    CONF_CCA_OPTION,
+    CONF_CCA_PCIA_RATE,
     CONF_CCA_PCIA_VINTAGE,
+    CONF_CCA_RATE_CARD,
     CONF_DISCOUNT,
     CONF_FORECAST_HOURS,
     CONF_INTERCONNECTION_YEAR,
     CONF_PTO_DATE,
     CONF_SUPPLIER,
+    CONF_TARIFF,
     DEFAULT_FORECAST_HOURS,
     DOMAIN,
 )
@@ -40,6 +47,11 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                     selector.SelectSelectorConfig(
                         options=["bundled", "cca"], translation_key="supplier"
                     )
+                )
+            ),
+            vol.Required(CONF_TARIFF, default=defaults.get(CONF_TARIFF, "E-ELEC")): (
+                selector.SelectSelector(
+                    selector.SelectSelectorConfig(options=["E-ELEC", "E-TOU-C", "EV2-A"])
                 )
             ),
             vol.Required(
@@ -72,12 +84,38 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                     selector.NumberSelectorConfig(min=1, max=3, step=1, mode="box")
                 )
             ),
+            vol.Optional(
+                CONF_BASELINE_TERRITORY,
+                default=defaults.get(CONF_BASELINE_TERRITORY, ""),
+            ): str,
+            vol.Required(
+                CONF_BASELINE_CODE,
+                default=defaults.get(CONF_BASELINE_CODE, "basic"),
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=["basic", "all_electric"], translation_key="baseline_code"
+                )
+            ),
             vol.Optional(CONF_CCA_NAME, default=defaults.get(CONF_CCA_NAME, "")): str,
+            vol.Optional(
+                CONF_CCA_RATE_CARD,
+                default=defaults.get(CONF_CCA_RATE_CARD, ""),
+            ): str,
+            vol.Optional(
+                CONF_CCA_OPTION,
+                default=defaults.get(CONF_CCA_OPTION, "light_green"),
+            ): str,
             vol.Optional(
                 CONF_CCA_PCIA_VINTAGE,
                 description={"suggested_value": defaults.get(CONF_CCA_PCIA_VINTAGE)},
             ): selector.NumberSelector(
                 selector.NumberSelectorConfig(min=2009, max=2030, step=1, mode="box")
+            ),
+            vol.Optional(
+                CONF_CCA_PCIA_RATE,
+                description={"suggested_value": defaults.get(CONF_CCA_PCIA_RATE)},
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(min=-1, max=1, step=0.00001, mode="box")
             ),
             vol.Optional(
                 CONF_CCA_FRANCHISE_FEE,
@@ -91,6 +129,10 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
             ): selector.NumberSelector(
                 selector.NumberSelectorConfig(min=0, max=5, step=0.00001, mode="box")
             ),
+            vol.Optional(
+                CONF_CCA_GENERATION_RATES,
+                description={"suggested_value": defaults.get(CONF_CCA_GENERATION_RATES)},
+            ): selector.ObjectSelector(),
             vol.Required(
                 CONF_FORECAST_HOURS,
                 default=defaults.get(CONF_FORECAST_HOURS, DEFAULT_FORECAST_HOURS),
@@ -130,7 +172,8 @@ class TariffKitConfigFlow(ConfigFlow, domain=DOMAIN):
             errors = _validate(data)
             if not errors:
                 await self.async_set_unique_id(
-                    f"{data[CONF_SUPPLIER]}-{data[CONF_INTERCONNECTION_YEAR]}"
+                    f"{data[CONF_TARIFF]}-{data[CONF_SUPPLIER]}-"
+                    f"{data[CONF_INTERCONNECTION_YEAR]}-{data[CONF_PTO_DATE]}"
                 )
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(title="PG&E Rates", data=data)

@@ -5,16 +5,23 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 import signal
 import threading
+import tomllib
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from types import FrameType
 from typing import Any
 
+from ..config import default_config_path
 from ..engine import RateEngine
+from ..errors import ConfigError
 from ..interop import forecast_lists, predbat_payload
 from ..models import PricePoint
+from ..secrets import get_secret
+from ..sources.homeassistant import load_dotenv
 from ..timeutil import next_hour, now_pacific
 from .discovery import discovery_payloads
 
@@ -36,6 +43,55 @@ class MqttSettings:
     forecast_hours: int = 48
     client_id: str = "tariffkit"
     tls: bool = False
+
+    @classmethod
+    def load(
+        cls,
+        config_path: str | Path | None = None,
+        dotenv_path: str | Path = ".env",
+        **overrides: Any,
+    ) -> MqttSettings:
+        """Resolve non-secrets from config and credentials from env or keyring."""
+        values: dict[str, Any] = {}
+        path = Path(config_path) if config_path else default_config_path()
+        if path.is_file():
+            table = tomllib.loads(path.read_text(encoding="utf-8")).get("mqtt", {})
+            for key in (
+                "broker",
+                "port",
+                "topic_prefix",
+                "discovery",
+                "discovery_prefix",
+                "forecast_hours",
+                "client_id",
+                "tls",
+            ):
+                if key in table:
+                    values[key] = table[key]
+
+        env = {**load_dotenv(dotenv_path), **os.environ}
+        for key, name in (
+            ("broker", "TARIFFKIT_MQTT_BROKER"),
+            ("port", "TARIFFKIT_MQTT_PORT"),
+            ("topic_prefix", "TARIFFKIT_MQTT_TOPIC_PREFIX"),
+            ("username", "TARIFFKIT_MQTT_USERNAME"),
+            ("password", "TARIFFKIT_MQTT_PASSWORD"),
+        ):
+            if value := env.get(name):
+                values[key] = value
+        if not values.get("username"):
+            values["username"] = get_secret("mqtt.username")
+        if not values.get("password"):
+            values["password"] = get_secret("mqtt.password")
+        values.update({key: value for key, value in overrides.items() if value is not None})
+        if not values.get("broker"):
+            raise ConfigError(
+                "MQTT broker not set; configure [mqtt].broker, TARIFFKIT_MQTT_BROKER, or --broker"
+            )
+        for key in ("port", "forecast_hours"):
+            if key in values:
+                values[key] = int(values[key])
+        return cls(**values)
 
 
 class MqttPublisher:

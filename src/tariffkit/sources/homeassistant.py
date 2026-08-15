@@ -38,6 +38,7 @@ from typing import Any, Literal
 from ..billing.models import IntervalReading
 from ..config import default_config_path
 from ..errors import ConfigError, DataError
+from ..secrets import get_secret
 from ..timeutil import to_pacific
 
 log = logging.getLogger(__name__)
@@ -128,7 +129,7 @@ class HaSettings:
         env = {**load_dotenv(dotenv_path), **os.environ}
         if host := env.get("HA_HOST"):
             values["host"] = host
-        if token := env.get("HA_TOKEN"):
+        if token := env.get("HA_TOKEN") or get_secret("home_assistant.token"):
             values["token"] = token
         for key, name in (
             ("import_entity", "TARIFFKIT_HA_IMPORT_ENTITY"),
@@ -143,7 +144,8 @@ class HaSettings:
         if missing:
             raise ConfigError(
                 f"Home Assistant {' and '.join(missing)} not set; put HA_HOST and "
-                f"HA_TOKEN in {Path(dotenv_path)} or the environment"
+                f"HA_TOKEN in the environment, or store home_assistant.token with "
+                f"`tariffkit credentials set`"
             )
         return cls(
             host=values["host"],

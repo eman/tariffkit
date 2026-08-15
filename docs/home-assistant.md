@@ -27,6 +27,16 @@ cp -r /path/to/tariffkit/custom_components/tariffkit custom_components/
 Restart Home Assistant, then **Settings → Devices & Services → Add Integration
 → "TariffKit"**.
 
+Setup stores the rate plan, PTO date, NBT year, discount, baseline details, CCA
+card or custom generation rates, and forecast horizon in Home Assistant's
+private config-entry storage. The options flow edits the same fields later.
+
+The integration computes from local static data and does not sign in to PG&E,
+MQTT, InfluxDB, or another Home Assistant instance, so it deliberately does not
+request or store those credentials. Home Assistant config entries are access
+controlled but not an encrypted secret vault; adding unused passwords there
+would increase exposure without enabling a feature.
+
 ### HACS
 
 Not in the default HACS store. Add this repository as a custom repository

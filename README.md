@@ -76,6 +76,7 @@ See [docs/home-assistant.md](docs/home-assistant.md) for setup of each.
 pip install tariffkit              # core, zero dependencies
 pip install 'tariffkit[mqtt]'      # + MQTT publisher with Home Assistant discovery
 pip install 'tariffkit[web]'       # + FastAPI service
+pip install 'tariffkit[secrets]'   # + OS keyring credential storage
 pip install 'tariffkit[all]'
 ```
 
@@ -105,6 +106,9 @@ base_services_charge_tier = 3
 ```
 
 `TARIFFKIT_*` environment variables override any file setting.
+Long-lived PG&E, Home Assistant, InfluxDB, and MQTT credentials can be stored
+outside that file with `tariffkit credentials set`; see
+[Configuration](docs/configuration.md#credentials).
 
 ### What the numbers include
 

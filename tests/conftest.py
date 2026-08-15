@@ -21,5 +21,6 @@ def isolated_user_config(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path_factory.mktemp("config")))
     for name in [key for key in os.environ if key.startswith("TARIFFKIT_")]:
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("TARIFFKIT_DISABLE_KEYRING", "1")
     # Guard against Config falling back to a real home directory.
     monkeypatch.setattr(Path, "home", lambda: Path(os.environ["XDG_CONFIG_HOME"]))

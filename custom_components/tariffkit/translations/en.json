@@ -6,15 +6,22 @@
         "description": "Prices come from rate data bundled with the integration; nothing is fetched at runtime. {detail}",
         "data": {
           "supplier": "Generation supplier",
+          "tariff": "Rate plan",
           "interconnection_year": "Interconnection application year",
           "pto_date": "Permission-To-Operate date",
           "acc_plus_segment": "ACC Plus segment",
           "discount": "CARE / FERA discount",
           "base_services_charge_tier": "Base Services Charge income tier",
+          "baseline_territory": "Baseline territory",
+          "baseline_code": "Baseline heat-source code",
           "cca_name": "CCA name",
+          "cca_rate_card": "Vendored CCA rate card",
+          "cca_option": "CCA product option",
           "cca_pcia_vintage": "CCA PCIA vintage year",
+          "cca_pcia_rate": "PCIA rate override ($/kWh)",
           "cca_franchise_fee_surcharge": "Franchise fee surcharge ($/kWh)",
           "cca_export_generation_rate": "CCA export generation rate ($/kWh)",
+          "cca_generation_rates": "CCA generation rates by season and period",
           "forecast_hours": "Forecast hours"
         },
         "data_description": {
@@ -40,15 +47,22 @@
         "description": "{detail}",
         "data": {
           "supplier": "Generation supplier",
+          "tariff": "Rate plan",
           "interconnection_year": "Interconnection application year",
           "pto_date": "Permission-To-Operate date",
           "acc_plus_segment": "ACC Plus segment",
           "discount": "CARE / FERA discount",
           "base_services_charge_tier": "Base Services Charge income tier",
+          "baseline_territory": "Baseline territory",
+          "baseline_code": "Baseline heat-source code",
           "cca_name": "CCA name",
+          "cca_rate_card": "Vendored CCA rate card",
+          "cca_option": "CCA product option",
           "cca_pcia_vintage": "CCA PCIA vintage year",
+          "cca_pcia_rate": "PCIA rate override ($/kWh)",
           "cca_franchise_fee_surcharge": "Franchise fee surcharge ($/kWh)",
           "cca_export_generation_rate": "CCA export generation rate ($/kWh)",
+          "cca_generation_rates": "CCA generation rates by season and period",
           "forecast_hours": "Forecast hours"
         }
       }
@@ -76,6 +90,12 @@
         "none": "None",
         "care": "CARE",
         "fera": "FERA"
+      }
+    },
+    "baseline_code": {
+      "options": {
+        "basic": "Basic / gas heat (Code B)",
+        "all_electric": "All-electric heat (Code H)"
       }
     }
   },

@@ -31,7 +31,7 @@ tariffkit mqtt --broker 192.168.1.100
 |---|---|---|
 | `--broker` | required | Broker host or IP |
 | `--port` | 1883 | |
-| `--username` / `--password` | none | |
+| `--username` | keyring/environment | Store `mqtt.password` with `tariffkit credentials set`; passwords are not accepted in argv |
 | `--tls` | off | |
 | `--topic-prefix` | `tariffkit` | |
 | `--forecast-hours` | 48 | Hours in the forecast payload |

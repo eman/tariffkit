@@ -18,6 +18,64 @@ Check what actually resolved before trusting a number:
 tariffkit info
 ```
 
+The file contains tariff and endpoint settings, not credentials. It may reveal
+your utility, rate plan, CCA, and PTO date, so keep it user-readable only:
+
+```bash
+chmod 600 ~/.config/tariffkit/config.toml
+```
+
+## Credentials
+
+Store long-lived credentials in the operating system's keyring rather than in
+`config.toml`, shell history, command arguments, or a repository `.env` file:
+
+```bash
+pip install 'tariffkit[secrets]'
+tariffkit credentials set pge.username
+tariffkit credentials set pge.password
+tariffkit credentials set home_assistant.token
+tariffkit credentials set influxdb.token
+tariffkit credentials set mqtt.username
+tariffkit credentials set mqtt.password
+
+tariffkit credentials list       # names only; values are never printed
+tariffkit credentials delete mqtt.password
+```
+
+`set` prompts without echo, so the value never appears in process arguments or
+shell history. macOS Keychain, Windows Credential Locker, and the configured
+Linux Secret Service backend provide storage. Containers and unattended
+services can continue to inject environment variables instead.
+
+Secret precedence is: explicit library/CLI value, environment (including a
+working-directory `.env` for compatibility), then OS keyring. Non-secret
+settings use: defaults, `config.toml`, environment, then explicit arguments.
+
+### PG&E portal access
+
+Portal credentials are only needed for Green Button downloads and the
+repository audit harness; pricing remains offline. Store them once:
+
+```bash
+tariffkit credentials set pge.username
+tariffkit credentials set pge.password
+```
+
+Optional device-trust values use `pge.browser_cookie`,
+`pge.validation_cookie`, and `pge.account_urn`. Non-secret account settings can
+live in the main file:
+
+```toml
+[pge]
+account_id = "service account identifier"
+cookie_path = "~/.cache/tariffkit/pge/cookies.json"
+```
+
+The cookie cache is created with mode `0600`. `PGE_USERNAME`, `PGE_PASSWORD`,
+`PGE_BROWSER_COOKIE`, `PGE_VALIDATION_COOKIE`, and `PGE_ACCOUNT_URN` remain
+available for containers.
+
 ## A worked example: PG&E delivery + MCE generation
 
 ```toml
@@ -134,7 +192,8 @@ section is only needed to point elsewhere. Note the defaults are the
 `sensor.eagle_100_total_energy_delivered` is the raw device feed and drops to
 zero several times a day when the meter session restarts.
 
-Credentials come from `.env` in the working directory, or the environment.
+The access token can come from the OS keyring, `.env` in the working directory,
+or the environment.
 The file is not shell — spaces around `=` and quoted values are fine, and are
 what the parser expects:
 
@@ -151,10 +210,9 @@ export HA_HOST=https://homeassistant.example:8123
 export HA_TOKEN=...
 ```
 
-Resolution order, later winning: the config file, then `.env`, then real
+Resolution order, later winning: the config file, OS keyring, `.env`, real
 environment variables, then `--ha-import-entity` / `--ha-export-entity`.
-`HA_TOKEN` is deliberately never read from the config file, which is not
-gitignored.
+`HA_TOKEN` is deliberately never read from the config file.
 
 ## Net Surplus Compensation
 
@@ -175,7 +233,7 @@ magnitude stand-in, not a forecast. Also settable as `TARIFFKIT_NSC_RATE`.
 ## InfluxDB
 
 Only needed for `tariffkit bill --source influx`. Same split as above: series
-names are configuration, the token is not.
+names are configuration, while the token comes from keyring or environment.
 
 ```toml
 [influxdb]
@@ -200,21 +258,43 @@ INFLUXDB3_DATABASE = "homedb"
 INFLUXDB3_AUTH_TOKEN = "<database token>"
 ```
 
-Resolution order, later winning: the config file, then `.env`, then real
+Resolution order, later winning: the config file, keyring, `.env`, then real
 environment variables (`TARIFFKIT_INFLUX_IMPORT_ENTITY` /
 `TARIFFKIT_INFLUX_EXPORT_ENTITY` for the series), then
 `--influx-import-entity` / `--influx-export-entity`. As with `HA_TOKEN`,
 `INFLUXDB3_AUTH_TOKEN` is never read from the config file.
 
+## MQTT
+
+MQTT settings also persist in the main config file, so publishing does not need
+connection arguments on every invocation:
+
+```toml
+[mqtt]
+broker = "mqtt.example"
+port = 8883
+topic_prefix = "tariffkit"
+forecast_hours = 48
+tls = true
+```
+
+Store `mqtt.username` and `mqtt.password` in the keyring. Explicit CLI
+arguments remain available for ephemeral overrides.
+
 ## Environment variables
 
 `TARIFFKIT_SUPPLIER`, `TARIFFKIT_VINTAGE`, `TARIFFKIT_INTERCONNECTION_YEAR`,
 `TARIFFKIT_PTO_DATE`, `TARIFFKIT_ACC_PLUS_SEGMENT`, `TARIFFKIT_DISCOUNT`,
-`TARIFFKIT_BSC_TIER`.
+`TARIFFKIT_BSC_TIER`, `TARIFFKIT_BASELINE_TERRITORY`,
+`TARIFFKIT_BASELINE_CODE`, and `TARIFFKIT_NSC_RATE`.
 
-**These do not cover `[cca]` settings.** A container or service that needs CCA
-pricing must mount a config file; setting `TARIFFKIT_SUPPLIER=cca` alone raises
-`ConfigError` because no `CcaConfig` is supplied.
+Containers can provide a complete CCA object as `TARIFFKIT_CCA_JSON`; for
+example:
+
+```bash
+export TARIFFKIT_SUPPLIER=cca
+export TARIFFKIT_CCA_JSON='{"name":"MCE","rate_card":"mce","pcia_vintage":2011}'
+```
 
 ## CCA service
 
