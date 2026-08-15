@@ -18,9 +18,9 @@ from audit.reconcile.report import render
 from audit.statements import Statement, parse_statement
 from audit.statements.mapping import MAP, LineRule, Side, check_map, normalize_label, split_side
 from audit.statements.model import Section
-from nem_rates.billing import Bill, BillingPeriod
-from nem_rates.config import CcaConfig, Config
-from nem_rates.models import Supplier
+from tariffkit.billing import Bill, BillingPeriod
+from tariffkit.config import CcaConfig, Config
+from tariffkit.models import Supplier
 
 from .test_statements import load
 

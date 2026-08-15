@@ -21,14 +21,14 @@ PGE_20260205.pdf  2025-12-30..2026-01-29 (31 days)  E-TOU-C / MCE
 
 ## Why it is not in the package
 
-`src/nem_rates` prices energy. This reads how one utility prints paper for one
+`src/tariffkit` prices energy. This reads how one utility prints paper for one
 account, and needs that account's login. A wheel carrying it would ship a
 statement parser that fails on everybody else's bill. The build pins the
 exclusion for both wheel and sdist.
 
 The one thing that does belong in the library is the authenticated session and
 Green Button download: a metered record fetched over HTTP is still a metered
-record, which is what `nem_rates.sources` is for.
+record, which is what `tariffkit.sources` is for.
 
 ## Setup
 
@@ -42,7 +42,7 @@ moment. A cycle spanning a change is refused rather than guessed: no single
 configuration priced it, and picking one produces a believable delta that gets
 filed as a rounding mystery.
 
-Statements are never committed. Point `NEM_RATES_STATEMENT_DIR` at wherever
+Statements are never committed. Point `TARIFFKIT_STATEMENT_DIR` at wherever
 yours already are, or let downloads land in `.cache/pge/statements/`. `*.pdf` is
 gitignored.
 

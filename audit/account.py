@@ -4,7 +4,7 @@ Rate *data* is already effective-dated: ``versioned.load`` picks the snapshot in
 force on a date and raises rather than reaching backwards. What is not dated is
 the *account* -- the schedule it is on, whether a community choice aggregator
 supplies its generation, its baseline territory, its PCIA vintage. Those change
-over an account's life too, and a :class:`~nem_rates.config.Config` describes only
+over an account's life too, and a :class:`~tariffkit.config.Config` describes only
 one moment of it. Pricing a 2026 January statement with a configuration written
 for April prices E-TOU-C usage on EV2-A, which is off by tens of dollars and
 looks entirely plausible.
@@ -38,11 +38,11 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-from nem_rates.billing import BillingPeriod
-from nem_rates.billing.engine import Segment
-from nem_rates.config import CcaConfig, Config
-from nem_rates.errors import ConfigError
-from nem_rates.models import Supplier
+from tariffkit.billing import BillingPeriod
+from tariffkit.billing.engine import Segment
+from tariffkit.config import CcaConfig, Config
+from tariffkit.errors import ConfigError
+from tariffkit.models import Supplier
 
 from .errors import AccountError
 from .statements import Statement

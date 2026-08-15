@@ -1,6 +1,6 @@
 """Command line for the audit harness.
 
-Mirrors ``nem_rates.cli``'s conventions -- argparse subcommands dispatched by
+Mirrors ``tariffkit.cli``'s conventions -- argparse subcommands dispatched by
 name, ``--json`` wherever a machine-readable form is useful -- so moving between
 the two does not mean learning a second set of habits.
 
@@ -23,7 +23,7 @@ from collections.abc import Sequence
 from datetime import date, timedelta
 from pathlib import Path
 
-from nem_rates import __version__ as library_version
+from tariffkit import __version__ as library_version
 
 from . import __version__
 from .errors import AuditError
@@ -44,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version",
         action="version",
-        version=f"audit {__version__} (nem-rates {library_version})",
+        version=f"audit {__version__} (tariffkit {library_version})",
     )
     sub = parser.add_subparsers(dest="command", required=False)
 
@@ -178,7 +178,7 @@ def _run(
     """Ask the portal what statements exist, then reconcile each of them."""
     from contextlib import ExitStack
 
-    from nem_rates.sources.pge import PgeSession, PgeSettings
+    from tariffkit.sources.pge import PgeSession, PgeSettings
 
     from .run import DEFAULT_CACHE, downloaded, fetch_refs, select
 
@@ -229,7 +229,7 @@ def _doctor(*, account: Path, since: date | None = None, offline: bool = False) 
     and reporting every problem at once matters more than it sounds, because
     fixing them one round trip at a time against a live portal is slow.
     """
-    from nem_rates.sources.pge import ENDPOINTS
+    from tariffkit.sources.pge import ENDPOINTS
 
     from .preflight import run_checks
 
@@ -267,9 +267,9 @@ def _reconcile(
     as_json: bool,
     green_button: bool = False,
 ) -> int:
-    from nem_rates.billing.engine import compute_segments, price_segments
-    from nem_rates.engine import RateEngine
-    from nem_rates.sources.influx import InfluxSettings, read_counters
+    from tariffkit.billing.engine import compute_segments, price_segments
+    from tariffkit.engine import RateEngine
+    from tariffkit.sources.influx import InfluxSettings, read_counters
 
     from .account import AccountHistory, check_against_statement
     from .reconcile import reconcile, render_all, render_summary
@@ -327,7 +327,7 @@ def _reconcile(
             # request because one meter cannot tell you it is incomplete: PG&E's
             # export was once missing a whole day, and only a second source
             # showed it.
-            from nem_rates.sources.pge import PgeSettings, read_green_button_download
+            from tariffkit.sources.pge import PgeSettings, read_green_button_download
 
             sources["green_button"] = read_green_button_download(
                 PgeSettings.load(), statement.period.start, statement.period.end

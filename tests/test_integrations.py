@@ -7,9 +7,9 @@ from typing import Any
 
 import pytest
 
-from nem_rates import Config, RateEngine
-from nem_rates.cli import main
-from nem_rates.mqtt.discovery import discovery_payloads
+from tariffkit import Config, RateEngine
+from tariffkit.cli import main
+from tariffkit.mqtt.discovery import discovery_payloads
 
 
 class TestCli:
@@ -70,7 +70,7 @@ class TestDiscovery:
     def test_topics_are_under_the_discovery_prefix(
         self, payloads: list[tuple[str, dict[str, Any]]]
     ) -> None:
-        assert all(topic.startswith("homeassistant/sensor/nem_rates/") for topic, _ in payloads)
+        assert all(topic.startswith("homeassistant/sensor/tariffkit/") for topic, _ in payloads)
 
     def test_price_sensors_declare_a_unit_but_not_a_monetary_device_class(
         self, payloads: list[tuple[str, dict[str, Any]]]
@@ -85,8 +85,8 @@ class TestDiscovery:
     def test_entities_share_one_device_and_an_availability_topic(
         self, payloads: list[tuple[str, dict[str, Any]]]
     ) -> None:
-        assert {p["device"]["identifiers"][0] for _, p in payloads} == {"nem_rates"}
-        assert all(p["availability_topic"] == "nem_rates/status" for _, p in payloads)
+        assert {p["device"]["identifiers"][0] for _, p in payloads} == {"tariffkit"}
+        assert all(p["availability_topic"] == "tariffkit/status" for _, p in payloads)
 
     def test_unique_ids_are_distinct(self, payloads: list[tuple[str, dict[str, Any]]]) -> None:
         ids = [p["unique_id"] for _, p in payloads]
@@ -101,7 +101,7 @@ class TestWebApi:
     @pytest.fixture
     def client(self) -> Any:
         fastapi_testclient = pytest.importorskip("fastapi.testclient")
-        from nem_rates.web import create_app
+        from tariffkit.web import create_app
 
         return fastapi_testclient.TestClient(create_app(Config()))
 

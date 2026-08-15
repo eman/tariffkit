@@ -19,9 +19,9 @@ import pytest
 # contributor who installed without it.
 pytest.importorskip("websockets")
 
-from nem_rates.errors import ConfigError, DataError
-from nem_rates.sources import homeassistant as ha
-from nem_rates.timeutil import PACIFIC
+from tariffkit.errors import ConfigError, DataError
+from tariffkit.sources import homeassistant as ha
+from tariffkit.timeutil import PACIFIC
 
 IMPORT_ID = ha.DEFAULT_IMPORT_ENTITY
 EXPORT_ID = ha.DEFAULT_EXPORT_ENTITY
@@ -336,7 +336,7 @@ def test_interleaved_messages_do_not_confuse_the_response(
 def test_describe_resolution_names_a_mixed_run() -> None:
     """One run can mix resolutions, so the caller can say so rather than imply
     uniformity."""
-    from nem_rates.billing import IntervalReading
+    from tariffkit.billing import IntervalReading
 
     start = datetime(2026, 7, 1, tzinfo=PACIFIC)
     readings = [

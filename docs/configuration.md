@@ -8,20 +8,20 @@ same `Config` object. Get this right once and all of them agree.
 `Config.load()` resolves in this order, later winning:
 
 1. Built-in defaults (PG&E bundled, NBT26, PTO 2026-06-03).
-2. `~/.config/nem-rates/config.toml`, or `$XDG_CONFIG_HOME/nem-rates/config.toml`.
+2. `~/.config/tariffkit/config.toml`, or `$XDG_CONFIG_HOME/tariffkit/config.toml`.
 3. An explicit `--config /path/to.toml`.
-4. `NEM_RATES_*` environment variables.
+4. `TARIFFKIT_*` environment variables.
 
 Check what actually resolved before trusting a number:
 
 ```bash
-nem-rates info
+tariffkit info
 ```
 
 ## A worked example: PG&E delivery + MCE generation
 
 ```toml
-# ~/.config/nem-rates/config.toml
+# ~/.config/tariffkit/config.toml
 supplier = "cca"
 interconnection_year = 2026        # -> NBT26 vintage, ACC Plus $0.00880/kWh
 pto_date = "2026-06-03"            # -> 9-year lock ends 2035-06-02
@@ -75,7 +75,7 @@ bill can be several percent.
 
 Three residential schedules are vendored. Adding another is a data change, not a
 code change: drop a dated snapshot under
-`src/nem_rates/data/tariff/pge/<slug>/`.
+`src/tariffkit/data/tariff/pge/<slug>/`.
 
 | Schedule | Periods | Baseline |
 |---|---|---|
@@ -118,7 +118,7 @@ reporting none.
 
 ## Home Assistant
 
-Only needed for `nem-rates bill --source ha`. Entity ids are configuration and
+Only needed for `tariffkit bill --source ha`. Entity ids are configuration and
 live in the config file; the access token is not and does not.
 
 ```toml
@@ -170,11 +170,11 @@ in advance, so there is no correct value to pre-fill. Left unset, the true-up
 falls back to PG&E's published series (vendored, monthly) and marks the result
 `estimated`. That series is PG&E's rate for **bundled** customers — a CCA account
 is not eligible for PG&E NSC at all — so treat the fallback as an order-of-
-magnitude stand-in, not a forecast. Also settable as `NEM_RATES_NSC_RATE`.
+magnitude stand-in, not a forecast. Also settable as `TARIFFKIT_NSC_RATE`.
 
 ## InfluxDB
 
-Only needed for `nem-rates bill --source influx`. Same split as above: series
+Only needed for `tariffkit bill --source influx`. Same split as above: series
 names are configuration, the token is not.
 
 ```toml
@@ -201,19 +201,19 @@ INFLUXDB3_AUTH_TOKEN = "<database token>"
 ```
 
 Resolution order, later winning: the config file, then `.env`, then real
-environment variables (`NEM_RATES_INFLUX_IMPORT_ENTITY` /
-`NEM_RATES_INFLUX_EXPORT_ENTITY` for the series), then
+environment variables (`TARIFFKIT_INFLUX_IMPORT_ENTITY` /
+`TARIFFKIT_INFLUX_EXPORT_ENTITY` for the series), then
 `--influx-import-entity` / `--influx-export-entity`. As with `HA_TOKEN`,
 `INFLUXDB3_AUTH_TOKEN` is never read from the config file.
 
 ## Environment variables
 
-`NEM_RATES_SUPPLIER`, `NEM_RATES_VINTAGE`, `NEM_RATES_INTERCONNECTION_YEAR`,
-`NEM_RATES_PTO_DATE`, `NEM_RATES_ACC_PLUS_SEGMENT`, `NEM_RATES_DISCOUNT`,
-`NEM_RATES_BSC_TIER`.
+`TARIFFKIT_SUPPLIER`, `TARIFFKIT_VINTAGE`, `TARIFFKIT_INTERCONNECTION_YEAR`,
+`TARIFFKIT_PTO_DATE`, `TARIFFKIT_ACC_PLUS_SEGMENT`, `TARIFFKIT_DISCOUNT`,
+`TARIFFKIT_BSC_TIER`.
 
 **These do not cover `[cca]` settings.** A container or service that needs CCA
-pricing must mount a config file; setting `NEM_RATES_SUPPLIER=cca` alone raises
+pricing must mount a config file; setting `TARIFFKIT_SUPPLIER=cca` alone raises
 `ConfigError` because no `CcaConfig` is supplied.
 
 ## CCA service
@@ -271,8 +271,8 @@ bills. The Base Services Charge is $/day and is deliberately excluded.
 
 ```python
 from datetime import datetime
-from nem_rates import Config, PACIFIC
-from nem_rates.tariff.retail import RetailTariff
+from tariffkit import Config, PACIFIC
+from tariffkit.tariff.retail import RetailTariff
 
 tariff = RetailTariff(Config.load())
 for label, hour, kwh in [("off_peak", 12, 22.903), ("peak", 17, 0.458)]:

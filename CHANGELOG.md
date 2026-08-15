@@ -6,6 +6,20 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Changed
+- **The project is now TariffKit.** The distribution, import package, CLI,
+  configuration directory, environment prefix, MQTT default, repository links,
+  and Home Assistant domain use the globally neutral `tariffkit` identity. This
+  is an intentional clean break before the first public release; the initial
+  provider scope remains PG&E and is documented as such.
+- **Packaging remains one public distribution in one repository.** Optional
+  runtime dependencies stay behind extras, while repository-only rate-data
+  generation moved to `tools.regen` and is excluded from wheel and sdist.
+- **Home Assistant now installs an exact TariffKit release requirement** instead
+  of vendoring the complete source tree. This prevents maintainer code and local
+  caches from leaking into HACS artifacts.
+- **Development dependencies now use PEP 735 dependency groups**, package
+  licensing uses an SPDX expression, versions are read from installed metadata,
+  and release automation uses PyPI Trusted Publishing with attestations.
 - **Python 3.14 is now the minimum.** Support for 3.11, 3.12 and 3.13 is
   dropped, and the CI matrix that spanned them is replaced by a single 3.14 job
   -- it had never tested the version this is developed on, so a regression could

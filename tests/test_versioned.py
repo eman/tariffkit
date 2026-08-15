@@ -18,8 +18,8 @@ from datetime import date, timedelta
 
 import pytest
 
-from nem_rates.data import versioned
-from nem_rates.errors import DataError
+from tariffkit.data import versioned
+from tariffkit.errors import DataError
 
 TARIFF = "tariff/pge/eelec"
 CARD = "cca/mce"
@@ -81,7 +81,7 @@ class TestEveryVersionedDataset:
         # Otherwise the directory listing lies about what is vendored.
         from importlib.resources import files
 
-        root = files("nem_rates.data")
+        root = files("tariffkit.data")
         for part in dataset.split("/"):
             root = root / part
         names = sorted(e.name for e in root.iterdir() if e.name.endswith(".toml"))
@@ -97,7 +97,7 @@ class TestEveryVersionedDataset:
 
 class TestCcaCardsResolveByDate:
     def test_a_card_is_chosen_for_the_moment_being_priced(self) -> None:
-        from nem_rates.cca import load_rate_card
+        from tariffkit.cca import load_rate_card
 
         card = load_rate_card("mce", date(2026, 7, 15))
         assert card.provider == "MCE"
@@ -105,7 +105,7 @@ class TestCcaCardsResolveByDate:
     def test_a_date_before_the_earliest_card_raises_rather_than_guessing(self) -> None:
         # Asks the data where its own edge is: vintages get backfilled, so a
         # hardcoded date here goes stale the moment one lands before it.
-        from nem_rates.cca import load_rate_card
+        from tariffkit.cca import load_rate_card
 
         earliest = versioned.versions(CARD)[0].effective
         with pytest.raises(DataError, match="no version effective on or before"):
@@ -116,14 +116,14 @@ class TestCcaCardsResolveByDate:
         # January with April's card understated generation by about two cents a
         # kilowatt-hour; the December 2025 statement shows 0.14900/0.13500 for
         # E-TOU-C winter, which is what the vintage in force must give.
-        from nem_rates.cca import load_rate_card
+        from tariffkit.cca import load_rate_card
 
         card = load_rate_card("mce", date(2026, 1, 15))
         assert card.generation("E-TOU-C", "winter", "peak") == pytest.approx(0.14900)
         assert card.generation("E-TOU-C", "winter", "off_peak") == pytest.approx(0.13500)
 
     def test_july_2026_resolves_to_the_repriced_card(self) -> None:
-        from nem_rates.cca import load_rate_card
+        from tariffkit.cca import load_rate_card
 
         card = load_rate_card("mce", date(2026, 7, 15))
         assert card.generation("E-TOU-C", "winter", "peak") == pytest.approx(0.13710)
@@ -131,7 +131,7 @@ class TestCcaCardsResolveByDate:
     def test_an_unvendored_provider_says_to_supply_rates_instead(self) -> None:
         # A different problem from "we have it but not that far back", and it
         # has a different answer, so it keeps its own message.
-        from nem_rates.cca import load_rate_card
+        from tariffkit.cca import load_rate_card
 
         with pytest.raises(DataError, match="supply rates via"):
             load_rate_card("nosuchcca", date(2026, 7, 15))

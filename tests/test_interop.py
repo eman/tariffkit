@@ -12,8 +12,8 @@ from itertools import pairwise
 
 import pytest
 
-from nem_rates import PriceCurve, RateEngine
-from nem_rates.interop import (
+from tariffkit import PriceCurve, RateEngine
+from tariffkit.interop import (
     forecast_lists,
     forecast_payload,
     local_day_window,
@@ -21,8 +21,8 @@ from nem_rates.interop import (
     raw_attributes,
     resample,
 )
-from nem_rates.interop.predbat import CENTS_PER_DOLLAR
-from nem_rates.timeutil import PACIFIC
+from tariffkit.interop.predbat import CENTS_PER_DOLLAR
+from tariffkit.timeutil import PACIFIC
 
 
 def pt(year: int, month: int, day: int, hour: int = 0) -> datetime:

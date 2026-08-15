@@ -33,7 +33,7 @@ class Check:
 
 
 def _credentials() -> Check:
-    from nem_rates.sources.pge import PgeSettings
+    from tariffkit.sources.pge import PgeSettings
 
     try:
         settings = PgeSettings.load()
@@ -66,7 +66,7 @@ def _credentials() -> Check:
 
 
 def _portal() -> Check:
-    from nem_rates.sources.pge import PgeSession, PgeSettings
+    from tariffkit.sources.pge import PgeSession, PgeSettings
 
     try:
         settings = PgeSettings.load()
@@ -81,8 +81,8 @@ def _portal() -> Check:
 
 
 def _influx() -> Check:
-    from nem_rates.sources.influx import InfluxSettings, read_counters
-    from nem_rates.timeutil import PACIFIC
+    from tariffkit.sources.influx import InfluxSettings, read_counters
+    from tariffkit.timeutil import PACIFIC
 
     try:
         settings = InfluxSettings.load()
@@ -137,8 +137,8 @@ def _rate_data(path: Path, oldest: date) -> Check:
     than as missing data. Each epoch is asked for the tariff it names, on the
     later of its own start and the oldest cycle wanted.
     """
-    from nem_rates.data import versioned
-    from nem_rates.errors import DataError
+    from tariffkit.data import versioned
+    from tariffkit.errors import DataError
 
     from .account import AccountHistory
 
@@ -188,8 +188,8 @@ def _cca_card(path: Path, oldest: date) -> Check:
     superseded vintages are simply unavailable. Worth knowing before a run
     rather than inferring it from a thirty-cent generation gap.
     """
-    from nem_rates.cca import load_rate_card
-    from nem_rates.errors import DataError
+    from tariffkit.cca import load_rate_card
+    from tariffkit.errors import DataError
 
     from .account import AccountHistory
 

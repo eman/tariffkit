@@ -14,9 +14,9 @@ from pathlib import Path
 
 import pytest
 
-from nem_rates.config import Config
-from nem_rates.export.nbt import NbtExportRates
-from nem_rates.timeutil import PACIFIC, DayType, day_type, export_hour
+from tariffkit.config import Config
+from tariffkit.export.nbt import NbtExportRates
+from tariffkit.timeutil import PACIFIC, DayType, day_type, export_hour
 
 FIXTURE = Path(__file__).parent / "fixtures" / "nbt_golden_rows.jsonl"
 

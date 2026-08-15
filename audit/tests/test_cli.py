@@ -29,7 +29,7 @@ class TestParser:
     def test_version_reports_both_versions(self, capsys: pytest.CaptureFixture[str]) -> None:
         # The harness and the library it audits version separately, and a report
         # is only reproducible if you know which of each produced it.
-        from nem_rates import __version__ as library_version
+        from tariffkit import __version__ as library_version
 
         with pytest.raises(SystemExit) as caught:
             main(["--version"])

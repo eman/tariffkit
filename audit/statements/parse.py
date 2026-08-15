@@ -32,7 +32,7 @@ from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 
-from nem_rates.billing import BillingPeriod
+from tariffkit.billing import BillingPeriod
 
 from ..errors import StatementError
 from .model import Section, Statement, StatementLine, StatementSection
@@ -182,7 +182,7 @@ def read_statement(path: str | Path) -> Statement:
         from pypdf import PdfReader
     except ImportError as exc:  # pragma: no cover - exercised by the extra's absence
         raise StatementError(
-            "reading a statement PDF needs pypdf: pip install 'nem-rates[regen]'"
+            "reading a statement PDF needs pypdf: pip install 'tariffkit[regen]'"
         ) from exc
 
     reader = PdfReader(source)

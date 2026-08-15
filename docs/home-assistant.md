@@ -21,11 +21,11 @@ Home Assistant and configure it in the UI.
 ```bash
 cd /config    # your Home Assistant config directory
 mkdir -p custom_components
-cp -r /path/to/nem-rates/custom_components/nem_rates custom_components/
+cp -r /path/to/tariffkit/custom_components/tariffkit custom_components/
 ```
 
 Restart Home Assistant, then **Settings → Devices & Services → Add Integration
-→ "PG&E NEM 3.0 Rates"**.
+→ "TariffKit"**.
 
 ### HACS
 
@@ -34,17 +34,17 @@ Not in the default HACS store. Add this repository as a custom repository
 
 ### The dependency
 
-`manifest.json` declares `nem-rates>=0.1.0`, which Home Assistant installs from
+`manifest.json` declares `tariffkit==0.1.0`, which Home Assistant installs from
 PyPI on first setup. **This package is not published to PyPI yet**, so that step
 will fail. Until it is published, install the library into HA's Python
 environment yourself:
 
 ```bash
 # Home Assistant Container / Supervised
-docker exec -it homeassistant pip install /share/nem_rates-0.1.0-py3-none-any.whl
+docker exec -it homeassistant pip install /share/tariffkit-0.1.0-py3-none-any.whl
 
 # Core install in a venv
-/srv/homeassistant/bin/pip install /path/to/nem_rates-0.1.0-py3-none-any.whl
+/srv/homeassistant/bin/pip install /path/to/tariffkit-0.1.0-py3-none-any.whl
 ```
 
 Build the wheel with `uv build` from the repo root; it lands in `dist/`.
@@ -86,9 +86,9 @@ shorter. The examples below use `sensor.pg_e_rates_*`; substitute whatever your
 install assigned.
 
 The MQTT path is different: it pins `object_id` in the discovery payload, so
-those entities are deterministically `sensor.nem_rates_import_price`,
-`sensor.nem_rates_export_price`, `sensor.nem_rates_spread`, and
-`sensor.nem_rates_tou_period`.
+those entities are deterministically `sensor.tariffkit_import_price`,
+`sensor.tariffkit_export_price`, `sensor.tariffkit_spread`, and
+`sensor.tariffkit_tou_period`.
 
 Import and export sensors carry the full component breakdown as attributes,
 plus the forecast:
@@ -236,7 +236,7 @@ template:
 
 ## Troubleshooting
 
-**Integration will not load.** Almost always the missing `nem-rates` library;
+**Integration will not load.** Almost always the missing `tariffkit` library;
 see the dependency note above. Check **Settings → System → Logs**.
 
 **Prices look like bundled PG&E when you are on a CCA.** Reconfigure the

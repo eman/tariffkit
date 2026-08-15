@@ -10,12 +10,12 @@ from datetime import date, datetime
 
 import pytest
 
-from nem_rates import Config, RateEngine, Supplier
-from nem_rates.cca import load_rate_card
-from nem_rates.config import CcaConfig
-from nem_rates.errors import DataError
-from nem_rates.tariff.retail import RetailTariff, load_snapshot
-from nem_rates.timeutil import PACIFIC
+from tariffkit import Config, RateEngine, Supplier
+from tariffkit.cca import load_rate_card
+from tariffkit.config import CcaConfig
+from tariffkit.errors import DataError
+from tariffkit.tariff.retail import RetailTariff, load_snapshot
+from tariffkit.timeutil import PACIFIC
 
 #: A date the vendored MCE card is in force for; cards resolve by date.
 CARD_DATE = date(2026, 7, 15)

@@ -15,8 +15,8 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
-from nem_rates import Config, RateEngine, Supplier
-from nem_rates.billing import (
+from tariffkit import Config, RateEngine, Supplier
+from tariffkit.billing import (
     BillEngine,
     BillingPeriod,
     IntervalReading,
@@ -25,9 +25,9 @@ from nem_rates.billing import (
     find_overlaps,
     hourly,
 )
-from nem_rates.config import CcaConfig
-from nem_rates.sources import read_green_button
-from nem_rates.timeutil import PACIFIC
+from tariffkit.config import CcaConfig
+from tariffkit.sources import read_green_button
+from tariffkit.timeutil import PACIFIC
 
 BILLED_KWH = 23.589
 PERIOD = BillingPeriod(date(2026, 7, 2), date(2026, 7, 28))  # 27 days

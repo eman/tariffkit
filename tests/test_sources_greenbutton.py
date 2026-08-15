@@ -13,9 +13,9 @@ from datetime import UTC, timedelta
 
 import pytest
 
-from nem_rates.errors import DataError
-from nem_rates.sources import GreenButtonLayout, read_green_button
-from nem_rates.timeutil import export_hour
+from tariffkit.errors import DataError
+from tariffkit.sources import GreenButtonLayout, read_green_button
+from tariffkit.timeutil import export_hour
 
 
 class TestGreenButtonCsv:

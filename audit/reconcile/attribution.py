@@ -27,10 +27,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import date, datetime, time, timedelta
 
-from nem_rates.config import Config
-from nem_rates.engine import RateEngine
-from nem_rates.models import TouPeriod
-from nem_rates.timeutil import PACIFIC
+from tariffkit.config import Config
+from tariffkit.engine import RateEngine
+from tariffkit.models import TouPeriod
+from tariffkit.timeutil import PACIFIC
 
 from ..statements.model import Section, Statement
 

@@ -1,29 +1,163 @@
-# Python Packaging Strategy
+# Architecture decision: packaging and repository strategy
 
-Based on the architecture of the `src/nem_rates` directory and the `pyproject.toml` extras, the project is currently structured as a **monolithic package with optional dependencies (`extras`)**.
+- **Status:** Accepted
+- **Date:** 2026-08-15
+- **Decision owners:** Project maintainers
 
-For a project of this size, that is a pragmatic and robust starting point while it remains private or highly specific to a single use case. However, when generalizing this project for a broader public release, it is recommended to split it into multiple independent packages. This minimizes the dependency footprint for downstream consumers (like the Home Assistant integration) and creates clearer domain boundaries.
+## Context
 
-Here is the recommended architecture for splitting the packages:
+The project combines a dependency-free pricing and billing library, optional
+network and service integrations, generated rate data, a Home Assistant custom
+component, rate-data generation tools, and an account-specific audit harness.
+All of these parts are maintained together and changes to one frequently need
+validation across the others.
 
-### 1. `nem-rates-core` (The Engine)
-* **Contents:** `models.py`, `engine.py`, `tariff/`, `config.py`, `billing/`, `timeutil.py`, and `cca.py`.
-* **Purpose:** This is the pure, dependency-free (or minimal dependency) state machine and calculator. It accepts timestamps, consumption data, and configuration, and outputs costs, prices, and bills. 
-* **Why split it?** Other developers (and the Home Assistant custom component) only need the core business logic to calculate prices locally. They should not be forced to install web server dependencies, MQTT clients, or PDF scrapers just to calculate a tariff. 
+The original strategy proposed publishing separate core, client, and server
+packages. That proposal correctly valued a lightweight runtime and clear domain
+boundaries, but package boundaries did not match the code:
 
-### 2. `nem-rates-client` (Data Fetching & API)
-* **Contents:** `sources/`, `pge/`, `fetch`, and `interop/`.
-* **Purpose:** Handles the messy reality of talking to external services. It manages authentication with the PG&E portal, fetching usage data, parsing statements, and pulling down upstream rate data.
-* **Why split it?** Fetching data from utility companies is notoriously brittle and requires heavier HTTP dependencies (like `httpx`). Keeping this separate ensures that if the PG&E portal changes and scraping breaks, the core rating engine remains perfectly valid and stable.
+- optional dependencies are already isolated behind extras and lazy imports, so
+  a default install has no third-party dependencies;
+- `interop/` is pure runtime conversion rather than an I/O client;
+- `export/` prices exported energy, while InfluxDB and PG&E access live under
+  `sources/`;
+- statement parsing belongs to the unpublished `audit/` harness; and
+- billing depends on the engine, configuration, tariffs, data, and time helpers,
+  making a narrower “core” unsuitable for its actual consumers.
 
-### 3. `nem-rates-server` / `nem-ratesd` (The Daemon/Services)
-* **Contents:** `web/` (FastAPI), `mqtt/`, `cli.py`, and `export/` (InfluxDB).
-* **Purpose:** The standalone application layer for users who *do not* use Home Assistant but want to integrate NEM 3.0 data into Node-RED, Grafana, or a custom smart home stack.
-* **Why split it?** This layer requires heavyweight dependencies (`fastapi`, `uvicorn`, `paho-mqtt`, etc.). Users building simple scripts or integrations do not need a full ASGI web server in their environment.
+The current artifacts also violate one intended boundary: `regen/` is below the
+packaged source tree and therefore ships in both wheel and sdist. The Home
+Assistant build script vendors that whole tree and can copy ignored source
+caches into its release.
 
-### 4. Build Tools (`regen/`)
-Code that rebuilds the vendored rate data by scraping PG&E PDFs (`regen/`, using `pypdf`) should not be published in the end-user packages at all. This is strictly an internal pipeline for the repository maintainers to generate the JSON/CSV data that ships statically with `nem-rates-core`.
+## Decision drivers
 
-## Conclusion
+- Keep the default installation dependency-free.
+- Ship runtime code and static rate data together so they cannot drift.
+- Validate engine, data, integrations, and billing atomically.
+- Keep the Home Assistant integration small and conventionally packaged.
+- Exclude account-specific and maintainer-only programs from distributions.
+- Minimize release choreography while one team owns every surface.
+- Use current Python packaging metadata and secure publication practices.
 
-Utilizing `pyproject.toml` extras (e.g., `nem-rates[web, mqtt]`) is perfectly acceptable while the project is private. However, prior to a public launch, extracting at least a **pure, lightweight core package** (`nem-rates-core`) will significantly improve adoption by the Home Assistant ecosystem and other Python developers by eliminating unnecessary dependencies.
+## Considered options
+
+### One distribution and one repository
+
+Feature dependencies remain extras. Runtime modules share one version and static
+data release. Maintainer tools stay in the repository but outside artifacts.
+
+### Multiple distributions in one repository
+
+A core, client, and service package would isolate source archives, but introduce
+cross-package constraints and coordinated releases without reducing the default
+dependency set. The current dependency graph would also force arbitrary splits.
+
+### Multiple repositories
+
+Independent repositories provide ownership and access isolation. Neither exists
+here today; splitting would instead duplicate CI and make cross-surface changes
+non-atomic.
+
+## Decision
+
+Use **one repository and one public Python distribution**.
+
+The distribution contains:
+
+- pricing models, configuration, time handling, tariffs, export rates, and
+  static data;
+- billing, netting, ledgers, and true-up behavior;
+- pure interoperability adapters;
+- source adapters;
+- the CLI, MQTT publisher, and web application.
+
+The default install remains dependency-free. MQTT, web, portal, Home Assistant
+source, and InfluxDB capabilities use named extras and lazy imports.
+
+Rate-data generation moves to a repository-only tool namespace. The audit
+harness remains repository-only. Neither ships in wheel or sdist, but both
+retain strict typing, linting, tests, and CI coverage.
+
+The Home Assistant integration declares an exact requirement on the published
+distribution instead of vendoring it.
+
+The project is renamed **TariffKit** before its first public release:
+
+| Surface | Value |
+|---|---|
+| Product and repository | TariffKit / `tariffkit` |
+| PyPI distribution | `tariffkit` |
+| Python import | `tariffkit` |
+| CLI | `tariffkit` |
+| Environment prefix | `TARIFFKIT_` |
+| Configuration directory | `~/.config/tariffkit/` |
+| Home Assistant domain | `tariffkit` |
+
+The name is globally neutral; documentation must still state that the initial
+vendored providers and tariffs are PG&E/California-specific. A 2026-08-15
+screen found no PyPI project or exact-name GitHub repository, but availability
+is not trademark clearance.
+
+## Consequences
+
+### Benefits
+
+- Core users install no service dependencies.
+- One version identifies compatible code and data across every runtime surface.
+- Home Assistant uses normal dependency management and no copied source tree.
+- Maintainer and account-specific code cannot leak into public artifacts.
+- Cross-cutting changes remain atomic and use one audit trail.
+
+### Costs
+
+- The wheel includes optional modules a core-only consumer does not import.
+- Release versions remain coordinated across runtime surfaces.
+- Repository CI covers more than the published package.
+
+These costs are smaller than maintaining independent compatibility contracts at
+the current project size.
+
+## Future split triggers
+
+Reconsider packages or repositories only when at least one boundary gains:
+
+- independent maintainers or access controls;
+- an independent release cadence or support policy;
+- conflicting Python or dependency requirements;
+- a stable public protocol that removes atomic source changes; or
+- Home Assistant core inclusion requiring its own upstream workflow.
+
+If a second distribution becomes justified, use a uv workspace with one
+`pyproject.toml` per member and a shared lockfile. A workspace is unnecessary
+while only one distribution exists.
+
+## Packaging baseline
+
+- Python 3.14 remains the declared and tested floor.
+- Standardized `[project]` metadata is used (PEP 621).
+- The MIT license uses an SPDX expression and declared license files (PEP 639).
+- Runtime features use optional dependencies; development tools use dependency
+  groups (PEP 735).
+- `py.typed` remains in the wheel (PEP 561).
+- uv manages Python, environments, locking, builds, and CI. `uv.lock` remains
+  the repository lock; a PEP 751 `pylock.toml` is only needed for a consumer
+  that requires the interchange format.
+- Hatchling remains the backend unless another backend demonstrably simplifies
+  the required package-data and exclusion rules.
+- Release artifacts are built once, inspected, installed in a clean
+  environment, and published with PyPI Trusted Publishing and PEP 740
+  attestations.
+
+## References
+
+- [pyproject.toml specification](https://packaging.python.org/en/latest/specifications/pyproject-toml/)
+- [Dependency Groups](https://packaging.python.org/en/latest/specifications/dependency-groups/)
+- [Core metadata](https://packaging.python.org/en/latest/specifications/core-metadata/)
+- [pylock.toml specification](https://packaging.python.org/en/latest/specifications/pylock-toml/)
+- [uv package guide](https://docs.astral.sh/uv/guides/package/)
+- [uv workspaces](https://docs.astral.sh/uv/concepts/projects/workspaces/)
+- [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/)
+- [PyPI attestations](https://docs.pypi.org/attestations/)
+- [Home Assistant integration manifest](https://developers.home-assistant.io/docs/creating_integration_manifest/)
+- [HACS integration publishing](https://hacs.xyz/docs/publish/integration/)

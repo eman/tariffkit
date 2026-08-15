@@ -16,9 +16,9 @@ import pytest
 
 pytest.importorskip("pypdf")
 
-from nem_rates.regen import accplus, cca, franchise, nsc, providers, sheets, tax
-from nem_rates.regen import tariff as rt
-from nem_rates.regen.sheets import ExtractionError
+from tools.regen import accplus, cca, franchise, nsc, providers, sheets, tax
+from tools.regen import tariff as rt
+from tools.regen.sheets import ExtractionError
 
 # Verbatim from Schedule E-ELEC Sheet 3.
 EELEC_UNBUNDLED = """UNBUNDLING OF TOTAL RATES |
@@ -250,7 +250,7 @@ def test_every_vendored_snapshot_still_reconciles() -> None:
     """The invariant the generator enforces must hold for what is committed."""
     import tomllib
 
-    root = Path(__file__).resolve().parent.parent / "src" / "nem_rates" / "data" / "tariff" / "pge"
+    root = Path(__file__).resolve().parent.parent / "src" / "tariffkit" / "data" / "tariff" / "pge"
     files = sorted(root.rglob("*.toml"))
     assert files, "no vendored tariff snapshots found"
     for path in files:
@@ -602,7 +602,7 @@ class TestUnparseableCardIsStillWatched:
         raw = tomllib.loads(
             (
                 Path(__file__).resolve().parent.parent
-                / "src/nem_rates/data/cca/mce/2026-04-01.toml"
+                / "src/tariffkit/data/cca/mce/2026-04-01.toml"
             ).read_text(encoding="utf-8")
         )
         assert len(str(raw.get("source_sha256", ""))) == 64
@@ -686,7 +686,7 @@ class TestVintagedTablesComeFromTheirOwnEra:
 
         path = (
             Path(__file__).resolve().parent.parent
-            / f"src/nem_rates/data/tariff/pge/{slug}/{effective}.toml"
+            / f"src/tariffkit/data/tariff/pge/{slug}/{effective}.toml"
         )
         return tomllib.loads(path.read_text(encoding="utf-8"))
 
@@ -752,7 +752,7 @@ class TestEnergySurcharge:
 
         path = (
             Path(__file__).resolve().parent.parent
-            / f"src/nem_rates/data/tax/ca_energy_resources/{year}-01-01.toml"
+            / f"src/tariffkit/data/tax/ca_energy_resources/{year}-01-01.toml"
         )
         assert tomllib.loads(path.read_text(encoding="utf-8"))["rate"] == pytest.approx(0.0003)
 
@@ -770,7 +770,7 @@ class TestFilingScanWidening:
         self, monkeypatch: pytest.MonkeyPatch, *, target: int | None
     ) -> list[tuple[int, int, bool]]:
         """Stand in for the network. Returns the (lo, hi, refresh) of each pass."""
-        from nem_rates.regen import filings
+        from tools.regen import filings
 
         passes: list[tuple[int, int, bool]] = []
         index: dict[str, filings.Filing] = {}
@@ -806,7 +806,7 @@ class TestFilingScanWidening:
     def test_it_reaches_back_until_it_finds_the_filing(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        from nem_rates import regen
+        from tools import regen
 
         passes = self._stub(monkeypatch, target=7250)
         found = regen._filing_for_date("eelec", date(2024, 6, 1), tmp_path, None, False)
@@ -820,7 +820,7 @@ class TestFilingScanWidening:
     ) -> None:
         # A date the utility never filed for has to stop somewhere rather than
         # walking back to advice letter one.
-        from nem_rates import regen
+        from tools import regen
 
         passes = self._stub(monkeypatch, target=None)
         with pytest.raises(ExtractionError) as caught:
@@ -840,7 +840,7 @@ class TestFilingScanWidening:
     ) -> None:
         # Passing --scan is the caller pinning a range; searching outside it
         # anyway would defeat the point of having passed it.
-        from nem_rates import regen
+        from tools import regen
 
         passes = self._stub(monkeypatch, target=None)
         with pytest.raises(ExtractionError, match="pinned to 7000-7100"):
@@ -854,7 +854,7 @@ class TestFilingScanWidening:
         # A widening probes numbers the index has never held, so re-fetching
         # with refresh set would discard the block just indexed instead of
         # adding to it -- and the search would never accumulate enough to hit.
-        from nem_rates import regen
+        from tools import regen
 
         passes = self._stub(monkeypatch, target=7250)
         regen._filing_for_date("eelec", date(2024, 6, 1), tmp_path, None, True)

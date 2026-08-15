@@ -8,14 +8,14 @@ each looked entirely plausible until a piece of paper disagreed. Nothing re-ran
 those checks afterwards, so a regression in any of them would ship in silence
 and the next statement would have to be reconciled by hand to find it.
 
-This lives outside ``src/nem_rates`` deliberately. The package's job is to price
+This lives outside ``src/tariffkit`` deliberately. The package's job is to price
 energy; this one's is to read how one utility prints paper for one account, and
 those two things change on unrelated cadences. A wheel carrying this would ship
 a statement parser that fails on everybody else's bill, and a login nobody else
 can use.
 
 The line is drawn at authentication rather than at "is it network code":
-``nem_rates.sources.pge`` owns the session and the Green Button download,
+``tariffkit.sources.pge`` owns the session and the Green Button download,
 because a metered record fetched over HTTP is still a metered record and that is
 what ``sources`` is for. Statement PDFs, the printed-label map, and the
 reconciler are here, because they are facts about a bill's layout.

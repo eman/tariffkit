@@ -6,9 +6,9 @@ or anything on another host.
 ## Setup
 
 ```bash
-pip install 'nem-rates[web]'
-nem-rates serve                        # 127.0.0.1:8000
-nem-rates serve --host 0.0.0.0 --port 8080
+pip install 'tariffkit[web]'
+tariffkit serve                        # 127.0.0.1:8000
+tariffkit serve --host 0.0.0.0 --port 8080
 ```
 
 Every response is pure computation over vendored data: no upstream to call, no
@@ -60,16 +60,16 @@ Check the flags before acting on a price:
 ## Custom config
 
 ```bash
-nem-rates --config /etc/nem-rates/config.toml serve
+tariffkit --config /etc/tariffkit/config.toml serve
 ```
 
 Or build the app yourself:
 
 ```python
-from nem_rates import Config
-from nem_rates.web import create_app
+from tariffkit import Config
+from tariffkit.web import create_app
 
-app = create_app(Config.from_toml("/etc/nem-rates/config.toml"))
+app = create_app(Config.from_toml("/etc/tariffkit/config.toml"))
 ```
 
 ```bash
@@ -79,16 +79,16 @@ uvicorn myapp:app --host 0.0.0.0 --port 8000 --workers 2
 ## Run as a service
 
 ```ini
-# /etc/systemd/system/nem-rates-web.service
+# /etc/systemd/system/tariffkit-web.service
 [Unit]
-Description=nem-rates REST API
+Description=tariffkit REST API
 After=network-online.target
 
 [Service]
 Type=simple
-User=nem-rates
-Environment=XDG_CONFIG_HOME=/etc/nem-rates
-ExecStart=/opt/nem-rates/.venv/bin/nem-rates serve --host 0.0.0.0 --port 8000
+User=tariffkit
+Environment=XDG_CONFIG_HOME=/etc/tariffkit
+ExecStart=/opt/tariffkit/.venv/bin/tariffkit serve --host 0.0.0.0 --port 8000
 Restart=on-failure
 
 [Install]
@@ -99,20 +99,20 @@ WantedBy=multi-user.target
 
 ```dockerfile
 FROM python:3.14-slim
-RUN pip install --no-cache-dir 'nem-rates[web]'
+RUN pip install --no-cache-dir 'tariffkit[web]'
 EXPOSE 8000
-CMD ["nem-rates", "serve", "--host", "0.0.0.0"]
+CMD ["tariffkit", "serve", "--host", "0.0.0.0"]
 ```
 
 ```bash
 docker run -p 8000:8000 \
-  -v /etc/nem-rates:/config \
+  -v /etc/tariffkit:/config \
   -e XDG_CONFIG_HOME=/config \
-  nem-rates
+  tariffkit
 ```
 
-The config file must be mounted: `NEM_RATES_*` variables cannot express CCA
-settings, so `-e NEM_RATES_SUPPLIER=cca` alone will fail to start.
+The config file must be mounted: `TARIFFKIT_*` variables cannot express CCA
+settings, so `-e TARIFFKIT_SUPPLIER=cca` alone will fail to start.
 
 ## Security
 

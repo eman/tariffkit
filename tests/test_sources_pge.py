@@ -17,8 +17,8 @@ import pytest
 
 pytest.importorskip("httpx")
 
-from nem_rates.errors import ConfigError
-from nem_rates.sources.pge import (
+from tariffkit.errors import ConfigError
+from tariffkit.sources.pge import (
     APEX_ACTION,
     ENDPOINTS,
     PgeSession,
@@ -152,7 +152,7 @@ class TestProtocol:
         # An endpoint inferred rather than observed is not a bug, but a failure
         # against one should point at itself first. Every shipped endpoint has
         # since been confirmed, so this uses a made-up one.
-        from nem_rates.sources import pge
+        from tariffkit.sources import pge
 
         monkeypatch.setattr(
             pge, "ENDPOINTS", {**pge.ENDPOINTS, "guess": pge.Endpoint("guess", "C", "m")}
@@ -246,7 +246,7 @@ class TestGreenButton:
     def test_downloaded_text_parses_exactly_like_a_file(self, tmp_path: Path) -> None:
         # The whole reason the download is a separate concern from the format:
         # there must be exactly one parser, and this is what pins that.
-        from nem_rates.sources import read_green_button
+        from tariffkit.sources import read_green_button
 
         path = tmp_path / "gb.csv"
         path.write_text(CSV, encoding="utf-8")

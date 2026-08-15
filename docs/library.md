@@ -5,13 +5,13 @@ Lookups are pure and O(1), so it is safe to call in a tight loop or inside an
 async event loop without an executor.
 
 ```bash
-pip install nem-rates
+pip install tariffkit
 ```
 
 ## Basics
 
 ```python
-from nem_rates import RateEngine, Config
+from tariffkit import RateEngine, Config
 
 engine = RateEngine(Config.load())  # or Config() for bundled PG&E defaults
 
@@ -26,7 +26,7 @@ than being guessed at: a silent eight-hour error is worse than a traceback.
 
 ```python
 from datetime import datetime
-from nem_rates import PACIFIC
+from tariffkit import PACIFIC
 
 engine.price_at(datetime(2026, 9, 15, 19, tzinfo=PACIFIC))
 ```
@@ -56,13 +56,13 @@ transitions.
 
 ## Interoperability
 
-`nem_rates.interop` renders a curve into the shapes other energy management
+`tariffkit.interop` renders a curve into the shapes other energy management
 systems already read, so neither Home Assistant nor a template layer has to do
 the reshaping.
 
 ```python
-from nem_rates.interop import forecast_lists, predbat_payload, resample
-from nem_rates.timeutil import now_pacific
+from tariffkit.interop import forecast_lists, predbat_payload, resample
+from tariffkit.timeutil import now_pacific
 
 resample(curve, 30)  # tuple[PricePoint, ...] on 30-minute boundaries
 
@@ -150,7 +150,7 @@ engine.describe()
 
 ## Errors
 
-All inherit `NemRatesError`:
+All inherit `TariffKitError`:
 
 | | |
 |---|---|
@@ -159,11 +159,11 @@ All inherit `NemRatesError`:
 | `OutOfRangeError` | Timestamp outside the vendored years (subclass of `DataError`) |
 
 ```python
-from nem_rates.errors import NemRatesError
+from tariffkit.errors import TariffKitError
 
 try:
     point = engine.price_at(moment)
-except NemRatesError as exc:
+except TariffKitError as exc:
     log.warning("no price available: %s", exc)
 ```
 

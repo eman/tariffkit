@@ -20,11 +20,11 @@ from datetime import date, datetime
 
 import pytest
 
-from nem_rates import Config, RateEngine, Supplier
-from nem_rates.billing.engine import BillEngine
-from nem_rates.billing.models import BillingPeriod, IntervalReading
-from nem_rates.config import CcaConfig
-from nem_rates.timeutil import PACIFIC
+from tariffkit import Config, RateEngine, Supplier
+from tariffkit.billing.engine import BillEngine
+from tariffkit.billing.models import BillingPeriod, IntervalReading
+from tariffkit.config import CcaConfig
+from tariffkit.timeutil import PACIFIC
 
 DAYS = 29
 PERIOD = BillingPeriod(date(2026, 4, 1), date(2026, 4, 29))

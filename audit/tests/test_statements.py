@@ -231,14 +231,14 @@ def _unreadable(pdf: Path) -> bool:
 class TestRealStatements:
     """Against actual statements, wherever they already are.
 
-    Nothing is copied into the repository. Point ``NEM_RATES_STATEMENT_DIR`` at a
+    Nothing is copied into the repository. Point ``TARIFFKIT_STATEMENT_DIR`` at a
     directory of PDFs, or leave them in the gitignored download cache; without
     either, this skips.
     """
 
     @staticmethod
     def _pdfs() -> list[Path]:
-        configured = os.environ.get("NEM_RATES_STATEMENT_DIR")
+        configured = os.environ.get("TARIFFKIT_STATEMENT_DIR")
         root = Path(configured) if configured else Path(".cache/pge/statements")
         # Only PG&E's own naming. The directory may be somewhere general like a
         # desktop, and everything else in it is somebody else's PDF.
@@ -247,7 +247,7 @@ class TestRealStatements:
     def test_each_one_parses_and_self_checks_clean(self) -> None:
         pdfs = self._pdfs()
         if not pdfs:
-            pytest.skip("no statements available; set NEM_RATES_STATEMENT_DIR")
+            pytest.skip("no statements available; set TARIFFKIT_STATEMENT_DIR")
 
         readable = 0
         for pdf in pdfs:

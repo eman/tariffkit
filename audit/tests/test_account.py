@@ -17,8 +17,8 @@ from audit.account import (
 )
 from audit.errors import AccountError
 from audit.statements import parse_statement
-from nem_rates.billing import BillingPeriod
-from nem_rates.models import Supplier
+from tariffkit.billing import BillingPeriod
+from tariffkit.models import Supplier
 
 from .test_statements import load
 
@@ -147,7 +147,7 @@ class TestStatementConfirmsTheEpoch:
     def test_the_wrong_pcia_vintage_is_caught(self, history: AccountHistory) -> None:
         # The statement prints its own vintage, and the PCIA differs threefold
         # across vintages, so this is worth several dollars a month.
-        from nem_rates.config import CcaConfig
+        from tariffkit.config import CcaConfig
 
         statement = parse_statement(load())
         base = history.config_for(statement.period)

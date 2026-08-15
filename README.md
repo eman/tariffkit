@@ -1,7 +1,9 @@
-# nem-rates
+# TariffKit
 
-Real-time and forecast electricity **import** and **export** prices for PG&E
-residential rate plans under **NEM 3.0 / the Net Billing Tariff (NBT)**.
+An offline electricity tariff engine for pricing, billing, and energy-system
+integrations. The first data provider supports PG&E residential rate plans under
+**NEM 3.0 / the Net Billing Tariff (NBT)**; the package identity is deliberately
+not tied to one utility or tariff program.
 
 Three schedules are vendored: **E-ELEC** (Electric Home), **E-TOU-C**
 (Time-of-Use, peak 4–9 p.m. every day), and **EV2-A** (Home Charging).
@@ -13,7 +15,7 @@ what it will be worth over the next two days, is the input to every useful
 solar-and-battery dispatch decision.
 
 ```python
-from nem_rates import RateEngine
+from tariffkit import RateEngine
 
 engine = RateEngine()
 point = engine.price_now()
@@ -32,7 +34,7 @@ for hour in curve.best_export_hours(3):
 PG&E publishes 20 years of hourly export rates per vintage, as CPUC Resolution
 E-5301 requires (roughly 40 MB of CSV per vintage). But that file is a lossless
 expansion of a 576-cell matrix per year (12 months × 2 day types × 24 hours) per
-component. `nem-rates` collapses it at build time, verifying losslessness cell by
+component. `tariffkit` collapses it at build time, verifying losslessness cell by
 cell, so the entire five-vintage dataset ships inside the wheel at **268 KiB**
 and every lookup is a few list indexes.
 
@@ -53,6 +55,7 @@ Nothing here touches the network at runtime.
 | [REST API](docs/web.md) | HTTP service |
 | [Home Assistant](docs/home-assistant.md) | Custom component, Energy dashboard, EMHASS, Predbat |
 | [Maintaining rate data](docs/data.md) | Regenerating export rates, updating the retail tariff and CCA cards |
+| [Packaging strategy](docs/packaging_strategy.md) | Architecture decision, boundaries, and release model |
 
 ## Works with
 
@@ -70,28 +73,28 @@ See [docs/home-assistant.md](docs/home-assistant.md) for setup of each.
 ## Install
 
 ```bash
-pip install nem-rates              # core, zero dependencies
-pip install 'nem-rates[mqtt]'      # + MQTT publisher with Home Assistant discovery
-pip install 'nem-rates[web]'       # + FastAPI service
-pip install 'nem-rates[all]'
+pip install tariffkit              # core, zero dependencies
+pip install 'tariffkit[mqtt]'      # + MQTT publisher with Home Assistant discovery
+pip install 'tariffkit[web]'       # + FastAPI service
+pip install 'tariffkit[all]'
 ```
 
 ## CLI
 
 ```bash
-nem-rates now                          # current import/export price
-nem-rates forecast --hours 48          # the upcoming curve
-nem-rates forecast --format json       # machine-readable
-nem-rates mqtt --broker 192.168.1.100  # publish hourly, with HA discovery
-nem-rates serve                        # REST API on :8000
-nem-rates bill intervals.csv           # compute a cycle from meter data
-nem-rates info                         # which data is loaded, and from where
+tariffkit now                          # current import/export price
+tariffkit forecast --hours 48          # the upcoming curve
+tariffkit forecast --format json       # machine-readable
+tariffkit mqtt --broker 192.168.1.100  # publish hourly, with HA discovery
+tariffkit serve                        # REST API on :8000
+tariffkit bill intervals.csv           # compute a cycle from meter data
+tariffkit info                         # which data is loaded, and from where
 ```
 
 ## Configuration
 
 Defaults target a PG&E-bundled residential customer. Point it at your own
-service agreement via `~/.config/nem-rates/config.toml`:
+service agreement via `~/.config/tariffkit/config.toml`:
 
 ```toml
 supplier = "bundled"              # or "cca"
@@ -101,7 +104,7 @@ acc_plus_segment = "residential"
 base_services_charge_tier = 3
 ```
 
-`NEM_RATES_*` environment variables override any file setting.
+`TARIFFKIT_*` environment variables override any file setting.
 
 ### What the numbers include
 
@@ -166,13 +169,13 @@ Note that a CCA customer's PCIA is a **charge**, while a bundled customer's is a
 ## Keeping rates current
 
 Every vendored dataset is regenerated from the document that publishes it, by
-`nem_rates.regen`. Nothing is hand-transcribed and nothing is hand-edited.
+`tools.regen`. Nothing is hand-transcribed and nothing is hand-edited.
 
 ```bash
-nem-rates regen                                # rebuild every dataset
-nem-rates regen --check                        # exit 1 if a publisher moved
-nem-rates regen tariff --for-date 2025-12-15   # rebuild a superseded vintage
-python -m nem_rates.regen.export --download    # the 843 MB export-rate archive
+python -m tools.regen                              # rebuild every dataset
+python -m tools.regen --check                      # exit 1 if a publisher moved
+python -m tools.regen tariff --for-date 2025-12-15 # rebuild a superseded vintage
+python -m tools.regen.export --download            # the 843 MB export-rate archive
 ```
 
 Export matrices come from PG&E's CSV archive, which is large enough to have its
@@ -195,4 +198,3 @@ table and why OpenEI's URDB is deliberately not used.
 ## License
 
 MIT
-

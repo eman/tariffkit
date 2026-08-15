@@ -40,7 +40,7 @@ from .model import Section
 
 
 class Side(StrEnum):
-    """Which of a :class:`~nem_rates.billing.Bill`'s component maps to look in."""
+    """Which of a :class:`~tariffkit.billing.Bill`'s component maps to look in."""
 
     IMPORT = "import"
     EXPORT = "export"

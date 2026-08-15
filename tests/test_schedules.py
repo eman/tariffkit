@@ -11,12 +11,12 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-from nem_rates import Config, RateEngine, Season, TouPeriod
-from nem_rates.billing.engine import BillEngine
-from nem_rates.billing.models import Bill, BillingPeriod, IntervalReading
-from nem_rates.errors import ConfigError
-from nem_rates.tariff.retail import RetailTariff, load_snapshot
-from nem_rates.timeutil import PACIFIC
+from tariffkit import Config, RateEngine, Season, TouPeriod
+from tariffkit.billing.engine import BillEngine
+from tariffkit.billing.models import Bill, BillingPeriod, IntervalReading
+from tariffkit.errors import ConfigError
+from tariffkit.tariff.retail import RetailTariff, load_snapshot
+from tariffkit.timeutil import PACIFIC
 
 SCHEDULES = ("E-ELEC", "E-TOU-C", "EV2-A")
 EFFECTIVE = date(2026, 6, 1)

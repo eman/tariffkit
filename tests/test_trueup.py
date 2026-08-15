@@ -13,9 +13,9 @@ from datetime import date
 
 import pytest
 
-from nem_rates.billing import BillingPeriod
-from nem_rates.billing.ledger import CreditBalances, CreditBucket, LedgerEntry
-from nem_rates.billing.trueup import (
+from tariffkit.billing import BillingPeriod
+from tariffkit.billing.ledger import CreditBalances, CreditBucket, LedgerEntry
+from tariffkit.billing.trueup import (
     CHECK_THRESHOLD,
     TrueUpKind,
     average_export_rate,
@@ -26,7 +26,7 @@ from nem_rates.billing.trueup import (
     relevant_period_end,
     run_true_ups,
 )
-from nem_rates.errors import ConfigError, DataError
+from tariffkit.errors import ConfigError, DataError
 
 
 def entry(

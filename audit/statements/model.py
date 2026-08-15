@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from enum import StrEnum
 
-from nem_rates.billing import BillingPeriod
+from tariffkit.billing import BillingPeriod
 
 #: A printed figure is rounded to the cent, so agreement is judged at half a cent
 #: plus a cent per line that had to be added together to get there.

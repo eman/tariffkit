@@ -5,18 +5,18 @@ readings in, decomposed charges out. It does not know or care where the readings
 came from.
 
 ```bash
-nem-rates bill intervals.csv --start 2026-07-02 --end 2026-07-28
-nem-rates bill - --json < intervals.csv
+tariffkit bill intervals.csv --start 2026-07-02 --end 2026-07-28
+tariffkit bill - --json < intervals.csv
 ```
 
 ## Where readings come from
 
-Three sources, all in `nem_rates.sources`. Green Button is the default and needs
+Three sources, all in `tariffkit.sources`. Green Button is the default and needs
 nothing installed beyond the core package:
 
 ```bash
-nem-rates bill pge_electric_usage_interval_data_....csv --start 2026-07-02 --end 2026-07-28
-nem-rates bill - --json < intervals.csv
+tariffkit bill pge_electric_usage_interval_data_....csv --start 2026-07-02 --end 2026-07-28
+tariffkit bill - --json < intervals.csv
 ```
 
 `--source csv` is still accepted as a spelling of `--source green-button`, but
@@ -25,15 +25,15 @@ nem-rates bill - --json < intervals.csv
 Home Assistant reads the meter directly, so there is no download step:
 
 ```bash
-pip install 'nem-rates[ha]'
-nem-rates bill --source ha --start 2026-07-29 --end 2026-08-09
+pip install 'tariffkit[ha]'
+tariffkit bill --source ha --start 2026-07-29 --end 2026-08-09
 ```
 
 It pulls **long-term statistics**, not state history. That is the only place a
 whole cycle survives — the history behind `/api/history` is purged on the
 recorder's schedule, typically ten days, while statistics are kept indefinitely.
 Statistics are WebSocket-only, which is why this needs the `ha` extra;
-`nem_rates.billing` itself stays stdlib-only.
+`tariffkit.billing` itself stays stdlib-only.
 
 Home Assistant keeps two resolutions for different lengths of time, so the
 default asks for both and prefers the finer one wherever it exists:
@@ -74,8 +74,8 @@ counters are there as a plain time series, and reading them directly is more
 accurate than either of the other two sources:
 
 ```bash
-pip install 'nem-rates[influx]'
-nem-rates bill --source influx --start 2026-06-30 --end 2026-07-28
+pip install 'tariffkit[influx]'
+tariffkit bill --source influx --start 2026-06-30 --end 2026-07-28
 ```
 
 Energy over a window is a cumulative counter's endpoints, so the total does not
@@ -156,7 +156,7 @@ autumn DST transition is ambiguous without one.
 Override detection when needed:
 
 ```python
-from nem_rates.sources import GreenButtonLayout, read_green_button
+from tariffkit.sources import GreenButtonLayout, read_green_button
 
 readings = read_green_button(
     "meter.csv",
@@ -172,9 +172,9 @@ readings = read_green_button(
 
 ```python
 from datetime import date
-from nem_rates import Config, RateEngine
-from nem_rates.billing import BillEngine, BillingPeriod
-from nem_rates.sources import read_green_button
+from tariffkit import Config, RateEngine
+from tariffkit.billing import BillEngine, BillingPeriod
+from tariffkit.sources import read_green_button
 
 engine = BillEngine(RateEngine(Config.load()))
 bill = engine.compute(
@@ -273,7 +273,7 @@ direction separately, so it never changes what the bill totals.
 charges, which is stateful, so it lives in a ledger on top:
 
 ```python
-from nem_rates.billing import CreditBalances, apply_credits, run_ledger
+from tariffkit.billing import CreditBalances, apply_credits, run_ledger
 
 entry = apply_credits(bill, CreditBalances(generation=4.93))
 entry.applied.total  # spent this cycle
@@ -308,7 +308,7 @@ Closing a year is a separate module, because for a CCA account it is two events
 on two calendars that do not line up:
 
 ```python
-from nem_rates.billing import run_ledger, run_true_ups
+from tariffkit.billing import run_ledger, run_true_ups
 
 ledger = run_ledger(bills)
 run_true_ups(ledger.entries, pto_date=config.pto_date, is_cca=True)
@@ -348,7 +348,7 @@ the payment second.
 `TrueUp.verified` is always `False`. Nothing here has been checked against a
 statement, because none exists yet: the first MCE cash-out falls after the
 March–April 2027 cycle and the first PG&E Relevant Period ends 2027-06-03.
-`nem_rates.billing.trueup.OPEN_QUESTIONS` records the two places the tariff text
+`tariffkit.billing.trueup.OPEN_QUESTIONS` records the two places the tariff text
 supports more than one reading — whether the credit reversal and the NSC rate
 are two steps or one, and whether MCE's $5,000 cap and "NSC + $0.02/kWh" formula
 (both published under its NEM 1.0/2.0 program) carry over to the SBP.

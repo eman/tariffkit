@@ -7,6 +7,7 @@ dist/
 .venv/
 venv/
 .env
+.env.bak*
 
 # One real account's tariff history. audit/account.example.toml is the template.
 audit/account.toml
@@ -22,9 +23,9 @@ audit/account.toml
 .coverage
 htmlcov/
 
-# Upstream archives and documents fetched by `nem-rates regen` — large, not
+# Upstream archives and documents fetched by `python -m tools.regen` — large, not
 # vendored. Also where downloaded statements and Green Button exports land.
-# The normalized outputs under src/nem_rates/data/ ARE committed.
+# The normalized outputs under src/tariffkit/data/ ARE committed.
 /.cache/
 *.zip
 !tests/fixtures/*.zip
