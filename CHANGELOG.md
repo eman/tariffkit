@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-16
+
 ### Added
 - **HACS releases now include a deterministic `tariffkit.zip` integration
   artifact.** HACS installs only the tracked component files, rooted directly
@@ -182,5 +184,6 @@ Initial release.
 - Holiday calendars are extracted per vintage from the source data rather than
   recomputed, because the vintage files disagree in far-future years.
 
-[Unreleased]: https://github.com/eman/tariffkit/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/eman/tariffkit/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/eman/tariffkit/releases/tag/v0.2.1
 [0.2.0]: https://github.com/eman/tariffkit/releases/tag/v0.2.0

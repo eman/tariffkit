@@ -10,7 +10,7 @@
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/eman/tariffkit/issues",
   "requirements": [
-    "tariffkit==0.2.0"
+    "tariffkit==0.2.1"
   ],
-  "version": "0.2.0"
+  "version": "0.2.1"
 }
