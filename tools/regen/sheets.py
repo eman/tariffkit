@@ -33,8 +33,92 @@ from tariffkit.errors import DataError
 #: a change marker. Also matches a bare decimal, which is how MCE writes kWh
 #: quantities and PG&E writes baseline allowances.
 CELL = re.compile(r"(\()?\$?\s?([0-9]+\.[0-9]+)\)?\s*(?:\([IRNL]\))?")
+
+
+@dataclass(frozen=True, slots=True)
+class _TrailingCellMatch:
+    text: str
+    offset: int
+
+    def start(self, group: int = 0) -> int:
+        """Start of the complete trailing-cell run."""
+        if group not in (0, 1):
+            raise IndexError("no such group")
+        return self.offset
+
+    def group(self, group: int = 0) -> str:
+        """The complete trailing-cell run, preserving the former capture API."""
+        if group not in (0, 1):
+            raise IndexError("no such group")
+        return self.text[self.offset :]
+
+
+def _scan_cell(
+    text: str,
+    start: int,
+    digit_ends: list[int],
+    whitespace_ends: list[int],
+) -> int | None:
+    """Return the end of a cell beginning at ``start``, if one does."""
+    position = start
+    if position < len(text) and text[position] == "(":
+        position += 1
+    if position < len(text) and text[position] == "$":
+        position += 1
+    if position < len(text) and text[position].isspace():
+        position += 1
+
+    integer_end = digit_ends[position]
+    if integer_end == position or integer_end >= len(text) or text[integer_end] != ".":
+        return None
+    position = integer_end + 1
+
+    decimal_end = digit_ends[position]
+    if decimal_end == position:
+        return None
+    position = decimal_end
+
+    if position < len(text) and text[position] == ")":
+        position += 1
+    position = whitespace_ends[position]
+    if (
+        position + 2 < len(text)
+        and text[position] == "("
+        and text[position + 1] in "IRNL"
+        and text[position + 2] == ")"
+    ):
+        position += 3
+        position = whitespace_ends[position]
+    return position
+
+
+class _TrailingCellsScanner:
+    """Find a trailing run of rate cells in linear time."""
+
+    @staticmethod
+    def search(text: str) -> _TrailingCellMatch | None:
+        digit_ends = list(range(len(text) + 1))
+        whitespace_ends = digit_ends.copy()
+        for position in range(len(text) - 1, -1, -1):
+            if "0" <= text[position] <= "9":
+                digit_ends[position] = digit_ends[position + 1]
+            if text[position].isspace():
+                whitespace_ends[position] = whitespace_ends[position + 1]
+
+        reaches_end = [False] * (len(text) + 1)
+        reaches_end[len(text)] = True
+        for position in range(len(text) - 1, -1, -1):
+            end = _scan_cell(text, position, digit_ends, whitespace_ends)
+            reaches_end[position] = end is not None and reaches_end[end]
+        try:
+            offset = reaches_end.index(True, 0, len(text))
+        except ValueError:
+            return None
+        return _TrailingCellMatch(text, offset)
+
+
 #: Everything after a label: a run of one or more cells, to end of line.
-TRAILING_CELLS = re.compile(r"((?:\(?\$?\s?[0-9]+\.[0-9]+\)?\s*(?:\([IRNL]\))?\s*)+)$")
+TRAILING_CELLS = _TrailingCellsScanner()
 
 SHEET_HEADER = re.compile(r"ELECTRIC SCHEDULE\s+(\S+)\s+Sheet\s+(\d+)", re.I)
 ADVICE = re.compile(r"Advice\s+(\d+-E)", re.I)

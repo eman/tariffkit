@@ -1,0 +1,41 @@
+name: Support question
+description: Ask a usage or configuration question using public-safe details.
+title: "[Question]: "
+labels:
+  - question
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search the [documentation](https://github.com/eman/tariffkit#documentation) and existing issues first.
+
+        **Do not include secrets, credentials, `.env` contents, bills or statement PDFs, account or meter identifiers, Home Assistant diagnostics, Green Button exports, or raw portal responses.** Use synthetic, sanitized data. Report security vulnerabilities through [private vulnerability reporting](https://github.com/eman/tariffkit/security/advisories/new).
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Public-report safety
+      options:
+        - label: I removed secrets, bills/statements, account identifiers, `.env` contents, diagnostics, exports, and portal responses.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: TariffKit version
+      description: Run `tariffkit --version` if TariffKit is already installed.
+      placeholder: 0.2.1
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to do?
+      description: Describe the intended outcome rather than only the command attempted.
+    validations:
+      required: true
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What have you tried?
+      description: Include minimal commands or synthetic configuration and the sanitized result.
+    validations:
+      required: true

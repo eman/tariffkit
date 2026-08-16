@@ -101,7 +101,10 @@ def test_mqtt_settings_resolve_config_environment_and_keyring(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = tmp_path / "config.toml"
-    config.write_text('[mqtt]\nbroker = "config-broker"\nport = 1884\n', encoding="utf-8")
+    config.write_text(
+        '[mqtt]\nbroker = "config-broker"\nport = 1884\ntls = true\n',
+        encoding="utf-8",
+    )
     monkeypatch.setenv("TARIFFKIT_MQTT_BROKER", "env-broker")
     monkeypatch.setattr(
         "tariffkit.mqtt.publisher.get_secret",

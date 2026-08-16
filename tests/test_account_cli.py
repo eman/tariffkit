@@ -21,7 +21,7 @@ from tariffkit.account import (
 )
 from tariffkit.account.cli import migrate_existing, sync_profile
 from tariffkit.billing import BillingPeriod, IntervalReading
-from tariffkit.cli import _mqtt_settings, _pricing_context, main
+from tariffkit.cli import _mqtt_settings, _pricing_context, build_parser, main
 from tariffkit.config import Config
 from tariffkit.errors import ConfigError
 from tariffkit.models import Supplier
@@ -412,6 +412,7 @@ def test_explicit_config_stops_mqtt_from_reverting_to_a_default_profile(
         discovery=None,
         forecast_hours=None,
         tls=None,
+        allow_insecure_auth=None,
     )
     _engine, config, profile_name, _repository = _pricing_context(args)
 
@@ -420,3 +421,13 @@ def test_explicit_config_stops_mqtt_from_reverting_to_a_default_profile(
     settings = _mqtt_settings(args, config=config, profile_name=profile_name)
 
     assert settings.profile is None
+
+
+def test_mqtt_cli_accepts_insecure_auth_escape_hatch() -> None:
+    args = build_parser().parse_args(
+        ["mqtt", "--broker", "broker.local", "--username", "user", "--allow-insecure-auth"]
+    )
+
+    settings = _mqtt_settings(args, config=None, profile_name=None)
+
+    assert settings.allow_insecure_auth is True

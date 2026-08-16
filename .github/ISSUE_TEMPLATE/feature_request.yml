@@ -1,0 +1,41 @@
+name: Feature request
+description: Propose a focused, provider-neutral improvement.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Explain the user problem before proposing an implementation. Do not include secrets, `.env` contents, bills/statements, account identifiers, diagnostics, exports, or portal responses. Use [private vulnerability reporting](https://github.com/eman/tariffkit/security/advisories/new) for security concerns.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Public-report safety
+      options:
+        - label: This request contains no private utility or account data and is not a vulnerability report.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to accomplish, and what blocks you today?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe the behavior or interface that would solve the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds or existing features have you tried?
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope notes
+      description: Note affected providers, tariffs, integrations, or documentation.

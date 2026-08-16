@@ -1,0 +1,60 @@
+name: Rate-data correction
+description: Report published source data that appears missing, outdated, or incorrect.
+title: "[Rate data]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Vendored rate files are generated from published documents and must not be hand-edited. Link to a public publisher source whenever possible.
+
+        **Do not upload bills/statements, account identifiers, credentials, `.env` contents, portal responses, Green Button exports, or other private account evidence.** Use [private vulnerability reporting](https://github.com/eman/tariffkit/security/advisories/new) for security concerns.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Public-report safety
+      options:
+        - label: My evidence is public publisher material and contains no private account data or secrets.
+          required: true
+  - type: dropdown
+    id: dataset
+    attributes:
+      label: Dataset
+      options:
+        - Retail tariff
+        - NBT export rates
+        - ACC Plus
+        - CCA rate card
+        - Net Surplus Compensation
+        - State surcharge or tax
+        - Holiday calendar
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: effective
+    attributes:
+      label: Effective date or period
+      placeholder: YYYY-MM-DD
+    validations:
+      required: true
+  - type: input
+    id: source
+    attributes:
+      label: Public source URL
+      description: Link directly to the utility, regulator, or CCA publication.
+    validations:
+      required: true
+  - type: textarea
+    id: discrepancy
+    attributes:
+      label: Discrepancy
+      description: Identify the published value and TariffKit value without using an individual bill.
+    validations:
+      required: true
+  - type: textarea
+    id: provenance
+    attributes:
+      label: Source location
+      description: Give page, table, row, schedule, or other precise location in the public source.

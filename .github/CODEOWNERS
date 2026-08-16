@@ -1,0 +1,8 @@
+* @eman
+/.github/ @eman
+/SECURITY.md @eman
+/audit/ @eman
+/custom_components/tariffkit/ @eman
+/src/tariffkit/data/ @eman
+/tools/regen/ @eman
+/tools/release.py @eman

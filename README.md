@@ -4,6 +4,11 @@
 
 # TariffKit
 
+[![CI](https://github.com/eman/tariffkit/actions/workflows/ci.yml/badge.svg)](https://github.com/eman/tariffkit/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/tariffkit)](https://pypi.org/project/tariffkit/)
+[![Python 3.14.2](https://img.shields.io/badge/python-3.14.2-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 An offline electricity tariff engine for pricing, billing, and energy-system
 integrations. The first data provider supports PG&E residential rate plans under
 **NEM 3.0 / the Net Billing Tariff (NBT)**; the package identity is deliberately

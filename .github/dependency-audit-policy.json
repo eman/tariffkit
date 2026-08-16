@@ -1,0 +1,24 @@
+{
+  "expires": "2026-09-01",
+  "package": {
+    "name": "cryptography",
+    "version": "48.0.1"
+  },
+  "advisories": [
+    "PYSEC-2026-3552",
+    "PYSEC-2026-3553",
+    "PYSEC-2026-3554"
+  ],
+  "scope": "development-only",
+  "dependency_path": [
+    "dev dependency group",
+    "pytest-homeassistant-custom-component==0.13.356",
+    "homeassistant==2026.8.2",
+    "cryptography==48.0.1"
+  ],
+  "reachability": "TariffKit runtime code and production extras do not import cryptography or its PKCS#7 and X.509 verification APIs. The package is present only to run the Home Assistant integration test suite.",
+  "tracking": [
+    "https://pypi.org/project/homeassistant/",
+    "https://pypi.org/project/pytest-homeassistant-custom-component/"
+  ]
+}

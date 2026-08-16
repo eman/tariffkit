@@ -2,7 +2,7 @@
 
 ## Build, test, and lint
 
-Use the same toolchain and command style as CI (`uv` + Python 3.14).
+Use the same toolchain and command style as CI (`uv` + Python 3.14.2).
 
 ```bash
 # Install dev environment (runtime extras + test/lint/type/regen tools)
@@ -195,7 +195,7 @@ uv run python -m audit run --since 2025-11-01 --until 2026-08-31
 - **Core package remains dependency-light**: optional features (`web`, `mqtt`) use extras and lazy imports with explicit runtime messages when extras are missing.
 - **Typing and linting are intentionally strict** in `src/tariffkit` (`mypy --strict`, broad Ruff rule set). Follow existing typing quality rather than introducing `Any`-heavy shortcuts.
 - **Home Assistant integration has deliberate lint exceptions** in Ruff config to match HA conventions; avoid “normalizing” HA files to core-package naming/signature patterns.
-- **Python 3.14 is the floor**, and CI runs exactly that one version rather than a matrix — a matrix that spanned versions nobody develops on could only catch regressions where they did not matter. Raising it also raises the Home Assistant floor in `hacs.json` (currently 2026.3.0), and the two move together.
+- **Python 3.14.2 is the floor**, and CI runs exactly that one version rather than a matrix — a matrix that spanned versions nobody develops on could only catch regressions where they did not matter. Raising it also raises the Home Assistant floor in `hacs.json` (currently 2026.3.0), and the two move together.
 - **Comments explain why, not what.** Config files here carry the reasoning for non-obvious choices (why `audit` is in `known-first-party`, why the wheel check is pinned, why the rate-data job gates on step outcomes rather than `failure()`). Preserve those when editing, and add one when making a choice a reader would otherwise undo.
 
 ## Changelog and docs
