@@ -1,7 +1,7 @@
 get_rates:
   name: Get rates
   description: Return a bounded, timestamped TariffKit rate forecast.
-  icon: mdi:chart-timeline-variant
+  target: {}
   fields:
     config_entry:
       name: TariffKit config entry
@@ -48,7 +48,7 @@ get_rates:
 get_emhass_forecast:
   name: Get EMHASS forecast
   description: Return EMHASS positional load and production price arrays.
-  icon: mdi:robot
+  target: {}
   fields:
     config_entry:
       name: TariffKit config entry

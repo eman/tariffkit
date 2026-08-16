@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import tomllib
+import zipfile
 from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -20,11 +21,15 @@ ROOT = Path(__file__).resolve().parent.parent
 PROJECT_FILE = Path("pyproject.toml")
 LOCK_FILE = Path("uv.lock")
 MANIFEST_FILE = Path("custom_components/tariffkit/manifest.json")
+COMPONENT_DIR = MANIFEST_FILE.parent
+HACS_FILE = Path("hacs.json")
+HACS_ASSET = "tariffkit.zip"
 CHANGELOG_FILE = Path("CHANGELOG.md")
 VERSIONED_DOCS = (
     Path("docs/containers.md"),
     Path("docs/home-assistant.md"),
     Path("docs/home-assistant-quality.md"),
+    Path("docs/releases.md"),
 )
 CHANGE_TYPES = ("Added", "Changed", "Deprecated", "Removed", "Fixed", "Security")
 _HEADING = re.compile(
@@ -37,6 +42,37 @@ _RELEASE_LINK = re.compile(r"^\[([^\]]+)\]: .+$", re.MULTILINE)
 
 class ReleaseError(Exception):
     """A release invariant was not satisfied."""
+
+
+def _validate_manifest(manifest: object, version: Version) -> None:
+    if not isinstance(manifest, dict):
+        raise ReleaseError("Home Assistant manifest must be a JSON object")
+    if manifest.get("domain") != "tariffkit":
+        raise ReleaseError("Home Assistant manifest domain must be tariffkit")
+    if manifest.get("version") != str(version):
+        raise ReleaseError("Home Assistant manifest version does not match project.version")
+    if manifest.get("requirements") != [f"tariffkit=={version}"]:
+        raise ReleaseError("Home Assistant manifest must require the exact project version")
+
+
+def _validate_hacs_config(config: object) -> None:
+    if not isinstance(config, dict):
+        raise ReleaseError("hacs.json must be a JSON object")
+    required = {
+        "name": "TariffKit",
+        "content_in_root": False,
+        "country": "US",
+        "filename": HACS_ASSET,
+        "hide_default_branch": True,
+        "zip_release": True,
+    }
+    mismatched = {
+        key: {"expected": expected, "actual": config.get(key)}
+        for key, expected in required.items()
+        if config.get(key) != expected
+    }
+    if mismatched:
+        raise ReleaseError(f"hacs.json release settings do not match: {mismatched}")
 
 
 def parse_version(raw: str) -> Version:
@@ -139,10 +175,9 @@ def check(
         raise ReleaseError(f"release tag must be v{version}, got {tag!r}")
 
     manifest = json.loads((root / MANIFEST_FILE).read_text(encoding="utf-8"))
-    if manifest.get("version") != str(version):
-        raise ReleaseError("Home Assistant manifest version does not match project.version")
-    if manifest.get("requirements") != [f"tariffkit=={version}"]:
-        raise ReleaseError("Home Assistant manifest must require the exact project version")
+    _validate_manifest(manifest, version)
+    hacs_config = json.loads((root / HACS_FILE).read_text(encoding="utf-8"))
+    _validate_hacs_config(hacs_config)
 
     changelog = (root / CHANGELOG_FILE).read_text(encoding="utf-8")
     sections = _sections(changelog)
@@ -151,6 +186,112 @@ def check(
         raise ReleaseError(f"the newest changelog release must be {version}")
     _validate_change_types(sections[1][2], section=str(version), allow_empty=False)
     return version
+
+
+def _tracked_component_files(root: Path) -> list[Path]:
+    result = subprocess.run(
+        ["git", "ls-files", "-z", "--", COMPONENT_DIR.as_posix()],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    return [Path(item.decode()) for item in result.stdout.split(b"\0") if item]
+
+
+def _archive_inventory(
+    root: Path,
+    component_files: Sequence[Path] | None,
+) -> list[tuple[Path, str]]:
+    files = list(component_files) if component_files is not None else _tracked_component_files(root)
+    inventory: list[tuple[Path, str]] = []
+    for relative in files:
+        try:
+            archive_name = relative.relative_to(COMPONENT_DIR).as_posix()
+        except ValueError as exc:
+            raise ReleaseError(f"HACS source is outside {COMPONENT_DIR}: {relative}") from exc
+        if not archive_name or archive_name.startswith("/") or ".." in Path(archive_name).parts:
+            raise ReleaseError(f"unsafe HACS archive path: {archive_name!r}")
+        source = root / relative
+        if source.is_symlink():
+            raise ReleaseError(f"HACS source must not be a symlink: {relative}")
+        if not source.is_file():
+            raise ReleaseError(f"HACS source is not a regular file: {relative}")
+        inventory.append((source, archive_name))
+    inventory.sort(key=lambda item: item[1])
+    names = [item[1] for item in inventory]
+    if len(names) != len(set(names)):
+        raise ReleaseError("HACS source inventory contains duplicate archive paths")
+    required = {"__init__.py", "manifest.json"}
+    missing = required.difference(names)
+    if missing:
+        raise ReleaseError(f"HACS source inventory is missing required files: {sorted(missing)}")
+    return inventory
+
+
+def check_hacs_archive(
+    archive_path: Path,
+    *,
+    root: Path = ROOT,
+    component_files: Sequence[Path] | None = None,
+) -> None:
+    """Validate a HACS ZIP against the tracked integration source."""
+    inventory = _archive_inventory(root, component_files)
+    expected = {name: source.read_bytes() for source, name in inventory}
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            corrupt = archive.testzip()
+            if corrupt is not None:
+                raise ReleaseError(f"HACS archive has corrupt member {corrupt!r}")
+            members = archive.infolist()
+            names = [member.filename for member in members]
+            if len(names) != len(set(names)):
+                raise ReleaseError("HACS archive contains duplicate paths")
+            if any(member.is_dir() for member in members):
+                raise ReleaseError("HACS archive must contain files only")
+            if names != sorted(expected):
+                raise ReleaseError("HACS archive inventory does not match tracked component files")
+            for name, content in expected.items():
+                if archive.read(name) != content:
+                    raise ReleaseError(f"HACS archive content differs for {name}")
+            manifest = json.loads(archive.read("manifest.json"))
+    except (KeyError, json.JSONDecodeError, zipfile.BadZipFile) as exc:
+        raise ReleaseError(f"invalid HACS archive {archive_path}: {exc}") from exc
+    _validate_manifest(manifest, project_version(root))
+
+
+def build_hacs_archive(
+    output: Path,
+    *,
+    root: Path = ROOT,
+    component_files: Sequence[Path] | None = None,
+) -> None:
+    """Build a deterministic HACS ZIP from tracked integration files."""
+    sources = tuple(component_files) if component_files is not None else None
+    inventory = _archive_inventory(root, sources)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_suffix(f"{output.suffix}.tmp")
+    temporary.unlink(missing_ok=True)
+    try:
+        with zipfile.ZipFile(
+            temporary,
+            mode="w",
+            compression=zipfile.ZIP_DEFLATED,
+            compresslevel=9,
+        ) as archive:
+            for source, archive_name in inventory:
+                info = zipfile.ZipInfo(archive_name, date_time=(1980, 1, 1, 0, 0, 0))
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.create_system = 3
+                info.external_attr = 0o100644 << 16
+                archive.writestr(info, source.read_bytes(), compresslevel=9)
+        check_hacs_archive(
+            temporary,
+            root=root,
+            component_files=sources,
+        )
+        temporary.replace(output)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _update_manifest(root: Path, old: Version, new: Version) -> None:
@@ -299,6 +440,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     available_parser.add_argument("version")
     available_parser.add_argument("--repository", choices=("pypi", "testpypi"), required=True)
+
+    hacs_parser = subparsers.add_parser(
+        "build-hacs", help="build a deterministic HACS integration archive"
+    )
+    hacs_parser.add_argument("--output", type=Path, default=Path("hacs") / HACS_ASSET)
     return parser
 
 
@@ -320,6 +466,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "available":
             ensure_available(args.version, args.repository)
             print(f"tariffkit {args.version} is available on {args.repository}")
+        elif args.command == "build-hacs":
+            output = args.output if args.output.is_absolute() else ROOT / args.output
+            build_hacs_archive(output)
+            print(f"built HACS archive {output}")
         else:
             raise AssertionError(f"unhandled release command {args.command!r}")
     except (OSError, ReleaseError, subprocess.CalledProcessError) as exc:

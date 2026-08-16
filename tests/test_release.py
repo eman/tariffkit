@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import zipfile
 from datetime import date
 from pathlib import Path
 from urllib.error import HTTPError
@@ -12,7 +13,9 @@ import pytest
 
 from tools.release import (
     ReleaseError,
+    build_hacs_archive,
     check,
+    check_hacs_archive,
     ensure_available,
     notes,
     parse_version,
@@ -21,7 +24,9 @@ from tools.release import (
 
 
 def repository(tmp_path: Path, *, changelog: str | None = None) -> Path:
-    (tmp_path / "custom_components/tariffkit").mkdir(parents=True)
+    component = tmp_path / "custom_components/tariffkit"
+    component.mkdir(parents=True)
+    (component / "translations").mkdir()
     (tmp_path / "docs").mkdir()
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "tariffkit"\nversion = "0.1.0"\n',
@@ -41,7 +46,22 @@ def repository(tmp_path: Path, *, changelog: str | None = None) -> Path:
         ),
         encoding="utf-8",
     )
-    for name in ("containers.md", "home-assistant.md", "home-assistant-quality.md"):
+    (component / "__init__.py").write_text('"""TariffKit integration."""\n', encoding="utf-8")
+    (component / "translations/en.json").write_text("{}\n", encoding="utf-8")
+    (tmp_path / "hacs.json").write_text(
+        json.dumps(
+            {
+                "name": "TariffKit",
+                "content_in_root": False,
+                "country": "US",
+                "filename": "tariffkit.zip",
+                "hide_default_branch": True,
+                "zip_release": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    for name in ("containers.md", "home-assistant.md", "home-assistant-quality.md", "releases.md"):
         (tmp_path / "docs" / name).write_text("tariffkit==0.1.0\n", encoding="utf-8")
     (tmp_path / "CHANGELOG.md").write_text(
         changelog
@@ -63,6 +83,14 @@ def repository(tmp_path: Path, *, changelog: str | None = None) -> Path:
         encoding="utf-8",
     )
     return tmp_path
+
+
+def component_files() -> list[Path]:
+    return [
+        Path("custom_components/tariffkit/__init__.py"),
+        Path("custom_components/tariffkit/manifest.json"),
+        Path("custom_components/tariffkit/translations/en.json"),
+    ]
 
 
 def update_project(root: Path, version: str) -> None:
@@ -130,6 +158,59 @@ def test_check_rejects_manifest_drift(tmp_path: Path) -> None:
 
     with pytest.raises(ReleaseError, match="exact project version"):
         check(root)
+
+
+def test_check_rejects_hacs_release_drift(tmp_path: Path) -> None:
+    root = repository(tmp_path)
+    hacs = root / "hacs.json"
+    payload = json.loads(hacs.read_text(encoding="utf-8"))
+    payload["filename"] = "versioned-name.zip"
+    hacs.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ReleaseError, match=r"hacs\.json release settings"):
+        check(root)
+
+
+def test_hacs_archive_is_rooted_and_deterministic(tmp_path: Path) -> None:
+    root = repository(tmp_path)
+    first = root / "first.zip"
+    second = root / "second.zip"
+
+    build_hacs_archive(first, root=root, component_files=component_files())
+    build_hacs_archive(second, root=root, component_files=reversed(component_files()))
+
+    assert first.read_bytes() == second.read_bytes()
+    with zipfile.ZipFile(first) as archive:
+        assert archive.namelist() == [
+            "__init__.py",
+            "manifest.json",
+            "translations/en.json",
+        ]
+        assert all(info.date_time == (1980, 1, 1, 0, 0, 0) for info in archive.infolist())
+
+
+def test_hacs_archive_rejects_untracked_or_changed_content(tmp_path: Path) -> None:
+    root = repository(tmp_path)
+    archive = root / "tariffkit.zip"
+    build_hacs_archive(archive, root=root, component_files=component_files())
+    (root / "custom_components/tariffkit/__init__.py").write_text(
+        '"""Changed integration."""\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ReleaseError, match="content differs"):
+        check_hacs_archive(archive, root=root, component_files=component_files())
+
+
+def test_hacs_archive_rejects_sources_outside_component(tmp_path: Path) -> None:
+    root = repository(tmp_path)
+
+    with pytest.raises(ReleaseError, match="outside"):
+        build_hacs_archive(
+            root / "tariffkit.zip",
+            root=root,
+            component_files=[Path("hacs.json"), *component_files()],
+        )
 
 
 @pytest.mark.parametrize(

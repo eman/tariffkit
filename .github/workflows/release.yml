@@ -77,6 +77,8 @@ jobs:
       - run: uv run pytest audit/tests
       - run: uv build --no-sources
       - run: uv run twine check dist/*
+      - name: Build and verify the HACS integration archive
+        run: uv run python -m tools.release build-hacs
       - name: Verify artifact boundaries
         run: |
           python -m zipfile -l dist/*.whl | grep -q 'tariffkit/data/export/pge/nbt26.json.gz'
@@ -107,13 +109,19 @@ jobs:
         env:
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          (cd dist && sha256sum -- *.whl *.tar.gz) > SHA256SUMS
+          (
+            cd dist
+            sha256sum -- *.whl *.tar.gz
+            cd ../hacs
+            sha256sum -- tariffkit.zip
+          ) > SHA256SUMS
           uv run python -m tools.release notes "$RELEASE_VERSION" > release-notes.md
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tariffkit-${{ inputs.version }}
           path: |
             dist/
+            hacs/
             SHA256SUMS
             release-notes.md
           if-no-files-found: error
@@ -171,7 +179,7 @@ jobs:
             --draft \
             --title "TariffKit $RELEASE_VERSION" \
             --notes-file release-notes.md \
-            dist/*.whl dist/*.tar.gz SHA256SUMS
+            dist/*.whl dist/*.tar.gz hacs/tariffkit.zip SHA256SUMS
 
   publish-pypi:
     name: Approve and publish exact build to PyPI

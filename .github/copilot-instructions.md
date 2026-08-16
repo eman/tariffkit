@@ -217,6 +217,8 @@ Two workflows, in `.github/workflows/`:
   main suite with coverage, then `audit/tests`; a separate `build` job asserts
   the vendored data is inside the wheel and the audit harness is inside neither
   wheel nor sdist.
+- `home-assistant.yml` — HACS validation and hassfest on PRs, `main`, published
+  releases, a weekly schedule, and manual runs. Neither check permits ignores.
 - `rate-data-check.yml` — weekly and on demand. Runs both `--check`
   regenerators against live publishers and opens a single deduplicated
   `rate-data`-labelled issue when upstream has moved. It needs `issues: write`,
