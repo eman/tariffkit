@@ -19,6 +19,7 @@ import pytest
 # contributor who installed without it.
 pytest.importorskip("websockets")
 
+from tariffkit.account import MeterSource
 from tariffkit.errors import ConfigError, DataError
 from tariffkit.sources import homeassistant as ha
 from tariffkit.timeutil import PACIFIC
@@ -115,6 +116,30 @@ class TestSettings:
         env.write_text('HA_HOST = "http://env"\nHA_TOKEN = "tok"\n')
         s = ha.HaSettings.load(dotenv_path=env, import_entity="sensor.override")
         assert s.import_entity == "sensor.override"
+
+    def test_profile_mapping_wins_over_environment_but_cli_wins_over_profile(
+        self, tmp_path: Path
+    ) -> None:
+        env = tmp_path / ".env"
+        env.write_text(
+            'HA_HOST = "http://env"\nHA_TOKEN = "tok"\n'
+            'TARIFFKIT_HA_IMPORT_ENTITY = "sensor.env_in"\n'
+            'TARIFFKIT_HA_EXPORT_ENTITY = "sensor.env_out"\n'
+        )
+        profile = MeterSource("sensor.profile_in", "sensor.profile_out")
+        settings = ha.HaSettings.load(
+            dotenv_path=env,
+            profile_source=profile,
+            import_entity="sensor.cli_in",
+        )
+        assert settings.import_entity == "sensor.cli_in"
+        assert settings.export_entity == "sensor.profile_out"
+
+        settings = ha.HaSettings.load(dotenv_path=env, profile_source=profile)
+        assert (settings.import_entity, settings.export_entity) == (
+            "sensor.profile_in",
+            "sensor.profile_out",
+        )
 
     def test_empty_override_does_not_clear_a_real_value(self, tmp_path: Path) -> None:
         """argparse hands through None for a flag nobody passed."""

@@ -35,6 +35,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
+from ..account.model import MeterSource
 from ..billing.models import IntervalReading
 from ..config import default_config_path
 from ..errors import ConfigError, DataError
@@ -89,7 +90,7 @@ def load_dotenv(path: str | Path = ".env") -> dict[str, str]:
 
 @dataclass(frozen=True, slots=True)
 class HaSettings:
-    """Where to reach Home Assistant, and which entities carry the meter."""
+    """Where to reach Home Assistant, and which entities carry grid exchange."""
 
     host: str
     token: str
@@ -107,12 +108,14 @@ class HaSettings:
         cls,
         config_path: str | Path | None = None,
         dotenv_path: str | Path = ".env",
+        profile_source: MeterSource | None = None,
         **overrides: str | None,
     ) -> HaSettings:
         """Resolve settings from config file, ``.env``, environment, and args.
 
         Later wins: ``[home_assistant]`` in the config file, then ``.env``, then
-        real environment variables, then explicit overrides.
+        real environment variables, then a named profile's grid-import/grid-
+        export mapping, then explicit overrides.
 
         The token is deliberately not read from the config file. Entity ids are
         configuration and belong somewhere shareable; a long-lived access token
@@ -137,6 +140,12 @@ class HaSettings:
         ):
             if value := env.get(name):
                 values[key] = value
+
+        if profile_source is not None:
+            if not isinstance(profile_source, MeterSource):
+                raise ConfigError("profile_source must be a MeterSource")
+            values["import_entity"] = profile_source.grid_import_entity
+            values["export_entity"] = profile_source.grid_export_entity
 
         values.update({k: v for k, v in overrides.items() if v})
 

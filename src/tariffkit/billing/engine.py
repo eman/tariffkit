@@ -391,6 +391,11 @@ def _ordered_segments(segments: Sequence[Segment]) -> list[Segment]:
                 f"{later.period.start}..{later.period.end}. Overlapping segments would "
                 f"price the same day twice"
             )
+        if later.period.start > earlier.period.end + timedelta(days=1):
+            raise DataError(
+                f"segments have a gap: {earlier.period.end}..{later.period.start}. "
+                "A segmented bill must cover every day exactly once"
+            )
     return ordered
 
 

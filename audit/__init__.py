@@ -8,17 +8,16 @@ each looked entirely plausible until a piece of paper disagreed. Nothing re-ran
 those checks afterwards, so a regression in any of them would ship in silence
 and the next statement would have to be reconciled by hand to find it.
 
-This lives outside ``src/tariffkit`` deliberately. The package's job is to price
-energy; this one's is to read how one utility prints paper for one account, and
-those two things change on unrelated cadences. A wheel carrying this would ship
-a statement parser that fails on everybody else's bill, and a login nobody else
-can use.
+This lives outside ``src/tariffkit`` deliberately. The public package owns the
+provider statement importer, account profiles, and pricing; this harness owns
+the PG&E-specific reconciliation map, attribution, orchestration, and portal
+protocol notes.
 
 The line is drawn at authentication rather than at "is it network code":
 ``tariffkit.sources.pge`` owns the session and the Green Button download,
 because a metered record fetched over HTTP is still a metered record and that is
-what ``sources`` is for. Statement PDFs, the printed-label map, and the
-reconciler are here, because they are facts about a bill's layout.
+what ``sources`` is for. The printed-label map and reconciler remain here,
+because they are facts about this audit's bill layout.
 
 Both halves need the same login, so the session object is public and reusable
 and this package never handles credentials itself.

@@ -8,12 +8,20 @@ CONF_SUPPLIER = "supplier"
 CONF_TARIFF = "tariff"
 CONF_INTERCONNECTION_YEAR = "interconnection_year"
 CONF_PTO_DATE = "pto_date"
+CONF_VINTAGE = "vintage"
 CONF_ACC_PLUS_SEGMENT = "acc_plus_segment"
 CONF_BSC_TIER = "base_services_charge_tier"
 CONF_DISCOUNT = "discount"
 CONF_BASELINE_TERRITORY = "baseline_territory"
 CONF_BASELINE_CODE = "baseline_code"
 CONF_FORECAST_HOURS = "forecast_hours"
+CONF_PREDBAT_ENABLED = "predbat_enabled"
+CONF_PROFILE_NAME = "profile_name"
+CONF_EXPORT_ENABLED = "export_enabled"
+CONF_NSC_RATE = "nsc_rate"
+CONF_PROFILE = "profile"
+CONF_EFFECTIVE = "effective"
+CONF_ACTION = "action"
 
 CONF_CCA_NAME = "cca_name"
 CONF_CCA_RATE_CARD = "cca_rate_card"
@@ -25,8 +33,22 @@ CONF_CCA_EXPORT_RATE = "cca_export_generation_rate"
 CONF_CCA_GENERATION_RATES = "cca_generation_rates"
 
 DEFAULT_FORECAST_HOURS = 48
+DEFAULT_PREDBAT_ENABLED = False
 
-ATTR_FORECAST = "forecast"
+SERVICE_GET_RATES = "get_rates"
+SERVICE_GET_EMHASS_FORECAST = "get_emhass_forecast"
+CONF_CONFIG_ENTRY = "config_entry"
+CONF_START = "start"
+CONF_END = "end"
+CONF_DATE = "date"
+CONF_HORIZON = "horizon"
+CONF_RESOLUTION = "resolution"
+SUPPORTED_RESOLUTIONS = (15, 30, 60)
+
+ATTR_RATES = "rates"
+ATTR_QUALITY = "quality"
+ATTR_GENERATED_AT = "generated_at"
+ATTR_PROVENANCE = "provenance"
 #: Predbat reads these two off whichever entity apps.yaml points
 #: metric_octopus_import / metric_octopus_export at.
 ATTR_RAW_TODAY = "raw_today"
@@ -35,4 +57,3 @@ ATTR_RAW_TOMORROW = "raw_tomorrow"
 #: lists, positional against EMHASS's timeline, so the horizon travels with them.
 ATTR_LOAD_COST = "load_cost_forecast"
 ATTR_PROD_PRICE = "prod_price_forecast"
-ATTR_HORIZON = "prediction_horizon"

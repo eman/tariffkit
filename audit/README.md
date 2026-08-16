@@ -19,28 +19,32 @@ PGE_20260205.pdf  2025-12-30..2026-01-29 (31 days)  E-TOU-C / MCE
   RECONCILED
 ```
 
-## Why it is not in the package
+## What is public and what remains here
 
-`src/tariffkit` prices energy. This reads how one utility prints paper for one
-account, and needs that account's login. A wheel carrying it would ship a
-statement parser that fails on everybody else's bill. The build pins the
-exclusion for both wheel and sdist.
+The local PG&E statement importer is public under the optional
+`tariffkit[statements]` extra. It extracts and validates statement evidence
+without uploading or retaining PDFs. The audit harness keeps only the
+PG&E-specific reconciliation map, attribution rules, orchestration, and portal
+protocol notes.
 
-The one thing that does belong in the library is the authenticated session and
-Green Button download: a metered record fetched over HTTP is still a metered
-record, which is what `tariffkit.sources` is for.
+The authenticated session and Green Button download are also public:
+a metered record fetched over HTTP is still a metered record, which is what
+`tariffkit.sources` is for.
 
 ## Setup
 
+Create or migrate a named managed profile with the public CLI, then select it
+for the audit:
+
 ```bash
-cp audit/account.example.toml audit/account.toml   # gitignored
+tariffkit account init home --audit-file /path/to/legacy-account.toml
+python -m audit reconcile --account home ~/Desktop/PGE_20260205.pdf
 ```
 
-`account.toml` dates the *account* — schedule, supplier, baseline territory,
-PCIA vintage — because those change over its life and `Config` describes one
-moment. A cycle spanning a change is refused rather than guessed: no single
-configuration priced it, and picking one produces a believable delta that gets
-filed as a rounding mystery.
+Profiles date the *account* — schedule, supplier, baseline territory, and PCIA
+vintage — because those change over its life and `Config` describes one moment.
+A cycle whose statement evidence does not exactly match the profile's segments
+is refused before interval data is priced.
 
 Statements are never committed. Point `TARIFFKIT_STATEMENT_DIR` at wherever
 yours already are, or let downloads land in `.cache/pge/statements/`. `*.pdf` is
@@ -89,7 +93,7 @@ talks to it.
 ## Running it
 
 ```bash
-uv run python -m audit run --since 2025-11-01 --until 2026-08-31
+uv run python -m audit run --account home --since 2025-11-01 --until 2026-08-31
 ```
 
 Lists every statement the portal holds for that range, downloads each, prices
@@ -103,7 +107,7 @@ one row per cycle. Useful flags:
 | `--green-button` | also download PG&E's own interval export and compare the two meters |
 | `--keep-statements` | leave the downloaded PDFs in `.cache/pge/statements/` |
 | `--read-hour N` | move the cycle boundary off midnight |
-| `--account PATH` | a different account history (default `audit/account.toml`) |
+| `--account NAME` | the named managed profile (or use the configured default) |
 
 Statements are deleted after the run unless `--keep-statements`. One carries the
 service address, the account number, and a remittance scanline with the account

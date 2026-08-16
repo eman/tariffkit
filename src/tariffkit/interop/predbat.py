@@ -16,9 +16,8 @@ Two adaptations are needed:
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
-from ..engine import RateEngine
 from ..models import PriceCurve
 from ..timeutil import now_pacific, to_pacific
 from .slots import local_day_window, resample
@@ -27,6 +26,12 @@ from .slots import local_day_window, resample
 CENTS_PER_DOLLAR = 100.0
 
 Direction = Literal["import", "export"]
+
+
+class ForecastEngine(Protocol):
+    """The small engine surface needed to build Predbat's two-day payload."""
+
+    def forecast(self, hours: int, start: datetime | None = None) -> PriceCurve: ...
 
 
 def raw_attributes(
@@ -68,7 +73,7 @@ def raw_attributes(
 
 
 def payload(
-    engine: RateEngine,
+    engine: ForecastEngine,
     moment: datetime | None = None,
     *,
     minutes: int = 30,

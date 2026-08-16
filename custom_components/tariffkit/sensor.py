@@ -1,10 +1,11 @@
-"""Sensor entities."""
+"""TariffKit price and forecast entities."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -12,62 +13,102 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from tariffkit import TouPeriod
 
 from .const import (
-    ATTR_FORECAST,
-    ATTR_HORIZON,
+    ATTR_GENERATED_AT,
     ATTR_LOAD_COST,
     ATTR_PROD_PRICE,
+    ATTR_PROVENANCE,
+    ATTR_QUALITY,
+    ATTR_RATES,
     ATTR_RAW_TODAY,
     ATTR_RAW_TOMORROW,
     DOMAIN,
 )
-from .coordinator import TariffKitCoordinator
+from .coordinator import (
+    TariffKitConfigEntry,
+    TariffKitCoordinator,
+    TariffKitData,
+    TariffKitQuality,
+)
 
-#: Ends in "/kWh", which is the whole of what Home Assistant's Energy dashboard
-#: requires of a price entity -- it checks neither device_class nor currency.
+PARALLEL_UPDATES = 0
 UNIT = "USD/kWh"
+SPREAD_DESCRIPTION = (
+    "Export compensation minus avoided import cost; excludes battery efficiency, "
+    "degradation, and inverter losses."
+)
+
+
+def _quality_attributes(quality: TariffKitQuality) -> dict[str, bool]:
+    return quality.to_dict()
+
+
+def _price_attrs(direction: str) -> Callable[[TariffKitData], dict[str, Any]]:
+    """Return compact attributes for one current price direction."""
+
+    if direction not in {"import", "export"}:
+        raise ValueError(f"unsupported price direction {direction!r}")
+
+    def extract(data: TariffKitData) -> dict[str, Any]:
+        price = data.point.import_price if direction == "import" else data.point.export_price
+        quality = (
+            TariffKitQuality(
+                complete=price.complete,
+                exact=True,
+                locked=True,
+            )
+            if direction == "import"
+            else TariffKitQuality(
+                complete=price.complete,
+                exact=price.exact,
+                locked=price.locked,
+            )
+        )
+        attrs: dict[str, Any] = {
+            "components": dict(price.components),
+            ATTR_QUALITY: _quality_attributes(quality),
+            ATTR_PROVENANCE: dict(data.provenance),
+        }
+        if data.predbat is not None:
+            attrs.update(data.predbat[direction])
+            if data.predbat_warning is not None:
+                attrs["predbat_warning"] = data.predbat_warning
+        return attrs
+
+    return extract
+
+
+def _spread_attrs(data: TariffKitData) -> dict[str, Any]:
+    """Attributes for the derived export-minus-import spread."""
+    quality = TariffKitQuality.from_point(data.point)
+    return {
+        ATTR_QUALITY: _quality_attributes(quality),
+        ATTR_PROVENANCE: dict(data.provenance),
+        "description": SPREAD_DESCRIPTION,
+    }
+
+
+def _forecast_attrs(data: TariffKitData) -> dict[str, Any]:
+    return {
+        ATTR_RATES: [rate.to_dict() for rate in data.forecast],
+        ATTR_QUALITY: data.quality.to_dict(),
+        ATTR_GENERATED_AT: data.generated_at.isoformat(),
+    }
 
 
 @dataclass(frozen=True, kw_only=True)
 class TariffKitSensorDescription(SensorEntityDescription):
-    """Adds the value and attribute extractors to the standard description."""
+    """Adds typed value and attribute extractors to a sensor description."""
 
-    value_fn: Callable[[dict[str, Any]], Any]
-    attrs_fn: Callable[[dict[str, Any]], dict[str, Any]] | None = None
-
-
-def _price_attrs(key: str) -> Callable[[dict[str, Any]], dict[str, Any]]:
-    """Component breakdown, plus the payloads other energy systems read.
-
-    Note the scale mismatch: ``raw_today``/``raw_tomorrow`` are cents while the
-    state and the EMHASS series are dollars. That is deliberate -- Predbat is a
-    UK tool whose thresholds assume pence, and it reads only these attributes,
-    never the state.
-    """
-    # Explicit rather than "import if ... else export": a typo'd key would
-    # otherwise silently attach the export payloads to the wrong sensor.
-    direction = {"import_price": "import", "export_price": "export"}[key]
-    emhass_key = ATTR_LOAD_COST if direction == "import" else ATTR_PROD_PRICE
-
-    def extract(data: dict[str, Any]) -> dict[str, Any]:
-        price = getattr(data["point"], key)
-        return {
-            **price.to_dict(),
-            ATTR_FORECAST: data["forecast"],
-            emhass_key: data["emhass"][emhass_key],
-            ATTR_HORIZON: data["emhass"][ATTR_HORIZON],
-            **data["predbat"][direction],
-        }
-
-    return extract
+    value_fn: Callable[[TariffKitData], Any]
+    attrs_fn: Callable[[TariffKitData], dict[str, Any]] | None = None
 
 
 SENSORS: tuple[TariffKitSensorDescription, ...] = (
@@ -77,9 +118,9 @@ SENSORS: tuple[TariffKitSensorDescription, ...] = (
         native_unit_of_measurement=UNIT,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=5,
-        icon="mdi:transmission-tower-export",
-        value_fn=lambda data: data["point"].import_price.total,
-        attrs_fn=_price_attrs("import_price"),
+        icon="mdi:transmission-tower-import",
+        value_fn=lambda data: data.point.import_price.total,
+        attrs_fn=_price_attrs("import"),
     ),
     TariffKitSensorDescription(
         key="export_price",
@@ -87,9 +128,9 @@ SENSORS: tuple[TariffKitSensorDescription, ...] = (
         native_unit_of_measurement=UNIT,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=5,
-        icon="mdi:transmission-tower-import",
-        value_fn=lambda data: data["point"].export_price.total,
-        attrs_fn=_price_attrs("export_price"),
+        icon="mdi:transmission-tower-export",
+        value_fn=lambda data: data.point.export_price.total,
+        attrs_fn=_price_attrs("export"),
     ),
     TariffKitSensorDescription(
         key="spread",
@@ -98,84 +139,99 @@ SENSORS: tuple[TariffKitSensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=5,
         icon="mdi:swap-vertical",
-        value_fn=lambda data: round(data["point"].spread, 6),
-        attrs_fn=lambda data: {
-            "favours_export": data["point"].spread > 0,
-            ATTR_FORECAST: data["forecast"],
-        },
+        value_fn=lambda data: round(data.point.spread, 6),
+        attrs_fn=_spread_attrs,
     ),
     TariffKitSensorDescription(
         key="tou_period",
         translation_key="tou_period",
-        # A fixed set of string states, which is what ENUM is for. No
-        # state_class: these are labels, not a series to run statistics over.
         device_class=SensorDeviceClass.ENUM,
         options=[str(period) for period in TouPeriod],
         icon="mdi:clock-outline",
-        value_fn=lambda data: str(data["point"].import_price.period),
-        attrs_fn=lambda data: {"season": str(data["point"].import_price.season)},
+        value_fn=lambda data: str(data.point.import_price.period),
+        attrs_fn=lambda data: {
+            "season": str(data.point.import_price.season),
+            ATTR_QUALITY: _quality_attributes(
+                TariffKitQuality(
+                    complete=data.point.import_price.complete,
+                    exact=True,
+                    locked=True,
+                )
+            ),
+        },
     ),
     TariffKitSensorDescription(
-        key="daily_fixed_charge",
-        translation_key="daily_fixed_charge",
-        native_unit_of_measurement="USD/d",
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=5,
-        icon="mdi:cash-clock",
-        entity_registry_enabled_default=False,
-        value_fn=lambda data: data["daily_fixed_charge"],
+        key="forecast_through",
+        translation_key="forecast_through",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        icon="mdi:chart-timeline-variant",
+        value_fn=lambda data: data.forecast[-1].end,
+        attrs_fn=_forecast_attrs,
     ),
 )
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: TariffKitConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    coordinator: TariffKitCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator: TariffKitCoordinator = entry.runtime_data
     async_add_entities(TariffKitSensor(coordinator, entry, description) for description in SENSORS)
 
 
 class TariffKitSensor(CoordinatorEntity[TariffKitCoordinator], SensorEntity):
+    """A sensor backed by the shared typed coordinator result."""
+
     entity_description: TariffKitSensorDescription
     _attr_has_entity_name = True
-    # The recorder writes every attribute on every state change, and the
-    # coordinator ticks each minute. These are large, wholly derivable, and
-    # useless as history -- a forecast recorded hourly is just noise.
-    #
-    # Home Assistant folds this across the MRO in Entity.__init_subclass__, so it
-    # has to be a class attribute: setting it per-description or in __init__ does
-    # nothing. Listing an attribute an entity does not have is harmless.
     _unrecorded_attributes = frozenset(
         {
-            ATTR_FORECAST,
-            ATTR_LOAD_COST,
-            ATTR_PROD_PRICE,
+            ATTR_RATES,
             ATTR_RAW_TODAY,
             ATTR_RAW_TOMORROW,
-            "components",
+            ATTR_LOAD_COST,
+            ATTR_PROD_PRICE,
         }
-        # ATTR_HORIZON stays recorded: it is a single small int, and seeing the
-        # horizon change over time is genuinely useful when debugging EMHASS.
     )
 
     def __init__(
         self,
         coordinator: TariffKitCoordinator,
-        entry: ConfigEntry,
+        entry: TariffKitConfigEntry,
         description: TariffKitSensorDescription,
     ) -> None:
         super().__init__(coordinator)
         self.entity_description = description
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
-        info = coordinator.data["info"]
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name="PG&E Rates",
-            manufacturer=str(info.get("utility", "PGE")),
-            model=f"{info.get('tariff')} / {info.get('export_vintage')}",
-            configuration_url=str(info.get("tariff_source") or None),
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Use the active profile epoch for service-device metadata."""
+        info = self.coordinator.data.provenance
+        source = info.get("tariff_source")
+        parsed = urlparse(source) if isinstance(source, str) else None
+        configuration_url = (
+            source
+            if parsed is not None and parsed.scheme in {"http", "https"} and parsed.netloc
+            else None
+        )
+        profile_name = self.coordinator.profile.name
+        name = f"TariffKit — {profile_name}" if profile_name else "TariffKit Rates"
+        utility = info.get("utility")
+        manufacturer = utility if isinstance(utility, str) and utility else "TariffKit"
+        tariff = info.get("tariff")
+        model = tariff if isinstance(tariff, str) and tariff else "unknown"
+        vintage = info.get("export_vintage")
+        if vintage:
+            model = f"{model} / {vintage}"
+        return DeviceInfo(
+            identifiers={(DOMAIN, self.coordinator.entry.entry_id)},
+            name=name,
+            manufacturer=manufacturer,
+            model=model,
+            entry_type=DeviceEntryType.SERVICE,
+            configuration_url=configuration_url,
         )
 
     @property

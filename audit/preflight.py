@@ -14,7 +14,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
-from pathlib import Path
+
+from tariffkit.account import AccountProfile
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,21 +102,34 @@ def _influx() -> Check:
     return Check("meter data (InfluxDB)", True, f"{len(readings)} intervals in the last 2 days")
 
 
-def _account(path: Path) -> Check:
-    from .account import AccountHistory
+def _profile_name(account: str | None) -> str | None:
+    if account is not None:
+        return account
+    from tariffkit.account import configured_profile_name
 
+    return configured_profile_name()
+
+
+def _load_profile(account: str | None) -> tuple[str, AccountProfile]:
+    from tariffkit.account import NamedProfileRepository
+
+    name = _profile_name(account)
+    if name is None:
+        raise ValueError("select a named account profile with --account or configuration")
+    return name, NamedProfileRepository().load(name)
+
+
+def _account(account: str | None) -> Check:
     try:
-        history = AccountHistory.from_toml(path)
+        name, profile = _load_profile(account)
     except Exception as exc:
-        return Check(f"account history ({path})", False, str(exc)[:160])
-    if not history.epochs:
-        return Check(f"account history ({path})", False, "no [[epoch]] blocks")
-    spans = ", ".join(f"{e.start} {e.overrides.get('tariff', '?')}" for e in history.epochs)
-    return Check(f"account history ({path})", True, spans)
+        return Check("account profile", False, str(exc)[:160])
+    spans = ", ".join(f"{epoch.effective} {epoch.config.tariff}" for epoch in profile.epochs)
+    return Check(f"account profile ({name})", True, spans)
 
 
 def _recognition() -> Check:
-    from .statements.ocr import available
+    from tariffkit.providers.pge.statements.ocr import available
 
     if available():
         return Check("page recognition (tesseract, poppler)", True, "installed")
@@ -128,7 +142,7 @@ def _recognition() -> Check:
     )
 
 
-def _rate_data(path: Path, oldest: date) -> Check:
+def _rate_data(account: str | None, oldest: date) -> Check:
     """Whether every schedule the account was on can be priced back to ``oldest``.
 
     Checking one dataset was not enough. The tax vintage spans the whole window
@@ -140,8 +154,6 @@ def _rate_data(path: Path, oldest: date) -> Check:
     from tariffkit.data import versioned
     from tariffkit.errors import DataError
 
-    from .account import AccountHistory
-
     problems: list[str] = []
     try:
         versioned.load("tax/ca_energy_resources", oldest)
@@ -150,21 +162,21 @@ def _rate_data(path: Path, oldest: date) -> Check:
 
     checked: list[str] = []
     try:
-        history = AccountHistory.from_toml(path)
+        _name, profile = _load_profile(account)
     except Exception:
         # Already reported by its own check; nothing to add here.
-        history = None
+        profile = None
 
-    epochs = history.epochs if history else ()
+    epochs = profile.epochs if profile else ()
     for epoch in epochs:
         # Epochs that ended before the window are not priced, so a missing
         # snapshot for one is not a problem this run has.
-        later = [e.start for e in epochs if e.start > epoch.start]
+        later = [e.effective for e in epochs if e.effective > epoch.effective]
         if later and min(later) <= oldest:
             continue
-        assert history is not None
-        config = epoch.apply(history.base)
-        when = max(epoch.start, oldest)
+        assert profile is not None
+        when = max(epoch.effective, oldest)
+        config = epoch.config
         try:
             versioned.load(f"tariff/{config.utility.lower()}/{_slug(config.tariff)}", when)
             checked.append(config.tariff)
@@ -180,7 +192,7 @@ def _slug(tariff: str) -> str:
     return tariff.lower().replace("-", "")
 
 
-def _cca_card(path: Path, oldest: date) -> Check:
+def _cca_card(account: str | None, oldest: date) -> Check:
     """Whether the vendored CCA rate card is anywhere near the cycles priced.
 
     Its own check because it is not an error and cannot be fixed by vendoring
@@ -191,23 +203,21 @@ def _cca_card(path: Path, oldest: date) -> Check:
     from tariffkit.cca import load_rate_card
     from tariffkit.errors import DataError
 
-    from .account import AccountHistory
-
     try:
-        history = AccountHistory.from_toml(path)
+        _name, profile = _load_profile(account)
     except Exception:
-        return Check("CCA rate card", True, "no account history to check against")
+        return Check("CCA rate card", True, "no account profile to check against")
 
     stale: list[str] = []
-    for epoch in history.epochs:
-        cca = epoch.apply(history.base).cca
+    for epoch in profile.epochs:
+        cca = epoch.config.cca
         if cca is None or cca.rate_card is None:
             continue
         try:
-            card = load_rate_card(cca.rate_card, max(epoch.start, oldest))
+            card = load_rate_card(cca.rate_card, max(epoch.effective, oldest))
         except DataError as exc:
             return Check("CCA rate card", False, str(exc)[:160])
-        age = (max(epoch.start, oldest) - card.effective).days
+        age = (max(epoch.effective, oldest) - card.effective).days
         if age > 400:
             stale.append(
                 f"{cca.rate_card.upper()} card is {age} days older than the cycles it prices"
@@ -217,7 +227,7 @@ def _cca_card(path: Path, oldest: date) -> Check:
     return Check("CCA rate card", True, "current for the window")
 
 
-def run_checks(*, account: Path, oldest: date, contact: bool = True) -> list[Check]:
+def run_checks(*, account: str | None, oldest: date, contact: bool = True) -> list[Check]:
     """Every prerequisite, in the order a run needs them."""
     checks = [
         _credentials(),

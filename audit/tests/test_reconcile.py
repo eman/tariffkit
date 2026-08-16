@@ -14,13 +14,12 @@ from datetime import date
 import pytest
 
 from audit.reconcile import Outcome, Reconciliation, Tolerance, reconcile
+from audit.reconcile.mapping import MAP, LineRule, Side, check_map, normalize_label, split_side
 from audit.reconcile.report import render
-from audit.statements import Statement, parse_statement
-from audit.statements.mapping import MAP, LineRule, Side, check_map, normalize_label, split_side
-from audit.statements.model import Section
 from tariffkit.billing import Bill, BillingPeriod
 from tariffkit.config import CcaConfig, Config
 from tariffkit.models import Supplier
+from tariffkit.providers.pge.statements import Section, Statement, parse_statement
 
 from .test_statements import load
 

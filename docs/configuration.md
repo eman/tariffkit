@@ -25,6 +25,15 @@ your utility, rate plan, CCA, and PTO date, so keep it user-readable only:
 chmod 600 ~/.config/tariffkit/config.toml
 ```
 
+**This is the stateless path** — one `Config`, current settings only. If your
+service agreement has ever changed tariff, supplier, or baseline territory,
+and you want past bills to price with what was actually in force on their own
+days, use a [named account profile](accounts.md) instead: `--account NAME`
+(or a configured default profile) replaces this resolution order entirely for
+that command, and `--config`/`--account` cannot be combined. See
+[Selecting a profile](accounts.md#selecting-a-profile) for exactly how that
+choice is made.
+
 ## Credentials
 
 Store long-lived credentials in the operating system's keyring rather than in
@@ -54,8 +63,9 @@ settings use: defaults, `config.toml`, environment, then explicit arguments.
 
 ### PG&E portal access
 
-Portal credentials are only needed for Green Button downloads and the
-repository audit harness; pricing remains offline. Store them once:
+Portal credentials are needed for Green Button downloads, `account sync`
+(see [Named account profiles](accounts.md)), and the repository audit
+harness; pricing itself remains offline regardless. Store them once:
 
 ```bash
 tariffkit credentials set pge.username
@@ -75,6 +85,13 @@ cookie_path = "~/.cache/tariffkit/pge/cookies.json"
 The cookie cache is created with mode `0600`. `PGE_USERNAME`, `PGE_PASSWORD`,
 `PGE_BROWSER_COOKIE`, `PGE_VALIDATION_COOKIE`, and `PGE_ACCOUNT_URN` remain
 available for containers.
+
+**Named credential sets** let more than one account profile share one login
+without duplicating it: `tariffkit credentials set pge.username --set NAME`
+stores it under `NAME` instead of the default, unnamed slot, and
+`tariffkit account init/update ... --credential-set NAME` associates a
+profile with it. See
+[Credential sets](accounts.md#credential-sets).
 
 ## A worked example: PG&E delivery + MCE generation
 
@@ -211,7 +228,11 @@ export HA_TOKEN=...
 ```
 
 Resolution order, later winning: the config file, OS keyring, `.env`, real
-environment variables, then `--ha-import-entity` / `--ha-export-entity`.
+environment variables, a named account profile's source mapping, then
+`--ha-import-entity` / `--ha-export-entity`. For a bill, that is explicitly
+`--account NAME` or the configured default profile; it does not change
+stateless/global behavior. The profile mapping names grid import (consumed from
+the grid, not whole-home load) and grid export separately.
 `HA_TOKEN` is deliberately never read from the config file.
 
 ## Net Surplus Compensation
@@ -260,9 +281,14 @@ INFLUXDB3_AUTH_TOKEN = "<database token>"
 
 Resolution order, later winning: the config file, keyring, `.env`, then real
 environment variables (`TARIFFKIT_INFLUX_IMPORT_ENTITY` /
-`TARIFFKIT_INFLUX_EXPORT_ENTITY` for the series), then
+`TARIFFKIT_INFLUX_EXPORT_ENTITY` for the series), a named account profile's
+source mapping, then
 `--influx-import-entity` / `--influx-export-entity`. As with `HA_TOKEN`,
 `INFLUXDB3_AUTH_TOKEN` is never read from the config file.
+
+For a named profile, save the pair with `tariffkit account source NAME set
+influx ... --apply`; use `ha` for Home Assistant. The source mapping is not
+effective-dated because it identifies the data store, not tariff history.
 
 ## MQTT
 

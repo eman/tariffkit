@@ -30,9 +30,8 @@ from datetime import date, datetime, time, timedelta
 from tariffkit.config import Config
 from tariffkit.engine import RateEngine
 from tariffkit.models import TouPeriod
+from tariffkit.providers.pge.statements import Section, Statement
 from tariffkit.timeutil import PACIFIC
-
-from ..statements.model import Section, Statement
 
 #: Printed row labels that name a time-of-use period. The utility qualifies
 #: some with a season -- "Off Peak Summer" on the generation page -- which is

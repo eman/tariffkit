@@ -6,6 +6,146 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Changed
+- **The Home Assistant custom component's config flow was redesigned around
+  account history, and account identity no longer depends on mutable
+  values.** Both setup and options used to be one flat form listing every
+  field unconditionally -- CCA fields shown even for a bundled customer,
+  export fields shown even without one -- with no concept of a profile's
+  dated history at all. Setup is now a staged wizard -- account and tariff,
+  then delivery and export, then a CCA product step only when your supplier
+  is one -- that asks only the fields your earlier answers make relevant, and
+  a new [**Account history**](docs/home-assistant.md#account-history) options
+  submenu (inspect, add, edit, remove, import, export) brings the CLI's named
+  account profiles (`docs/accounts.md`) into the integration for the first
+  time, alongside a separate **Forecast and Predbat** options page. A config
+  entry's identity is now the profile's stable local name: the old unique ID was
+  `f"{tariff}-{supplier}-{interconnection_year}-{pto_date}"`, which changed
+  out from under an entry the moment you updated your rate plan or PTO date
+  and could collide with an unrelated account that happened to share all four
+  values. New entries use `profile:<name>`, so tariff/history edits do not
+  change identity and importing the same named account twice is rejected.
+  The entry's title now reflects your profile name (or `supplier:tariff`)
+  instead of a hardcoded "PG&E Rates" for every account.
+- **Custom component entities got leaner.** The coordinator now hands sensors
+  a typed `TariffKitData` (a forecast point, a rolling forecast, aggregate
+  quality, trimmed provenance) instead of an ad hoc dict, and large or
+  fast-changing attributes -- the forecast's `rates` list, and Predbat's
+  `raw_today` / `raw_tomorrow` when enabled -- are excluded from the recorder.
+  The separate Base Services Charge sensor is removed: it is a $/day fixed
+  charge, not a $/kWh marginal price, and mixing it into the same device as
+  the Energy dashboard's price entities produced nonsense there; read it via
+  `engine.daily_fixed_charge()` instead ([docs/library.md](docs/library.md)).
+  A new **Rate Forecast Through** timestamp entity replaces the forecast that
+  used to ride along on every price sensor's attributes. `manifest.json`'s
+  `iot_class` is now `calculated`, matching what the integration has always
+  actually done -- computing from local static data, with no network call to
+  ever go offline.
+- **EMHASS forecasting moved from sensor attributes to an action**,
+  `tariffkit.get_emhass_forecast`, and **Predbat compatibility is opt-in**
+  instead of always computed. Both used to ride along on the import/export
+  price entities' attributes on every coordinator refresh whether or not
+  anything read them; EMHASS's shape needs a caller-chosen window rather than
+  whatever the coordinator's own forecast horizon happens to cover, and most
+  installs do not run Predbat at all. See
+  [docs/home-assistant.md](docs/home-assistant.md#emhass) and
+  [docs/home-assistant.md](docs/home-assistant.md#predbat).
+
+### Added
+- **Two response-returning actions**, `tariffkit.get_rates` and
+  `tariffkit.get_emhass_forecast`, registered once per Home Assistant
+  instance rather than per config entry, so they stay callable --
+  including from **Developer Tools → Actions** -- even before an entry has
+  finished loading. Both take an explicit window (`start`/`end`, `date`, or
+  `horizon`, at a chosen `resolution`) capped at 168 hours, reject an
+  ambiguous DST-fold timestamp or a window that does not align to the
+  resolution with a named `ServiceValidationError` rather than guessing, and
+  return the same quality and provenance data as the entities. See
+  [docs/home-assistant.md](docs/home-assistant.md#actions).
+- **Diagnostics support.** **Settings → Devices & Services → TariffKit → ⋮ →
+  Download diagnostics** returns a sanitized snapshot -- schema version,
+  whether the entry is loaded, forecast and Predbat settings, aggregate
+  quality, trimmed provenance, and the cached forecast's span -- that
+  deliberately omits the account's full profile, its observations, and any
+  meter-source mapping.
+- **[docs/home-assistant-quality.md](docs/home-assistant-quality.md)**, a
+  dedicated rule-by-rule self-assessment against every published Bronze
+  through Platinum rule in the Home Assistant Integration Quality Scale, with
+  a justification for each exemption (no device or service to discover,
+  poll, or reauthenticate to) and measured, reproducible test-coverage
+  numbers rather than a claim -- distinct from a short summary and pointer
+  left on the main integration page.
+- **A genuine Home Assistant custom-component test harness**
+  (`tests/test_ha_component.py`, with `pytest-homeassistant-custom-component`
+  as a test dependency) covering the config and options flows, legacy entry
+  migration, entity behaviour, both actions, diagnostics, Energy dashboard
+  compatibility, DST handling, and opt-in Predbat -- the integration had no
+  automated coverage of its own before this.
+
+### Notes
+- `CONFIG_VERSION` is now `3`. An entry created before this schema exists is
+  migrated automatically on load, preserving its prices and every entity's
+  existing unique ID and history; a migration TariffKit cannot make sense of
+  fails the entry with a logged reason rather than guessing. See
+  [docs/home-assistant.md](docs/home-assistant.md#account-history).
+
+### Added
+- **Profile-scoped meter sources.** Named accounts can store provider-neutral
+  grid-import (consumed-from-grid) and grid-export entity pairs for Home
+  Assistant and InfluxDB 3. `tariffkit bill --account NAME --source ha|influx`
+  uses the saved pair, with explicit CLI entity flags taking precedence over
+  the profile, then environment/global settings, then source defaults. The
+  `tariffkit account source NAME show|set` command previews by default and
+  persists only with `--apply`; mappings are not effective-dated.
+- **Named account profiles.** `tariffkit account
+  init/list/show/history/update/import-statement/sync/export` track a service
+  agreement's history as an ordered set of dated `Config` snapshots
+  (`AccountProfile`), so a bill for a cycle that spans a tariff, supplier, or
+  baseline-territory change prices each stretch under the settings that were
+  actually in force on its own days rather than today's. `--account NAME`
+  selects a profile on `now`, `forecast`, `info`, `bill`, `mqtt`, and `serve`;
+  `tariffkit bill --account` tiles a cycle into per-epoch segments
+  automatically. Profiles are stored under
+  `$XDG_CONFIG_HOME/tariffkit/accounts/<name>.json` with atomic, fsync'd
+  writes and optimistic-concurrency conflict detection, so an interrupted or
+  racing write cannot corrupt or silently overwrite one. See
+  [docs/accounts.md](docs/accounts.md).
+- **A public local PG&E statement importer**, moved out of the repository-only
+  audit harness into `tariffkit.providers.pge` under the new
+  `tariffkit[statements]` extra. `account import-statement` and `account sync`
+  parse a local or portal-downloaded statement PDF (with an OCR fallback for
+  bills with no text layer), reconcile its printed facts against a profile's
+  history, and report each change as `ADD`, `CONFIRM`, `CONFLICT`, or
+  `MISSING_REQUIRED` -- a change set with any conflict or missing value cannot
+  be applied, so a profile is always either fully caught up to a statement or
+  untouched by it. Only facts a statement actually prints are ever proposed;
+  nothing is inferred past what it shows.
+- **Named credential sets.** `tariffkit credentials set NAME --set SET_NAME`
+  and `account init/update --credential-set SET_NAME` let more than one
+  account profile share one PG&E portal login without storing the password
+  twice.
+- **REST and Home Assistant profile support.** `POST` pricing endpoints accept
+  a `profile`/`account` selector alongside the existing `config` key, and
+  `/v1/meta` reports `account_profile`/`account_effective` when one is active;
+  an unknown or unreadable name returns a uniform, non-disclosing 404. The
+  Home Assistant options flow gained a menu (current settings, account
+  history, add/edit/remove a transition, import/export a profile) over the
+  same credential-free profile storage, and migrates older config entries
+  that predate it.
+- `tariffkit account init --audit-file PATH` explicitly migrates an existing
+  legacy audit account file, so adopting profiles does not require re-entering
+  a service agreement's history by hand and a public command never probes
+  repository-local developer configuration implicitly.
+
+### Changed
+- **The statement importer and reconciler are no longer audit-only.** The
+  packaging ADR ([docs/packaging_strategy.md](docs/packaging_strategy.md)) is
+  revised: reading and reconciling a PG&E statement was always generic,
+  dependency-light logic with no maintainer-specific content, and now ships
+  publicly as part of the distribution. What remains repository-only in
+  `audit/` is narrower than "statement parsing" -- only the line-to-component
+  mapping, attribution rules, run orchestration, and portal-protocol research
+  genuinely specific to reconciling this project's own real statements
+  against computed bills.
 - **The project is now TariffKit.** The distribution, import package, CLI,
   configuration directory, environment prefix, MQTT default, repository links,
   and Home Assistant domain use the globally neutral `tariffkit` identity. This

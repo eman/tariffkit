@@ -1,0 +1,77 @@
+ ENERGY STATEMENT
+ Service For:                                                                   Your Account Summary
+ JANE Q CUSTOMER
+ 1 EXAMPLE ST
+
+                                                                                Amount Due on Previous Statement                            100.00
+                                                                                Payment(s) Received Since Last Statement                    -100.00
+                                                                                Previous Unpaid Balance                                     0.00
+                                                                                Current PG&E Electric Delivery Charges                      158.60
+                                                                                MCE Electric Generation Charges                             136.70
+                                                                                Total Amount Due by 03/26/2026                              $295.30
+
+ Account Number:  9999999999-9   Due Date:  03/26/2026
+
+
+
+ ENERGY STATEMENT                                                                                   Account No:  9999999999-9
+ www.pge.com/MyEnergy                                                                               Statement Date:       02/05/2026
+ Details of PG&E Electric Delivery Charges
+12/30/2025 to 01/29/2026 (31 billing days)
+Service For:  1 EXAMPLE ST
+Rate Schedule:  Time-of-Use (Peak Pricing 4 - 9 p.m. Every Day)
+.                             31        days       @   $0.79343                           $24.60
+Base Services Charge                                                                                                  Baseline Territory                    X
+ 12/30/2025 to 12/31/2025
+.                             40.00       kWh          (2 days       20.0 kWh/day)
+Baseline Allowance                                                                                  x
+Energy Charges
+  Peak                        20.000000        kWh        @   $0.50000                    $10.00                      To program your smart device, scan the
+  Off Peak                    50.000000        kWh        @   $0.40000                     20.00                      QR code or enter the RIN code above and
+Baseline Credit               40.00        kWh        @   -$0.05000                        -2.00                      follow the on-screen instructions.
+Generation Credit                                                                          -5.00                      Service Information
+Power Charge Indifference Adjustment                                                        1.00
+Franchise Fee Surcharge                                                                     0.10                      Meter #                    99999999
+                                                                                                                      Total Usage                        1000.000
+ 01/01/2026 to 01/29/2026
+.                             290.00       kWh          (29 days       20.0 kWh/day)
+Baseline Allowance                                                                                  x
+Energy Charges
+  Peak                        60.000000        kWh        @   $0.50000                    $30.00                      To program your smart device, scan the
+  Off Peak                    250.000000        kWh        @   $0.40000                   100.00                      QR code or enter the RIN code above and
+Baseline Credit               290.00        kWh        @   -$0.03448                      -10.00                      follow the on-screen instructions.
+Generation Credit                                                                         -20.00                      Service Information
+Power Charge Indifference Adjustment                                                        9.00
+Franchise Fee Surcharge                                                                     0.90                      Meter #                    99999999
+Total PG&E Electric Delivery Charges                                                     $158.60
+2011 Vintaged Power Charge Indifference Adjustment
+   Electric Usage This Period: 1000.000000 kWh, 31 billing days
+
+ ENERGY STATEMENT                                                                                   Account No:  9999999999-9
+ Details of MCE Electric Generation Charges
+12/30/2025 to 01/29/2026 (31 billing days)
+Rate Schedule:       ETOUC
+Off Peak Winter               900.000000     kWh    @  $0.13500                          $121.50        USCA-XXMC-0000
+Peak Winter                   100.000000     kWh    @  $0.14900                            14.90        www.pge.com/rin
+                                             Net Charges       136.40
+Energy Commission Tax                                                                       0.30
+Total MCE Electric Generation                                                                           To program your smart device
+Charges                                                                                  $136.70        Service Information
+
+ ENERGY STATEMENT                                                                                   Statement Date:       02/05/2026
+ PG&E offers a monthly discount on electric bills for income-qualified             Your Electric Charges Breakdown  (from page 2)
+ households of three or more persons. To see if you qualify, please call           Conservation Incentive                                                  $7.88
+ 1-800-PGE-5000 or apply online at www.pge.com/fera.                               Transmission                                                            20.00
+ Electric power line safety: PG&E cares about your safety. Be aware of             Distribution                                                            94.60
+ your surroundings and keep yourself, tools, equipment and antennas at             Electric Public Purpose Programs                                        22.00
+ least 10 feet away from overhead power lines. If you see an electric              Nuclear Decommissioning                                                 -0.05
+ power line fall to the ground, keep yourself and others away. Call 911.           Wildfire Fund Charge                                                     2.00
+ Visit www.pge.com/MyEnergy for a detailed bill comparison.                        Recovery Bond Charge                                                     3.00
+                                                                                   Recovery Bond Credit                                                    -3.00
+                                                                                   Wildfire Hardening Charge                                                1.00
+                                                                                   Competition Transition Charges (CTC)                                     0.15
+                                                                                   Energy Cost Recovery Amount                                              0.02
+                                                                                   PCIA                                                                    10.00
+                                                                                   Taxes and Other                                                          1.00
+                                                                                   Total Electric Charges                                                $158.60
+

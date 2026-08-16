@@ -30,9 +30,13 @@ from pathlib import Path
 
 import pytest
 
-from audit.errors import StatementError
-from audit.statements import Section, parse_statement, read_statement
-from audit.statements.parse import _fields, _money
+from tariffkit.providers.pge.statements import (
+    Section,
+    StatementError,
+    parse_statement,
+    read_statement,
+)
+from tariffkit.providers.pge.statements.parse import _fields, _money
 
 FIXTURES = Path(__file__).parent / "fixtures" / "statements"
 SYNTHETIC = FIXTURES / "synthetic_cca_ratechange.txt"
@@ -223,7 +227,7 @@ def _unreadable(pdf: Path) -> bool:
     """Whether this PDF is one of the text-free Type 3 statements."""
     from pypdf import PdfReader
 
-    from audit.statements.parse import _glyphs_are_spaces
+    from tariffkit.providers.pge.statements.parse import _glyphs_are_spaces
 
     return _glyphs_are_spaces(PdfReader(pdf))
 

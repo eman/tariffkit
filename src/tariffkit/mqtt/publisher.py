@@ -15,6 +15,12 @@ from pathlib import Path
 from types import FrameType
 from typing import Any
 
+from ..account import (
+    AccountProfile,
+    AccountRateEngine,
+    NamedProfileRepository,
+    configured_profile_name,
+)
 from ..config import default_config_path
 from ..engine import RateEngine
 from ..errors import ConfigError
@@ -43,6 +49,14 @@ class MqttSettings:
     forecast_hours: int = 48
     client_id: str = "tariffkit"
     tls: bool = False
+    profile: str | None = None
+    account: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.profile is not None and self.account is not None and self.profile != self.account:
+            raise ConfigError("profile and account selections disagree")
+        if self.profile is None:
+            object.__setattr__(self, "profile", self.account)
 
     @classmethod
     def load(
@@ -65,6 +79,8 @@ class MqttSettings:
                 "forecast_hours",
                 "client_id",
                 "tls",
+                "profile",
+                "account",
             ):
                 if key in table:
                     values[key] = table[key]
@@ -79,10 +95,29 @@ class MqttSettings:
         ):
             if value := env.get(name):
                 values[key] = value
+        if not values.get("profile") and values.get("account"):
+            values["profile"] = values["account"]
+        if not values.get("profile"):
+            for name in ("TARIFFKIT_ACCOUNT", "TARIFFKIT_PROFILE"):
+                if value := env.get(name):
+                    values["profile"] = value
+                    break
+        if not values.get("profile"):
+            values["profile"] = configured_profile_name(config_path)
         if not values.get("username"):
             values["username"] = get_secret("mqtt.username")
         if not values.get("password"):
             values["password"] = get_secret("mqtt.password")
+        profile_overrides = {
+            key: overrides.pop(key)
+            for key in ("profile", "account", "profile_name")
+            if key in overrides and overrides[key] is not None
+        }
+        selected_profiles = {str(value) for value in profile_overrides.values()}
+        if len(selected_profiles) > 1:
+            raise ConfigError("profile, account, and profile_name must select the same profile")
+        if selected_profiles:
+            overrides["profile"] = selected_profiles.pop()
         values.update({key: value for key, value in overrides.items() if value is not None})
         if not values.get("broker"):
             raise ConfigError(
@@ -102,9 +137,23 @@ class MqttPublisher:
     """
 
     def __init__(
-        self, engine: RateEngine, settings: MqttSettings, client: Any | None = None
+        self,
+        engine: RateEngine | AccountRateEngine,
+        settings: MqttSettings,
+        client: Any | None = None,
+        *,
+        profile: AccountProfile | None = None,
+        profile_repository: NamedProfileRepository | None = None,
     ) -> None:
-        self.engine = engine
+        if profile is not None and settings.profile is not None:
+            raise ConfigError("choose either an MQTT profile name or an in-memory profile")
+        if profile is not None:
+            self.engine: RateEngine | AccountRateEngine = AccountRateEngine(profile)
+        elif settings.profile is not None:
+            repository = profile_repository or NamedProfileRepository()
+            self.engine = AccountRateEngine(repository.load(settings.profile))
+        else:
+            self.engine = engine
         self.settings = settings
         self._stop = threading.Event()
         self._client = self._configure(client if client is not None else self._build_client())

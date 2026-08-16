@@ -25,7 +25,9 @@ from tariffkit.billing import (
     find_overlaps,
     hourly,
 )
+from tariffkit.billing.engine import Segment, compute_segments
 from tariffkit.config import CcaConfig
+from tariffkit.errors import DataError
 from tariffkit.sources import read_green_button
 from tariffkit.timeutil import PACIFIC
 
@@ -518,3 +520,13 @@ class TestEnergyCommissionTax:
             self.readings(), BillingPeriod(date(2026, 1, 5), date(2026, 1, 5)), check=False
         )
         assert not any("energy surcharge vintage" in w for w in bill.warnings)
+
+
+def test_segmented_billing_rejects_uncovered_days() -> None:
+    segments = [
+        Segment(Config(), BillingPeriod(date(2026, 1, 1), date(2026, 1, 5))),
+        Segment(Config(tariff="EV2-A"), BillingPeriod(date(2026, 1, 7), date(2026, 1, 31))),
+    ]
+
+    with pytest.raises(DataError, match="segments have a gap"):
+        compute_segments(segments, [], check=False)

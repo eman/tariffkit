@@ -31,12 +31,14 @@ ha = ["websockets>=12"]
 # InfluxDB 3 is queried over its HTTP SQL API.
 influx = ["httpx>=0.27"]
 pge = ["httpx>=0.27"]
+statements = ["pypdf>=4.0"]
 secrets = ["keyring>=25"]
 all = [
     "fastapi>=0.110",
     "httpx>=0.27",
     "paho-mqtt>=2.0",
     "keyring>=25",
+    "pypdf>=4.0",
     "uvicorn[standard]>=0.29",
     "websockets>=12",
 ]
@@ -61,6 +63,7 @@ dev = [
     { include-group = "regen" },
     "fastapi>=0.110",
     "paho-mqtt>=2.0",
+    "pytest-homeassistant-custom-component>=0.13.316",
     "uvicorn[standard]>=0.29",
     "websockets>=12",
 ]
@@ -127,6 +130,7 @@ no_implicit_reexport = false
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-q --strict-markers"
+asyncio_mode = "auto"
 markers = [
   "slowdata: requires the full upstream PG&E dataset",
   "statements: reads real statement PDFs, which are never committed",

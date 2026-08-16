@@ -65,7 +65,15 @@ class CcaConfig:
     @property
     def complete(self) -> bool:
         has_generation = bool(self.generation_rates) or self.rate_card is not None
-        return has_generation and self.franchise_fee_surcharge is not None
+        # A PCIA vintage supplies both the PCIA and the matching E-FFS value
+        # from the vendored tariff sheet.  Requiring the surcharge to be copied
+        # into every profile made the otherwise valid ``rate_card + pcia_vintage``
+        # form look incomplete, even though RetailTariff can price it exactly.
+        has_pcia = self.pcia_rate is not None or self.pcia_vintage is not None
+        has_franchise_fee = (
+            self.franchise_fee_surcharge is not None or self.pcia_vintage is not None
+        )
+        return has_generation and has_pcia and has_franchise_fee
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,7 +224,15 @@ class Config:
     @classmethod
     def from_toml(cls, path: str | Path) -> Config:
         with Path(path).open("rb") as handle:
-            return cls.from_dict(tomllib.load(handle))
+            table = tomllib.load(handle)
+        # The shared user config also carries integration settings such as the
+        # default account profile and MQTT broker. They are not pricing fields
+        # and must not make a stateless Config unusable.
+        for section in ("account", "mqtt", "home_assistant", "influxdb"):
+            table.pop(section, None)
+        for key in ("profile", "default_profile", "account_profile"):
+            table.pop(key, None)
+        return cls.from_dict(table)
 
     @classmethod
     def from_env(cls, base: Config | None = None) -> Config:

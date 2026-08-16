@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from tariffkit import Config, RateEngine
+from tariffkit.account import AccountEpoch, AccountProfile, NamedProfileRepository
+from tariffkit.errors import ConfigError
 from tariffkit.mqtt.publisher import OFFLINE, ONLINE, MqttPublisher, MqttSettings
 from tariffkit.timeutil import PACIFIC
 
@@ -168,3 +171,57 @@ def test_custom_topic_prefix() -> None:
     publisher = make_publisher(topic_prefix="energy/pge")
     publisher.publish_now(datetime(2026, 9, 15, 19, tzinfo=PACIFIC))
     assert "energy/pge/import_price" in client_of(publisher).topics()
+
+
+def test_selected_profile_drives_active_rates(tmp_path: Path) -> None:
+    repository = NamedProfileRepository(tmp_path)
+    repository.save(
+        "ev",
+        AccountProfile((AccountEpoch(date(1970, 1, 1), Config(tariff="EV2-A")),)),
+    )
+    settings = MqttSettings(broker="broker.local", profile="ev")
+    publisher = MqttPublisher(
+        RateEngine(Config()),
+        settings,
+        client=FakeClient(),
+        profile_repository=repository,
+    )
+
+    publisher.publish_now(datetime(2026, 9, 15, 19, tzinfo=PACIFIC))
+
+    assert publisher.engine.describe()["account_profile"] == "ev"
+
+
+def test_mqtt_settings_read_default_profile_from_shared_config(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        '[account]\ndefault_profile = "home"\n[mqtt]\nbroker = "broker.local"\n',
+        encoding="utf-8",
+    )
+
+    settings = MqttSettings.load(config, tmp_path / "absent")
+
+    assert settings.profile == "home"
+
+
+def test_mqtt_settings_accepts_account_alias() -> None:
+    assert MqttSettings(broker="broker.local", account="home").profile == "home"
+
+
+def test_mqtt_settings_rejects_conflicting_profile_aliases() -> None:
+    with pytest.raises(ConfigError, match="must select the same profile"):
+        MqttSettings.load(
+            broker="broker.local",
+            account="home",
+            profile_name="other",
+        )
+
+
+def test_mqtt_settings_collapses_matching_profile_aliases() -> None:
+    settings = MqttSettings.load(
+        broker="broker.local",
+        account="home",
+        profile_name="home",
+    )
+
+    assert settings.profile == "home"

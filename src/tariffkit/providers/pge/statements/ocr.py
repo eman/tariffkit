@@ -29,7 +29,7 @@ import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
-from ..errors import StatementError
+from .errors import StatementError
 
 #: Rendering resolution. 300 is not a floor to be raised for better results:
 #: 400 was measurably worse here, losing the statement date entirely, because

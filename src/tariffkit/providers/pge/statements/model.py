@@ -113,6 +113,41 @@ class StatementSection:
 
 
 @dataclass(frozen=True, slots=True)
+class StatementAgreement:
+    """One service-agreement span and the tariff evidence printed with it."""
+
+    period: BillingPeriod
+    printed_schedule: str
+    tariff: str
+    page: int
+    account_masked: str = ""
+    baseline_territory: str = ""
+    pcia_vintage: int | None = None
+
+    def __post_init__(self) -> None:
+        if not self.printed_schedule.strip():
+            raise ValueError("statement agreement needs a printed schedule")
+        if not self.tariff.strip():
+            raise ValueError("statement agreement needs a normalized tariff")
+        if self.page < 0:
+            raise ValueError("statement agreement page must be non-negative")
+        if self.account_masked and (
+            len(self.account_masked) != 4 or not self.account_masked.isdigit()
+        ):
+            raise ValueError("statement agreement account suffix must be four digits")
+
+    @property
+    def start(self) -> date:
+        """The inclusive first date printed for this agreement."""
+        return self.period.start
+
+    @property
+    def end(self) -> date:
+        """The inclusive last date printed for this agreement."""
+        return self.period.end
+
+
+@dataclass(frozen=True, slots=True)
 class Statement:
     """One issued statement, parsed."""
 
@@ -129,6 +164,10 @@ class Statement:
     #: separately -- a count, never the identifiers themselves. Priced, not
     #: refused: ``compute_segments`` handles it.
     service_agreements: int = 1
+    #: Exact service-agreement spans paired with tariff evidence from the same
+    #: delivery page. An empty tuple means the statement did not provide enough
+    #: evidence to establish that mapping.
+    agreements: tuple[StatementAgreement, ...] = ()
     #: Gas, on a combined statement. This account burned no therms and was still
     #: billed a minimum transportation charge, so a zero-usage service is not a
     #: zero-money one. Recorded to make the amount due add up and then ignored:
@@ -219,6 +258,10 @@ class Statement:
         # agree, or one of the two presentations was mis-parsed.
         delivery = self.section(Section.PGE_DELIVERY)
         breakdown = self.section(Section.PGE_BREAKDOWN)
+        if delivery is None:
+            problems.append("the PG&E delivery section is missing")
+        elif not self.agreements:
+            problems.append("the statement has no service-agreement tariff evidence")
         if delivery and breakdown and None not in (delivery.printed_total, breakdown.printed_total):
             assert delivery.printed_total is not None and breakdown.printed_total is not None
             if abs(delivery.printed_total - breakdown.printed_total) > CENT:

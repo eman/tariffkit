@@ -82,6 +82,10 @@ class NbtExportRates:
             return 0.0
         year = self.config.interconnection_year
         if year is None:
+            if self.vintage != FLOATING_VINTAGE:
+                raise ConfigError(
+                    "interconnection_year is required to price ACC Plus for a locked NBT vintage"
+                )
             return 0.0
         # Resolved against the last day of the interconnection year, not its
         # first. The adder locks at interconnection, so what strictly governs is

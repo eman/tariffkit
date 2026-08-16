@@ -12,10 +12,10 @@ from datetime import date
 import pytest
 
 from audit.reconcile.attribution import _tou, fixed_from_statement, priced_from_statement
-from audit.statements.model import Section, Statement, StatementLine, StatementSection
 from tariffkit.billing import BillingPeriod
 from tariffkit.config import CcaConfig, Config
 from tariffkit.models import Supplier, TouPeriod
+from tariffkit.providers.pge.statements import Section, Statement, StatementLine, StatementSection
 
 PERIOD = BillingPeriod(date(2026, 6, 30), date(2026, 7, 28))
 

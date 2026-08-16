@@ -50,25 +50,31 @@ Nothing here touches the network at runtime.
 |---|---|
 | [Configuration](docs/configuration.md) | Settings, CCA setup, reading your bill |
 | [Library](docs/library.md) | Embedding in Python |
+| [Named account profiles](docs/accounts.md) | Tracking a changing service agreement over time, importing PG&E statements |
 | [Bill calculator](docs/billing.md) | Computing a cycle from interval meter data |
 | [MQTT](docs/mqtt.md) | Publishing, with Home Assistant discovery |
 | [REST API](docs/web.md) | HTTP service |
-| [Home Assistant](docs/home-assistant.md) | Custom component, Energy dashboard, EMHASS, Predbat |
+| [Home Assistant](docs/home-assistant.md) | Custom component, Energy dashboard, account history, response actions, opt-in Predbat |
+| [Home Assistant quality checklist](docs/home-assistant-quality.md) | Self-assessment against the Integration Quality Scale, with exemptions |
 | [Maintaining rate data](docs/data.md) | Regenerating export rates, updating the retail tariff and CCA cards |
 | [Packaging strategy](docs/packaging_strategy.md) | Architecture decision, boundaries, and release model |
 
 ## Works with
 
 Prices are published in the shapes these already read, via either the custom
-component or the MQTT publisher — no template plumbing on your side.
+component or the MQTT publisher — no template plumbing on your side. The two
+surfaces differ for EMHASS and Predbat: MQTT always publishes their
+attributes, while the custom component asks for a window on demand and keeps
+Predbat opt-in.
 
-| | How |
-|---|---|
-| **Home Assistant Energy dashboard** | Import and export price entities, for grid consumption and return-to-grid compensation |
-| **EMHASS** | `load_cost_forecast` / `prod_price_forecast` attributes, timestamped and in dollars |
-| **Predbat** | `raw_today` / `raw_tomorrow` attributes, 30-minute slots in cents |
+| | Custom component | MQTT |
+|---|---|---|
+| **Home Assistant Energy dashboard** | Import/export price entities | Import/export price entities |
+| **EMHASS** | `tariffkit.get_emhass_forecast` action, called with any window | `load_cost_forecast` / `prod_price_forecast` attributes, always published |
+| **Predbat** | `raw_today` / `raw_tomorrow` attributes, only once enabled in options | `raw_today` / `raw_tomorrow` attributes, always published |
 
-See [docs/home-assistant.md](docs/home-assistant.md) for setup of each.
+See [docs/home-assistant.md](docs/home-assistant.md) and
+[docs/mqtt.md](docs/mqtt.md) for setup of each.
 
 ## Install
 
@@ -77,6 +83,7 @@ pip install tariffkit              # core, zero dependencies
 pip install 'tariffkit[mqtt]'      # + MQTT publisher with Home Assistant discovery
 pip install 'tariffkit[web]'       # + FastAPI service
 pip install 'tariffkit[secrets]'   # + OS keyring credential storage
+pip install 'tariffkit[statements]' # + reading local PG&E statement PDFs
 pip install 'tariffkit[all]'
 ```
 
@@ -90,6 +97,8 @@ tariffkit mqtt --broker 192.168.1.100  # publish hourly, with HA discovery
 tariffkit serve                        # REST API on :8000
 tariffkit bill intervals.csv           # compute a cycle from meter data
 tariffkit info                         # which data is loaded, and from where
+tariffkit account init home            # track a service agreement's history
+tariffkit account source home show ha  # inspect profile grid-import/export entities
 ```
 
 ## Configuration

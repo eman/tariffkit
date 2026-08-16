@@ -145,3 +145,49 @@ There is no authentication. Bind to localhost, or put it behind a reverse proxy
 or firewall. It exposes your rate plan and interconnection details, and it is
 read-only, but it is not written to face the internet. Request bodies must never
 contain credentials; this API has no credential-backed operation.
+
+## Named account profiles
+
+`GET /v1/meta`, `POST /v1/meta`, and every `POST` pricing endpoint can price
+against a [named account profile](accounts.md) instead of a stateless
+`Config`:
+
+```bash
+curl -s localhost:8000/v1/meta -X POST -H 'content-type: application/json' \
+  -d '{"profile": "home"}' | jq '.account_profile, .account_effective.tariff'
+```
+
+When a profile is active, `describe()` adds `account_profile` (its name) and
+`account_effective` (the resolved `Config.to_dict()` for the requested
+moment) to the usual `/v1/meta` fields.
+
+**Server-wide default.** `create_app(profile_name=..., profile_repository=...,
+config_path=...)` selects a profile for every request that does not name one
+itself, resolved the same way as the CLI's implicit default (env vars, then
+`[account] default_profile` in `config.toml`) when `profile_name` is not
+passed explicitly. `tariffkit serve` wires this up automatically; building
+the app yourself with `create_app(Config(...))` (a `config` positional
+argument) opts out of profile resolution entirely for that server, the same
+way `--config` does on the CLI.
+
+**Per-request selection.** Pass `profile` (or `account` — the two must agree
+if both are given) alongside `ts`/`hours` instead of `config`:
+
+```bash
+curl -s localhost:8000/v1/price/now -X POST -H 'content-type: application/json' \
+  -d '{"profile": "home"}'
+```
+
+`config` and `profile`/`account` are mutually exclusive per request (422
+`"choose either config or profile"`), the same restriction as the CLI's
+`--account`/`--config`. An unknown or unreadable profile name returns
+`404 {"detail": "profile unavailable"}` — deliberately identical whether the
+name does not exist, is malformed, or fails to load, so a request cannot
+enumerate what profiles exist on the server.
+
+**Nothing here can change a profile.** There is no endpoint to list, create,
+update, import, export, or delete one, and none accepts a PDF or a
+credential — those are exclusively `tariffkit account ...` and Home
+Assistant's options flow. The REST surface only ever *reads* a profile
+already managed elsewhere. See [Named account profiles](accounts.md) for how
+one is created and kept current.

@@ -21,7 +21,11 @@ boundaries, but package boundaries did not match the code:
 - `interop/` is pure runtime conversion rather than an I/O client;
 - `export/` prices exported energy, while InfluxDB and PG&E access live under
   `sources/`;
-- statement parsing belongs to the unpublished `audit/` harness; and
+- reading a PG&E statement and reconciling it against tracked account history
+  is itself dependency-light, generic logic with no maintainer-specific
+  content — only the mapping from *this project's own* real statements to
+  computed-bill line items, and the orchestration that runs reconciliation
+  across one account's whole history, are unpublished-harness-specific; and
 - billing depends on the engine, configuration, tariffs, data, and time helpers,
   making a narrower “core” unsuitable for its actual consumers.
 
@@ -70,13 +74,23 @@ The distribution contains:
 - billing, netting, ledgers, and true-up behavior;
 - pure interoperability adapters;
 - source adapters;
+- named account profiles and their local persistence (`account/`), and the
+  generic PG&E statement importer and reconciler that populates them
+  (`providers/pge/`), each gated behind its own extra;
 - the CLI, MQTT publisher, and web application.
 
 The default install remains dependency-free. MQTT, web, portal, Home Assistant
-source, and InfluxDB capabilities use named extras and lazy imports.
+source, InfluxDB, statement, and secrets capabilities use named extras and
+lazy imports.
 
-Rate-data generation moves to a repository-only tool namespace. The audit
-harness remains repository-only. Neither ships in wheel or sdist, but both
+Rate-data generation moves to a repository-only tool namespace. What remains
+repository-only in the audit harness is narrower than "statement parsing" —
+it is the parts genuinely specific to reconciling *this project's own* real
+statements against computed bills: the line-to-component mapping, attribution
+rules, run orchestration, and portal-protocol research. The generic statement
+importer and reconciler moved out of it into `providers/pge/` and ship
+publicly; the harness now consumes that published code rather than owning it.
+Neither the harness nor the rate-data tools ship in wheel or sdist, but both
 retain strict typing, linting, tests, and CI coverage.
 
 The Home Assistant integration declares an exact requirement on the published

@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
 
-from .model import Section
+from tariffkit.providers.pge.statements import Section
 
 
 class Side(StrEnum):

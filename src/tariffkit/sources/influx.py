@@ -34,6 +34,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from ..account.model import MeterSource
 from ..billing.models import IntervalReading
 from ..config import default_config_path
 from ..errors import ConfigError, DataError
@@ -61,7 +62,7 @@ _ENTITY_RE = re.compile(r"^[A-Za-z0-9_.]+$")
 
 @dataclass(frozen=True, slots=True)
 class InfluxSettings:
-    """Where to reach InfluxDB 3, and which series carry the meter."""
+    """Where to reach InfluxDB 3, and which series carry grid exchange."""
 
     host: str
     database: str
@@ -80,12 +81,14 @@ class InfluxSettings:
         cls,
         config_path: str | Path | None = None,
         dotenv_path: str | Path = ".env",
+        profile_source: MeterSource | None = None,
         **overrides: str | None,
     ) -> InfluxSettings:
-        """Resolve from config file, ``.env``, environment, then explicit args.
+        """Resolve from config file, ``.env``, environment, profile, then args.
 
         Same split as the Home Assistant source: entity ids and the database are
-        configuration and may live in the config file; the token is a secret and
+        configuration and may live in the config file; a profile mapping can
+        replace the grid-import/grid-export series; the token is a secret and
         is read only from ``.env`` or the environment.
         """
         import os
@@ -110,6 +113,11 @@ class InfluxSettings:
                 values[key] = value
         if "token" not in values and (token := get_secret("influxdb.token")):
             values["token"] = token
+        if profile_source is not None:
+            if not isinstance(profile_source, MeterSource):
+                raise ConfigError("profile_source must be a MeterSource")
+            values["import_entity"] = profile_source.grid_import_entity
+            values["export_entity"] = profile_source.grid_export_entity
         values.update({k: v for k, v in overrides.items() if v})
 
         missing = [k for k in ("host", "database", "token") if not values.get(k)]

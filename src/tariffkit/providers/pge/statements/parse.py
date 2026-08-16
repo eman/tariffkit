@@ -34,8 +34,14 @@ from pathlib import Path
 
 from tariffkit.billing import BillingPeriod
 
-from ..errors import StatementError
-from .model import Section, Statement, StatementLine, StatementSection
+from .errors import StatementAmbiguityError, StatementError
+from .model import (
+    Section,
+    Statement,
+    StatementAgreement,
+    StatementLine,
+    StatementSection,
+)
 
 #: A money field: "$333.87", "-1.96", "-$0.10084", "1,234.56".
 MONEY = re.compile(r"^-?\$?-?\d[\d,]*\.\d{2,6}$")
@@ -145,6 +151,16 @@ RATE_SCHEDULE = re.compile(r"Rate\s+Schedule:\s*(.+?)\s*$", re.M)
 BASELINE_TERRITORY = re.compile(r"Baseline\s+Territory\s+([A-Z])\b")
 PCIA_VINTAGE = re.compile(r"(\d{4})\s+Vintaged\s+Power\s+Charge")
 
+# PG&E prints marketing names on delivery pages, while the pricing library
+# uses tariff codes. Keep this correspondence in the provider adapter rather
+# than making the core tariff model understand utility-specific wording.
+PRINTED_TARIFFS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"EV\s*2-?A", re.I), "EV2-A"),
+    (re.compile(r"E-?ELEC|Electric\s+Home", re.I), "E-ELEC"),
+    (re.compile(r"E-?TOU-?C|ETOUC", re.I), "E-TOU-C"),
+    (re.compile(r"Time-of-Use.*4\s*-\s*9", re.I), "E-TOU-C"),
+)
+
 #: Rows that are structure rather than charges.
 SKIP_LABELS = re.compile(
     r"^(energy charges|baseline allowance|service for|rate schedule|account n|statement date|"
@@ -172,6 +188,14 @@ def _parse_date(text: str) -> date:
     return date(year, month, day)
 
 
+def normalize_tariff(printed: str) -> str | None:
+    """Return the tariff code named by a PG&E printed schedule."""
+    for pattern, tariff in PRINTED_TARIFFS:
+        if pattern.search(printed):
+            return tariff
+    return None
+
+
 def read_statement(path: str | Path) -> Statement:
     """Read a statement PDF.
 
@@ -182,18 +206,21 @@ def read_statement(path: str | Path) -> Statement:
         from pypdf import PdfReader
     except ImportError as exc:  # pragma: no cover - exercised by the extra's absence
         raise StatementError(
-            "reading a statement PDF needs pypdf: pip install 'tariffkit[regen]'"
+            "reading a statement PDF needs pypdf: install 'tariffkit[statements]'"
         ) from exc
 
-    reader = PdfReader(source)
-    pages: list[str] = []
-    for page in reader.pages:
-        try:
-            pages.append(page.extract_text(extraction_mode="layout") or "")
-        except KeyError:
-            # A page with no content stream. Real: PG&E pads statements with a
-            # trailing blank page, and pypdf raises rather than returning "".
-            pages.append("")
+    try:
+        reader = PdfReader(source)
+        pages: list[str] = []
+        for page in reader.pages:
+            try:
+                pages.append(page.extract_text(extraction_mode="layout") or "")
+            except KeyError:
+                # A page with no content stream. Real: PG&E pads statements with a
+                # trailing blank page, and pypdf raises rather than returning "".
+                pages.append("")
+    except Exception as exc:
+        raise StatementError(f"{source.name} could not be read as a PDF") from exc
 
     if not any(text.strip() for text in pages):
         raise StatementError(
@@ -211,27 +238,31 @@ def read_statement(path: str | Path) -> Statement:
         # the arithmetic between them.
         from .ocr import readings
 
-        # Keep the first reading that survives the statement's own checks. The
-        # criterion is the document's, not a preference: a bill prints its
-        # totals twice and its sections have to sum to them, so a reading that
-        # satisfies that has almost certainly read the figures correctly, and
-        # one that does not has demonstrably not. Falling back to the first
-        # reading keeps the failure reportable rather than raising, and it is
-        # still gated -- `self_check` runs again before anything is priced.
-        scored: list[tuple[int, int, Statement]] = []
+        # Keep only a reading that survives the statement's own checks. OCR can
+        # turn a digit into a plausible amount, so an incomplete parse must not
+        # become evidence merely because it produced a Statement object.
+        scored: list[Statement] = []
+        failures: list[StatementError] = []
         for pages in readings(source):
-            candidate = parse_statement(pages, source=source.name, recognised=True)
-            # Two criteria, in order. Adding up is the document's own test and
-            # comes first. Among readings that pass it, prefer the one whose
-            # labels are words: a row recognised as "s" carries its amount
-            # correctly and still cannot be matched to anything, so the section
-            # totals while a charge goes unclaimed.
-            scored.append((0 if candidate.self_check() else 1, _legible(candidate), candidate))
+            try:
+                candidate = parse_statement(pages, source=source.name, recognised=True)
+            except StatementError as exc:
+                failures.append(exc)
+                continue
+            if not candidate.self_check():
+                scored.append(candidate)
         if not scored:
-            raise StatementError(f"{source.name} produced no readable pages")
-        scored.sort(key=lambda entry: (entry[0], entry[1]), reverse=True)
-        return scored[0][2]
-    return parse_statement(pages, source=source.name)
+            if failures and all(
+                isinstance(failure, StatementAmbiguityError) for failure in failures
+            ):
+                raise failures[0]
+            raise StatementError(f"{source.name} OCR did not produce a self-checking statement")
+        return scored[0]
+    statement = parse_statement(pages, source=source.name)
+    problems = statement.self_check()
+    if problems:
+        raise StatementError(f"{source.name} failed its self-check ({len(problems)} problems)")
+    return statement
 
 
 #: Above this share of glyphs mapping to U+0020, the document is not text.
@@ -294,21 +325,115 @@ def _summary_amount(summary: StatementSection, label: str) -> float | None:
     return matches[0].amount if matches else None
 
 
-def _legible(statement: Statement) -> int:
-    """How many of a statement's charge rows carry a label a rule can claim.
-
-    A count rather than a ratio, so a reading that finds more rows is not
-    penalised for it. Used only to choose between recognitions of the same
-    document, never to judge whether one is right.
-    """
-    from .mapping import rule_for
-
-    return sum(
-        1
-        for section in statement.sections
-        for line in section.charged
-        if rule_for(section.name, line.label) is not None
+def _agreement_spans(page: str) -> tuple[BillingPeriod, ...]:
+    """Return the agreement-level date spans printed on one page."""
+    matches = [
+        (_parse_date(start), _parse_date(end), days) for start, end, days in CYCLE.findall(page)
+    ]
+    dated = [match for match in matches if match[2]]
+    candidates = dated or matches
+    return tuple(
+        BillingPeriod(start, end)
+        for start, end, _ in sorted(set(candidates), key=lambda value: value[:2])
     )
+
+
+def _agreements(pages: Sequence[str]) -> tuple[StatementAgreement, ...]:
+    """Map each delivery span to tariff evidence from that same page."""
+    diagnostics: list[str] = []
+    found: dict[BillingPeriod, StatementAgreement] = {}
+
+    for page_number, page in enumerate(pages):
+        delivery = any(DELIVERY_PAGE.match(line.lstrip()) for line in page.splitlines())
+        schedules = tuple(
+            dict.fromkeys(schedule.strip() for schedule in RATE_SCHEDULE.findall(page))
+        )
+        spans = _agreement_spans(page) if delivery else ()
+
+        if delivery and not schedules and not spans:
+            diagnostics.append(
+                f"page {page_number + 1} has a delivery heading but no exact date span "
+                "or printed schedule"
+            )
+            continue
+        if delivery and schedules and not spans:
+            diagnostics.append(f"page {page_number + 1} prints a schedule without a date span")
+            continue
+        if not delivery or not spans:
+            continue
+        if not schedules:
+            diagnostics.append(f"page {page_number + 1} has a date span without a schedule")
+            continue
+        if len(spans) != 1:
+            diagnostics.append(
+                f"page {page_number + 1} prints {len(spans)} date spans for one delivery schedule"
+            )
+            continue
+        if len(schedules) != 1:
+            diagnostics.append(
+                f"page {page_number + 1} prints {len(schedules)} schedules for one date span"
+            )
+            continue
+
+        printed = schedules[0]
+        tariff = normalize_tariff(printed)
+        if tariff is None:
+            diagnostics.append(f"page {page_number + 1} prints an unsupported tariff")
+            continue
+
+        period = spans[0]
+        account = ACCOUNT.search(page)
+        territory = BASELINE_TERRITORY.search(page)
+        vintage = PCIA_VINTAGE.search(page)
+        candidate = StatementAgreement(
+            period,
+            printed,
+            tariff,
+            page_number,
+            account_masked=re.sub(r"\D", "", account.group(1))[-4:] if account else "",
+            baseline_territory=territory.group(1) if territory else "",
+            pcia_vintage=int(vintage.group(1)) if vintage else None,
+        )
+        previous = found.get(period)
+        if previous is None:
+            found[period] = candidate
+            continue
+
+        if (previous.printed_schedule, previous.tariff) != (printed, tariff):
+            diagnostics.append(
+                f"date span {period.start}..{period.end} has conflicting delivery schedules"
+            )
+            continue
+
+        facts = (
+            ("account suffix", previous.account_masked, candidate.account_masked),
+            ("baseline territory", previous.baseline_territory, candidate.baseline_territory),
+            (
+                "PCIA vintage",
+                previous.pcia_vintage,
+                candidate.pcia_vintage,
+            ),
+        )
+        conflicts = [name for name, old, new in facts if old and new and old != new]
+        if conflicts:
+            diagnostics.append(
+                f"date span {period.start}..{period.end} has conflicting delivery "
+                f"account facts ({', '.join(conflicts)})"
+            )
+            continue
+        found[period] = replace(
+            previous,
+            account_masked=previous.account_masked or candidate.account_masked,
+            baseline_territory=previous.baseline_territory or candidate.baseline_territory,
+            pcia_vintage=previous.pcia_vintage or candidate.pcia_vintage,
+        )
+
+    if diagnostics:
+        raise StatementAmbiguityError(
+            "could not map PG&E service agreements one-to-one",
+            diagnostics=diagnostics,
+        )
+    return tuple(sorted(found.values(), key=lambda agreement: (agreement.start, agreement.end)))
 
 
 def parse_statement(
@@ -367,6 +492,13 @@ def parse_statement(
     territory = BASELINE_TERRITORY.search(joined)
     vintage = PCIA_VINTAGE.search(joined)
     cca = ANCHORS[2][1].search(joined)
+    agreements = _agreements(pages)
+    cca_schedules = tuple(
+        schedule.strip()
+        for page in pages
+        if ANCHORS[2][1].search(page)
+        for schedule in RATE_SCHEDULE.findall(page)
+    )
 
     return Statement(
         statement_date=_parse_date(stamp.group(1)),
@@ -375,14 +507,15 @@ def parse_statement(
         account_masked=re.sub(r"\D", "", account.group(1))[-4:] if account else "",
         billed_days=billed_days,
         billed_kwh=(sum(kwh for kwh, _ in usage_blocks) or None if usage_blocks else None),
-        service_agreements=max(1, _delivery_pages(pages)),
+        service_agreements=len(agreements) or max(1, _delivery_pages(pages)),
+        agreements=agreements,
         gas_charges=_scalar(joined, GAS_TOTAL),
         electric_adjustments=_summary_amount(summary, "Electric Adjustments"),
         sections=sections,
-        rate_schedule=schedules[0].strip() if schedules else "",
+        rate_schedule=agreements[0].printed_schedule if agreements else "",
         printed_schedules=tuple(dict.fromkeys(s.strip() for s in schedules if s.strip())),
         cca_name=cca.group("cca").strip() if cca else "",
-        cca_rate_schedule=schedules[1].strip() if len(schedules) > 1 else "",
+        cca_rate_schedule=cca_schedules[0] if cca_schedules else "",
         baseline_territory=territory.group(1) if territory else "",
         pcia_vintage=int(vintage.group(1)) if vintage else None,
         source=source,
