@@ -17,6 +17,10 @@ price-entity support directly.
 
 The rest of this page covers the custom component.
 
+For integration development, the repository includes a Docker Compose stack
+that bind mounts both the component and Home Assistant configuration. See
+[Containers](containers.md#test-the-home-assistant-integration).
+
 ## Install
 
 ### HACS

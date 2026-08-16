@@ -56,6 +56,12 @@ All notable changes to this project are documented here. This project follows
   [docs/home-assistant.md](docs/home-assistant.md#predbat).
 
 ### Added
+- **A Docker Compose Home Assistant development environment** now bind mounts
+  the custom component, local TariffKit source, and an isolated HA
+  configuration directory. This makes integration changes testable against a
+  real Home Assistant container without copying files or publishing the Python
+  package; the accompanying container guide also defines the proposed
+  production boundaries for the API and MQTT publisher.
 - **Two response-returning actions**, `tariffkit.get_rates` and
   `tariffkit.get_emhass_forecast`, registered once per Home Assistant
   instance rather than per config entry, so they stay callable --

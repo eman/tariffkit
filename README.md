@@ -56,6 +56,7 @@ Nothing here touches the network at runtime.
 | [REST API](docs/web.md) | HTTP service |
 | [Home Assistant](docs/home-assistant.md) | Custom component, Energy dashboard, account history, response actions, opt-in Predbat |
 | [Home Assistant quality checklist](docs/home-assistant-quality.md) | Self-assessment against the Integration Quality Scale, with exemptions |
+| [Containers](docs/containers.md) | Local Home Assistant development stack and API/MQTT deployment proposal |
 | [Maintaining rate data](docs/data.md) | Regenerating export rates, updating the retail tariff and CCA cards |
 | [Packaging strategy](docs/packaging_strategy.md) | Architecture decision, boundaries, and release model |
 

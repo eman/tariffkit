@@ -1,0 +1,29 @@
+name: tariffkit-dev
+
+services:
+  homeassistant:
+    build:
+      context: .
+      dockerfile: docker/homeassistant/Dockerfile
+      args:
+        HA_VERSION: ${HA_VERSION:-stable}
+    image: tariffkit-homeassistant-dev:${HA_VERSION:-stable}
+    environment:
+      PYTHONPATH: /workspace/src
+      TZ: ${TZ:-America/Los_Angeles}
+    ports:
+      - "${HA_PORT:-8123}:8123"
+    restart: unless-stopped
+    stop_grace_period: 30s
+    volumes:
+      - type: bind
+        source: ./dev/home-assistant
+        target: /config
+      - type: bind
+        source: ./custom_components
+        target: /config/custom_components
+        read_only: true
+      - type: bind
+        source: ./src
+        target: /workspace/src
+        read_only: true
