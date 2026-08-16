@@ -47,7 +47,7 @@ jobs:
         if: >-
           always() && (steps.export.outcome == 'failure'
           || steps.retail.outcome == 'failure')
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const title = 'Vendored rate data is out of date with PG&E';
