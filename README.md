@@ -93,10 +93,22 @@ pip install 'tariffkit[statements]' # + reading local PG&E statement PDFs
 pip install 'tariffkit[all]'
 ```
 
-The Home Assistant custom component is also available through HACS as a custom
-repository while its default-store submission is reviewed:
+The Home Assistant integration has been
+[submitted to the default HACS store](https://github.com/hacs/default/pull/10019),
+but approval queues can take months. Until it is approved, install TariffKit as
+a custom repository:
 
 [![Open your Home Assistant instance and add the TariffKit repository to HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=eman&repository=tariffkit&category=integration)
+
+Or add it manually:
+
+1. Open **HACS** in Home Assistant.
+2. Select the **three-dot menu → Custom repositories**.
+3. Enter `https://github.com/eman/tariffkit`, choose **Integration**, and select
+   **Add**.
+4. Search HACS for **TariffKit**, open it, and select **Download**.
+5. Restart Home Assistant, then add TariffKit from
+   **Settings → Devices & services → Add integration**.
 
 ## CLI
 
