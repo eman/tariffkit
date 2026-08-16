@@ -29,37 +29,57 @@ changelog. Mark a yanked release as `[YANKED]` in its version heading.
 
 ## One-time publisher setup
 
-PyPI and TestPyPI are separate services. Complete these steps on both sites:
+PyPI and TestPyPI are separate services with separate accounts, projects, and
+publisher registrations. Configuration on one does not configure the other.
 
-1. Create an account, verify its email address, enable two-factor
-   authentication, and store the recovery codes securely.
-2. In the GitHub repository settings, create environments named `testpypi` and
-   `pypi`. Restrict `pypi` to the protected `main` branch and require a reviewer
-   when another trusted maintainer is available. Enable prevent-self-review
-   only when that does not make releases impossible.
-3. Keep `testpypi` lightweight; it may omit approval, but its name must match
-   the workflow and publisher configuration exactly.
-4. At <https://test.pypi.org/manage/account/publishing/>, add a pending GitHub
-   publisher with these values:
+1. Create an account at <https://test.pypi.org/account/register/>. Verify its
+   email address, enable two-factor authentication under **Account settings**,
+   and store the recovery codes securely.
+2. Sign in and open
+   <https://test.pypi.org/manage/account/publishing/>. Under **Add a new pending
+   publisher**, select **GitHub Actions** and enter:
 
-   | Field | Value |
+   | TestPyPI form label | Enter exactly |
    |---|---|
-   | PyPI project | `tariffkit` |
+   | PyPI Project Name | `tariffkit` |
    | Owner | `eman` |
-   | Repository | `tariffkit` |
-   | Workflow | `release.yml` |
-   | Environment | `testpypi` |
+   | Repository name | `tariffkit` |
+   | Workflow name | `release.yml` |
+   | Environment name | `testpypi` |
 
-5. Repeat at <https://pypi.org/manage/account/publishing/>, using the `pypi`
-   environment.
-6. In **Settings → General → Releases**, enable immutable releases.
-7. Protect `main` with the CI and security checks required for merge. Restrict
-   tag creation to maintainers and release automation where repository
-   rulesets support it.
+3. Click **Add**. Confirm the resulting pending publisher shows all five values
+   exactly. In particular, the workflow field is only the filename
+   `release.yml`, not `.github/workflows/release.yml`, and the environment is
+   lowercase `testpypi`.
+4. Separately create or sign in to the production account at
+   <https://pypi.org/account/register/>. Verify its email, enable two-factor
+   authentication, and store its recovery codes.
+5. Open <https://pypi.org/manage/account/publishing/>. Under **Add a new pending
+   publisher**, select **GitHub Actions** and enter:
+
+   | PyPI form label | Enter exactly |
+   |---|---|
+   | PyPI Project Name | `tariffkit` |
+   | Owner | `eman` |
+   | Repository name | `tariffkit` |
+   | Workflow name | `release.yml` |
+   | Environment name | `pypi` |
+
+6. Click **Add** and verify the displayed registration. The only intended
+   difference from TestPyPI is the environment name: production uses `pypi`.
+7. In the GitHub repository's **Settings → General → Releases**, enable release
+   immutability. GitHub environments named `testpypi` and `pypi` must exist;
+   restrict both to `main` and require approval on `pypi`.
+8. Protect `main` with the CI and security checks required for merge. Restrict
+   tag creation to maintainers and release automation where repository rulesets
+   support it.
 
 Do not create PyPI API-token secrets. The workflow receives short-lived OIDC
-credentials from the protected environments. Create pending publishers shortly
-before the first publication: they do not reserve a project name.
+credentials from the protected environments. Do not manually create the
+`tariffkit` project or upload a placeholder distribution: the first successful
+Trusted Publishing upload creates the project and converts the pending
+publisher into a normal publisher. Create pending publishers shortly before the
+first publication because they do not reserve a project name.
 
 ## Prepare a release
 
