@@ -5,6 +5,10 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+- Project documentation now uses a TariffKit banner built from the integration's
+  existing icon and a provider-neutral electricity rate curve.
+
 ## [0.2.1] - 2026-08-16
 
 ### Added
