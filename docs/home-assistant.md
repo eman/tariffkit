@@ -25,11 +25,15 @@ that bind mounts both the component and Home Assistant configuration. See
 
 ### HACS
 
-Not in the default HACS store yet — that requires TariffKit to be published to
-PyPI first, since HACS validates the `manifest.json` `requirements` entry
-against a real release (see [The dependency](#the-dependency) below). Until
-then, add this repository as a **custom repository** in HACS (category:
-Integration), install, and restart.
+TariffKit is awaiting inclusion in the default HACS store. Until that review is
+complete, add it as a custom repository with category **Integration**:
+
+[![Open your Home Assistant instance and add the TariffKit repository to HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=eman&repository=tariffkit&category=integration)
+
+Select the newest release, install, and restart Home Assistant. HACS downloads
+the release's `tariffkit.zip`, which contains only the integration files. The
+default branch is deliberately not offered: it can temporarily refer to a
+Python package version that has not been published yet.
 
 ### Manual
 
@@ -45,23 +49,10 @@ Restart Home Assistant, then **Settings → Devices & Services → Add Integrati
 ### The dependency
 
 `manifest.json` declares an exact-pinned `tariffkit==0.2.0` requirement, which
-Home Assistant installs from PyPI on first setup. **This package is not
-published to PyPI yet**, so that step will fail until the first release ships.
-Until then, install the library into HA's Python environment yourself:
-
-```bash
-# Home Assistant Container / Supervised
-docker exec -it homeassistant pip install /share/tariffkit-0.2.0-py3-none-any.whl
-
-# Core install in a venv
-/srv/homeassistant/bin/pip install /path/to/tariffkit-0.2.0-py3-none-any.whl
-```
-
-Build the wheel with `uv build` from the repo root; it lands in `dist/`. The
-requirement stays an exact version rather than a range so a HACS update to the
-integration and a `pip install --upgrade tariffkit` cannot drift apart —
-either both move together or the entry fails to load with a clear "not
-installed" error rather than silently pricing with a mismatched library.
+Home Assistant installs from PyPI on first setup. The requirement stays an
+exact version rather than a range so a HACS update to the integration and a
+package upgrade cannot drift apart: every GitHub integration release has one
+matching PyPI distribution.
 
 The integration computes from local static data and does not sign in to PG&E,
 MQTT, InfluxDB, or another Home Assistant instance, so it deliberately does not

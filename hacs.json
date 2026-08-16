@@ -1,6 +1,10 @@
 {
   "name": "TariffKit",
   "content_in_root": false,
+  "country": "US",
+  "filename": "tariffkit.zip",
+  "hide_default_branch": true,
+  "zip_release": true,
   "render_readme": true,
   "homeassistant": "2026.3.0"
 }

@@ -16,12 +16,17 @@ def test_project_identity_and_version_are_consistent() -> None:
     manifest = json.loads(
         (ROOT / "custom_components" / "tariffkit" / "manifest.json").read_text(encoding="utf-8")
     )
+    hacs = json.loads((ROOT / "hacs.json").read_text(encoding="utf-8"))
 
     assert project["name"] == "tariffkit"
     assert project["license"] == "MIT"
     assert manifest["domain"] == "tariffkit"
     assert manifest["version"] == project["version"] == tariffkit.__version__
     assert manifest["requirements"] == [f"tariffkit=={project['version']}"]
+    assert hacs["zip_release"] is True
+    assert hacs["filename"] == "tariffkit.zip"
+    assert hacs["hide_default_branch"] is True
+    assert hacs["country"] == "US"
 
 
 def test_maintainer_dependencies_are_not_public_extras() -> None:

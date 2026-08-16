@@ -3,7 +3,8 @@
 This runbook is for maintainers publishing the Python distribution and the
 matching Home Assistant integration version. TariffKit uses a reviewed release
 commit, one set of distribution files, PyPI Trusted Publishing, and curated
-release notes.
+release notes. The same build also produces the HACS integration artifact
+`tariffkit.zip`.
 
 ## Version and changelog policy
 
@@ -108,7 +109,8 @@ uv run python -m tools.release available "$VERSION" --repository testpypi
 The preparation command updates the project and lockfile versions, the Home
 Assistant manifest and exact requirement, versioned documentation, changelog,
 and comparison links. Review every change, then open a release PR. The PR must
-pass normal CI. Merge it without creating a tag or GitHub release.
+pass normal CI, HACS validation, and hassfest. Merge it without creating a tag
+or GitHub release.
 
 For a release candidate, use a version such as `0.2.0rc1` and follow the same
 process. A later candidate or stable release gets a new version; published
@@ -119,8 +121,11 @@ candidate files are never replaced.
 From the repository's **Actions → Release → Run workflow** menu, select `main`,
 enter the exact prepared version, and select `dry-run`. The workflow performs
 release identity checks, tests, artifact-boundary checks, clean installation,
-sdist reconstruction, checksums, and release-note extraction. It does not
-request an OIDC token, create a tag, or publish anything.
+sdist reconstruction, deterministic HACS ZIP construction, checksums, and
+release-note extraction. It does not request an OIDC token, create a tag, or
+publish anything. Download the run artifact and confirm `tariffkit.zip`
+contains `manifest.json` and `__init__.py` at ZIP root, not beneath another
+`custom_components` directory.
 
 Resolve any failure in a new PR. Do not bypass a release check.
 
@@ -143,14 +148,15 @@ Resolve any failure in a new PR. Do not bypass a release check.
 
 3. If TestPyPI staging is enabled, inspect its description, metadata, wheel,
    sdist, hashes, and attestations. In every release, inspect the draft GitHub
-   release notes and confirm that its distribution hashes match `SHA256SUMS`.
+   release notes and confirm the wheel, sdist, and `tariffkit.zip` hashes match
+   `SHA256SUMS`.
 4. Approve the pending `pypi` environment deployment. The workflow uploads the
    already-tested files to PyPI, then publishes the prepared GitHub draft. Do
    not create or move the release tag manually.
 
-When enabled, TestPyPI receives the exact files later sent to PyPI and GitHub.
-When disabled, the locally validated workflow artifacts still move unchanged
-through protected PyPI publication and the GitHub release.
+When enabled, TestPyPI receives the exact Python files later sent to PyPI and
+GitHub. The HACS ZIP is never placed in the PyPI upload directory; it travels
+unchanged in the same Actions artifact and is attached only to GitHub.
 
 ## Verify a published release
 
@@ -162,6 +168,7 @@ uvx --refresh --from "tariffkit==$VERSION" tariffkit --version
 uvx --refresh --from "tariffkit[all]==$VERSION" tariffkit info
 gh release download "v$VERSION" --repo eman/tariffkit --dir release-assets
 (cd release-assets && shasum -a 256 -c SHA256SUMS)
+unzip -Z1 release-assets/tariffkit.zip
 ```
 
 Confirm the PyPI files show attestations and verify a distribution against the
@@ -176,7 +183,9 @@ uvx pypi-attestations verify pypi \
 
 Finally, confirm that the released
 `custom_components/tariffkit/manifest.json` has the same `version` and the
-single requirement `tariffkit==<version>`.
+single requirement `tariffkit==<version>`. Add the repository to HACS as an
+integration and install that release; Home Assistant must resolve the exact
+PyPI dependency and complete the config flow.
 
 ## Recover from a failed release
 

@@ -166,6 +166,10 @@ while only one distribution exists.
   versions. The manual workflow stages the same artifacts on TestPyPI, waits
   for protected PyPI approval, and publishes an immutable GitHub release only
   after PyPI succeeds. See the [release runbook](releases.md).
+- The same build produces a deterministic HACS `tariffkit.zip` containing only
+  tracked integration files at archive root. It stays outside the PyPI upload
+  directory, but is checksummed and attached before the GitHub release becomes
+  immutable.
 
 ## References
 

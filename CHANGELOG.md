@@ -5,6 +5,15 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+- **HACS releases now include a deterministic `tariffkit.zip` integration
+  artifact.** HACS installs only the tracked component files, rooted directly
+  in the integration directory, while the release pipeline validates the ZIP
+  against its source, checksums it with the Python distributions, and attaches
+  all artifacts before immutable publication. Dedicated HACS and hassfest
+  checks also gate integration changes and prepare TariffKit for default-store
+  submission.
+
 ## [0.2.0] - 2026-08-16
 
 ### Added
