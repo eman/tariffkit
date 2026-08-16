@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="images/banner.svg" alt="TariffKit — electricity pricing, billing, and energy integrations" width="100%">
+</p>
+
 # TariffKit
 
 An offline electricity tariff engine for pricing, billing, and energy-system
