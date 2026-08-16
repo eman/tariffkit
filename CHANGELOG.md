@@ -67,8 +67,8 @@ All notable changes to this project are documented here. This project follows
   and local package source in a real container without publishing a wheel.
 - **A build-once release process and maintainer runbook** synchronize Python,
   lockfile, Home Assistant, changelog, and documentation versions. One validated
-  wheel/sdist pair moves through TestPyPI, protected PyPI approval, PEP 740
-  attestations, and an immutable GitHub release.
+  wheel/sdist pair moves through optional TestPyPI staging, protected PyPI
+  approval, PEP 740 attestations, and an immutable GitHub release.
 
 ### Changed
 - **The project is now TariffKit.** The distribution, import package, CLI,
