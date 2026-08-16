@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tariffkit"
-version = "0.1.0"
+version = "0.2.0"
 description = "Offline electricity tariff pricing, billing, and integration tools"
 readme = "README.md"
 license = "MIT"
@@ -57,10 +57,15 @@ regen = [
     "httpx>=0.27",
     "pypdf>=4.0",
 ]
+release = [
+    "packaging>=25",
+    "twine>=6.2",
+]
 dev = [
     { include-group = "test" },
     { include-group = "quality" },
     { include-group = "regen" },
+    { include-group = "release" },
     "fastapi>=0.110",
     "paho-mqtt>=2.0",
     "pytest-homeassistant-custom-component>=0.13.316",
@@ -88,6 +93,7 @@ exclude = [
     "/tests/test_ha_component.py",
     "/tests/test_packaging.py",
     "/tests/test_regen.py",
+    "/tests/test_release.py",
 ]
 
 [tool.ruff]
@@ -121,7 +127,7 @@ explicit_package_bases = true
 warn_unreachable = true
 # The audit harness and Home Assistant component are checked as strictly as the
 # package even though neither ships in the Python distribution.
-files = ["src/tariffkit", "tools/regen", "audit", "custom_components/tariffkit"]
+files = ["src/tariffkit", "tools", "audit", "custom_components/tariffkit"]
 
 [[tool.mypy.overrides]]
 module = ["pypdf.*"]

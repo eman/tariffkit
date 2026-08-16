@@ -44,17 +44,17 @@ Restart Home Assistant, then **Settings → Devices & Services → Add Integrati
 
 ### The dependency
 
-`manifest.json` declares an exact-pinned `tariffkit==0.1.0` requirement, which
+`manifest.json` declares an exact-pinned `tariffkit==0.2.0` requirement, which
 Home Assistant installs from PyPI on first setup. **This package is not
 published to PyPI yet**, so that step will fail until the first release ships.
 Until then, install the library into HA's Python environment yourself:
 
 ```bash
 # Home Assistant Container / Supervised
-docker exec -it homeassistant pip install /share/tariffkit-0.1.0-py3-none-any.whl
+docker exec -it homeassistant pip install /share/tariffkit-0.2.0-py3-none-any.whl
 
 # Core install in a venv
-/srv/homeassistant/bin/pip install /path/to/tariffkit-0.1.0-py3-none-any.whl
+/srv/homeassistant/bin/pip install /path/to/tariffkit-0.2.0-py3-none-any.whl
 ```
 
 Build the wheel with `uv build` from the repo root; it lands in `dist/`. The

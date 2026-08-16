@@ -162,6 +162,10 @@ while only one distribution exists.
 - Release artifacts are built once, inspected, installed in a clean
   environment, and published with PyPI Trusted Publishing and PEP 740
   attestations.
+- A reviewed release commit synchronizes the Python and Home Assistant
+  versions. The manual workflow stages the same artifacts on TestPyPI, waits
+  for protected PyPI approval, and publishes an immutable GitHub release only
+  after PyPI succeeds. See the [release runbook](releases.md).
 
 ## References
 

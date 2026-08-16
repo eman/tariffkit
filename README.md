@@ -59,6 +59,7 @@ Nothing here touches the network at runtime.
 | [Containers](docs/containers.md) | Local Home Assistant development stack and API/MQTT deployment proposal |
 | [Maintaining rate data](docs/data.md) | Regenerating export rates, updating the retail tariff and CCA cards |
 | [Packaging strategy](docs/packaging_strategy.md) | Architecture decision, boundaries, and release model |
+| [Release procedure](docs/releases.md) | Versioning, Trusted Publishing, verification, and recovery |
 
 ## Works with
 

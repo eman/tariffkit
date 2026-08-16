@@ -1,44 +1,119 @@
 name: Release
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
+    inputs:
+      version:
+        description: Exact PEP 440 release version already committed on main
+        required: true
+        type: string
+      mode:
+        description: Validate only, or stage and publish the release
+        required: true
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - release
 
 permissions:
   contents: read
 
+concurrency:
+  group: tariffkit-release
+  cancel-in-progress: false
+
 jobs:
   build:
+    name: Validate and build once
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-      - run: uv sync --all-extras --group dev --python 3.14
+      - name: Require the default branch
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "Releases must run from main, not $GITHUB_REF" >&2
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      - run: uv python install 3.14
+      - run: uv sync --locked --all-extras --group dev --python 3.14
+      - name: Verify release identity
+        env:
+          RELEASE_TAG: v${{ inputs.version }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          uv run python -m tools.release check \
+            --version "$RELEASE_VERSION" \
+            --tag "$RELEASE_TAG"
+      - name: Require an unused version and tag
+        if: inputs.mode == 'release'
+        env:
+          RELEASE_TAG: v${{ inputs.version }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          uv run python -m tools.release available "$RELEASE_VERSION" --repository testpypi
+          uv run python -m tools.release available "$RELEASE_VERSION" --repository pypi
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null; then
+            echo "$RELEASE_TAG already exists" >&2
+            exit 1
+          fi
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy
       - run: uv run pytest --cov=tariffkit --cov-report=term-missing
       - run: uv run pytest audit/tests
       - run: uv build --no-sources
-      - name: Verify the release identity
-        if: github.event_name == 'release'
-        env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+      - run: uv run twine check dist/*
+      - name: Verify artifact boundaries
         run: |
-          uv run --no-project --with ./dist/*.whl python -c \
-            "import os, tariffkit; assert tariffkit.__version__ == os.environ['RELEASE_TAG'].removeprefix('v')"
-      - name: Verify the wheel installs
-        if: github.event_name == 'workflow_dispatch'
-        run: uv run --no-project --with ./dist/*.whl python -c "import tariffkit"
-      - uses: actions/upload-artifact@v4
+          python -m zipfile -l dist/*.whl | grep -q 'tariffkit/data/export/pge/nbt26.json.gz'
+          python -m zipfile -l dist/*.whl | grep -q 'tariffkit/data/holidays.toml'
+          python -m zipfile -l dist/*.whl | grep -q 'tariffkit/py.typed'
+          ! python -m zipfile -l dist/*.whl | grep -q '^audit/'
+          ! python -m zipfile -l dist/*.whl | grep -q '^tools/'
+          ! python -m zipfile -l dist/*.whl | grep -q '/\.cache/'
+          ! tar -tzf dist/*.tar.gz | grep -q '/audit/'
+          ! tar -tzf dist/*.tar.gz | grep -q '/tools/'
+          ! tar -tzf dist/*.tar.gz | grep -q '/\.cache/'
+      - name: Install and exercise the wheel with every extra
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          wheel=$(find dist -name '*.whl' -print -quit)
+          uv run --no-project --with "${wheel}[all]" python -c \
+            "import importlib.metadata, tariffkit; assert tariffkit.RateEngine().price_now(); assert importlib.metadata.version('tariffkit') == '$RELEASE_VERSION'"
+          uv run --no-project --with "${wheel}[all]" tariffkit --version
+          uv run --no-project --with "${wheel}[all]" python -c \
+            "from tariffkit.web import create_app; assert create_app()"
+      - name: Rebuild the wheel from the sdist
+        run: |
+          mkdir dist-from-sdist
+          uv build dist/*.tar.gz --wheel --out-dir dist-from-sdist
+          cmp dist/*.whl dist-from-sdist/*.whl
+      - name: Generate checksums and release notes
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          (cd dist && sha256sum -- *.whl *.tar.gz) > SHA256SUMS
+          uv run python -m tools.release notes "$RELEASE_VERSION" > release-notes.md
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: python-distributions
-          path: dist/
+          name: tariffkit-${{ inputs.version }}
+          path: |
+            dist/
+            SHA256SUMS
+            release-notes.md
           if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
 
   publish-testpypi:
-    if: github.event_name == 'workflow_dispatch'
+    name: Publish exact build to TestPyPI
+    if: inputs.mode == 'release'
     needs: build
     runs-on: ubuntu-latest
     environment:
@@ -47,19 +122,47 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: python-distributions
-          path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+          name: tariffkit-${{ inputs.version }}
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           repository-url: https://test.pypi.org/legacy/
           packages-dir: dist/
           attestations: true
 
+  draft-release:
+    name: Prepare GitHub draft
+    if: inputs.mode == 'release'
+    needs: [build, publish-testpypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: tariffkit-${{ inputs.version }}
+      - name: Create tag and draft with tested assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: v${{ inputs.version }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$RELEASE_TAG" \
+            -f sha="$GITHUB_SHA"
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --draft \
+            --title "TariffKit $RELEASE_VERSION" \
+            --notes-file release-notes.md \
+            dist/*.whl dist/*.tar.gz SHA256SUMS
+
   publish-pypi:
-    if: github.event_name == 'release'
-    needs: build
+    name: Approve and publish exact build to PyPI
+    if: inputs.mode == 'release'
+    needs: [build, draft-release]
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -67,11 +170,24 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: python-distributions
-          path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+          name: tariffkit-${{ inputs.version }}
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist/
           attestations: true
+
+  publish-github:
+    name: Publish immutable GitHub release
+    if: inputs.mode == 'release'
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the prepared draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: v${{ inputs.version }}
+        run: gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
