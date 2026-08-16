@@ -6,9 +6,9 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
-from tariffkit import Config, RateEngine, Supplier
+from tariffkit import Config, RateEngine, Supplier, Utility
 from tariffkit.config import CcaConfig
-from tariffkit.errors import ConfigError, OutOfRangeError
+from tariffkit.errors import ConfigError, DataError, OutOfRangeError
 from tariffkit.timeutil import (
     PACIFIC,
     DayType,
@@ -278,6 +278,29 @@ class TestConfigValidation:
         assert config.cca is not None
         assert config.cca.name == "MCE"
 
+    def test_canonical_utility_identifier_is_emitted(self) -> None:
+        config = Config()
+
+        assert config.utility is Utility.PACIFIC_GAS_AND_ELECTRIC
+        assert config.to_dict()["utility"] == Utility.PACIFIC_GAS_AND_ELECTRIC.value
+        assert RateEngine(config).describe()["utility"] == Utility.PACIFIC_GAS_AND_ELECTRIC.value
+        assert (
+            RateEngine(config).tariff.snapshot_for(pt(2026, 8, 16, 9)).raw["utility"]
+            == Utility.PACIFIC_GAS_AND_ELECTRIC.value
+        )
+
+    def test_uppercase_pge_is_not_a_utility_identifier(self) -> None:
+        with pytest.raises(ConfigError, match="is not a valid Utility"):
+            Config.from_dict({"utility": "PGE"})
+
+    def test_lowercase_pge_identifies_portland_without_loading_california_rates(self) -> None:
+        config = Config.from_dict({"utility": "pge"})
+
+        assert config.utility is Utility.PORTLAND_GENERAL_ELECTRIC
+        assert config.to_dict()["utility"] == "pge"
+        with pytest.raises(DataError, match="Portland General Electric pricing is not supported"):
+            RateEngine(config)
+
     def test_from_dict_rejects_unknown_keys(self) -> None:
         with pytest.raises(ConfigError, match="unknown config keys"):
             Config.from_dict({"supplier": "bundled", "nonsense": 1})
@@ -306,6 +329,7 @@ def test_describe_reports_provenance(engine: RateEngine) -> None:
     assert info["export_vintage"] == "NBT26"
     assert info["tariff_effective"] == "2026-03-01"
     assert info["tariff_advice_letter"] == "7846-E"
+    assert info["pto_date"] == "2026-06-03"
     assert info["lock_end"] == "2035-06-02"
 
 

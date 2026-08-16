@@ -54,6 +54,8 @@ class Utility:
     """A distribution utility: retail tariffs, export rates, export adders."""
 
     key: str
+    identifier: str
+    short_name: str
     name: str
     #: Retail schedule slug -> its tariff sheet. Slugs match the data
     #: directories: the tariff name with punctuation stripped.
@@ -98,9 +100,11 @@ class Cca:
     tariff_url: str = ""
 
 
-PGE = Utility(
+PACIFIC_GAS_AND_ELECTRIC = Utility(
     key="pge",
-    name="Pacific Gas and Electric",
+    identifier="pacific_gas_and_electric",
+    short_name="PG&E",
+    name="Pacific Gas and Electric Company",
     schedules={
         "eelec": Source("https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-ELEC.pdf"),
         "etouc": Source(
@@ -188,7 +192,7 @@ CA_ENERGY_RESOURCES = Tax(
     notices=("L-971", "L-1020"),
 )
 
-UTILITIES: dict[str, Utility] = {PGE.key: PGE}
+UTILITIES: dict[str, Utility] = {PACIFIC_GAS_AND_ELECTRIC.key: PACIFIC_GAS_AND_ELECTRIC}
 TAXES: dict[str, Tax] = {CA_ENERGY_RESOURCES.key: CA_ENERGY_RESOURCES}
 CCAS: dict[str, Cca] = {MCE.key: MCE}
 

@@ -1,4 +1,4 @@
-# Pacific Gas and Electric Schedule EV2-A -- retail time-of-use rates.
+# Pacific Gas and Electric Company Schedule EV2-A -- retail time-of-use rates.
 #
 # Source: https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_EV2%20(Sch).pdf
 #
@@ -23,7 +23,7 @@
 # makes a silent mis-parse essentially impossible.
 
 schema = 1
-utility = "PGE"
+utility = "pacific_gas_and_electric"
 tariff = "EV2-A"
 effective = "2026-03-01"
 advice_letter = "7846-E"

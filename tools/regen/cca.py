@@ -42,7 +42,7 @@ from datetime import date
 from pathlib import Path
 
 from .emit import DATA_DIR, Result, fmt, write_or_check
-from .providers import Cca
+from .providers import Cca, utility
 from .sheets import ExtractionError, Page, cells, read_pages
 
 #: "Peak", "Part-Peak", "Off Peak" -> the period key. Spellings vary by card:
@@ -168,13 +168,12 @@ def parity_note(generation: dict[str, dict[str, dict[str, float]]], utility_key:
     """
     from tariffkit.tariff.retail import load_snapshot
 
-    from .providers import utility as get_utility
-
     notes: list[str] = []
-    names = get_utility(utility_key).schedule_names
+    utility_provider = utility(utility_key)
+    names = utility_provider.schedule_names
     for slug, seasons in sorted(generation.items()):
         try:
-            snapshot = load_snapshot(utility_key.upper(), names[slug], date.today())
+            snapshot = load_snapshot(utility_provider.identifier, names[slug], date.today())
         except Exception:
             continue
         same = differs = 0
@@ -188,10 +187,13 @@ def parity_note(generation: dict[str, dict[str, dict[str, float]]], utility_key:
                 )
         if differs:
             notes.append(
-                f"{slug}: {differs} of {same + differs} rates now DIFFER from {utility_key.upper()}"
+                f"{slug}: {differs} of {same + differs} rates now DIFFER from "
+                f"{utility_provider.short_name}"
             )
         elif same:
-            notes.append(f"{slug}: all {same} rates still at parity with {utility_key.upper()}")
+            notes.append(
+                f"{slug}: all {same} rates still at parity with {utility_provider.short_name}"
+            )
     return notes
 
 
@@ -226,7 +228,7 @@ def render(
         "schema = 1",
         f'provider = "{provider.key.upper()}"',
         f'name = "{provider.name}"',
-        f'utility = "{provider.utility.upper()}"',
+        f'utility = "{utility(provider.utility).identifier}"',
         f"schedules = {fmt([names[s] for s in sorted(generation)])}",
         f'effective = "{effective.isoformat()}"',
         f'currency = "{previous.get("currency", "USD/kWh")}"',

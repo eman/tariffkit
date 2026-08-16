@@ -5,6 +5,19 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+- Pacific Gas and Electric now has the unambiguous machine identifier
+  `pacific_gas_and_electric`, while Home Assistant and MQTT present `PG&E` or
+  the full company name. The separate `pge` identifier correctly means Portland
+  General Electric and is recognized but explicitly unsupported for pricing,
+  preventing it from ever selecting California tariff data.
+- Home Assistant now labels the export-minus-import calculation explicitly,
+  translates time-of-use states for display, and presents the forecast horizon
+  as **Rates Available Through**. Forecast metadata and a new **Rate Data
+  Status** entity are grouped under diagnostics, where PTO date, export lock
+  end, NBT vintage, tariff provenance, source, and quality flags explain the
+  active rates without crowding the primary price controls.
+
 ## [0.2.2] - 2026-08-16
 
 ### Added

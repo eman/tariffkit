@@ -178,7 +178,7 @@ def _rate_data(account: str | None, oldest: date) -> Check:
         when = max(epoch.effective, oldest)
         config = epoch.config
         try:
-            versioned.load(f"tariff/{config.utility.lower()}/{_slug(config.tariff)}", when)
+            versioned.load(f"tariff/{config.utility.data_slug}/{_slug(config.tariff)}", when)
             checked.append(config.tariff)
         except DataError as exc:
             problems.append(f"{config.tariff}: {str(exc)[:80]}")

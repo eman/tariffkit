@@ -75,9 +75,9 @@ the percentages, since they drift as tests and flow branches are added.
 | `docs-troubleshooting` | Met | [Troubleshooting](home-assistant.md#troubleshooting). |
 | `docs-use-cases` | Partial | Energy dashboard, EMHASS, and Predbat use cases are each covered in their own section, but the page has no single "why would I use this" overview tying them together. |
 | `dynamic-devices` | Not applicable | Exactly one static device per entry; nothing is discovered or added later. |
-| `entity-category` | **Not met** | All five entities are plain (no `entity_category` assignment); none is arguably diagnostic-only enough to justify one. |
-| `entity-device-class` | Met | `TOU Period` uses `SensorDeviceClass.ENUM` and `Rate Forecast Through` uses `TIMESTAMP`. The three price entities set none: HA's `MONETARY` class requires `state_class: total`, which is incompatible with a continuously-changing live rate at `state_class: measurement`, so leaving it unset is the correct choice, not a gap. |
-| `entity-disabled-by-default` | Not applicable | All five entities are meant to be watched or graphed; none is noisy or a minority interest that would justify disabling it by default. |
+| `entity-category` | Met | `Rates Available Through` and `Rate Data Status` are diagnostic metadata; current prices and TOU period remain primary entities. |
+| `entity-device-class` | Met | `TOU Period` and `Rate Data Status` use `SensorDeviceClass.ENUM`, while `Rates Available Through` uses `TIMESTAMP`. The three price entities set none: HA's `MONETARY` class requires `state_class: total`, which is incompatible with a continuously-changing live rate at `state_class: measurement`, so leaving it unset is the correct choice, not a gap. |
+| `entity-disabled-by-default` | Not applicable | All six entities support the primary display or rate troubleshooting and remain enabled by default. |
 | `entity-translations` | Met | `translation_key` plus `strings.json`/`translations/en.json` names for every entity. |
 | `exception-translations` | **Not met** | Action validation errors (`ServiceValidationError`) use raw f-string messages rather than `translation_domain`/`translation_key`/`translation_placeholders`. |
 | `icon-translations` | Met | `icons.json`. |

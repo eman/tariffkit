@@ -477,7 +477,7 @@ def render(
         "# makes a silent mis-parse essentially impossible.",
         "",
         "schema = 1",
-        f'utility = "{provider.key.upper()}"',
+        f'utility = "{provider.identifier}"',
         f'tariff = "{tariff_name}"',
         f'effective = "{effective.isoformat()}"',
         f'advice_letter = "{data.rates_advice}"',

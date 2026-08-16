@@ -16,7 +16,7 @@
 schema = 1
 provider = "MCE"
 name = "Marin Clean Energy"
-utility = "PGE"
+utility = "pacific_gas_and_electric"
 schedules = ["E-ELEC", "E-TOU-C", "EV2-A"]
 effective = "2023-01-01"
 currency = "USD/kWh"

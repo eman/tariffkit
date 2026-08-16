@@ -10,7 +10,7 @@ from datetime import date, datetime
 
 import pytest
 
-from tariffkit import Config, RateEngine, Supplier
+from tariffkit import Config, RateEngine, Supplier, Utility
 from tariffkit.cca import load_rate_card
 from tariffkit.config import CcaConfig
 from tariffkit.errors import DataError
@@ -67,6 +67,10 @@ def test_cost_relief_credit_expires_at_the_end_of_2026() -> None:
     )
 
 
+def test_rate_card_uses_canonical_utility_identifier() -> None:
+    assert load_rate_card("mce", CARD_DATE).raw["utility"] == "pacific_gas_and_electric"
+
+
 @pytest.mark.parametrize("schedule", ["E-ELEC", "E-TOU-C", "EV2-A"])
 def test_mce_generation_is_at_parity_with_pge_today(schedule: str) -> None:
     """Parity is real but not guaranteed -- fail loudly if MCE diverges.
@@ -75,7 +79,7 @@ def test_mce_generation_is_at_parity_with_pge_today(schedule: str) -> None:
     a bug in the engine. Checked per schedule, since MCE prices each separately.
     """
     card = load_rate_card("mce", CARD_DATE)
-    snapshot = load_snapshot("PGE", schedule, date(2026, 6, 1))
+    snapshot = load_snapshot(Utility.PACIFIC_GAS_AND_ELECTRIC, schedule, date(2026, 6, 1))
     for season, periods in snapshot.raw["energy"].items():
         for period, components in periods.items():
             assert card.generation(schedule, season, period) == pytest.approx(

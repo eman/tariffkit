@@ -49,7 +49,7 @@
 schema = 1
 provider = "MCE"
 name = "Marin Clean Energy"
-utility = "PGE"
+utility = "pacific_gas_and_electric"
 #: MCE prices each PG&E schedule separately, so a rate card is keyed by schedule
 #: rather than tied to one. Slugs match the tariff data directories.
 schedules = ["E-ELEC", "E-TOU-C", "EV2-A"]
