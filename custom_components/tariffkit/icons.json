@@ -1,0 +1,10 @@
+{
+  "services": {
+    "get_rates": {
+      "service": "mdi:chart-timeline-variant"
+    },
+    "get_emhass_forecast": {
+      "service": "mdi:robot"
+    }
+  }
+}

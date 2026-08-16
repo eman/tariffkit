@@ -1,12 +1,12 @@
-# Copilot instructions for `nem-rates`
+# Copilot instructions for `tariffkit`
 
 ## Build, test, and lint
 
 Use the same toolchain and command style as CI (`uv` + Python 3.14).
 
 ```bash
-# Install dev environment (all extras + test/lint/type tools)
-uv sync --all-extras
+# Install dev environment (runtime extras + test/lint/type/regen tools)
+uv sync --all-extras --group dev
 
 # Lint
 uv run ruff check .
@@ -16,7 +16,7 @@ uv run ruff format --check .
 uv run mypy
 
 # Full test suite
-uv run pytest --cov=nem_rates --cov-report=term-missing
+uv run pytest --cov=tariffkit --cov-report=term-missing
 
 # Run one test file
 uv run pytest tests/test_engine.py
@@ -37,15 +37,17 @@ uv run pytest tests/test_integrations.py
 uv run pytest audit/tests
 
 # Build distributables
-uv build
+uv build --no-sources
 
 # Confirm vendored data is included in built wheel (CI parity)
-python -m zipfile -l dist/*.whl | grep -q 'nem_rates/data/export/pge/nbt26.json.gz'
-python -m zipfile -l dist/*.whl | grep -q 'nem_rates/data/holidays.toml'
+python -m zipfile -l dist/*.whl | grep -q 'tariffkit/data/export/pge/nbt26.json.gz'
+python -m zipfile -l dist/*.whl | grep -q 'tariffkit/data/holidays.toml'
 
-# ...and that the audit harness is not (CI parity)
+# ...and that repository-only tools are not (CI parity)
 ! python -m zipfile -l dist/*.whl | grep -q '^audit/'
+! python -m zipfile -l dist/*.whl | grep -q '^tools/'
 ! tar -tzf dist/*.tar.gz | grep -q '/audit/'
+! tar -tzf dist/*.tar.gz | grep -q '/tools/'
 ```
 
 `testpaths` is `["tests"]`, so `uv run pytest` does not reach `audit/tests`. CI
@@ -70,19 +72,19 @@ hand-transcribed. Never hand-edit a generated file; regenerate it.
 
 ### Export rates (NBT matrices + holiday calendar)
 
-`src/nem_rates/data/export/pge/*.json.gz`, `holidays.toml`, and `manifest.json`
+`src/tariffkit/data/export/pge/*.json.gz`, `holidays.toml`, and `manifest.json`
 come from PG&E's published CSV archive. It is 843 MB, so it has its own entry
 point rather than sharing the PDF-driven one.
 
 ```bash
 # Regenerate from a local copy of the archive
-python -m nem_rates.regen.export --zip /path/to/PGE-Solar-Billing-Plan-Export-Rates.zip
+python -m tools.regen.export --zip /path/to/PGE-Solar-Billing-Plan-Export-Rates.zip
 
 # Or download it directly
-python -m nem_rates.regen.export --download
+python -m tools.regen.export --download
 
 # CI-style check: exit 1 if upstream has moved, without writing anything
-python -m nem_rates.regen.export --download --check
+python -m tools.regen.export --download --check
 ```
 
 After regenerating, run `uv run pytest tests/test_export_golden.py`. It
@@ -90,16 +92,16 @@ round-trips the new matrices against known-good rows sampled from PG&E's own
 files (including both DST transitions and a holiday), so a bad collapse fails
 loudly rather than shipping silently.
 
-### Retail tariffs, ACC Plus, CCA cards, NSC, and the state surcharge: `nem-rates regen`
+### Retail tariffs, ACC Plus, CCA cards, NSC, and the state surcharge: `python -m tools.regen`
 
-`src/nem_rates/data/{tariff,export/*/acc_plus,cca,nsc,tax}/**.toml` are
-**generated** from published documents by `nem_rates.regen`. Do not hand-edit
+`src/tariffkit/data/{tariff,export/*/acc_plus,cca,nsc,tax}/**.toml` are
+**generated** from published documents by `tools.regen`. Do not hand-edit
 them; each names the document it came from in a header comment.
 
 ```bash
-nem-rates regen                                # rebuild every dataset from live documents
-nem-rates regen --check                        # exit 1 if a publisher moved, writing nothing
-nem-rates regen tariff --for-date 2025-12-15   # rebuild a superseded vintage
+python -m tools.regen                                # rebuild every dataset from live documents
+python -m tools.regen --check                        # exit 1 if a publisher moved, writing nothing
+python -m tools.regen tariff --for-date 2025-12-15   # rebuild a superseded vintage
 ```
 
 Nothing is written unless the rendered file survives being read back by the
@@ -108,12 +110,12 @@ reads them with a second, independent set of literals — two encodings of one
 schema — so the check is what keeps them from drifting apart silently.
 
 Rates are **effective-dated**: a dataset is a directory of `<effective>.toml`,
-and `nem_rates.data.versioned` resolves the version in force on a date — the
+and `tariffkit.data.versioned` resolves the version in force on a date — the
 latest effective on or before it, raising rather than borrowing when a date
 predates every vintage. Add a new dated file rather than editing the current
 one, or old bills silently reprice at today's rates.
 
-`RetailTariff` / `load_snapshot` (`src/nem_rates/tariff/retail.py`) read those
+`RetailTariff` / `load_snapshot` (`src/tariffkit/tariff/retail.py`) read those
 snapshots. After vendored data changes, run `uv run pytest` in full:
 `tests/test_engine.py`, `tests/test_integrations.py` and
 `tests/test_mqtt_publisher.py` all assert specific dollar figures derived from
@@ -139,7 +141,7 @@ uv run python -m audit run --since 2025-11-01 --until 2026-08-31
 - **It is held to the same strictness as `src/`** — `mypy --strict` and the full
   Ruff rule set — because a harness that is trusted when it reports a
   discrepancy has to be trustworthy itself. `known-first-party` in the isort
-  config lists `audit` alongside `nem_rates` for the same reason.
+  config lists `audit` alongside `tariffkit` for the same reason.
 - **Exit codes are load-bearing and distinct**: `0` all reconciled, `1` a real
   disagreement (mismatch, unmapped line, or unmapped component), `2` the check
   could not be performed. Do not collapse `1` and `2` — a broken harness must
@@ -149,7 +151,7 @@ uv run python -m audit run --since 2025-11-01 --until 2026-08-31
 - **Secrets and statements stay out of the repo.** `audit/account.toml` (from
   `account.example.toml`) is gitignored, `*.pdf` is gitignored, statements are
   deleted after a run unless `--keep-statements`, and interval data comes from
-  InfluxDB via `INFLUXDB3_*` in `.env`. `NEM_RATES_STATEMENT_DIR` points at
+  InfluxDB via `INFLUXDB3_*` in `.env`. `TARIFFKIT_STATEMENT_DIR` points at
   existing statements instead of downloading.
 - **A cycle spanning an account change is refused, not guessed.** `account.toml`
   dates the account's schedule, supplier, baseline territory, and PCIA vintage,
@@ -165,23 +167,23 @@ uv run python -m audit run --since 2025-11-01 --until 2026-08-31
 
 ## High-level architecture
 
-- The core API is `RateEngine` (`src/nem_rates/engine.py`), which composes:
-  - `RetailTariff` for **import** pricing (`src/nem_rates/tariff/retail.py`), covering E-ELEC, E-TOU-C and EV2-A
-  - `NbtExportRates` for **export** pricing (`src/nem_rates/export/nbt.py`)
-- Runtime pricing is offline and table-driven. Data is vendored under `src/nem_rates/data/`; runtime code does not call external services.
-- `nem_rates.regen` regenerates every vendored dataset from its published source, and `nem_rates.regen.export` is the normalization pipeline that collapses PG&E's large hourly CSVs into compact vendored matrices, with exactness checks and provenance metadata.
-- `nem_rates.data.versioned` resolves effective-dated data: the version in force is the latest effective on or before the priced date, and a date before every vintage raises rather than borrowing.
+- The core API is `RateEngine` (`src/tariffkit/engine.py`), which composes:
+  - `RetailTariff` for **import** pricing (`src/tariffkit/tariff/retail.py`), covering E-ELEC, E-TOU-C and EV2-A
+  - `NbtExportRates` for **export** pricing (`src/tariffkit/export/nbt.py`)
+- Runtime pricing is offline and table-driven. Data is vendored under `src/tariffkit/data/`; runtime code does not call external services.
+- `tools.regen` regenerates every vendored dataset from its published source, and `tools.regen.export` is the normalization pipeline that collapses PG&E's large hourly CSVs into compact vendored matrices, with exactness checks and provenance metadata.
+- `tariffkit.data.versioned` resolves effective-dated data: the version in force is the latest effective on or before the priced date, and a date before every vintage raises rather than borrowing.
 - `audit/` is a harness, outside the package, that reconciles computed bills against real PG&E statements. It is not shipped in the wheel — see the section above.
-- `Config`/`CcaConfig` (`src/nem_rates/config.py`) resolve tariff/vintage/CCA settings from defaults, TOML, and `NEM_RATES_*` env overlays. `cca.py` holds the CCA rate-card model; `timeutil.py` holds the Pacific-time and DST-stepping helpers everything else uses.
+- `Config`/`CcaConfig` (`src/tariffkit/config.py`) resolve tariff/vintage/CCA settings from defaults, TOML, and `TARIFFKIT_*` env overlays. `cca.py` holds the CCA rate-card model; `timeutil.py` holds the Pacific-time and DST-stepping helpers everything else uses.
 - `models.py` defines the pricing contracts (`ImportPrice`, `ExportPrice`, `PricePoint`, `PriceCurve`) shared across surfaces.
 - Delivery surfaces are thin wrappers around the same engine:
-  - CLI (`src/nem_rates/cli.py`) — subcommands `now`, `forecast`, `info`, `bill`, `mqtt`, `regen`, `serve`
-  - REST API (`src/nem_rates/web/app.py`)
-  - MQTT publisher + Home Assistant discovery (`src/nem_rates/mqtt/`)
-  - Home Assistant custom component (`custom_components/nem_rates/`)
-- Billing (`src/nem_rates/billing/`) is a separate pure, stdlib-only layer that consumes interval readings and engine outputs: `engine.py` decomposes a cycle, `netting.py` finds gaps/overlaps and nets intervals, `ledger.py` tracks export credit buckets, `trueup.py` handles annual true-up and cash-out (PG&E and MCE).
-- `nem_rates.sources/` turns external records of metered energy into `IntervalReading`s for the billing layer, and is where dependency-carrying I/O lives so billing can stay stdlib-only: `greenbutton.py` (PG&E CSV, best timing, worst totals), `homeassistant.py` (long-term statistics, biases energy forward across bucket boundaries), `influx.py` (raw counter samples, exact totals and pro-rata timing), `pge.py` (authenticated session and Green Button download). The differences between them are about *when* energy is recorded, which time-of-use pricing cares about — do not treat them as interchangeable.
-- `nem_rates.interop/` publishes rates in shapes other energy systems already read (`emhass.py`, `predbat.py`, `slots.py`). These are pure functions over a `PriceCurve` so the HA component and the MQTT publisher share one implementation and it stays testable without either — keep new adapters that way.
+  - CLI (`src/tariffkit/cli.py`) — subcommands `now`, `forecast`, `info`, `bill`, `mqtt`, `regen`, `serve`
+  - REST API (`src/tariffkit/web/app.py`)
+  - MQTT publisher + Home Assistant discovery (`src/tariffkit/mqtt/`)
+  - Home Assistant custom component (`custom_components/tariffkit/`)
+- Billing (`src/tariffkit/billing/`) is a separate pure, stdlib-only layer that consumes interval readings and engine outputs: `engine.py` decomposes a cycle, `netting.py` finds gaps/overlaps and nets intervals, `ledger.py` tracks export credit buckets, `trueup.py` handles annual true-up and cash-out (PG&E and MCE).
+- `tariffkit.sources/` turns external records of metered energy into `IntervalReading`s for the billing layer, and is where dependency-carrying I/O lives so billing can stay stdlib-only: `greenbutton.py` (PG&E CSV, best timing, worst totals), `homeassistant.py` (long-term statistics, biases energy forward across bucket boundaries), `influx.py` (raw counter samples, exact totals and pro-rata timing), `pge.py` (authenticated session and Green Button download). The differences between them are about *when* energy is recorded, which time-of-use pricing cares about — do not treat them as interchangeable.
+- `tariffkit.interop/` publishes rates in shapes other energy systems already read (`emhass.py`, `predbat.py`, `slots.py`). These are pure functions over a `PriceCurve` so the HA component and the MQTT publisher share one implementation and it stays testable without either — keep new adapters that way.
 
 ## Repository conventions
 
@@ -189,9 +191,9 @@ uv run python -m audit run --since 2025-11-01 --until 2026-08-31
 - **Do not silently “fill in” missing pricing inputs**: incomplete CCA configuration should propagate via `complete=False` flags on price objects rather than fabricated totals.
 - **Preserve pricing quality flags** on outputs and integrations: `locked`, `exact`, and `complete` are intended for downstream decision logic and should not be dropped.
 - **Keep fixed daily charges separate from per-kWh marginal prices** (`daily_fixed_charge()` is separate by design).
-- **Errors are surfaced, not hidden**: domain failures use typed exceptions (`NemRatesError` family); API/CLI layers convert them to user-facing errors/status codes.
+- **Errors are surfaced, not hidden**: domain failures use typed exceptions (`TariffKitError` family); API/CLI layers convert them to user-facing errors/status codes.
 - **Core package remains dependency-light**: optional features (`web`, `mqtt`) use extras and lazy imports with explicit runtime messages when extras are missing.
-- **Typing and linting are intentionally strict** in `src/nem_rates` (`mypy --strict`, broad Ruff rule set). Follow existing typing quality rather than introducing `Any`-heavy shortcuts.
+- **Typing and linting are intentionally strict** in `src/tariffkit` (`mypy --strict`, broad Ruff rule set). Follow existing typing quality rather than introducing `Any`-heavy shortcuts.
 - **Home Assistant integration has deliberate lint exceptions** in Ruff config to match HA conventions; avoid “normalizing” HA files to core-package naming/signature patterns.
 - **Python 3.14 is the floor**, and CI runs exactly that one version rather than a matrix — a matrix that spanned versions nobody develops on could only catch regressions where they did not matter. Raising it also raises the Home Assistant floor in `hacs.json` (currently 2026.3.0), and the two move together.
 - **Comments explain why, not what.** Config files here carry the reasoning for non-obvious choices (why `audit` is in `known-first-party`, why the wheel check is pinned, why the rate-data job gates on step outcomes rather than `failure()`). Preserve those when editing, and add one when making a choice a reader would otherwise undo.
@@ -228,4 +230,4 @@ Two workflows, in `.github/workflows/`:
 If MCP servers are available in your Copilot environment, prioritize:
 
 - **GitHub MCP** for issue/PR/review workflows tied to this repo.
-- **Browser/API automation MCP (for example Playwright)** when validating the REST surface end-to-end (`nem-rates serve` + `/v1/*` endpoints), especially for reproducible integration checks.
+- **Browser/API automation MCP (for example Playwright)** when validating the REST surface end-to-end (`tariffkit serve` + `/v1/*` endpoints), especially for reproducible integration checks.

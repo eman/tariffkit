@@ -28,13 +28,13 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from nem_rates.billing import Bill
-from nem_rates.billing.ledger import apply_credits
-from nem_rates.config import Config
+from tariffkit.billing import Bill
+from tariffkit.billing.ledger import apply_credits
+from tariffkit.config import Config
+from tariffkit.providers.pge.statements import Section, Statement
 
-from ..statements.mapping import MAP, LineRule, Side, claimed_components, rule_for, split_side
-from ..statements.model import Section, Statement
 from .attribution import fixed_from_statement, priced_from_statement
+from .mapping import MAP, LineRule, Side, claimed_components, rule_for, split_side
 from .tolerance import Tolerance
 
 

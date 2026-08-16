@@ -17,11 +17,11 @@ jobs:
       # to 3.13 and never tested the version actually developed against, so a
       # regression could only be found on a version nobody runs.
       - run: uv python install 3.14
-      - run: uv sync --all-extras --python 3.14
+      - run: uv sync --all-extras --group dev --python 3.14
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy
-      - run: uv run pytest --cov=nem_rates --cov-report=term-missing
+      - run: uv run pytest --cov=tariffkit --cov-report=term-missing
       # A second invocation rather than a `testpaths` entry: `audit/` is not in
       # the sdist, and pytest errors on a testpath that does not exist, so
       # listing it would break `pytest` on an unpacked sdist.
@@ -32,18 +32,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - run: uv build
-      - name: Vendored rate data must ship inside the wheel
+      - run: uv build --no-sources
+      - name: Runtime files must have exact artifact boundaries
         run: |
-          python -m zipfile -l dist/*.whl | grep -q 'nem_rates/data/export/pge/nbt26.json.gz'
-          python -m zipfile -l dist/*.whl | grep -q 'nem_rates/data/holidays.toml'
-      - name: The audit harness must not ship at all
-        # It is one account's statement parser and login. Pinned the same way
-        # the inclusions above are, so the exclusion cannot rot into an
-        # accident.
-        run: |
+          python -m zipfile -l dist/*.whl | grep -q 'tariffkit/data/export/pge/nbt26.json.gz'
+          python -m zipfile -l dist/*.whl | grep -q 'tariffkit/data/holidays.toml'
+          python -m zipfile -l dist/*.whl | grep -q 'tariffkit/py.typed'
           ! python -m zipfile -l dist/*.whl | grep -q '^audit/'
+          ! python -m zipfile -l dist/*.whl | grep -q '^tools/'
+          ! python -m zipfile -l dist/*.whl | grep -q '/\.cache/'
           ! tar -tzf dist/*.tar.gz | grep -q '/audit/'
+          ! tar -tzf dist/*.tar.gz | grep -q '/tools/'
+          ! tar -tzf dist/*.tar.gz | grep -q '/\.cache/'
+      - name: Install and exercise the built wheel
+        run: |
+          uv run --no-project --with ./dist/*.whl python -c \
+            "import tariffkit; assert tariffkit.RateEngine().price_now()"
+          uv run --no-project --with ./dist/*.whl tariffkit --version
+      - name: Rebuild the wheel from the sdist
+        run: |
+          mkdir dist-from-sdist
+          uv build dist/*.tar.gz --wheel --out-dir dist-from-sdist
+          cmp dist/*.whl dist-from-sdist/*.whl
       - uses: actions/upload-artifact@v4
         with:
           name: dist

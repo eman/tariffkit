@@ -31,20 +31,9 @@ class PortalError(AuditError):
         self.step = step
 
 
-class StatementError(AuditError):
-    """A statement could not be read, or did not survive its own self-check.
-
-    Kept distinct from a reconciliation mismatch on purpose. A parser that
-    dropped a row produces a bill-shaped disagreement, and reporting that as a
-    billing discrepancy would destroy the only thing this tool sells, which is
-    trust in its findings.
-    """
-
-
 class AccountError(AuditError):
-    """The account's configured history cannot price this cycle.
+    """The selected managed account profile cannot price this cycle.
 
-    Raised rather than guessed when a cycle straddles a tariff or supplier
-    change: no single configuration priced it, and picking one produces a
-    plausible-looking delta that gets filed as a rounding mystery.
+    Raised rather than guessed when a profile is missing or a statement falls
+    outside its effective-dated epochs.
     """

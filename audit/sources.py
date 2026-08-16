@@ -17,11 +17,11 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, time, timedelta
 
-from nem_rates.billing import BillingPeriod, IntervalReading
-from nem_rates.timeutil import PACIFIC, hour_floor, to_pacific
+from tariffkit.billing import BillingPeriod, IntervalReading
+from tariffkit.providers.pge.statements import Statement
+from tariffkit.timeutil import PACIFIC, hour_floor, to_pacific
 
 from .reconcile import SourceDelta, Tolerance
-from .statements import Statement
 
 #: Most a two-decimal reading can lose per interval. The utility's own export
 #: rounds each one, so a long cycle accumulates a predictable shortfall.

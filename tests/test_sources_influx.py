@@ -19,9 +19,10 @@ import pytest
 # for a contributor who installed without it.
 pytest.importorskip("httpx")
 
-from nem_rates.errors import ConfigError, DataError
-from nem_rates.sources import influx
-from nem_rates.timeutil import PACIFIC
+from tariffkit.account import MeterSource
+from tariffkit.errors import ConfigError, DataError
+from tariffkit.sources import influx
+from tariffkit.timeutil import PACIFIC
 
 IMPORT_ID = influx.DEFAULT_IMPORT_ENTITY
 EXPORT_ID = influx.DEFAULT_EXPORT_ENTITY
@@ -114,6 +115,29 @@ class TestSettings:
         env.write_text("INFLUXDB3_HOST=a\nINFLUXDB3_DATABASE=b\nINFLUXDB3_AUTH_TOKEN=c\n", "utf-8")
         got = influx.InfluxSettings.load(tmp_path / "none.toml", env, host="override")
         assert got.host == "override"
+
+    def test_profile_mapping_wins_over_environment_but_cli_wins_over_profile(
+        self, tmp_path: Path
+    ) -> None:
+        env = tmp_path / ".env"
+        env.write_text(
+            "INFLUXDB3_HOST=h\nINFLUXDB3_DATABASE=d\nINFLUXDB3_AUTH_TOKEN=t\n"
+            "TARIFFKIT_INFLUX_IMPORT_ENTITY=env_in\n"
+            "TARIFFKIT_INFLUX_EXPORT_ENTITY=env_out\n",
+            encoding="utf-8",
+        )
+        profile = MeterSource("profile_in", "profile_out")
+        got = influx.InfluxSettings.load(
+            tmp_path / "none.toml",
+            env,
+            profile_source=profile,
+            import_entity="cli_in",
+        )
+        assert got.import_entity == "cli_in"
+        assert got.export_entity == "profile_out"
+
+        got = influx.InfluxSettings.load(tmp_path / "none.toml", env, profile_source=profile)
+        assert (got.import_entity, got.export_entity) == ("profile_in", "profile_out")
 
     def test_missing_credentials_say_what_to_set(self, tmp_path: Path) -> None:
         with pytest.raises(ConfigError) as caught:
@@ -365,7 +389,7 @@ class TestSmearedGaps:
         ]
 
     def test_dense_sampling_is_not_marked(self) -> None:
-        from nem_rates.sources.influx import _per_interval
+        from tariffkit.sources.influx import _per_interval
 
         samples = self._samples(timedelta(minutes=5), 25, rate=1.0)
         start = samples[0][0]
@@ -373,7 +397,7 @@ class TestSmearedGaps:
         assert smeared == set()
 
     def test_a_multi_hour_gap_marks_every_interval_it_spans(self) -> None:
-        from nem_rates.sources.influx import _per_interval
+        from tariffkit.sources.influx import _per_interval
 
         start = datetime(2026, 3, 2, tzinfo=UTC)
         samples = [(start, 0.0), (start + timedelta(hours=4), 8.0)]
@@ -385,8 +409,8 @@ class TestSmearedGaps:
         assert len(smeared) == 4
 
     def test_the_coverage_check_reports_it(self) -> None:
-        from nem_rates.billing import BillingPeriod, IntervalReading
-        from nem_rates.billing.netting import check_coverage
+        from tariffkit.billing import BillingPeriod, IntervalReading
+        from tariffkit.billing.netting import check_coverage
 
         period = BillingPeriod(date(2026, 3, 2), date(2026, 3, 2))
         readings = [

@@ -29,7 +29,7 @@ class TestParser:
     def test_version_reports_both_versions(self, capsys: pytest.CaptureFixture[str]) -> None:
         # The harness and the library it audits version separately, and a report
         # is only reproducible if you know which of each produced it.
-        from nem_rates import __version__ as library_version
+        from tariffkit import __version__ as library_version
 
         with pytest.raises(SystemExit) as caught:
             main(["--version"])
@@ -55,9 +55,7 @@ class TestParser:
         # "I could not check" and "your numbers disagree" call for opposite
         # responses. An AuditError escaping to Python gives exit 1, which reads
         # as a billing discrepancy that was never actually found.
-        code = main(
-            ["reconcile", str(tmp_path / "nope.pdf"), "--account", str(tmp_path / "a.toml")]
-        )
+        code = main(["reconcile", str(tmp_path / "nope.pdf"), "--account", "missing-profile"])
         assert code == EXIT_ERROR
         assert code != EXIT_MISMATCH
         assert "error:" in capsys.readouterr().out

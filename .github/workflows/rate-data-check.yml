@@ -24,10 +24,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - run: uv sync --all-extras
+      - run: uv sync --group regen
       - name: Compare vendored export rates against the utility
         id: export
-        run: uv run python -m nem_rates.regen.export --download --check
+        run: uv run python -m tools.regen.export --download --check
       # Runs even when the export check failed, so one report covers both
       # rather than the first failure hiding the second. Sources a script
       # cannot fetch are skipped with a note, not failed: they are unknown
@@ -36,7 +36,7 @@ jobs:
       - name: Compare vendored tariffs, adders and CCA cards against publishers
         id: retail
         if: always()
-        run: uv run nem-rates regen --check
+        run: uv run python -m tools.regen --check
       # Gated on the two comparisons, not on `failure()`. Any job failure --
       # a flaky download of a 35 MB archive, a uv hiccup, a full runner --
       # would otherwise file "rate data is out of date" when nothing is stale;
@@ -66,13 +66,13 @@ jobs:
               body: [
                 'The scheduled check found upstream rate data differing from what is vendored.',
                 '',
-                `- export rates (\`nem_rates.regen.export\`): **${{ steps.export.outcome }}**`,
-                `- retail tariffs (\`nem-rates regen\`): **${{ steps.retail.outcome }}**`,
+                `- export rates (\`tools.regen.export\`): **${{ steps.export.outcome }}**`,
+                `- retail tariffs (\`tools.regen\`): **${{ steps.retail.outcome }}**`,
                 '',
                 'To refresh whichever failed:',
                 '```bash',
-                'python -m nem_rates.regen.export --download   # export rate matrices',
-                'nem-rates regen                                # tariffs, adders, CCA cards',
+                'python -m tools.regen.export --download   # export rate matrices',
+                'python -m tools.regen                    # tariffs, adders, CCA cards',
                 'uv run pytest',
                 '```',
                 '',

@@ -8,20 +8,95 @@ same `Config` object. Get this right once and all of them agree.
 `Config.load()` resolves in this order, later winning:
 
 1. Built-in defaults (PG&E bundled, NBT26, PTO 2026-06-03).
-2. `~/.config/nem-rates/config.toml`, or `$XDG_CONFIG_HOME/nem-rates/config.toml`.
+2. `~/.config/tariffkit/config.toml`, or `$XDG_CONFIG_HOME/tariffkit/config.toml`.
 3. An explicit `--config /path/to.toml`.
-4. `NEM_RATES_*` environment variables.
+4. `TARIFFKIT_*` environment variables.
 
 Check what actually resolved before trusting a number:
 
 ```bash
-nem-rates info
+tariffkit info
 ```
+
+The file contains tariff and endpoint settings, not credentials. It may reveal
+your utility, rate plan, CCA, and PTO date, so keep it user-readable only:
+
+```bash
+chmod 600 ~/.config/tariffkit/config.toml
+```
+
+**This is the stateless path** — one `Config`, current settings only. If your
+service agreement has ever changed tariff, supplier, or baseline territory,
+and you want past bills to price with what was actually in force on their own
+days, use a [named account profile](accounts.md) instead: `--account NAME`
+(or a configured default profile) replaces this resolution order entirely for
+that command, and `--config`/`--account` cannot be combined. See
+[Selecting a profile](accounts.md#selecting-a-profile) for exactly how that
+choice is made.
+
+## Credentials
+
+Store long-lived credentials in the operating system's keyring rather than in
+`config.toml`, shell history, command arguments, or a repository `.env` file:
+
+```bash
+pip install 'tariffkit[secrets]'
+tariffkit credentials set pge.username
+tariffkit credentials set pge.password
+tariffkit credentials set home_assistant.token
+tariffkit credentials set influxdb.token
+tariffkit credentials set mqtt.username
+tariffkit credentials set mqtt.password
+
+tariffkit credentials list       # names only; values are never printed
+tariffkit credentials delete mqtt.password
+```
+
+`set` prompts without echo, so the value never appears in process arguments or
+shell history. macOS Keychain, Windows Credential Locker, and the configured
+Linux Secret Service backend provide storage. Containers and unattended
+services can continue to inject environment variables instead.
+
+Secret precedence is: explicit library/CLI value, environment (including a
+working-directory `.env` for compatibility), then OS keyring. Non-secret
+settings use: defaults, `config.toml`, environment, then explicit arguments.
+
+### PG&E portal access
+
+Portal credentials are needed for Green Button downloads, `account sync`
+(see [Named account profiles](accounts.md)), and the repository audit
+harness; pricing itself remains offline regardless. Store them once:
+
+```bash
+tariffkit credentials set pge.username
+tariffkit credentials set pge.password
+```
+
+Optional device-trust values use `pge.browser_cookie`,
+`pge.validation_cookie`, and `pge.account_urn`. Non-secret account settings can
+live in the main file:
+
+```toml
+[pge]
+account_id = "service account identifier"
+cookie_path = "~/.cache/tariffkit/pge/cookies.json"
+```
+
+The cookie cache is created with mode `0600`. `PGE_USERNAME`, `PGE_PASSWORD`,
+`PGE_BROWSER_COOKIE`, `PGE_VALIDATION_COOKIE`, and `PGE_ACCOUNT_URN` remain
+available for containers.
+
+**Named credential sets** let more than one account profile share one login
+without duplicating it: `tariffkit credentials set pge.username --set NAME`
+stores it under `NAME` instead of the default, unnamed slot, and
+`tariffkit account init/update ... --credential-set NAME` associates a
+profile with it. See
+[Credential sets](accounts.md#credential-sets).
 
 ## A worked example: PG&E delivery + MCE generation
 
 ```toml
-# ~/.config/nem-rates/config.toml
+# ~/.config/tariffkit/config.toml
 supplier = "cca"
 interconnection_year = 2026        # -> NBT26 vintage, ACC Plus $0.00880/kWh
 pto_date = "2026-06-03"            # -> 9-year lock ends 2035-06-02
@@ -75,7 +150,7 @@ bill can be several percent.
 
 Three residential schedules are vendored. Adding another is a data change, not a
 code change: drop a dated snapshot under
-`src/nem_rates/data/tariff/pge/<slug>/`.
+`src/tariffkit/data/tariff/pge/<slug>/`.
 
 | Schedule | Periods | Baseline |
 |---|---|---|
@@ -118,7 +193,7 @@ reporting none.
 
 ## Home Assistant
 
-Only needed for `nem-rates bill --source ha`. Entity ids are configuration and
+Only needed for `tariffkit bill --source ha`. Entity ids are configuration and
 live in the config file; the access token is not and does not.
 
 ```toml
@@ -134,7 +209,8 @@ section is only needed to point elsewhere. Note the defaults are the
 `sensor.eagle_100_total_energy_delivered` is the raw device feed and drops to
 zero several times a day when the meter session restarts.
 
-Credentials come from `.env` in the working directory, or the environment.
+The access token can come from the OS keyring, `.env` in the working directory,
+or the environment.
 The file is not shell — spaces around `=` and quoted values are fine, and are
 what the parser expects:
 
@@ -151,10 +227,13 @@ export HA_HOST=https://homeassistant.example:8123
 export HA_TOKEN=...
 ```
 
-Resolution order, later winning: the config file, then `.env`, then real
-environment variables, then `--ha-import-entity` / `--ha-export-entity`.
-`HA_TOKEN` is deliberately never read from the config file, which is not
-gitignored.
+Resolution order, later winning: the config file, OS keyring, `.env`, real
+environment variables, a named account profile's source mapping, then
+`--ha-import-entity` / `--ha-export-entity`. For a bill, that is explicitly
+`--account NAME` or the configured default profile; it does not change
+stateless/global behavior. The profile mapping names grid import (consumed from
+the grid, not whole-home load) and grid export separately.
+`HA_TOKEN` is deliberately never read from the config file.
 
 ## Net Surplus Compensation
 
@@ -170,12 +249,12 @@ in advance, so there is no correct value to pre-fill. Left unset, the true-up
 falls back to PG&E's published series (vendored, monthly) and marks the result
 `estimated`. That series is PG&E's rate for **bundled** customers — a CCA account
 is not eligible for PG&E NSC at all — so treat the fallback as an order-of-
-magnitude stand-in, not a forecast. Also settable as `NEM_RATES_NSC_RATE`.
+magnitude stand-in, not a forecast. Also settable as `TARIFFKIT_NSC_RATE`.
 
 ## InfluxDB
 
-Only needed for `nem-rates bill --source influx`. Same split as above: series
-names are configuration, the token is not.
+Only needed for `tariffkit bill --source influx`. Same split as above: series
+names are configuration, while the token comes from keyring or environment.
 
 ```toml
 [influxdb]
@@ -200,21 +279,48 @@ INFLUXDB3_DATABASE = "homedb"
 INFLUXDB3_AUTH_TOKEN = "<database token>"
 ```
 
-Resolution order, later winning: the config file, then `.env`, then real
-environment variables (`NEM_RATES_INFLUX_IMPORT_ENTITY` /
-`NEM_RATES_INFLUX_EXPORT_ENTITY` for the series), then
+Resolution order, later winning: the config file, keyring, `.env`, then real
+environment variables (`TARIFFKIT_INFLUX_IMPORT_ENTITY` /
+`TARIFFKIT_INFLUX_EXPORT_ENTITY` for the series), a named account profile's
+source mapping, then
 `--influx-import-entity` / `--influx-export-entity`. As with `HA_TOKEN`,
 `INFLUXDB3_AUTH_TOKEN` is never read from the config file.
 
+For a named profile, save the pair with `tariffkit account source NAME set
+influx ... --apply`; use `ha` for Home Assistant. The source mapping is not
+effective-dated because it identifies the data store, not tariff history.
+
+## MQTT
+
+MQTT settings also persist in the main config file, so publishing does not need
+connection arguments on every invocation:
+
+```toml
+[mqtt]
+broker = "mqtt.example"
+port = 8883
+topic_prefix = "tariffkit"
+forecast_hours = 48
+tls = true
+```
+
+Store `mqtt.username` and `mqtt.password` in the keyring. Explicit CLI
+arguments remain available for ephemeral overrides.
+
 ## Environment variables
 
-`NEM_RATES_SUPPLIER`, `NEM_RATES_VINTAGE`, `NEM_RATES_INTERCONNECTION_YEAR`,
-`NEM_RATES_PTO_DATE`, `NEM_RATES_ACC_PLUS_SEGMENT`, `NEM_RATES_DISCOUNT`,
-`NEM_RATES_BSC_TIER`.
+`TARIFFKIT_SUPPLIER`, `TARIFFKIT_VINTAGE`, `TARIFFKIT_INTERCONNECTION_YEAR`,
+`TARIFFKIT_PTO_DATE`, `TARIFFKIT_ACC_PLUS_SEGMENT`, `TARIFFKIT_DISCOUNT`,
+`TARIFFKIT_BSC_TIER`, `TARIFFKIT_BASELINE_TERRITORY`,
+`TARIFFKIT_BASELINE_CODE`, and `TARIFFKIT_NSC_RATE`.
 
-**These do not cover `[cca]` settings.** A container or service that needs CCA
-pricing must mount a config file; setting `NEM_RATES_SUPPLIER=cca` alone raises
-`ConfigError` because no `CcaConfig` is supplied.
+Containers can provide a complete CCA object as `TARIFFKIT_CCA_JSON`; for
+example:
+
+```bash
+export TARIFFKIT_SUPPLIER=cca
+export TARIFFKIT_CCA_JSON='{"name":"MCE","rate_card":"mce","pcia_vintage":2011}'
+```
 
 ## CCA service
 
@@ -271,8 +377,8 @@ bills. The Base Services Charge is $/day and is deliberately excluded.
 
 ```python
 from datetime import datetime
-from nem_rates import Config, PACIFIC
-from nem_rates.tariff.retail import RetailTariff
+from tariffkit import Config, PACIFIC
+from tariffkit.tariff.retail import RetailTariff
 
 tariff = RetailTariff(Config.load())
 for label, hour, kwh in [("off_peak", 12, 22.903), ("peak", 17, 0.458)]:

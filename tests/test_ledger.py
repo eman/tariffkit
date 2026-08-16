@@ -11,7 +11,7 @@ from datetime import date
 
 import pytest
 
-from nem_rates.billing import (
+from tariffkit.billing import (
     Bill,
     BillingPeriod,
     CreditBalances,
@@ -20,7 +20,7 @@ from nem_rates.billing import (
     credits_earned,
     run_ledger,
 )
-from nem_rates.billing.ledger import charges_by_bucket
+from tariffkit.billing.ledger import charges_by_bucket
 
 PERIOD = BillingPeriod(date(2026, 6, 30), date(2026, 7, 28))
 

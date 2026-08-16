@@ -1,0 +1,93 @@
+get_rates:
+  name: Get rates
+  description: Return a bounded, timestamped TariffKit rate forecast.
+  icon: mdi:chart-timeline-variant
+  fields:
+    config_entry:
+      name: TariffKit config entry
+      description: The loaded TariffKit entry to price with.
+      required: true
+      selector:
+        config_entry:
+          integration: tariffkit
+    start:
+      name: Start
+      description: An offset-aware timestamp aligned to the requested resolution.
+      selector:
+        text:
+    end:
+      name: End
+      description: An offset-aware timestamp aligned to the requested resolution.
+      selector:
+        text:
+    date:
+      name: Date
+      description: Pacific calendar date to start a forecast at midnight.
+      selector:
+        date:
+    horizon:
+      name: Horizon (hours)
+      description: Forecast horizon when an end timestamp is not supplied.
+      default: 24
+      selector:
+        number:
+          min: 1
+          max: 168
+          mode: box
+    resolution:
+      name: Resolution
+      description: Slot size in minutes.
+      default: 60
+      selector:
+        select:
+          options:
+            - "15"
+            - "30"
+            - "60"
+
+get_emhass_forecast:
+  name: Get EMHASS forecast
+  description: Return EMHASS positional load and production price arrays.
+  icon: mdi:robot
+  fields:
+    config_entry:
+      name: TariffKit config entry
+      description: The loaded TariffKit entry to price with.
+      required: true
+      selector:
+        config_entry:
+          integration: tariffkit
+    start:
+      name: Start
+      description: An offset-aware timestamp aligned to the requested resolution.
+      selector:
+        text:
+    end:
+      name: End
+      description: An offset-aware timestamp aligned to the requested resolution.
+      selector:
+        text:
+    date:
+      name: Date
+      description: Pacific calendar date to start a forecast at midnight.
+      selector:
+        date:
+    horizon:
+      name: Horizon (hours)
+      description: Forecast horizon when an end timestamp is not supplied.
+      default: 24
+      selector:
+        number:
+          min: 1
+          max: 168
+          mode: box
+    resolution:
+      name: Resolution
+      description: Slot size in minutes.
+      default: 30
+      selector:
+        select:
+          options:
+            - "15"
+            - "30"
+            - "60"

@@ -6,11 +6,11 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-from nem_rates import Config, Season, Supplier, TouPeriod
-from nem_rates.config import CcaConfig
-from nem_rates.errors import ConfigError
-from nem_rates.tariff.retail import RetailTariff, load_snapshot
-from nem_rates.timeutil import PACIFIC
+from tariffkit import Config, Season, Supplier, TouPeriod
+from tariffkit.config import CcaConfig
+from tariffkit.errors import ConfigError
+from tariffkit.tariff.retail import RetailTariff, load_snapshot
+from tariffkit.timeutil import PACIFIC
 
 
 @pytest.fixture
@@ -93,7 +93,7 @@ def test_dates_before_the_earliest_vendored_sheet_refuse_to_price(
     The earliest vintage moves as history is backfilled, so this asks the data
     where its own edge is rather than naming a date that keeps going stale.
     """
-    from nem_rates.data import versioned
+    from tariffkit.data import versioned
 
     earliest = versioned.versions("tariff/pge/eelec")[0].effective
     before = earliest - timedelta(days=1)

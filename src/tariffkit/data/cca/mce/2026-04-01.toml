@@ -1,0 +1,152 @@
+# MCE (Marin Clean Energy) residential generation rates.
+#
+# Source: MCE Light Green Residential Rates, effective April 1, 2026
+#   https://mcecleanenergy.org/wp-content/uploads/2025/09/MCE-website-rate-table_RES_as-of-4.1.26.pdf
+# Solar Billing Plan tariff (effective 2023-12-01, rev. 2024-12-04):
+#   https://mcecleanenergy.org/wp-content/uploads/2024/12/MCE-Solar-Billing-Plan-Tariff_120424.pdf
+#
+# HOW THESE WERE READ.
+#
+# The rate card is a "Microsoft: Print To PDF" export of a spreadsheet with no
+# text layer -- pdftotext, pdffonts and pypdf all come back empty, and its font
+# maps six characters to Unicode, enough to spell "Page 1". The page renders
+# perfectly, so the table is READ FROM THE RENDERED PAGE rather than parsed.
+# That is a supported way to maintain this file, not a failure: what is lost is
+# the automated extraction, not the source.
+#
+# `python -m tools.regen cca` therefore cannot rebuild this file inside a CI runner,
+# which has no reader -- but an agent session renders the page and reads it, so
+# the file is still maintainable without anyone transcribing by hand. CI detects
+# a republished card by checksum and leaves the reading to such a session. The
+# extractor exists and reads MCE's 2023 card exactly, and takes over the day
+# they publish text again.
+#
+# VERIFICATION. Every one of the 16 generation rates below was checked against
+# the rendered card on 2026-08-12 and matched. So were the cost relief credit
+# (-0.0062, through 2026-12-31) and the Deep Green premium (+0.0125).
+#
+# Three of them are independently confirmed a second way, against the July 2026
+# statement -- summer E-ELEC peak 0.26299, part-peak 0.16388, off-peak 0.11878
+# (tests/test_mce.py::test_generation_matches_the_billed_rate). The remaining
+# thirteen rest on the card alone, since no bill has exercised them yet; winter
+# first applies in October 2026.
+#
+# What this file does NOT have, unlike a PG&E snapshot, is an arithmetic check:
+# there is no published total for its components to sum to. Re-read the card
+# against these values when it changes.
+#
+# MCE calls the schedule "ELEC - Residential Time-of-Use for Qualified Electric
+# Technologies"; it pairs with PG&E's E-ELEC delivery service and appears on
+# bills as "SBP EELEC" for Solar Billing Plan customers.
+#
+# NOTE: every one of these values is currently IDENTICAL to PG&E's bundled
+# generation component. That is an OBSERVATION from the rendered card, not an
+# alias and not an assumption -- MCE prices at parity today. They are vendored
+# separately because nothing guarantees that continues, and a future divergence
+# must not go unnoticed. tests/test_mce.py asserts the parity so it fails loudly
+# if MCE moves.
+
+schema = 1
+provider = "MCE"
+name = "Marin Clean Energy"
+utility = "PGE"
+#: MCE prices each PG&E schedule separately, so a rate card is keyed by schedule
+#: rather than tied to one. Slugs match the tariff data directories.
+schedules = ["E-ELEC", "E-TOU-C", "EV2-A"]
+effective = "2026-04-01"
+currency = "USD/kWh"
+source_url = "https://mcecleanenergy.org/compare-rates-and-options/"
+
+# Checksum of the rate card these values were read from. This card has no text
+# layer, so it cannot be re-parsed -- but a scheduled check compares these bytes
+# and says whether MCE has republished, which is the half that matters. Silence
+# means the publisher has not moved, not that nobody looked.
+source_sha256 = "0c0ff13aa015eeb27fb8067e434e669a4ecfe4a2995af6f4bc2146f7465b1036"
+source_read_on = "2026-08-12"
+
+# TOU periods and season boundaries follow each PG&E schedule exactly, including
+# E-TOU-C having no part-peak at all.
+#
+# Every rate below is IDENTICAL to PG&E's generation component for the same
+# schedule, season and period. That is not an alias and not an error -- MCE
+# prices at parity today. They are vendored separately because nothing
+# guarantees that continues, and tests/test_mce.py asserts the parity so a
+# divergence fails loudly rather than going unnoticed.
+#
+# Keyed by schedule because the rates differ substantially between them: MCE
+# winter off-peak is 0.06754 on ELEC and 0.11042 on ETOUC. Applying one
+# schedule's card to another understates or overstates generation by ~2x, so an
+# uncovered schedule raises rather than falling back.
+
+[generation.eelec.summer]
+peak = 0.26299
+part_peak = 0.16388
+off_peak = 0.11878
+
+[generation.eelec.winter]
+peak = 0.10086
+part_peak = 0.08089
+off_peak = 0.06754
+
+# ETOUC/EMTOUC on MCE's table. No part-peak, matching PG&E's E-TOU-C.
+[generation.etouc.summer]
+peak = 0.20782
+off_peak = 0.10482
+
+[generation.etouc.winter]
+peak = 0.13710
+off_peak = 0.11042
+
+# EV2 on MCE's table, for PG&E's EV2-A.
+[generation.ev2a.summer]
+peak = 0.18830
+part_peak = 0.14359
+off_peak = 0.10245
+
+[generation.ev2a.winter]
+peak = 0.13143
+part_peak = 0.11894
+off_peak = 0.09546
+
+# Applied to all generation kWh. Explicitly time-limited -- the rate card says
+# "Runs through December 31, 2026" -- so it is dated rather than folded into the
+# rates above, and stops applying on its own afterwards.
+[cost_relief_credit]
+rate = -0.00620
+through = "2026-12-31"
+
+# Deep Green (100% renewable) costs the Light Green rate plus this adder.
+[options]
+light_green = 0.0
+deep_green = 0.0125
+
+[export]
+# "All customers will also receive a Solar Bonus Credit which provides an
+# additional 10% of the base export credit." -- SBP tariff section 1.
+solar_bonus_fraction = 0.10
+
+# CARE/FERA customers only, on all exports, additional to the above.
+care_fera_bonus_rate = 0.05
+care_fera_bonus_through = "2028-12-31"
+
+# MCE does not publish a machine-readable Energy Export Credit matrix; the
+# tariff says only that exports are credited at "the applicable Energy Export
+# Credit Value, which reflects the value of power to the grid at any given
+# time". Whether that equals the CPUC Avoided Cost Calculator generation
+# component (PG&E's USCA-XXPG series) was long unverified.
+#
+# It is now measured. Priced against 2,784 quarter-hourly meter intervals for the
+# 2026-06-30..2026-07-28 cycle and compared with the statement for that cycle,
+# every export component lands within 0.3% -- inside the rounding of the bill's
+# own displayed dollars:
+#
+#   MCE generation EEC   library $9.618   billed $9.63   -0.1%
+#   PG&E delivery EEC            $6.236          $6.25   -0.2%
+#   ACC Plus bonus               $1.705          $1.71   -0.3%
+#   MCE 10% solar bonus          $0.962          $0.96   +0.2%
+#
+# One summer cycle on one account, so the seasonal spread is untested; the claim
+# it supports is structural (MCE credits exports at the ACC generation component)
+# and 193 kWh spread across all three TOU periods is a fair test of that.
+export_credit_basis = "acc_generation"
+export_credit_verified = true

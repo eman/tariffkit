@@ -3,11 +3,12 @@ requires = ["hatchling>=1.24"]
 build-backend = "hatchling.build"
 
 [project]
-name = "nem-rates"
-version = "0.1.0"
-description = "Real-time and forecast import/export electricity prices for PG&E E-ELEC under NEM 3.0 (Net Billing Tariff)"
+name = "tariffkit"
+version = "0.2.0"
+description = "Offline electricity tariff pricing, billing, and integration tools"
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.14"
 keywords = ["pge", "nem3", "net-billing-tariff", "solar", "battery", "home-assistant", "energy", "tariff"]
 classifiers = [
@@ -23,71 +24,110 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-cli = []
 mqtt = ["paho-mqtt>=2.0"]
 web = ["fastapi>=0.110", "uvicorn[standard]>=0.29"]
-fetch = ["httpx>=0.27"]
 # Home Assistant statistics are only exposed over the WebSocket API.
 ha = ["websockets>=12"]
 # InfluxDB 3 is queried over its HTTP SQL API.
 influx = ["httpx>=0.27"]
 pge = ["httpx>=0.27"]
-# Rebuilding the vendored rate data reads the publishers' PDFs. Not needed to
-# price anything: the library itself never opens a PDF.
-regen = ["pypdf>=4.0"]
-all = ["nem-rates[cli,mqtt,web,fetch,ha,influx,pge,regen]"]
-dev = [
-    "nem-rates[all]",
+statements = ["pypdf>=4.0"]
+secrets = ["keyring>=25"]
+all = [
+    "fastapi>=0.110",
+    "httpx>=0.27",
+    "paho-mqtt>=2.0",
+    "keyring>=25",
+    "pypdf>=4.0",
+    "uvicorn[standard]>=0.29",
+    "websockets>=12",
+]
+
+[dependency-groups]
+test = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
+    "httpx>=0.27",
+]
+quality = [
     "ruff>=0.5",
     "mypy>=1.10",
+]
+regen = [
     "httpx>=0.27",
+    "pypdf>=4.0",
+]
+release = [
+    "packaging>=25",
+    "twine>=6.2",
+]
+dev = [
+    { include-group = "test" },
+    { include-group = "quality" },
+    { include-group = "regen" },
+    { include-group = "release" },
+    "fastapi>=0.110",
+    "paho-mqtt>=2.0",
+    "pytest-homeassistant-custom-component>=0.13.316",
+    "uvicorn[standard]>=0.29",
+    "websockets>=12",
 ]
 
 [project.scripts]
-nem-rates = "nem_rates.cli:main"
+tariffkit = "tariffkit.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/emansl/nem-rates"
-Issues = "https://github.com/emansl/nem-rates/issues"
+Homepage = "https://github.com/eman/tariffkit"
+Documentation = "https://github.com/eman/tariffkit#documentation"
+Issues = "https://github.com/eman/tariffkit/issues"
+Source = "https://github.com/eman/tariffkit"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/nem_rates"]
+packages = ["src/tariffkit"]
 
 [tool.hatch.build.targets.sdist]
 include = ["/src", "/tests", "/README.md", "/LICENSE", "/CHANGELOG.md"]
+# These exercise repository-only surfaces that are intentionally absent from
+# the sdist; keeping them would make its otherwise self-contained suite fail.
+exclude = [
+    "/tests/test_ha_component.py",
+    "/tests/test_packaging.py",
+    "/tests/test_regen.py",
+    "/tests/test_release.py",
+]
 
 [tool.ruff]
 line-length = 100
 target-version = "py314"
-src = ["src", "tests"]
+src = ["src", "tests", "tools", "audit", "custom_components"]
 
 [tool.ruff.lint.isort]
 # `src` above does not reach `audit/`, so without this ruff sorts it as a
 # third-party package and demands an import order no one would write by hand.
-known-first-party = ["nem_rates", "audit"]
+known-first-party = ["tariffkit", "audit", "tools"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "RET", "SIM", "PTH", "RUF"]
-ignore = ["A003"]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "ANN", "C4", "RET", "SIM", "PTH", "RUF"]
+# Strict mypy rejects unsafe Any use in production code. ANN401 is too broad
+# for framework contracts such as Home Assistant sensor states and test doubles.
+ignore = ["A003", "ANN401"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["E501"]
 # Query(...) in a parameter default is FastAPI's documented idiom, not a bug.
-"src/nem_rates/web/app.py" = ["B008"]
+"src/tariffkit/web/app.py" = ["B008"]
 # Home Assistant integrations follow upstream HA conventions, not this project's.
 "custom_components/*" = ["A002", "N805"]
 
 [tool.mypy]
 python_version = "3.14"
 strict = true
+mypy_path = ["$MYPY_CONFIG_FILE_DIR/src", "$MYPY_CONFIG_FILE_DIR"]
+explicit_package_bases = true
 warn_unreachable = true
-# `audit/` is checked as strictly as the package. It is not shipped, but it is a
-# real program written against a strict-typed library, and its whole purpose is
-# to be trusted when it reports a discrepancy. (`custom_components/` is excluded
-# instead because it follows Home Assistant's conventions, not this project's.)
-files = ["src/nem_rates", "audit"]
+# The audit harness and Home Assistant component are checked as strictly as the
+# package even though neither ships in the Python distribution.
+files = ["src/tariffkit", "tools", "audit", "custom_components/tariffkit"]
 
 [[tool.mypy.overrides]]
 module = ["pypdf.*"]
@@ -102,7 +142,9 @@ no_implicit_reexport = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-q --strict-markers"
+asyncio_mode = "auto"
 markers = [
   "slowdata: requires the full upstream PG&E dataset",
   "statements: reads real statement PDFs, which are never committed",

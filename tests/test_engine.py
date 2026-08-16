@@ -6,10 +6,10 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
-from nem_rates import Config, RateEngine, Supplier
-from nem_rates.config import CcaConfig
-from nem_rates.errors import ConfigError, OutOfRangeError
-from nem_rates.timeutil import (
+from tariffkit import Config, RateEngine, Supplier
+from tariffkit.config import CcaConfig
+from tariffkit.errors import ConfigError, OutOfRangeError
+from tariffkit.timeutil import (
     PACIFIC,
     DayType,
     day_type,
@@ -309,12 +309,17 @@ def test_describe_reports_provenance(engine: RateEngine) -> None:
     assert info["lock_end"] == "2035-06-02"
 
 
+def test_describe_resolves_provenance_at_the_requested_time(engine: RateEngine) -> None:
+    assert engine.describe(pt(2025, 2, 1, 0))["tariff_effective"] == "2025-01-01"
+    assert engine.describe(pt(2026, 2, 1, 0))["tariff_effective"] == "2026-01-01"
+
+
 def test_a_string_supplier_becomes_the_enum() -> None:
     """Supplier is a StrEnum, so "cca" compares equal to Supplier.CCA but is not
     it -- and every branch that matters tests identity. Constructing Config with
     a string therefore priced a CCA customer as bundled, silently.
     """
-    from nem_rates.config import CcaConfig
+    from tariffkit.config import CcaConfig
 
     config = Config(supplier="cca", cca=CcaConfig(name="MCE", rate_card="mce"))  # type: ignore[arg-type]
     assert config.supplier is Supplier.CCA

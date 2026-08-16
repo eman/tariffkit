@@ -17,8 +17,8 @@ import pytest
 
 pytest.importorskip("httpx")
 
-from nem_rates.errors import ConfigError
-from nem_rates.sources.pge import (
+from tariffkit.errors import ConfigError
+from tariffkit.sources.pge import (
     APEX_ACTION,
     ENDPOINTS,
     PgeSession,
@@ -37,7 +37,9 @@ Electric usage,2026-01-01,01:00,01:59,2.5,0.0
 
 
 class FakeResponse:
-    def __init__(self, payload: Any, status: int = 200, content_type: str = "application/json"):
+    def __init__(
+        self, payload: Any, status: int = 200, content_type: str = "application/json"
+    ) -> None:
         self.status_code = status
         self.headers = {"content-type": content_type}
         self._payload = payload
@@ -78,13 +80,17 @@ def session_with(client: FakeClient, tmp_path: Path) -> PgeSession:
 
 
 class TestSettings:
-    def test_credentials_come_from_the_environment(self, monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    def test_credentials_come_from_the_environment(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         monkeypatch.setenv("PGE_USERNAME", "someone@example.invalid")
         monkeypatch.setenv("PGE_PASSWORD", "hunter2")
         settings = PgeSettings.load(dotenv_path=tmp_path / "absent.env")
         assert settings.username == "someone@example.invalid"
 
-    def test_a_missing_credential_says_where_to_put_it(self, monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    def test_a_missing_credential_says_where_to_put_it(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         monkeypatch.delenv("PGE_USERNAME", raising=False)
         monkeypatch.delenv("PGE_PASSWORD", raising=False)
         with pytest.raises(ConfigError, match="PGE_USERNAME"):
@@ -152,7 +158,7 @@ class TestProtocol:
         # An endpoint inferred rather than observed is not a bug, but a failure
         # against one should point at itself first. Every shipped endpoint has
         # since been confirmed, so this uses a made-up one.
-        from nem_rates.sources import pge
+        from tariffkit.sources import pge
 
         monkeypatch.setattr(
             pge, "ENDPOINTS", {**pge.ENDPOINTS, "guess": pge.Endpoint("guess", "C", "m")}
@@ -246,7 +252,7 @@ class TestGreenButton:
     def test_downloaded_text_parses_exactly_like_a_file(self, tmp_path: Path) -> None:
         # The whole reason the download is a separate concern from the format:
         # there must be exactly one parser, and this is what pins that.
-        from nem_rates.sources import read_green_button
+        from tariffkit.sources import read_green_button
 
         path = tmp_path / "gb.csv"
         path.write_text(CSV, encoding="utf-8")

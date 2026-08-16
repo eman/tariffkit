@@ -30,9 +30,15 @@ from pathlib import Path
 
 import pytest
 
-from audit.errors import StatementError
-from audit.statements import Section, parse_statement, read_statement
-from audit.statements.parse import _fields, _money
+from tariffkit.providers.pge.statements import (
+    Section,
+    Statement,
+    StatementError,
+    StatementSection,
+    parse_statement,
+    read_statement,
+)
+from tariffkit.providers.pge.statements.parse import _fields, _money
 
 FIXTURES = Path(__file__).parent / "fixtures" / "statements"
 SYNTHETIC = FIXTURES / "synthetic_cca_ratechange.txt"
@@ -42,8 +48,14 @@ def load(path: Path = SYNTHETIC) -> list[str]:
     return path.read_text(encoding="utf-8").split("\x0c")
 
 
+def _section(statement: Statement, name: Section) -> StatementSection:
+    section = statement.section(name)
+    assert section is not None
+    return section
+
+
 @pytest.fixture
-def statement():  # type: ignore[no-untyped-def]
+def statement() -> Statement:
     return parse_statement(load(), source=SYNTHETIC.name)
 
 
@@ -74,14 +86,14 @@ class TestMoney:
 
 
 class TestParsedStatement:
-    def test_the_cycle_and_its_own_day_count(self, statement) -> None:  # type: ignore[no-untyped-def]
+    def test_the_cycle_and_its_own_day_count(self, statement: Statement) -> None:
         assert (statement.period.start.isoformat(), statement.period.end.isoformat()) == (
             "2025-12-30",
             "2026-01-29",
         )
         assert statement.billed_days == 31 == statement.period.days
 
-    def test_it_reports_what_it_says_about_itself(self, statement) -> None:  # type: ignore[no-untyped-def]
+    def test_it_reports_what_it_says_about_itself(self, statement: Statement) -> None:
         # Used to catch a stale account configuration before it can produce a
         # confident, fabricated finding.
         assert statement.rate_schedule.startswith("Time-of-Use")
@@ -90,26 +102,26 @@ class TestParsedStatement:
         assert statement.baseline_territory == "X"
         assert statement.pcia_vintage == 2011
 
-    def test_only_the_last_four_account_digits_survive(self, statement) -> None:  # type: ignore[no-untyped-def]
+    def test_only_the_last_four_account_digits_survive(self, statement: Statement) -> None:
         assert len(statement.account_masked) == 4
         assert statement.account_masked.isdigit()
 
-    def test_every_section_sums_to_its_printed_total(self, statement) -> None:  # type: ignore[no-untyped-def]
+    def test_every_section_sums_to_its_printed_total(self, statement: Statement) -> None:
         for section in statement.sections:
             if section.name is Section.SUMMARY or section.printed_total is None:
                 continue
             assert section.total() == pytest.approx(section.printed_total, abs=0.005)
 
-    def test_the_two_views_of_the_same_money_agree(self, statement) -> None:  # type: ignore[no-untyped-def]
+    def test_the_two_views_of_the_same_money_agree(self, statement: Statement) -> None:
         # The utility prints its total twice: once as time-of-use lines, once
         # unbundled into components. Agreement between them is the strongest
         # evidence the parse is right, because they share no rows.
-        delivery = statement.section(Section.PGE_DELIVERY)
-        breakdown = statement.section(Section.PGE_BREAKDOWN)
+        delivery = _section(statement, Section.PGE_DELIVERY)
+        breakdown = _section(statement, Section.PGE_BREAKDOWN)
         assert delivery.printed_total == pytest.approx(breakdown.printed_total)
         assert delivery.total() == pytest.approx(breakdown.total())
 
-    def test_the_rate_change_splits_the_cycle(self, statement) -> None:  # type: ignore[no-untyped-def]
+    def test_the_rate_change_splits_the_cycle(self, statement: Statement) -> None:
         # The statement splits itself at the rate change, which is the utility
         # independently confirming that effective-dated pricing is the right
         # model rather than an over-engineering.
@@ -118,59 +130,61 @@ class TestParsedStatement:
             "2026-01-01..2026-01-29",
         ]
 
-    def test_a_per_day_charge_keeps_its_rate_not_its_rate_as_its_amount(self, statement) -> None:  # type: ignore[no-untyped-def]
+    def test_a_per_day_charge_keeps_its_rate_not_its_rate_as_its_amount(
+        self, statement: Statement
+    ) -> None:
         # Billed "31 days @ $0.79343". Anchoring on the word "kWh" instead of on
         # the "@" read the rate as the amount and lost $23. Note the breakdown
         # does not print this line at all -- the utility spreads it across
         # Distribution and Public Purpose Programs.
-        (metered,) = statement.section(Section.PGE_DELIVERY).find("Base Services Charge")
+        (metered,) = _section(statement, Section.PGE_DELIVERY).find("Base Services Charge")
         assert metered.amount == pytest.approx(24.60)
         assert (metered.quantity, metered.unit) == (31.0, "days")
         assert metered.rate == pytest.approx(0.79343)
         # Days are not energy, so this row contributes no kWh.
         assert metered.kwh is None
 
-    def test_a_metered_row_keeps_quantity_and_rate(self, statement) -> None:  # type: ignore[no-untyped-def]
-        (row,) = statement.section(Section.CCA_GENERATION).find("Off Peak Winter")
+    def test_a_metered_row_keeps_quantity_and_rate(self, statement: Statement) -> None:
+        (row,) = _section(statement, Section.CCA_GENERATION).find("Off Peak Winter")
         assert (row.kwh, row.rate, row.amount) == pytest.approx((900.0, 0.135, 121.50))
 
-    def test_the_allowance_is_not_read_as_money(self, statement) -> None:  # type: ignore[no-untyped-def]
+    def test_the_allowance_is_not_read_as_money(self, statement: Statement) -> None:
         # "290.00 kWh (29 days)" states a quantity, not a charge. Reading it as
         # dollars adds a few hundred to the section and looks like an overcharge.
-        assert not statement.section(Section.PGE_DELIVERY).find("Baseline Allowance")
+        assert not _section(statement, Section.PGE_DELIVERY).find("Baseline Allowance")
 
-    def test_a_subtotal_is_not_added_to_its_own_section(self, statement) -> None:  # type: ignore[no-untyped-def]
+    def test_a_subtotal_is_not_added_to_its_own_section(self, statement: Statement) -> None:
         # "Net Charges" restates the rows above it. Counting it doubles most of
         # the section, and the result is plausibly wrong rather than obviously.
-        cca = statement.section(Section.CCA_GENERATION)
+        cca = _section(statement, Section.CCA_GENERATION)
         assert [line.label for line in cca.lines if line.is_subtotal] == ["Net Charges"]
         assert cca.total() == pytest.approx(cca.printed_total)
         assert sum(line.amount for line in cca.lines) > cca.total()
 
-    def test_the_state_surcharge_is_on_the_generation_page(self, statement) -> None:  # type: ignore[no-untyped-def]
+    def test_the_state_surcharge_is_on_the_generation_page(self, statement: Statement) -> None:
         # On a CCA account it prints on the provider's page, not the utility's,
         # which is how it stayed unmodelled while every line on the utility's
         # pages reconciled to the cent.
-        (tax,) = statement.section(Section.CCA_GENERATION).find("Energy Commission Tax")
+        (tax,) = _section(statement, Section.CCA_GENERATION).find("Energy Commission Tax")
         assert tax.amount == pytest.approx(0.30)
 
-    def test_the_sidebar_does_not_close_a_section(self, statement) -> None:  # type: ignore[no-untyped-def]
+    def test_the_sidebar_does_not_close_a_section(self, statement: Statement) -> None:
         # A "Total Usage" line sits in the right-hand sidebar, more than a
         # hundred columns in, partway through the delivery detail. Treating it
         # as the section's total drops every row beneath it.
-        delivery = statement.section(Section.PGE_DELIVERY)
+        delivery = _section(statement, Section.PGE_DELIVERY)
         assert delivery.printed_total == pytest.approx(158.60)
         # The second sub-period's rows sit below that sidebar line, so their
         # survival is the evidence the section stayed open.
         assert len(delivery.find("Franchise Fee Surcharge")) == 2
 
-    def test_the_breakdown_label_is_not_the_prose_beside_it(self, statement) -> None:  # type: ignore[no-untyped-def]
-        breakdown = statement.section(Section.PGE_BREAKDOWN)
+    def test_the_breakdown_label_is_not_the_prose_beside_it(self, statement: Statement) -> None:
+        breakdown = _section(statement, Section.PGE_BREAKDOWN)
         labels = {line.label for line in breakdown.lines}
         assert "Distribution" in labels
         assert not any("PG&E offers" in label or "1-800" in label for label in labels)
 
-    def test_a_clean_parse_reports_no_problems(self, statement) -> None:  # type: ignore[no-untyped-def]
+    def test_a_clean_parse_reports_no_problems(self, statement: Statement) -> None:
         assert statement.self_check() == []
 
 
@@ -223,7 +237,7 @@ def _unreadable(pdf: Path) -> bool:
     """Whether this PDF is one of the text-free Type 3 statements."""
     from pypdf import PdfReader
 
-    from audit.statements.parse import _glyphs_are_spaces
+    from tariffkit.providers.pge.statements.parse import _glyphs_are_spaces
 
     return _glyphs_are_spaces(PdfReader(pdf))
 
@@ -231,14 +245,14 @@ def _unreadable(pdf: Path) -> bool:
 class TestRealStatements:
     """Against actual statements, wherever they already are.
 
-    Nothing is copied into the repository. Point ``NEM_RATES_STATEMENT_DIR`` at a
+    Nothing is copied into the repository. Point ``TARIFFKIT_STATEMENT_DIR`` at a
     directory of PDFs, or leave them in the gitignored download cache; without
     either, this skips.
     """
 
     @staticmethod
     def _pdfs() -> list[Path]:
-        configured = os.environ.get("NEM_RATES_STATEMENT_DIR")
+        configured = os.environ.get("TARIFFKIT_STATEMENT_DIR")
         root = Path(configured) if configured else Path(".cache/pge/statements")
         # Only PG&E's own naming. The directory may be somewhere general like a
         # desktop, and everything else in it is somebody else's PDF.
@@ -247,7 +261,7 @@ class TestRealStatements:
     def test_each_one_parses_and_self_checks_clean(self) -> None:
         pdfs = self._pdfs()
         if not pdfs:
-            pytest.skip("no statements available; set NEM_RATES_STATEMENT_DIR")
+            pytest.skip("no statements available; set TARIFFKIT_STATEMENT_DIR")
 
         readable = 0
         for pdf in pdfs:

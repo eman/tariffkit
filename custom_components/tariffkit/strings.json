@@ -1,0 +1,270 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up TariffKit",
+        "description": "Choose a manual account setup or import a sanitized TariffKit profile.",
+        "menu_options": {
+          "manual": "Configure manually",
+          "import": "Import TariffKit profile"
+        }
+      },
+      "manual": {
+        "title": "Account and tariff",
+        "description": "Identify this account and choose its PG&E tariff and export setup.",
+        "data": {
+          "profile_name": "Profile name",
+          "supplier": "Generation supplier",
+          "tariff": "Rate plan",
+          "export_enabled": "Configure export compensation"
+        }
+      },
+      "manual_delivery": {
+        "title": "Delivery and export",
+        "description": "Enter only the delivery and NBT fields that apply to this setup.",
+        "data": {
+          "interconnection_year": "Interconnection application year",
+          "pto_date": "Permission-To-Operate date",
+          "acc_plus_segment": "ACC Plus segment",
+          "discount": "CARE / FERA discount",
+          "base_services_charge_tier": "Base Services Charge income tier",
+          "baseline_territory": "Baseline territory",
+          "baseline_code": "Baseline heat-source code"
+        }
+      },
+      "manual_cca": {
+        "title": "CCA product",
+        "description": "Choose a vendored CCA rate card and product option.",
+        "data": {
+          "cca_rate_card": "CCA rate card",
+          "cca_option": "CCA product option",
+          "cca_pcia_vintage": "PCIA vintage year"
+        }
+      },
+      "import": {
+        "title": "Import TariffKit profile",
+        "description": "Paste the sanitized JSON produced by TariffKit account export.",
+        "data": {
+          "profile_json": "Profile JSON"
+        }
+      }
+    },
+    "error": {
+      "invalid_config": "Invalid configuration: {detail}",
+      "invalid_profile": "Invalid account profile: {detail}"
+    },
+    "abort": {
+      "already_configured": "This service agreement is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "TariffKit options",
+        "menu_options": {
+          "settings": "Account pricing settings",
+          "forecast": "Forecast and Predbat",
+          "history": "Account history"
+        }
+      },
+      "settings": {
+        "title": "Account and tariff",
+        "description": "Update the active account pricing settings.",
+        "data": {
+          "supplier": "Generation supplier",
+          "tariff": "Rate plan",
+          "export_enabled": "Configure export compensation"
+        }
+      },
+      "settings_delivery": {
+        "title": "Delivery and export",
+        "description": "Enter only the delivery and NBT fields that apply to this setup.",
+        "data": {
+          "interconnection_year": "Interconnection application year",
+          "pto_date": "Permission-To-Operate date",
+          "acc_plus_segment": "ACC Plus segment",
+          "discount": "CARE / FERA discount",
+          "base_services_charge_tier": "Base Services Charge income tier",
+          "baseline_territory": "Baseline territory",
+          "baseline_code": "Baseline heat-source code"
+        }
+      },
+      "settings_cca": {
+        "title": "CCA product",
+        "description": "Choose a vendored CCA rate card and product option.",
+        "data": {
+          "cca_rate_card": "CCA rate card",
+          "cca_option": "CCA product option",
+          "cca_pcia_vintage": "PCIA vintage year"
+        }
+      },
+      "forecast": {
+        "title": "Forecast and Predbat",
+        "description": "Forecast settings are stored as options and do not change account identity.",
+        "data": {
+          "forecast_hours": "Forecast hours",
+          "predbat_enabled": "Enable Predbat compatibility"
+        }
+      },
+      "history": {
+        "title": "Account history",
+        "menu_options": {
+          "inspect": "Inspect account history",
+          "add_epoch": "Add account transition",
+          "edit_epoch": "Edit account transition",
+          "remove_epoch": "Remove account transition",
+          "import": "Import profile",
+          "export": "Export profile"
+        }
+      },
+      "inspect": {
+        "title": "Account history",
+        "description": "{history}"
+      },
+      "add_epoch": {
+        "title": "Add account transition",
+        "description": "{detail}",
+        "data": {
+          "effective": "Effective date"
+        }
+      },
+      "edit_epoch": {
+        "title": "Choose an account transition",
+        "data": {
+          "effective": "Effective date"
+        }
+      },
+      "edit_values": {
+        "title": "Edit account transition",
+        "description": "{detail}"
+      },
+      "remove_epoch": {
+        "title": "Remove account transition",
+        "data": {
+          "effective": "Effective date"
+        }
+      },
+      "remove_epoch_confirm": {
+        "title": "Confirm removal",
+        "data": {
+          "confirm": "Remove this transition"
+        }
+      },
+      "import": {
+        "title": "Import profile",
+        "description": "{detail}",
+        "data": {
+          "profile_json": "Profile JSON"
+        }
+      },
+      "export": {
+        "title": "Export profile",
+        "description": "{profile_json}"
+      }
+    },
+    "error": {
+      "invalid_config": "Invalid configuration: {detail}",
+      "invalid_profile": "Invalid account profile: {detail}"
+    },
+    "abort": {
+      "invalid_profile": "This account profile has no pricing configuration in force yet."
+    }
+  },
+  "selector": {
+    "supplier": {
+      "options": {
+        "bundled": "PG&E bundled",
+        "cca": "Community Choice Aggregator"
+      }
+    },
+    "acc_plus_segment": {
+      "options": {
+        "residential": "Residential",
+        "residential_low_income": "Residential low income (CARE/FERA)",
+        "none": "Not eligible"
+      }
+    },
+    "discount": {
+      "options": {
+        "none": "None",
+        "care": "CARE",
+        "fera": "FERA"
+      }
+    },
+    "baseline_code": {
+      "options": {
+        "basic": "Basic / gas heat (Code B)",
+        "all_electric": "All-electric heat (Code H)"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "import_price": {
+        "name": "Import Price"
+      },
+      "export_price": {
+        "name": "Export Price"
+      },
+      "spread": {
+        "name": "Import/Export Spread"
+      },
+      "tou_period": {
+        "name": "TOU Period"
+      },
+      "forecast_through": {
+        "name": "Rate Forecast Through"
+      }
+    }
+  },
+  "services": {
+    "get_rates": {
+      "name": "Get rates",
+      "description": "Return a bounded, timestamped TariffKit rate forecast.",
+      "fields": {
+        "config_entry": {
+          "name": "TariffKit config entry"
+        },
+        "start": {
+          "name": "Start"
+        },
+        "end": {
+          "name": "End"
+        },
+        "date": {
+          "name": "Date"
+        },
+        "horizon": {
+          "name": "Horizon (hours)"
+        },
+        "resolution": {
+          "name": "Resolution"
+        }
+      }
+    },
+    "get_emhass_forecast": {
+      "name": "Get EMHASS forecast",
+      "description": "Return EMHASS positional load and production price arrays.",
+      "fields": {
+        "config_entry": {
+          "name": "TariffKit config entry"
+        },
+        "start": {
+          "name": "Start"
+        },
+        "end": {
+          "name": "End"
+        },
+        "date": {
+          "name": "Date"
+        },
+        "horizon": {
+          "name": "Horizon (hours)"
+        },
+        "resolution": {
+          "name": "Resolution"
+        }
+      }
+    }
+  }
+}

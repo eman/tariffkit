@@ -1,0 +1,9 @@
+**
+!docker/
+!docker/homeassistant/
+!docker/homeassistant/Dockerfile
+!pyproject.toml
+!README.md
+!LICENSE
+!src/
+!src/**
