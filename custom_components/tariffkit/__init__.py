@@ -6,6 +6,7 @@ import logging
 
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
 
 from tariffkit.errors import TariffKitError
 
@@ -15,6 +16,7 @@ from .const import (
     CONF_PROFILE,
     DEFAULT_FORECAST_HOURS,
     DEFAULT_PREDBAT_ENABLED,
+    DOMAIN,
 )
 from .coordinator import TariffKitConfigEntry, TariffKitCoordinator
 from .profile import profile_from_entry, profile_payload
@@ -23,6 +25,7 @@ from .services import async_setup_services
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 CONFIG_VERSION = 3
 _LOGGER = logging.getLogger(__name__)
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: dict[str, object]) -> bool:

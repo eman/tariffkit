@@ -14,6 +14,11 @@ All notable changes to this project are documented here. This project follows
   checks also gate integration changes and prepare TariffKit for default-store
   submission.
 
+### Fixed
+- Home Assistant action descriptions now follow hassfest's current service
+  schema: icons live in `icons.json`, target metadata is explicit, and the
+  config-entry-only YAML schema is declared.
+
 ## [0.2.0] - 2026-08-16
 
 ### Added
