@@ -23,19 +23,21 @@ copied from environment variables or external service responses.
 
 ## Dependency auditing
 
-CI audits the locked production extras separately and permits no known
-vulnerabilities. It also audits the complete development graph, including the
-Home Assistant test stack.
+CI audits the locked production extras separately from the complete development
+graph, including the Home Assistant test stack. Both reports retain every
+finding rather than hiding policy exceptions.
 
 Home Assistant 2026.8.2 exactly pins `cryptography==48.0.1`, and the matching
-pytest plugin is currently the newest compatible release. Three advisories in
-that package are not reachable from TariffKit: the project does not import
-cryptography, PKCS#7 decryption, or X.509 verification APIs, and the dependency
-is absent from every production extra. The temporary exception is declared in
+pytest plugin is currently the newest compatible release. On Linux, the
+production `secrets` extra also installs that version through
+`keyring -> SecretStorage -> cryptography`. The three advisories are not
+reachable from TariffKit: it uses keyring's high-level password storage API and
+does not import cryptography or call the affected PKCS#7 decryption and X.509
+verification APIs. The temporary exception is declared in
 [`.github/dependency-audit-policy.json`](.github/dependency-audit-policy.json).
-CI requires the full development audit to contain exactly those package,
-version, and advisory tuples; any additional vulnerability fails. The policy
-also expires automatically, forcing review even if upstream has not released a
-fixed pin.
+CI independently requires both audits to contain exactly those package,
+version, and advisory tuples; a missing or additional finding fails. The policy
+also expires automatically, forcing review even if upstream has not released
+fixed pins.
 
 [report]: https://github.com/eman/tariffkit/security/advisories/new

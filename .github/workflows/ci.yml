@@ -54,48 +54,52 @@ jobs:
             --no-emit-project --output-file pip-audit-production-requirements.txt
           uv export --locked --all-extras --all-groups --python 3.14.2 \
             --no-emit-project --output-file pip-audit-development-requirements.txt
-      - name: Audit production dependencies
+      - name: Audit dependency graphs against exception policy
         run: |
+          set +e
           uv run --locked --only-group security --python 3.14.2 pip-audit \
             --requirement pip-audit-production-requirements.txt \
             --disable-pip \
             --format json --output pip-audit-production.json
-      - name: Audit development dependencies against exception policy
-        run: |
-          set +e
+          production_status=$?
           uv run --locked --only-group security --python 3.14.2 pip-audit \
             --requirement pip-audit-development-requirements.txt \
             --disable-pip \
             --format json --output pip-audit-development.json
-          audit_status=$?
+          development_status=$?
           set -e
-          AUDIT_STATUS="$audit_status" uv run --locked --only-group security \
-            --python 3.14.2 python - <<'PY'
+          PRODUCTION_STATUS="$production_status" DEVELOPMENT_STATUS="$development_status" \
+            uv run --locked --only-group security --python 3.14.2 python - <<'PY'
           import datetime
           import json
           import os
           from pathlib import Path
 
           policy = json.loads(Path(".github/dependency-audit-policy.json").read_text())
-          report = json.loads(Path("pip-audit-development.json").read_text())
-          actual = {
-              (dependency["name"], dependency["version"], vulnerability["id"])
-              for dependency in report["dependencies"]
-              for vulnerability in dependency["vulns"]
-          }
           expected = {
               (policy["package"]["name"], policy["package"]["version"], advisory)
               for advisory in policy["advisories"]
           }
-          if int(os.environ["AUDIT_STATUS"]) != 1:
-              raise SystemExit("full dependency audit did not report the tracked vulnerabilities")
           if datetime.date.today() >= datetime.date.fromisoformat(policy["expires"]):
               raise SystemExit(f"dependency audit exception expired on {policy['expires']}")
-          if actual != expected:
-              raise SystemExit(
-                  f"dependency audit policy mismatch: expected {sorted(expected)}, got {sorted(actual)}"
-              )
-          print(f"Confirmed {len(actual)} tracked development-only vulnerabilities: {sorted(actual)}")
+          for scope in ("production", "development"):
+              status = int(os.environ[f"{scope.upper()}_STATUS"])
+              report = json.loads(Path(f"pip-audit-{scope}.json").read_text())
+              actual = {
+                  (dependency["name"], dependency["version"], vulnerability["id"])
+                  for dependency in report["dependencies"]
+                  for vulnerability in dependency["vulns"]
+              }
+              if status != 1:
+                  raise SystemExit(
+                      f"{scope} dependency audit did not report the tracked vulnerabilities"
+                  )
+              if actual != expected:
+                  raise SystemExit(
+                      f"{scope} dependency audit policy mismatch: "
+                      f"expected {sorted(expected)}, got {sorted(actual)}"
+                  )
+              print(f"Confirmed {scope} exceptions: {sorted(actual)}")
           PY
       - name: Upload dependency audit reports
         if: always()

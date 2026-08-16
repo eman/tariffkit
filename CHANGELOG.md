@@ -21,10 +21,10 @@ All notable changes to this project are documented here. This project follows
 - **Python 3.14.2 and Home Assistant 2026.3.0 are now the supported floors.**
   The lockfile no longer carries the obsolete Home Assistant 2026.2 fallback,
   and CI audits the complete locked dependency graph with a pinned `pip-audit`
-  release while retaining its report as a failure artifact. Advisories in Home
-  Assistant's test-only exact cryptography pin are isolated from the clean
-  production audit and governed by an expiring policy that rejects any
-  additional finding.
+  release while retaining raw reports as failure artifacts. The Linux secrets
+  extra and Home Assistant tests both inherit the same exact cryptography pin;
+  an expiring policy requires each audit to report exactly its three known,
+  unreachable advisories and rejects any additional finding.
 - The README now explains that default HACS approval may take months and gives
   complete custom-repository installation steps for use during the review.
 - Workflow actions are pinned to reviewed immutable commits, checkout credentials
