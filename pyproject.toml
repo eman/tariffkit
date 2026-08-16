@@ -87,7 +87,7 @@ exclude = ["/tests/test_regen.py"]
 [tool.ruff]
 line-length = 100
 target-version = "py314"
-src = ["src", "tests", "tools", "audit"]
+src = ["src", "tests", "tools", "audit", "custom_components"]
 
 [tool.ruff.lint.isort]
 # `src` above does not reach `audit/`, so without this ruff sorts it as a
@@ -95,8 +95,10 @@ src = ["src", "tests", "tools", "audit"]
 known-first-party = ["tariffkit", "audit", "tools"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "RET", "SIM", "PTH", "RUF"]
-ignore = ["A003"]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "ANN", "C4", "RET", "SIM", "PTH", "RUF"]
+# Strict mypy rejects unsafe Any use in production code. ANN401 is too broad
+# for framework contracts such as Home Assistant sensor states and test doubles.
+ignore = ["A003", "ANN401"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["E501"]
@@ -108,12 +110,12 @@ ignore = ["A003"]
 [tool.mypy]
 python_version = "3.14"
 strict = true
+mypy_path = ["$MYPY_CONFIG_FILE_DIR/src", "$MYPY_CONFIG_FILE_DIR"]
+explicit_package_bases = true
 warn_unreachable = true
-# `audit/` is checked as strictly as the package. It is not shipped, but it is a
-# real program written against a strict-typed library, and its whole purpose is
-# to be trusted when it reports a discrepancy. (`custom_components/` is excluded
-# instead because it follows Home Assistant's conventions, not this project's.)
-files = ["src/tariffkit", "tools/regen", "audit"]
+# The audit harness and Home Assistant component are checked as strictly as the
+# package even though neither ships in the Python distribution.
+files = ["src/tariffkit", "tools/regen", "audit", "custom_components/tariffkit"]
 
 [[tool.mypy.overrides]]
 module = ["pypdf.*"]

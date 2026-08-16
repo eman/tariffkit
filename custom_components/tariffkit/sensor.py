@@ -18,7 +18,7 @@ from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from tariffkit import TouPeriod
+from tariffkit.models import TouPeriod
 
 from .const import (
     ATTR_GENERATED_AT,
@@ -57,22 +57,24 @@ def _price_attrs(direction: str) -> Callable[[TariffKitData], dict[str, Any]]:
         raise ValueError(f"unsupported price direction {direction!r}")
 
     def extract(data: TariffKitData) -> dict[str, Any]:
-        price = data.point.import_price if direction == "import" else data.point.export_price
-        quality = (
-            TariffKitQuality(
-                complete=price.complete,
+        if direction == "import":
+            import_price = data.point.import_price
+            quality = TariffKitQuality(
+                complete=import_price.complete,
                 exact=True,
                 locked=True,
             )
-            if direction == "import"
-            else TariffKitQuality(
-                complete=price.complete,
-                exact=price.exact,
-                locked=price.locked,
+            components = import_price.components
+        else:
+            export_price = data.point.export_price
+            quality = TariffKitQuality(
+                complete=export_price.complete,
+                exact=export_price.exact,
+                locked=export_price.locked,
             )
-        )
+            components = export_price.components
         attrs: dict[str, Any] = {
-            "components": dict(price.components),
+            "components": dict(components),
             ATTR_QUALITY: _quality_attributes(quality),
             ATTR_PROVENANCE: dict(data.provenance),
         }
@@ -211,11 +213,14 @@ class TariffKitSensor(CoordinatorEntity[TariffKitCoordinator], SensorEntity):
         info = self.coordinator.data.provenance
         source = info.get("tariff_source")
         parsed = urlparse(source) if isinstance(source, str) else None
-        configuration_url = (
-            source
-            if parsed is not None and parsed.scheme in {"http", "https"} and parsed.netloc
-            else None
-        )
+        configuration_url: str | None = None
+        if (
+            isinstance(source, str)
+            and parsed is not None
+            and parsed.scheme in {"http", "https"}
+            and parsed.netloc
+        ):
+            configuration_url = source
         profile_name = self.coordinator.profile.name
         name = f"TariffKit — {profile_name}" if profile_name else "TariffKit Rates"
         utility = info.get("utility")

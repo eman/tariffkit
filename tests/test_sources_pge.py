@@ -37,7 +37,9 @@ Electric usage,2026-01-01,01:00,01:59,2.5,0.0
 
 
 class FakeResponse:
-    def __init__(self, payload: Any, status: int = 200, content_type: str = "application/json"):
+    def __init__(
+        self, payload: Any, status: int = 200, content_type: str = "application/json"
+    ) -> None:
         self.status_code = status
         self.headers = {"content-type": content_type}
         self._payload = payload
@@ -78,13 +80,17 @@ def session_with(client: FakeClient, tmp_path: Path) -> PgeSession:
 
 
 class TestSettings:
-    def test_credentials_come_from_the_environment(self, monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    def test_credentials_come_from_the_environment(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         monkeypatch.setenv("PGE_USERNAME", "someone@example.invalid")
         monkeypatch.setenv("PGE_PASSWORD", "hunter2")
         settings = PgeSettings.load(dotenv_path=tmp_path / "absent.env")
         assert settings.username == "someone@example.invalid"
 
-    def test_a_missing_credential_says_where_to_put_it(self, monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    def test_a_missing_credential_says_where_to_put_it(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         monkeypatch.delenv("PGE_USERNAME", raising=False)
         monkeypatch.delenv("PGE_PASSWORD", raising=False)
         with pytest.raises(ConfigError, match="PGE_USERNAME"):

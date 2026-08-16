@@ -6,8 +6,8 @@ from collections.abc import Mapping
 from datetime import date
 from typing import Any
 
-from tariffkit import Config
 from tariffkit.account import AccountEpoch, AccountProfile
+from tariffkit.config import Config
 from tariffkit.errors import TariffKitError
 
 from .const import CONF_PROFILE

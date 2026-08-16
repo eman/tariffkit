@@ -9,7 +9,7 @@ from homeassistant.core import HomeAssistant
 from tariffkit.timeutil import now_pacific
 
 from .const import CONF_FORECAST_HOURS, CONF_PREDBAT_ENABLED
-from .coordinator import TariffKitConfigEntry, TariffKitCoordinator
+from .coordinator import TariffKitConfigEntry
 
 
 async def async_get_config_entry_diagnostics(
@@ -17,12 +17,6 @@ async def async_get_config_entry_diagnostics(
 ) -> dict[str, Any]:
     """Return provenance and quality without account evidence or identifiers."""
     coordinator = entry.runtime_data
-    if not isinstance(coordinator, TariffKitCoordinator):
-        return {
-            "schema_version": entry.version,
-            "loaded": False,
-        }
-
     data = coordinator.data
     provenance = {
         key: data.provenance[key]

@@ -11,10 +11,11 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from tariffkit import CcaConfig, Config, PricePoint, Supplier
 from tariffkit.account import AccountProfile, AccountRateEngine
+from tariffkit.config import CcaConfig, Config
 from tariffkit.errors import TariffKitError
 from tariffkit.interop import predbat_payload
+from tariffkit.models import PricePoint, Supplier
 from tariffkit.timeutil import now_pacific
 
 from .const import (
@@ -280,7 +281,8 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
 
     @property
     def current_hour(self) -> datetime:
-        return self.data.point.start
+        point: PricePoint = self.data.point
+        return point.start
 
 
 type TariffKitConfigEntry = ConfigEntry[TariffKitCoordinator]

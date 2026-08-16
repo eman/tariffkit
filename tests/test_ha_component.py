@@ -32,7 +32,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.device_registry import DeviceEntryType
+from homeassistant.helpers.device_registry import DeviceEntryType, DeviceRegistry
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from tariffkit import Config
@@ -95,7 +95,7 @@ def _entity_id(hass: HomeAssistant, entry: MockConfigEntry, key: str) -> str:
 
 @pytest.mark.usefixtures("enable_custom_integrations")
 async def test_setup_exposes_energy_price_entities_and_service_device(
-    hass: HomeAssistant, entry: MockConfigEntry, device_registry
+    hass: HomeAssistant, entry: MockConfigEntry, device_registry: DeviceRegistry
 ) -> None:
     await _setup_entry(hass, entry)
 

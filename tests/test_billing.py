@@ -17,6 +17,7 @@ import pytest
 
 from tariffkit import Config, RateEngine, Supplier
 from tariffkit.billing import (
+    Bill,
     BillEngine,
     BillingPeriod,
     IntervalReading,
@@ -103,29 +104,29 @@ class TestBillingPeriod:
 
 class TestStatementReconciliation:
     @pytest.fixture
-    def bill(self) -> object:
+    def bill(self) -> Bill:
         return engine().compute(statement_readings(), PERIOD)
 
-    def test_import_buckets_match_the_statement(self, bill) -> None:  # type: ignore[no-untyped-def]
+    def test_import_buckets_match_the_statement(self, bill: Bill) -> None:
         by_period = {str(b.period): b for b in bill.buckets}
         assert by_period["off_peak"].imported == pytest.approx(22.903)
         assert by_period["part_peak"].imported == pytest.approx(0.228)
         assert by_period["peak"].imported == pytest.approx(0.458)
 
-    def test_bucket_rates_match_the_marginal_rates(self, bill) -> None:  # type: ignore[no-untyped-def]
+    def test_bucket_rates_match_the_marginal_rates(self, bill: Bill) -> None:
         by_period = {str(b.period): b for b in bill.buckets}
         assert by_period["off_peak"].import_rate == pytest.approx(0.37267, abs=1e-5)
         assert by_period["part_peak"].import_rate == pytest.approx(0.42935, abs=1e-5)
         assert by_period["peak"].import_rate == pytest.approx(0.59123, abs=1e-5)
 
-    def test_gross_energy_charges(self, bill) -> None:  # type: ignore[no-untyped-def]
+    def test_gross_energy_charges(self, bill: Bill) -> None:
         """The statement's six per-kWh lines sum to $8.90."""
         assert bill.energy_charges == pytest.approx(8.90, abs=0.01)
 
-    def test_base_services_charge(self, bill) -> None:  # type: ignore[no-untyped-def]
+    def test_base_services_charge(self, bill: Bill) -> None:
         assert bill.fixed_components["base_services_charge"] == pytest.approx(21.42, abs=0.01)
 
-    def test_components_decompose_the_way_the_bill_prints(self, bill) -> None:  # type: ignore[no-untyped-def]
+    def test_components_decompose_the_way_the_bill_prints(self, bill: Bill) -> None:
         c = bill.import_components
         # MCE generation across all three periods.
         assert c["cca_generation"] == pytest.approx(2.88, abs=0.01)
@@ -133,22 +134,22 @@ class TestStatementReconciliation:
         assert c["pcia"] == pytest.approx(0.82, abs=0.01)
         assert c["franchise_fee_surcharge"] == pytest.approx(0.01, abs=0.01)
 
-    def test_acc_plus_credit_matches_the_billed_line(self, bill) -> None:  # type: ignore[no-untyped-def]
+    def test_acc_plus_credit_matches_the_billed_line(self, bill: Bill) -> None:
         """Statement shows '@ $0.00880  -1.59' against 180.68 kWh exported."""
         assert bill.export_components["acc_plus"] == pytest.approx(-1.59, abs=0.01)
 
-    def test_export_credits_are_negative(self, bill) -> None:  # type: ignore[no-untyped-def]
+    def test_export_credits_are_negative(self, bill: Bill) -> None:
         assert bill.export_credits < 0
         assert bill.exported_kwh == pytest.approx(180.68)
 
-    def test_totals_sum_consistently(self, bill) -> None:  # type: ignore[no-untyped-def]
+    def test_totals_sum_consistently(self, bill: Bill) -> None:
         # Taxes are per-kWh but are not energy charges: a statement prints them
         # on their own line and does not total them with the energy lines.
         assert bill.total == pytest.approx(
             bill.energy_charges + bill.taxes + bill.export_credits + bill.fixed_charges
         )
 
-    def test_pricing_confidence_is_separate_from_coverage(self, bill) -> None:  # type: ignore[no-untyped-def]
+    def test_pricing_confidence_is_separate_from_coverage(self, bill: Bill) -> None:
         """These readings price cleanly but cover the period sparsely.
 
         Four representative readings stand in for 27 days, so coverage warnings
@@ -159,7 +160,7 @@ class TestStatementReconciliation:
         assert bill.complete is True
         assert bill.warnings
 
-    def test_serializes(self, bill) -> None:  # type: ignore[no-untyped-def]
+    def test_serializes(self, bill: Bill) -> None:
         payload = bill.to_dict()
         assert payload["period"]["days"] == 27
         assert payload["imported_kwh"] == pytest.approx(23.589)

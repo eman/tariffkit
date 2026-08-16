@@ -12,10 +12,9 @@ from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResu
 from homeassistant.core import callback
 from homeassistant.helpers import selector
 
-from tariffkit import Config
 from tariffkit.account import AccountEpoch, AccountError, AccountProfile
 from tariffkit.cca import available_rate_cards
-from tariffkit.config import VINTAGE_BY_YEAR
+from tariffkit.config import VINTAGE_BY_YEAR, Config
 from tariffkit.errors import TariffKitError
 from tariffkit.timeutil import now_pacific
 

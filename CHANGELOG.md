@@ -6,6 +6,11 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Changed
+- **Static typing now covers the Home Assistant custom component, and Ruff
+  enforces function annotations across the repository.** This closes the gap
+  where core library and audit code passed strict mypy while integration code
+  could drift from Home Assistant's typed service, entity, and config-entry
+  contracts.
 - **The Home Assistant custom component's config flow was redesigned around
   account history, and account identity no longer depends on mutable
   values.** Both setup and options used to be one flat form listing every

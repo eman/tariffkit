@@ -8,9 +8,10 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import selector, service
+from homeassistant.util.json import JsonObjectType
 
 from tariffkit.errors import TariffKitError
 from tariffkit.interop import forecast_lists, resample
@@ -154,11 +155,23 @@ def _slots(
     return selected
 
 
-def _provenance(data: TariffKitData) -> dict[str, object]:
+def _provenance(data: TariffKitData) -> JsonObjectType:
+    result: JsonObjectType = {}
+    for key in ("utility", "account_profile", "export_vintage", "tariff_source"):
+        if key not in data.provenance:
+            continue
+        value = data.provenance[key]
+        if value is not None and not isinstance(value, str | int | float | bool):
+            raise RuntimeError(f"non-JSON provenance value for {key}")
+        result[key] = value
+    return result
+
+
+def _quality(quality: TariffKitQuality) -> JsonObjectType:
     return {
-        key: data.provenance[key]
-        for key in ("utility", "account_profile", "export_vintage", "tariff_source")
-        if key in data.provenance
+        "complete": quality.complete,
+        "exact": quality.exact,
+        "locked": quality.locked,
     }
 
 
@@ -167,7 +180,7 @@ def _rates_response(
     start: datetime,
     end: datetime,
     resolution: int,
-) -> dict[str, object]:
+) -> JsonObjectType:
     slots = _slots(coordinator, start, end, resolution)
     quality = TariffKitQuality.from_points(tuple(slots))
     return {
@@ -181,11 +194,11 @@ def _rates_response(
                 "import": slot.import_price.total,
                 "export": slot.export_price.total,
                 "spread": round(slot.spread, 6),
-                "quality": TariffKitQuality.from_point(slot).to_dict(),
+                "quality": _quality(TariffKitQuality.from_point(slot)),
             }
             for slot in slots
         ],
-        "quality": quality.to_dict(),
+        "quality": _quality(quality),
         "generated_at": now_pacific().isoformat(),
         "provenance": _provenance(coordinator.data),
     }
@@ -196,7 +209,7 @@ def _emhass_response(
     start: datetime,
     end: datetime,
     resolution: int,
-) -> dict[str, object]:
+) -> JsonObjectType:
     slots = _slots(coordinator, start, end, resolution)
     values = forecast_lists(PriceCurve(tuple(slots)), minutes=resolution, since=start)
     return {
@@ -204,7 +217,7 @@ def _emhass_response(
         "start": start.isoformat(),
         "end": end.isoformat(),
         "resolution": resolution,
-        "quality": TariffKitQuality.from_points(tuple(slots)).to_dict(),
+        "quality": _quality(TariffKitQuality.from_points(tuple(slots))),
         "generated_at": now_pacific().isoformat(),
         "provenance": _provenance(coordinator.data),
     }
@@ -218,13 +231,13 @@ def _coordinator(hass: HomeAssistant, entry_id: str) -> TariffKitCoordinator:
     return coordinator
 
 
-async def _get_rates(hass: HomeAssistant, call: ServiceCall) -> dict[str, object]:
+async def _get_rates(hass: HomeAssistant, call: ServiceCall) -> ServiceResponse:
     coordinator = _coordinator(hass, call.data[CONF_CONFIG_ENTRY])
     start, end, resolution = _window(call.data)
     return _rates_response(coordinator, start, end, resolution)
 
 
-async def _get_emhass_forecast(hass: HomeAssistant, call: ServiceCall) -> dict[str, object]:
+async def _get_emhass_forecast(hass: HomeAssistant, call: ServiceCall) -> ServiceResponse:
     coordinator = _coordinator(hass, call.data[CONF_CONFIG_ENTRY])
     start, end, resolution = _window(call.data)
     return _emhass_response(coordinator, start, end, resolution)
@@ -234,7 +247,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     """Register response actions once for the integration."""
     if not hass.services.has_service(DOMAIN, SERVICE_GET_RATES):
 
-        async def handle_get_rates(call: ServiceCall) -> dict[str, object]:
+        async def handle_get_rates(call: ServiceCall) -> ServiceResponse:
             return await _get_rates(hass, call)
 
         hass.services.async_register(
@@ -246,7 +259,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         )
     if not hass.services.has_service(DOMAIN, SERVICE_GET_EMHASS_FORECAST):
 
-        async def handle_get_emhass_forecast(call: ServiceCall) -> dict[str, object]:
+        async def handle_get_emhass_forecast(call: ServiceCall) -> ServiceResponse:
             return await _get_emhass_forecast(hass, call)
 
         hass.services.async_register(
