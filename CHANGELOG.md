@@ -9,6 +9,10 @@ All notable changes to this project are documented here. This project follows
 - Project documentation now uses a TariffKit banner built from the integration's
   existing icon and a provider-neutral electricity rate curve.
 
+### Changed
+- The README now explains that default HACS approval may take months and gives
+  complete custom-repository installation steps for use during the review.
+
 ## [0.2.1] - 2026-08-16
 
 ### Added
