@@ -309,6 +309,11 @@ def test_describe_reports_provenance(engine: RateEngine) -> None:
     assert info["lock_end"] == "2035-06-02"
 
 
+def test_describe_resolves_provenance_at_the_requested_time(engine: RateEngine) -> None:
+    assert engine.describe(pt(2025, 2, 1, 0))["tariff_effective"] == "2025-01-01"
+    assert engine.describe(pt(2026, 2, 1, 0))["tariff_effective"] == "2026-01-01"
+
+
 def test_a_string_supplier_becomes_the_enum() -> None:
     """Supplier is a StrEnum, so "cca" compares equal to Supplier.CCA but is not
     it -- and every branch that matters tests identity. Constructing Config with

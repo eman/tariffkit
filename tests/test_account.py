@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import stat
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
+from threading import Barrier, BrokenBarrierError
 
 import pytest
 
@@ -84,6 +87,10 @@ class TestAccountProfile:
 
     def test_home_assistant_sanitization_preserves_meter_sources(self) -> None:
         pytest.importorskip("homeassistant")
+        pytest.importorskip(
+            "custom_components.tariffkit.profile",
+            exc_type=ModuleNotFoundError,
+        )
         from custom_components.tariffkit.profile import profile_from_entry, sanitize_profile
 
         source = MeterSources(ha=MeterSource("sensor.grid_in", "sensor.grid_out"))
@@ -251,6 +258,54 @@ class TestNamedProfileRepository:
         repository.save("home", changed)
         with pytest.raises(ProfileConflictError):
             repository.save("home", saved)
+
+    def test_does_not_change_shared_config_root_permissions(self, tmp_path: Path) -> None:
+        config_home = tmp_path / "shared-config"
+        config_home.mkdir(mode=0o755)
+        config_home.chmod(0o755)
+
+        NamedProfileRepository(config_home)
+
+        assert stat.S_IMODE(config_home.stat().st_mode) == 0o755
+        assert stat.S_IMODE((config_home / "tariffkit").stat().st_mode) == 0o700
+
+    def test_concurrent_writers_cannot_both_replace_one_revision(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repository = NamedProfileRepository(tmp_path)
+        saved = repository.save("home", profile())
+        first = replace(
+            saved,
+            epochs=(AccountEpoch(date(2025, 1, 1), Config(tariff="EV2-A")),),
+        )
+        second = replace(
+            saved,
+            epochs=(AccountEpoch(date(2025, 1, 1), Config(tariff="E-TOU-C")),),
+        )
+        barrier = Barrier(2)
+        original_replace = Path.replace
+
+        def delayed_replace(source: Path, target: Path) -> Path:
+            with suppress(BrokenBarrierError):
+                barrier.wait(timeout=0.2)
+            return original_replace(source, target)
+
+        def save(candidate: AccountProfile) -> str:
+            try:
+                repository.save("home", candidate)
+            except ProfileConflictError:
+                return "conflict"
+            return "saved"
+
+        monkeypatch.setattr(Path, "replace", delayed_replace)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            outcomes = tuple(executor.map(save, (first, second)))
+
+        assert sorted(outcomes) == ["conflict", "saved"]
+        assert repository.load("home").config_at(date(2026, 1, 1)).tariff in {
+            "EV2-A",
+            "E-TOU-C",
+        }
 
     def test_rejects_traversal_symlinks_and_corrupt_schema(self, tmp_path: Path) -> None:
         repository = NamedProfileRepository(tmp_path)

@@ -4,10 +4,9 @@ Every price this library returns comes from data under ``tariffkit/data``, and
 there is no runtime network access, so keeping prices correct is entirely a
 matter of keeping that data current. This package is how.
 
-It ships *inside* the library rather than sitting in a ``tools/`` directory
-because the data does: a released wheel that carries rates a user cannot refresh
-is only useful until the next advice letter. ``python -m tools.regen`` is the entry
-point.
+It remains in the repository's ``tools/`` tree and is deliberately excluded
+from the runtime distribution. Maintainers run ``python -m tools.regen`` to
+refresh the vendored data before publishing a release.
 
 Four datasets, and what proves each one right:
 

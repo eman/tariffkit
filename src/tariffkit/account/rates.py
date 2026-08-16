@@ -55,7 +55,7 @@ class AccountRateEngine:
     def describe(self, moment: datetime | None = None) -> dict[str, object]:
         """Return rate provenance plus the active profile epoch."""
         when = moment or now_pacific()
-        description = self._engine_at(when).describe()
+        description = self._engine_at(when).describe(when)
         description["account_profile"] = self.profile.name or None
         description["account_effective"] = self.profile.config_at(when).to_dict()
         return description

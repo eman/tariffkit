@@ -399,9 +399,20 @@ returns
   ],
   "quality": {"complete": true, "exact": true, "locked": true},
   "generated_at": "2026-08-16T00:00:03-07:00",
-  "provenance": {"utility": "PGE", "account_profile": "home", "export_vintage": "nbt26", "tariff_source": "https://..."}
+  "provenance": {
+    "segments": [
+      {"start": "2026-08-16T00:00:00-07:00", "end": "2026-08-17T00:00:00-07:00",
+       "utility": "PGE", "tariff": "E-ELEC", "account_profile": "home",
+       "export_vintage": "nbt26", "tariff_source": "https://..."}
+    ]
+  }
 }
 ```
+
+Provenance is effective-dated over the requested window. A window crossing an
+account-profile epoch or tariff snapshot has one ordered entry per contiguous
+segment, each with exact `start` and `end` boundaries; it is never labeled with
+the coordinator's current configuration.
 
 Timestamps without an explicit UTC offset, and timestamps that fall on the
 autumn DST fold (ambiguous between `-07:00` and `-08:00`), are rejected with a
@@ -435,7 +446,13 @@ response_variable: emhass
   "resolution": 30,
   "quality": {"complete": true, "exact": true, "locked": true},
   "generated_at": "2026-08-16T09:00:03-07:00",
-  "provenance": {"utility": "PGE", "account_profile": "home", "export_vintage": "nbt26", "tariff_source": "https://..."}
+  "provenance": {
+    "segments": [
+      {"start": "2026-08-16T09:00:00-07:00", "end": "2026-08-17T09:00:00-07:00",
+       "utility": "PGE", "tariff": "E-ELEC", "account_profile": "home",
+       "export_vintage": "nbt26", "tariff_source": "https://..."}
+    ]
+  }
 }
 ```
 

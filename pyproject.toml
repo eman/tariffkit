@@ -82,7 +82,13 @@ packages = ["src/tariffkit"]
 
 [tool.hatch.build.targets.sdist]
 include = ["/src", "/tests", "/README.md", "/LICENSE", "/CHANGELOG.md"]
-exclude = ["/tests/test_regen.py"]
+# These exercise repository-only surfaces that are intentionally absent from
+# the sdist; keeping them would make its otherwise self-contained suite fail.
+exclude = [
+    "/tests/test_ha_component.py",
+    "/tests/test_packaging.py",
+    "/tests/test_regen.py",
+]
 
 [tool.ruff]
 line-length = 100

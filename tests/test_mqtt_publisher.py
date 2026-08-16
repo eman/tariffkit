@@ -204,6 +204,22 @@ def test_mqtt_settings_read_default_profile_from_shared_config(tmp_path: Path) -
     assert settings.profile == "home"
 
 
+def test_mqtt_environment_profile_overrides_config_alias(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        '[mqtt]\nbroker = "broker.local"\naccount = "old-account"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TARIFFKIT_ACCOUNT", "new-account")
+
+    settings = MqttSettings.load(config, tmp_path / "absent")
+
+    assert settings.profile == "new-account"
+    assert settings.account is None
+
+
 def test_mqtt_settings_accepts_account_alias() -> None:
     assert MqttSettings(broker="broker.local", account="home").profile == "home"
 

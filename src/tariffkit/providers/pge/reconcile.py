@@ -208,6 +208,11 @@ def observe_statement(
         raise ReconciliationError(
             "PG&E service-agreement evidence does not end at the statement's exact cycle end"
         )
+    for previous, current in pairwise(ordered):
+        if current.period.start != previous.period.end + timedelta(days=1):
+            raise ReconciliationError(
+                "PG&E service-agreement evidence must cover the cycle without gaps or overlaps"
+            )
 
     return AccountObservation(
         agreements=tuple(ordered),

@@ -271,7 +271,7 @@ When an advice letter or rate card update changes one of these tables:
 
    Adding a whole **schedule** works the same way: a new directory named for
    the tariff with `-` stripped (`E-TOU-C` → `etouc`) needs no code change, plus
-   an entry in `UTILITIES` in `tariffkit/regen/providers.py`. Omit `[periods].part_peak` if
+   an entry in `UTILITIES` in `tools/regen/providers.py`. Omit `[periods].part_peak` if
    the schedule has none, and omit `[discounts]` if the sheet does not publish
    CARE/FERA percentages — a requested discount then raises rather than
    borrowing another schedule's figure.

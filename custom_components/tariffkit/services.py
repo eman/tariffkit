@@ -11,7 +11,7 @@ import voluptuous as vol
 from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import selector, service
-from homeassistant.util.json import JsonObjectType
+from homeassistant.util.json import JsonObjectType, JsonValueType
 
 from tariffkit.errors import TariffKitError
 from tariffkit.interop import forecast_lists, resample
@@ -30,7 +30,7 @@ from .const import (
     SERVICE_GET_RATES,
     SUPPORTED_RESOLUTIONS,
 )
-from .coordinator import TariffKitCoordinator, TariffKitData, TariffKitQuality
+from .coordinator import TariffKitCoordinator, TariffKitQuality
 
 MAX_HOURS = 168
 
@@ -155,16 +155,68 @@ def _slots(
     return selected
 
 
-def _provenance(data: TariffKitData) -> JsonObjectType:
-    result: JsonObjectType = {}
-    for key in ("utility", "account_profile", "export_vintage", "tariff_source"):
-        if key not in data.provenance:
+_PROVENANCE_KEYS = (
+    "utility",
+    "tariff",
+    "supplier",
+    "tariff_effective",
+    "tariff_advice_letter",
+    "tariff_source",
+    "export_vintage",
+    "export_years",
+    "acc_plus",
+    "lock_end",
+    "account_profile",
+    "account_effective",
+)
+
+
+def _json_value(value: object) -> JsonValueType:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, Mapping):
+        if not all(isinstance(key, str) for key in value):
+            raise RuntimeError("provenance object keys must be strings")
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_json_value(item) for item in value]
+    raise RuntimeError(f"non-JSON provenance value: {value!r}")
+
+
+def _trim_provenance(data: Mapping[str, object]) -> JsonObjectType:
+    return {key: _json_value(data[key]) for key in _PROVENANCE_KEYS if key in data}
+
+
+def _provenance(coordinator: TariffKitCoordinator, slots: tuple[PricePoint, ...]) -> JsonObjectType:
+    segments: list[JsonValueType] = []
+    active: JsonObjectType | None = None
+    segment_start = slots[0].start
+    for slot in slots:
+        current = _trim_provenance(coordinator.engine.describe(slot.start))
+        if active is None:
+            active = current
             continue
-        value = data.provenance[key]
-        if value is not None and not isinstance(value, str | int | float | bool):
-            raise RuntimeError(f"non-JSON provenance value for {key}")
-        result[key] = value
-    return result
+        if current == active:
+            continue
+        segments.append(
+            {
+                "start": segment_start.isoformat(),
+                "end": slot.start.isoformat(),
+                **active,
+            }
+        )
+        active = current
+        segment_start = slot.start
+    if active is None:
+        raise RuntimeError("cannot describe provenance for an empty rate window")
+    segments.append(
+        {
+            "start": segment_start.isoformat(),
+            "end": slots[-1].end.isoformat(),
+            **active,
+        }
+    )
+    return {"segments": segments}
 
 
 def _quality(quality: TariffKitQuality) -> JsonObjectType:
@@ -200,7 +252,7 @@ def _rates_response(
         ],
         "quality": _quality(quality),
         "generated_at": now_pacific().isoformat(),
-        "provenance": _provenance(coordinator.data),
+        "provenance": _provenance(coordinator, slots),
     }
 
 
@@ -219,7 +271,7 @@ def _emhass_response(
         "resolution": resolution,
         "quality": _quality(TariffKitQuality.from_points(tuple(slots))),
         "generated_at": now_pacific().isoformat(),
-        "provenance": _provenance(coordinator.data),
+        "provenance": _provenance(coordinator, slots),
     }
 
 

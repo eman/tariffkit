@@ -63,9 +63,10 @@ class RateEngine:
         """Base Services Charge in $/day, excluded from the per-kWh prices."""
         return self.tariff.daily_fixed_charge(to_pacific(moment or now_pacific()))
 
-    def describe(self) -> dict[str, object]:
-        """Provenance for the data backing this engine."""
-        snapshot = self.tariff.snapshot_for(now_pacific())
+    def describe(self, moment: datetime | None = None) -> dict[str, object]:
+        """Provenance for the data backing this engine at ``moment``."""
+        when = to_pacific(moment or now_pacific())
+        snapshot = self.tariff.snapshot_for(when)
         low, high = self.export_rates.covered_years
         return {
             "utility": self.config.utility,

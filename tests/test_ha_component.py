@@ -532,14 +532,37 @@ async def test_options_import_branch_replaces_profile(
 
     imported = AccountProfile(
         (AccountEpoch(date(2026, 1, 1), Config(tariff="EV2-A")),),
-        name="imported",
+        name="",
     )
     result = await hass.config_entries.options.async_configure(
         flow_id,
         {"profile_json": json.dumps(imported.to_dict())},
     )
     assert result["type"] == "create_entry"
-    assert result["data"][CONF_PROFILE]["name"] == "imported"
+    assert result["data"][CONF_PROFILE]["name"] is None
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_options_import_rejects_a_different_profile_name(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    flow_id = result["flow_id"]
+    result = await hass.config_entries.options.async_configure(flow_id, {"next_step_id": "history"})
+    result = await hass.config_entries.options.async_configure(flow_id, {"next_step_id": "import"})
+    imported = AccountProfile(
+        (AccountEpoch(date(2026, 1, 1), Config(tariff="EV2-A")),),
+        name="other-account",
+    )
+
+    result = await hass.config_entries.options.async_configure(
+        flow_id,
+        {"profile_json": json.dumps(imported.to_dict())},
+    )
+
+    assert result["type"] == "form"
+    assert result["errors"] == {"base": "invalid_profile"}
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
@@ -557,6 +580,21 @@ async def test_transition_forecast_crosses_profile_epoch(
     )
     assert coordinator.engine.describe(curve[0].start)["account_effective"]["tariff"] == "E-ELEC"
     assert coordinator.engine.describe(curve[1].start)["account_effective"]["tariff"] == "EV2-A"
+    result = await hass.services.async_call(
+        DOMAIN,
+        SERVICE_GET_RATES,
+        {
+            "config_entry": entry.entry_id,
+            "start": "2026-08-15T23:00:00-07:00",
+            "horizon": 2,
+        },
+        blocking=True,
+        return_response=True,
+    )
+    assert result is not None
+    segments = result["provenance"]["segments"]
+    assert [segment["tariff"] for segment in segments] == ["E-ELEC", "EV2-A"]
+    assert segments[0]["end"] == segments[1]["start"]
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")

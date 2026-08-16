@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import re
 import stat
 import tempfile
+import threading
 import tomllib
-from collections.abc import Mapping
-from contextlib import suppress
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 from ..config import default_config_path
@@ -26,6 +28,8 @@ from .model import AccountProfile
 _NAME = re.compile(r"^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$")
 _MODE_DIR = 0o700
 _MODE_FILE = 0o600
+_THREAD_LOCKS: dict[Path, threading.Lock] = {}
+_THREAD_LOCKS_GUARD = threading.Lock()
 
 
 def validate_profile_name(name: str) -> str:
@@ -139,7 +143,6 @@ class NamedProfileRepository:
             base = root.parent.parent
             self._check_no_symlink_components(base)
             base.mkdir(mode=_MODE_DIR, parents=True, exist_ok=True)
-            base.chmod(_MODE_DIR)
             for current in (root.parent, root):
                 self._check_no_symlink_components(current)
                 current.mkdir(mode=_MODE_DIR, exist_ok=True)
@@ -214,36 +217,33 @@ class NamedProfileRepository:
         """Atomically save a validated profile with optimistic concurrency."""
         path = self.path_for(name)
         replacement = _json_bytes(profile, name=name)
-        original = self._read_existing(path)
-        original_revision = None if original is None else _revision(original)
-        expected = expected_revision
-        if expected is None:
-            expected = getattr(profile, "_revision", None)
-        if original_revision != expected:
-            raise ProfileConflictError(f"profile {name!r} changed; reload it before saving")
-        fd, temporary_name = tempfile.mkstemp(prefix=f".{name}.", suffix=".tmp", dir=self.directory)
-        temporary = Path(temporary_name)
-        try:
-            os.fchmod(fd, _MODE_FILE)
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(replacement)
-                handle.flush()
-                os.fsync(handle.fileno())
-            current = self._read_existing(path)
-            current_revision = None if current is None else _revision(current)
-            if current_revision != original_revision:
-                raise ProfileConflictError(f"profile {name!r} changed while it was being saved")
-            temporary.replace(path)
-            self._check_no_symlink(path)
-            path.chmod(_MODE_FILE)
-            self._fsync_directory()
-        except ProfileConflictError:
-            raise
-        except OSError as exc:
-            raise ProfileStorageError(f"could not save profile {name!r}") from exc
-        finally:
-            with suppress(FileNotFoundError):
-                temporary.unlink()
+        with self._profile_lock(name):
+            original = self._read_existing(path)
+            original_revision = None if original is None else _revision(original)
+            expected = expected_revision
+            if expected is None:
+                expected = getattr(profile, "_revision", None)
+            if original_revision != expected:
+                raise ProfileConflictError(f"profile {name!r} changed; reload it before saving")
+            fd, temporary_name = tempfile.mkstemp(
+                prefix=f".{name}.", suffix=".tmp", dir=self.directory
+            )
+            temporary = Path(temporary_name)
+            try:
+                os.fchmod(fd, _MODE_FILE)
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(replacement)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                temporary.replace(path)
+                self._check_no_symlink(path)
+                path.chmod(_MODE_FILE)
+                self._fsync_directory()
+            except OSError as exc:
+                raise ProfileStorageError(f"could not save profile {name!r}") from exc
+            finally:
+                with suppress(FileNotFoundError):
+                    temporary.unlink()
         saved = AccountProfile(
             epochs=profile.epochs,
             name=name,
@@ -256,17 +256,46 @@ class NamedProfileRepository:
     def delete(self, name: str, *, expected_revision: str | None = None) -> None:
         """Delete a profile only if its revision is the one the caller read."""
         path = self.path_for(name)
-        original = self._read_existing(path)
-        if original is None:
-            raise ProfileNotFoundError(f"profile {name!r} does not exist")
-        revision = _revision(original)
-        if expected_revision is not None and revision != expected_revision:
-            raise ProfileConflictError(f"profile {name!r} changed; reload it before deleting")
-        try:
-            path.unlink()
-            self._fsync_directory()
-        except OSError as exc:
-            raise ProfileStorageError(f"could not delete profile {name!r}") from exc
+        with self._profile_lock(name):
+            original = self._read_existing(path)
+            if original is None:
+                raise ProfileNotFoundError(f"profile {name!r} does not exist")
+            revision = _revision(original)
+            if expected_revision is not None and revision != expected_revision:
+                raise ProfileConflictError(f"profile {name!r} changed; reload it before deleting")
+            try:
+                path.unlink()
+                self._fsync_directory()
+            except OSError as exc:
+                raise ProfileStorageError(f"could not delete profile {name!r}") from exc
+
+    @contextmanager
+    def _profile_lock(self, name: str) -> Iterator[None]:
+        """Serialize revision checks and mutations across threads and processes."""
+        lock_path = self.directory / f".{validate_profile_name(name)}.lock"
+        self._check_no_symlink_components(lock_path)
+        resolved = lock_path.resolve()
+        with _THREAD_LOCKS_GUARD:
+            thread_lock = _THREAD_LOCKS.setdefault(resolved, threading.Lock())
+        with thread_lock:
+            flags = os.O_CREAT | os.O_RDWR
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            descriptor: int | None = None
+            try:
+                descriptor = os.open(lock_path, flags, _MODE_FILE)
+                os.fchmod(descriptor, _MODE_FILE)
+                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                    raise ProfileStorageError(f"profile lock is not a regular file: {lock_path}")
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                yield
+            except OSError as exc:
+                raise ProfileStorageError(f"could not lock profile {name!r}") from exc
+            finally:
+                if descriptor is not None:
+                    with suppress(OSError):
+                        fcntl.flock(descriptor, fcntl.LOCK_UN)
+                    os.close(descriptor)
 
     def _read_existing(self, path: Path) -> bytes | None:
         self._check_no_symlink_components(path)

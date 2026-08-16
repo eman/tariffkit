@@ -912,6 +912,8 @@ class TariffKitOptionsFlow(OptionsFlow):
                 if not isinstance(raw, str):
                     raise AccountError("profile export must be JSON text")
                 imported = AccountProfile.from_json(raw)
+                if imported.name != self._profile().name:
+                    raise AccountError("imported profile name must match this config entry")
                 return self._save_profile(imported)
             except (AccountError, json.JSONDecodeError, TypeError, ValueError) as err:
                 errors = {"base": "invalid_profile", "detail": str(err)}

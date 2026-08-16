@@ -84,6 +84,12 @@ class MqttSettings:
             ):
                 if key in table:
                     values[key] = table[key]
+        configured_aliases = {str(values[key]) for key in ("profile", "account") if values.get(key)}
+        if len(configured_aliases) > 1:
+            raise ConfigError("profile and account selections disagree")
+        values.pop("account", None)
+        if configured_aliases:
+            values["profile"] = configured_aliases.pop()
 
         env = {**load_dotenv(dotenv_path), **os.environ}
         for key, name in (
@@ -95,13 +101,10 @@ class MqttSettings:
         ):
             if value := env.get(name):
                 values[key] = value
-        if not values.get("profile") and values.get("account"):
-            values["profile"] = values["account"]
-        if not values.get("profile"):
-            for name in ("TARIFFKIT_ACCOUNT", "TARIFFKIT_PROFILE"):
-                if value := env.get(name):
-                    values["profile"] = value
-                    break
+        for name in ("TARIFFKIT_ACCOUNT", "TARIFFKIT_PROFILE"):
+            if value := env.get(name):
+                values["profile"] = value
+                break
         if not values.get("profile"):
             values["profile"] = configured_profile_name(config_path)
         if not values.get("username"):

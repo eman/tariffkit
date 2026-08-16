@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -78,6 +78,27 @@ def test_statement_adapter_keeps_exact_spans_and_only_sanitized_facts() -> None:
     assert observed.account_suffix == "****9999"
     assert observed.source_digest == hash_pdf(b"statement")
     assert "9999999999" not in evidence.to_dict().__repr__()
+
+
+@pytest.mark.parametrize("second_offset", [0, 2])
+def test_statement_adapter_rejects_overlapping_or_gapped_agreements(
+    second_offset: int,
+) -> None:
+    pages = STATEMENT_FIXTURE.read_text(encoding="utf-8").split("\x0c")
+    statement = parse_statement(pages)
+    agreement = statement.agreements[0]
+    boundary = statement.period.start + timedelta(days=10)
+    first = replace(
+        agreement,
+        period=BillingPeriod(statement.period.start, boundary),
+    )
+    second = replace(
+        agreement,
+        period=BillingPeriod(boundary + timedelta(days=second_offset), statement.period.end),
+    )
+
+    with pytest.raises(ReconciliationError, match="without gaps or overlaps"):
+        observe_statement(replace(statement, agreements=(first, second)), pdf=b"statement")
 
 
 def test_reconcile_adds_only_printed_fact_and_preserves_unobserved_config() -> None:

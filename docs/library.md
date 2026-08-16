@@ -148,6 +148,13 @@ engine.describe()
 #  'acc_plus': 0.0088, 'lock_end': '2035-06-02', ...}
 ```
 
+Pass an offset-aware datetime to resolve effective-dated provenance for a
+historical or future price rather than the current snapshot:
+
+```python
+engine.describe(moment)
+```
+
 ## Errors
 
 All inherit `TariffKitError`:

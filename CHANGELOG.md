@@ -229,6 +229,19 @@ $468.42 modelled against $468.41 billed.
   values to an old cycle.
 
 ### Fixed
+- Named account-profile updates now lock each profile across the revision check
+  and filesystem mutation, preventing simultaneous writers or deletes from
+  silently replacing a revision they did not read. Profile storage also leaves
+  the caller-owned XDG root's permissions unchanged.
+- Effective-dated provenance now resolves at the priced timestamp in the core
+  engine and Home Assistant actions. Action responses describe contiguous
+  provenance segments when a requested window crosses a tariff or account
+  epoch instead of labeling the whole result with the coordinator's current
+  configuration.
+- Statement-derived account updates reject gaps and overlaps between printed
+  service-agreement spans, Home Assistant profile imports cannot change a
+  config entry's stable profile identity, and MQTT environment profile
+  selection correctly overrides legacy aliases in the config file.
 - **The baseline credit is applied per day at each day's own rate.** It had been
   read once at the cycle start, which put December's rate on all 300.70 kWh of a
   cycle the statement splits at 19.40 kWh @ $0.10084 and 281.30 @ $0.09566.
