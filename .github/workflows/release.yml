@@ -175,7 +175,11 @@ jobs:
 
   publish-pypi:
     name: Approve and publish exact build to PyPI
-    if: inputs.mode == 'release'
+    if: >-
+      always() &&
+      inputs.mode == 'release' &&
+      needs.build.result == 'success' &&
+      needs.draft-release.result == 'success'
     needs: [build, draft-release]
     runs-on: ubuntu-latest
     environment:
@@ -194,7 +198,10 @@ jobs:
 
   publish-github:
     name: Publish immutable GitHub release
-    if: inputs.mode == 'release'
+    if: >-
+      always() &&
+      inputs.mode == 'release' &&
+      needs.publish-pypi.result == 'success'
     needs: publish-pypi
     runs-on: ubuntu-latest
     permissions:

@@ -108,6 +108,10 @@ All notable changes to this project are documented here. This project follows
   repository.
 
 ### Fixed
+- Production publishing no longer inherits a false implicit failure from the
+  intentionally skipped optional TestPyPI job. The explicit release dependency
+  checks now permit protected PyPI and GitHub publication only after the build
+  and draft jobs themselves succeed.
 - Account-profile updates no longer race between revision checks and filesystem
   mutation, statement-derived histories reject gaps and overlaps, imported Home
   Assistant profiles cannot replace an entry's stable identity, and MQTT
