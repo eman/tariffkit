@@ -148,7 +148,9 @@ while only one distribution exists.
 
 ## Packaging baseline
 
-- Python 3.14 remains the declared and tested floor.
+- Python 3.14.2 is the declared and tested floor. Home Assistant 2026.3.0 is
+  the matching integration floor because it is the first release on that
+  Python patch line.
 - Standardized `[project]` metadata is used (PEP 621).
 - The MIT license uses an SPDX expression and declared license files (PEP 639).
 - Runtime features use optional dependencies; development tools use dependency

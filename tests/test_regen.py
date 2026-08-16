@@ -105,6 +105,38 @@ class TestCells:
         assert sheets.cells("$0.04638  $0.04638  $0.04638") == [0.04638] * 3
 
 
+class TestTrailingCells:
+    @pytest.mark.parametrize(
+        ("line", "expected"),
+        [
+            (
+                "Summer Usage $0.26299  $0.16388  $0.11878",
+                ("Summer Usage", [0.26299, 0.16388, 0.11878]),
+            ),
+            (
+                "Nuclear Decommissioning (all usage) ($0.00002) ($0.00002) (L)",
+                ("Nuclear Decommissioning (all usage)", [-0.00002, -0.00002]),
+            ),
+            ("P 13.5 (R) 11.0 (R) 15.2 (R) 26.0 (R)", ("P", [13.5, 11.0, 15.2, 26.0])),
+        ],
+    )
+    def test_published_rows_are_preserved(
+        self, line: str, expected: tuple[str, list[float]]
+    ) -> None:
+        assert sheets.rate_lines(line) == [expected]
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "not a row $0.12345" + " " * 10_000 + "x",
+            "not a row " + "$0.12345 " * 5_000 + "x",
+            "not a row " + "1" * 10_000 + "x",
+        ],
+    )
+    def test_codeql_redos_witnesses_do_not_match_trailing_prose(self, line: str) -> None:
+        assert sheets.rate_lines(line) == []
+
+
 class TestLabels:
     @pytest.mark.parametrize(
         ("raw", "expected"),

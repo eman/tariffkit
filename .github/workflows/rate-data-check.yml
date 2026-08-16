@@ -10,19 +10,24 @@ on:
     - cron: "17 13 * * 1"
   workflow_dispatch:
 
-# The whole job exists to open an issue, and the default token for a scheduled
-# run cannot. Without this it failed with "Resource not accessible by
-# integration" every week, so a check that was reporting stale data reported it
-# to nobody.
 permissions:
   contents: read
-  issues: write
+
+concurrency:
+  group: rate-data-check
+  cancel-in-progress: false
 
 jobs:
-  check:
+  compare:
+    name: Compare vendored data
     runs-on: ubuntu-latest
+    outputs:
+      export_outcome: ${{ steps.export.outcome }}
+      retail_outcome: ${{ steps.retail.outcome }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
       - run: uv sync --group regen
       - name: Compare vendored export rates against the utility
@@ -43,11 +48,24 @@ jobs:
       # and because the dedupe below returns early while an open rate-data
       # issue exists, one such false alarm left open silences every real one
       # after it.
+  report:
+    name: Report upstream changes
+    needs: compare
+    if: >-
+      always() && (needs.compare.outputs.export_outcome == 'failure'
+      || needs.compare.outputs.retail_outcome == 'failure')
+    runs-on: ubuntu-latest
+    # Scheduled tokens cannot create issues without this job-scoped grant.
+    # Keeping it off the comparison job prevents downloaded publisher data or
+    # regeneration tooling from receiving repository write access.
+    permissions:
+      issues: write # Creates the deduplicated stale-rate-data issue.
+    steps:
       - name: Open an issue when upstream has moved
-        if: >-
-          always() && (steps.export.outcome == 'failure'
-          || steps.retail.outcome == 'failure')
-        uses: actions/github-script@v9
+        env:
+          EXPORT_OUTCOME: ${{ needs.compare.outputs.export_outcome }}
+          RETAIL_OUTCOME: ${{ needs.compare.outputs.retail_outcome }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const title = 'Vendored rate data is out of date with PG&E';
@@ -66,8 +84,8 @@ jobs:
               body: [
                 'The scheduled check found upstream rate data differing from what is vendored.',
                 '',
-                `- export rates (\`tools.regen.export\`): **${{ steps.export.outcome }}**`,
-                `- retail tariffs (\`tools.regen\`): **${{ steps.retail.outcome }}**`,
+                `- export rates (\`tools.regen.export\`): **${process.env.EXPORT_OUTCOME}**`,
+                `- retail tariffs (\`tools.regen\`): **${process.env.RETAIL_OUTCOME}**`,
                 '',
                 'To refresh whichever failed:',
                 '```bash',

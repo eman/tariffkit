@@ -8,10 +8,37 @@ All notable changes to this project are documented here. This project follows
 ### Added
 - Project documentation now uses a TariffKit banner built from the integration's
   existing icon and a provider-neutral electricity rate curve.
+- Public contribution and support guidance now provides privacy-safe issue
+  forms, private security routing, review ownership, a pull request checklist,
+  community conduct expectations, and exact development checks. The guidance
+  also makes the generated-data and repository-only audit boundaries explicit
+  so public collaboration does not expose utility-account material or alter
+  distribution guarantees.
+- Pull requests now run GitHub's dependency review action with read-only
+  permissions so vulnerable or disallowed dependency changes fail before merge.
 
 ### Changed
+- **Python 3.14.2 and Home Assistant 2026.3.0 are now the supported floors.**
+  The lockfile no longer carries the obsolete Home Assistant 2026.2 fallback,
+  and CI audits the complete locked dependency graph with a pinned `pip-audit`
+  release while retaining raw reports as failure artifacts. The Linux secrets
+  extra and Home Assistant tests both inherit the same exact cryptography pin;
+  an expiring policy requires each audit to report exactly its three known,
+  unreachable advisories and rejects any additional finding.
 - The README now explains that default HACS approval may take months and gives
   complete custom-repository installation steps for use during the review.
+- Workflow actions are pinned to reviewed immutable commits, checkout credentials
+  are not persisted, superseded runs are bounded by concurrency controls, and
+  repository write access is isolated to the jobs that publish results.
+- MQTT now rejects credentials over plaintext unless the operator explicitly
+  allows insecure authentication for an isolated trusted network. Passwords
+  also require a username, while anonymous plaintext publishing remains valid.
+
+### Fixed
+- Rate-sheet regeneration now scans trailing table cells with a linear parser,
+  avoiding pathological regular-expression backtracking on malformed publisher
+  text while preserving accepted dollar, decimal, negative, and change-marker
+  forms.
 
 ## [0.2.1] - 2026-08-16
 

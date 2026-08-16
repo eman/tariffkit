@@ -49,10 +49,26 @@ class MqttSettings:
     forecast_hours: int = 48
     client_id: str = "tariffkit"
     tls: bool = False
+    allow_insecure_auth: bool = False
     profile: str | None = None
     account: str | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.tls, bool):
+            raise ConfigError("MQTT tls must be a boolean")
+        if not isinstance(self.allow_insecure_auth, bool):
+            raise ConfigError("MQTT allow_insecure_auth must be a boolean")
+        if self.password is not None and not self.username:
+            raise ConfigError("MQTT password requires a username")
+        if (
+            (self.username is not None or self.password is not None)
+            and not self.tls
+            and not self.allow_insecure_auth
+        ):
+            raise ConfigError(
+                "MQTT credentials require TLS; enable tls or explicitly set "
+                "allow_insecure_auth for an isolated trusted network"
+            )
         if self.profile is not None and self.account is not None and self.profile != self.account:
             raise ConfigError("profile and account selections disagree")
         if self.profile is None:
@@ -79,6 +95,7 @@ class MqttSettings:
                 "forecast_hours",
                 "client_id",
                 "tls",
+                "allow_insecure_auth",
                 "profile",
                 "account",
             ):
@@ -101,6 +118,17 @@ class MqttSettings:
         ):
             if value := env.get(name):
                 values[key] = value
+        if value := env.get("TARIFFKIT_MQTT_ALLOW_INSECURE_AUTH"):
+            normalized = value.casefold()
+            if normalized in {"1", "true", "yes", "on"}:
+                values["allow_insecure_auth"] = True
+            elif normalized in {"0", "false", "no", "off"}:
+                values["allow_insecure_auth"] = False
+            else:
+                raise ConfigError(
+                    "TARIFFKIT_MQTT_ALLOW_INSECURE_AUTH must be a boolean "
+                    "(true/false, yes/no, on/off, or 1/0)"
+                )
         for name in ("TARIFFKIT_ACCOUNT", "TARIFFKIT_PROFILE"):
             if value := env.get(name):
                 values["profile"] = value
@@ -177,7 +205,7 @@ class MqttPublisher:
         Kept separate from construction to allow dependency injection of the client
         while still exercising this logic.
         """
-        if self.settings.username:
+        if self.settings.username is not None:
             client.username_pw_set(self.settings.username, self.settings.password)
         if self.settings.tls:
             client.tls_set()

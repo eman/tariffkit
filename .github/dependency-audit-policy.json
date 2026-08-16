@@ -1,0 +1,33 @@
+{
+  "expires": "2026-09-01",
+  "package": {
+    "name": "cryptography",
+    "version": "48.0.1"
+  },
+  "advisories": [
+    "PYSEC-2026-3552",
+    "PYSEC-2026-3553",
+    "PYSEC-2026-3554"
+  ],
+  "scope": "linux-production-extra-and-development",
+  "dependency_paths": {
+    "production": [
+      "secrets extra",
+      "keyring==25.7.0",
+      "SecretStorage==3.5.0",
+      "cryptography==48.0.1"
+    ],
+    "development": [
+      "all extras through keyring==25.7.0 -> SecretStorage==3.5.0",
+      "dev dependency group",
+      "pytest-homeassistant-custom-component==0.13.356",
+      "homeassistant==2026.8.2",
+      "cryptography==48.0.1"
+    ]
+  },
+  "reachability": "On Linux, the secrets extra brings cryptography in through keyring and SecretStorage; the full development graph also brings it through the Home Assistant test stack. TariffKit uses keyring's high-level password storage API and does not import cryptography or call the affected PKCS#7 decryption and X.509 verification APIs.",
+  "tracking": [
+    "https://pypi.org/project/homeassistant/",
+    "https://pypi.org/project/pytest-homeassistant-custom-component/"
+  ]
+}

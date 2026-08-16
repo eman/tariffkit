@@ -9,7 +9,7 @@ description = "Offline electricity tariff pricing, billing, and integration tool
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-requires-python = ">=3.14"
+requires-python = ">=3.14.2"
 keywords = ["pge", "nem3", "net-billing-tariff", "solar", "battery", "home-assistant", "energy", "tariff"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -61,11 +61,15 @@ release = [
     "packaging>=25",
     "twine>=6.2",
 ]
+security = [
+    "pip-audit==2.10.1",
+]
 dev = [
     { include-group = "test" },
     { include-group = "quality" },
     { include-group = "regen" },
     { include-group = "release" },
+    { include-group = "security" },
     "fastapi>=0.110",
     "paho-mqtt>=2.0",
     "pytest-homeassistant-custom-component>=0.13.316",

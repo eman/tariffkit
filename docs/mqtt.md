@@ -25,6 +25,10 @@ tariffkit mqtt --broker 192.168.1.100 --once -v
 
 # run continuously
 tariffkit mqtt --broker 192.168.1.100
+
+# authenticated broker: credentials are only sent over TLS
+TARIFFKIT_MQTT_USERNAME=tariffkit TARIFFKIT_MQTT_PASSWORD=secret \
+  tariffkit mqtt --broker mqtt.example --port 8883 --tls
 ```
 
 | Flag | Default | |
@@ -33,6 +37,7 @@ tariffkit mqtt --broker 192.168.1.100
 | `--port` | 1883 | |
 | `--username` | keyring/environment | Store `mqtt.password` with `tariffkit credentials set`; passwords are not accepted in argv |
 | `--tls` | off | |
+| `--allow-insecure-auth` | off | Permit credentials without TLS only on an isolated trusted network |
 | `--topic-prefix` | `tariffkit` | |
 | `--forecast-hours` | 48 | Hours in the forecast payload |
 | `--no-discovery` | n/a | Skip the Home Assistant discovery config |
@@ -40,6 +45,23 @@ tariffkit mqtt --broker 192.168.1.100
 
 It sleeps until the next hour boundary rather than polling, so it costs
 essentially nothing to leave running.
+
+Supplying a username or password without TLS is rejected, and a password always
+requires a username. Anonymous plaintext connections remain supported. For an
+authenticated broker, use TLS on port 8883:
+
+```toml
+[mqtt]
+broker = "mqtt.example"
+port = 8883
+tls = true
+```
+
+If a broker on an isolated LAN cannot support TLS, explicitly acknowledge the
+risk with `allow_insecure_auth = true`, `--allow-insecure-auth`, or
+`TARIFFKIT_MQTT_ALLOW_INSECURE_AUTH=true`. Credentials can then be observed by
+anyone able to inspect that network, so this escape hatch is not appropriate
+across the internet or an untrusted LAN.
 
 ## Topics
 

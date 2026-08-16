@@ -96,10 +96,10 @@ services:
 
   mqtt:
     image: ghcr.io/eman/tariffkit:0.2.1
-    command: ["tariffkit", "mqtt"]
+    command: ["tariffkit", "mqtt", "--port", "8883", "--tls"]
     environment:
       XDG_CONFIG_HOME: /config
-      TARIFFKIT_MQTT_BROKER: mosquitto
+      TARIFFKIT_MQTT_BROKER: mqtt.example
       TARIFFKIT_MQTT_USERNAME: tariffkit
       TARIFFKIT_MQTT_PASSWORD: ${TARIFFKIT_MQTT_PASSWORD:?set in the deployment environment}
     volumes:
@@ -127,10 +127,14 @@ proxy. It has no built-in authentication and should not be exposed directly to
 the internet.
 
 The MQTT publisher requires outbound broker access but publishes no listening
-port. Inject its password from the deployment platform's secret store. Compose
-environment interpolation is the currently supported path; native Docker
-secret files would require adding a `TARIFFKIT_MQTT_PASSWORD_FILE` setting
-before adopting this as a production stack.
+port. Authenticated connections must use TLS, conventionally on port 8883.
+Inject its password from the deployment platform's secret store. Compose
+environment interpolation is the currently supported path; native Docker secret
+files would require adding a `TARIFFKIT_MQTT_PASSWORD_FILE` setting before
+adopting this as a production stack. A broker confined to an isolated trusted
+LAN may set `TARIFFKIT_MQTT_ALLOW_INSECURE_AUTH=true`, but that explicit escape
+hatch sends credentials without transport encryption and must not be used on an
+untrusted network.
 
 ### Image and release requirements
 

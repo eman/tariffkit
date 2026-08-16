@@ -216,6 +216,12 @@ def build_parser() -> argparse.ArgumentParser:
     mqtt.add_argument("--forecast-hours", type=int)
     mqtt.add_argument("--tls", action="store_true", default=None)
     mqtt.add_argument(
+        "--allow-insecure-auth",
+        action="store_true",
+        default=None,
+        help="allow MQTT credentials without TLS on an isolated trusted network",
+    )
+    mqtt.add_argument(
         "--no-discovery",
         dest="discovery",
         action="store_false",
@@ -601,6 +607,7 @@ def _mqtt_settings(args: Any, *, config: Config | None, profile_name: str | None
         discovery=args.discovery,
         forecast_hours=args.forecast_hours,
         tls=args.tls,
+        allow_insecure_auth=args.allow_insecure_auth,
         profile=profile_name,
     )
     if config is not None and settings.profile is not None:

@@ -1,0 +1,72 @@
+name: Bug report
+description: Report a reproducible TariffKit defect with public-safe evidence.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve TariffKit.
+
+        **Do not include secrets, credentials, `.env` contents, bills or statement PDFs, account or meter identifiers, Home Assistant diagnostics, Green Button exports, or raw portal responses.** Use synthetic, sanitized data. Report security vulnerabilities through [private vulnerability reporting](https://github.com/eman/tariffkit/security/advisories/new).
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Public-report safety
+      options:
+        - label: I removed secrets, bills/statements, account identifiers, `.env` contents, diagnostics, exports, and portal responses.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: TariffKit version
+      description: Run `tariffkit --version`; do not paste unrelated environment output.
+      placeholder: 0.2.1
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: 3.14.2
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected surface
+      options:
+        - Library
+        - CLI
+        - Billing
+        - Home Assistant
+        - MQTT
+        - REST API
+        - Packaging or installation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the observed and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: Provide the smallest synthetic example and exact commands needed to reproduce it.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Sanitized context
+      description: Add relevant traceback or configuration with all private data removed.
+

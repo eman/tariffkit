@@ -5,19 +5,29 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
+    name: Test and type-check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
       # One version, matching `requires-python`. The matrix used to span 3.11
       # to 3.13 and never tested the version actually developed against, so a
       # regression could only be found on a version nobody runs.
-      - run: uv python install 3.14
-      - run: uv sync --all-extras --group dev --python 3.14
+      - run: uv python install 3.14.2
+      - run: uv sync --all-extras --group dev --python 3.14.2
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy
@@ -27,10 +37,90 @@ jobs:
       # listing it would break `pytest` on an unpacked sdist.
       - run: uv run pytest audit/tests
 
-  build:
+  dependency-audit:
+    name: Audit locked dependencies
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      - run: uv python install 3.14.2
+      - name: Export locked dependency graphs
+        run: |
+          uv export --locked --all-extras --no-default-groups --python 3.14.2 \
+            --no-emit-project --output-file pip-audit-production-requirements.txt
+          uv export --locked --all-extras --all-groups --python 3.14.2 \
+            --no-emit-project --output-file pip-audit-development-requirements.txt
+      - name: Audit dependency graphs against exception policy
+        run: |
+          set +e
+          uv run --locked --only-group security --python 3.14.2 pip-audit \
+            --requirement pip-audit-production-requirements.txt \
+            --disable-pip \
+            --format json --output pip-audit-production.json
+          production_status=$?
+          uv run --locked --only-group security --python 3.14.2 pip-audit \
+            --requirement pip-audit-development-requirements.txt \
+            --disable-pip \
+            --format json --output pip-audit-development.json
+          development_status=$?
+          set -e
+          PRODUCTION_STATUS="$production_status" DEVELOPMENT_STATUS="$development_status" \
+            uv run --locked --only-group security --python 3.14.2 python - <<'PY'
+          import datetime
+          import json
+          import os
+          from pathlib import Path
+
+          policy = json.loads(Path(".github/dependency-audit-policy.json").read_text())
+          expected = {
+              (policy["package"]["name"], policy["package"]["version"], advisory)
+              for advisory in policy["advisories"]
+          }
+          if datetime.date.today() >= datetime.date.fromisoformat(policy["expires"]):
+              raise SystemExit(f"dependency audit exception expired on {policy['expires']}")
+          for scope in ("production", "development"):
+              status = int(os.environ[f"{scope.upper()}_STATUS"])
+              report = json.loads(Path(f"pip-audit-{scope}.json").read_text())
+              actual = {
+                  (dependency["name"], dependency["version"], vulnerability["id"])
+                  for dependency in report["dependencies"]
+                  for vulnerability in dependency["vulns"]
+              }
+              if status != 1:
+                  raise SystemExit(
+                      f"{scope} dependency audit did not report the tracked vulnerabilities"
+                  )
+              if actual != expected:
+                  raise SystemExit(
+                      f"{scope} dependency audit policy mismatch: "
+                      f"expected {sorted(expected)}, got {sorted(actual)}"
+                  )
+              print(f"Confirmed {scope} exceptions: {sorted(actual)}")
+          PY
+      - name: Upload dependency audit reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pip-audit
+          path: |
+            .github/dependency-audit-policy.json
+            pip-audit-development.json
+            pip-audit-development-requirements.txt
+            pip-audit-production.json
+            pip-audit-production-requirements.txt
+          if-no-files-found: warn
+
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
       - run: uv build --no-sources
       - name: Runtime files must have exact artifact boundaries
@@ -38,12 +128,14 @@ jobs:
           python -m zipfile -l dist/*.whl | grep -q 'tariffkit/data/export/pge/nbt26.json.gz'
           python -m zipfile -l dist/*.whl | grep -q 'tariffkit/data/holidays.toml'
           python -m zipfile -l dist/*.whl | grep -q 'tariffkit/py.typed'
-          ! python -m zipfile -l dist/*.whl | grep -q '^audit/'
-          ! python -m zipfile -l dist/*.whl | grep -q '^tools/'
-          ! python -m zipfile -l dist/*.whl | grep -q '/\.cache/'
-          ! tar -tzf dist/*.tar.gz | grep -q '/audit/'
-          ! tar -tzf dist/*.tar.gz | grep -q '/tools/'
-          ! tar -tzf dist/*.tar.gz | grep -q '/\.cache/'
+          if python -m zipfile -l dist/*.whl | grep -qE '^(audit|tools)/|/\.cache/'; then
+            echo "Repository-only files found in wheel" >&2
+            exit 1
+          fi
+          if tar -tzf dist/*.tar.gz | grep -qE '/(audit|tools)/|/\.cache/'; then
+            echo "Repository-only files found in sdist" >&2
+            exit 1
+          fi
       - name: Install and exercise the built wheel
         run: |
           uv run --no-project --with ./dist/*.whl python -c \
@@ -54,7 +146,7 @@ jobs:
           mkdir dist-from-sdist
           uv build dist/*.tar.gz --wheel --out-dir dist-from-sdist
           cmp dist/*.whl dist-from-sdist/*.whl
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist
           path: dist/

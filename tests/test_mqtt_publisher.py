@@ -23,8 +23,16 @@ class FakeClient:
         self.published: list[tuple[str, str, bool]] = []
         self.will: tuple[str, str, bool] | None = None
         self.connected: tuple[str, int] | None = None
+        self.auth: tuple[str, str | None] | None = None
+        self.tls = False
         self.loop_running = False
         self.disconnected = False
+
+    def username_pw_set(self, username: str, password: str | None = None) -> None:
+        self.auth = (username, password)
+
+    def tls_set(self) -> None:
+        self.tls = True
 
     def will_set(self, topic: str, payload: str, retain: bool = False) -> None:
         self.will = (topic, payload, retain)
@@ -80,6 +88,48 @@ def test_discovery_can_be_disabled() -> None:
     publisher = make_publisher(discovery=False)
     publisher.connect()
     assert not any(t.startswith("homeassistant/") for t in client_of(publisher).topics())
+
+
+def test_anonymous_plaintext_connection_is_allowed() -> None:
+    publisher = make_publisher()
+
+    assert client_of(publisher).auth is None
+    assert client_of(publisher).tls is False
+
+
+def test_authenticated_plaintext_connection_is_rejected() -> None:
+    with pytest.raises(ConfigError, match="credentials require TLS"):
+        make_publisher(username="user")
+
+
+def test_password_without_username_is_rejected_even_with_tls() -> None:
+    with pytest.raises(ConfigError, match="password requires a username"):
+        make_publisher(password="secret", tls=True)
+
+
+def test_insecure_auth_escape_hatch_must_be_boolean() -> None:
+    with pytest.raises(ConfigError, match="allow_insecure_auth must be a boolean"):
+        make_publisher(username="user", allow_insecure_auth="false")
+
+
+def test_authenticated_tls_connection_configures_auth_and_tls() -> None:
+    publisher = make_publisher(username="user", password="secret", tls=True, port=8883)
+
+    client = client_of(publisher)
+    assert client.auth == ("user", "secret")
+    assert client.tls is True
+
+
+def test_explicit_insecure_auth_allows_credentials_without_tls() -> None:
+    publisher = make_publisher(
+        username="user",
+        password="secret",
+        allow_insecure_auth=True,
+    )
+
+    client = client_of(publisher)
+    assert client.auth == ("user", "secret")
+    assert client.tls is False
 
 
 def test_publishes_known_values_retained(publisher: MqttPublisher) -> None:
@@ -202,6 +252,48 @@ def test_mqtt_settings_read_default_profile_from_shared_config(tmp_path: Path) -
     settings = MqttSettings.load(config, tmp_path / "absent")
 
     assert settings.profile == "home"
+
+
+def test_mqtt_settings_loads_insecure_auth_escape_hatch_from_toml(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        '[mqtt]\nbroker = "broker.local"\nallow_insecure_auth = true\n',
+        encoding="utf-8",
+    )
+
+    settings = MqttSettings.load(
+        config,
+        tmp_path / "absent",
+        username="user",
+        password="secret",
+    )
+
+    assert settings.allow_insecure_auth is True
+
+
+def test_mqtt_settings_loads_insecure_auth_escape_hatch_from_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TARIFFKIT_MQTT_BROKER", "broker.local")
+    monkeypatch.setenv("TARIFFKIT_MQTT_USERNAME", "user")
+    monkeypatch.setenv("TARIFFKIT_MQTT_ALLOW_INSECURE_AUTH", "true")
+
+    settings = MqttSettings.load(tmp_path / "absent", tmp_path / "absent-dotenv")
+
+    assert settings.allow_insecure_auth is True
+
+
+def test_mqtt_settings_rejects_invalid_insecure_auth_environment_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TARIFFKIT_MQTT_ALLOW_INSECURE_AUTH", "sometimes")
+
+    with pytest.raises(ConfigError, match="must be a boolean"):
+        MqttSettings.load(
+            tmp_path / "absent",
+            tmp_path / "absent-dotenv",
+            broker="broker.local",
+        )
 
 
 def test_mqtt_environment_profile_overrides_config_alias(
