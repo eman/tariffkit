@@ -32,6 +32,15 @@ LOCK_YEARS = 9
 _ONE_DAY = timedelta(days=1)
 
 
+def _env_bool(name: str, value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigError(f"{name} must be true or false")
+
+
 @dataclass(frozen=True, slots=True)
 class CcaConfig:
     """Settings for customers whose generation comes from a CCA or ESP.
@@ -104,6 +113,17 @@ class Config:
     #: electric. PG&E prints this as Code B or Code H; the bill's "Heat Source"
     #: line says which.
     baseline_code: BaselineCode = "basic"
+    #: Medical Baseline enrollment. Tiered schedules receive additional
+    #: baseline quantity; E-ELEC, E-TOU-D, and EV2-A receive D-MEDICAL.
+    medical_baseline: bool = False
+    medical_kwh_per_day: float | None = None
+
+    #: SmartRate is event-driven. Event dates and the date through which the
+    #: supplied calendar is authoritative are explicit so a missing future
+    #: event cannot be silently priced as an ordinary day.
+    smartrate: bool = False
+    smartrate_events: tuple[date, ...] = ()
+    smartrate_known_through: date | None = None
 
     cca: CcaConfig | None = None
 
@@ -134,6 +154,18 @@ class Config:
         object.__setattr__(self, "supplier", Supplier(self.supplier))
         if self.supplier is Supplier.CCA and self.cca is None:
             raise ConfigError("supplier='cca' requires a CcaConfig")
+        if self.smartrate and self.supplier is not Supplier.BUNDLED:
+            raise ConfigError("SmartRate is available only with bundled PG&E generation")
+        if self.smartrate_events and not self.smartrate:
+            raise ConfigError("smartrate_events requires smartrate=true")
+        if self.smartrate and self.smartrate_known_through is None:
+            raise ConfigError("smartrate=true requires smartrate_known_through")
+        if self.smartrate_known_through is not None and any(
+            event > self.smartrate_known_through for event in self.smartrate_events
+        ):
+            raise ConfigError("a SmartRate event falls after smartrate_known_through")
+        if self.medical_kwh_per_day is not None and self.medical_kwh_per_day <= 0:
+            raise ConfigError("medical_kwh_per_day must be greater than zero")
         if self.vintage is None and self.interconnection_year is None:
             raise ConfigError("set either interconnection_year or vintage")
         if self.discount != "none" and self.acc_plus_segment == "residential":
@@ -189,6 +221,15 @@ class Config:
             value = data.get("pto_date")
             if isinstance(value, str):
                 data["pto_date"] = date.fromisoformat(value)
+            value = data.get("smartrate_known_through")
+            if isinstance(value, str):
+                data["smartrate_known_through"] = date.fromisoformat(value)
+            events = data.get("smartrate_events")
+            if isinstance(events, list | tuple):
+                data["smartrate_events"] = tuple(
+                    date.fromisoformat(value) if isinstance(value, str) else value
+                    for value in events
+                )
             return cls(**data)
         except (TypeError, ValueError) as exc:
             raise ConfigError(f"invalid config: {exc}") from exc
@@ -207,6 +248,15 @@ class Config:
             "base_services_charge_tier": self.base_services_charge_tier,
             "baseline_territory": self.baseline_territory,
             "baseline_code": self.baseline_code,
+            "medical_baseline": self.medical_baseline,
+            "medical_kwh_per_day": self.medical_kwh_per_day,
+            "smartrate": self.smartrate,
+            "smartrate_events": [event.isoformat() for event in self.smartrate_events],
+            "smartrate_known_through": (
+                self.smartrate_known_through.isoformat()
+                if self.smartrate_known_through is not None
+                else None
+            ),
             "nsc_rate": self.nsc_rate,
         }
         if self.cca is not None:
@@ -262,6 +312,18 @@ class Config:
             overrides["baseline_territory"] = value
         if value := os.environ.get("TARIFFKIT_BASELINE_CODE"):
             overrides["baseline_code"] = value
+        if value := os.environ.get("TARIFFKIT_MEDICAL_BASELINE"):
+            overrides["medical_baseline"] = _env_bool("TARIFFKIT_MEDICAL_BASELINE", value)
+        if value := os.environ.get("TARIFFKIT_MEDICAL_KWH_PER_DAY"):
+            overrides["medical_kwh_per_day"] = float(value)
+        if value := os.environ.get("TARIFFKIT_SMARTRATE"):
+            overrides["smartrate"] = _env_bool("TARIFFKIT_SMARTRATE", value)
+        if value := os.environ.get("TARIFFKIT_SMARTRATE_EVENTS"):
+            overrides["smartrate_events"] = tuple(
+                date.fromisoformat(item.strip()) for item in value.split(",") if item.strip()
+            )
+        if value := os.environ.get("TARIFFKIT_SMARTRATE_KNOWN_THROUGH"):
+            overrides["smartrate_known_through"] = date.fromisoformat(value)
         if value := os.environ.get("TARIFFKIT_NSC_RATE"):
             overrides["nsc_rate"] = float(value)
         if value := os.environ.get("TARIFFKIT_CCA_JSON"):

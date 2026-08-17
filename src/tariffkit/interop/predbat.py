@@ -2,13 +2,14 @@
 
 Predbat reads its rates off whichever Home Assistant entity ``apps.yaml`` points
 ``metric_octopus_import`` / ``metric_octopus_export`` at, expecting two attributes
--- ``raw_today`` and ``raw_tomorrow`` -- each a list of ``{start, end, value}``.
+-- ``raw_today`` and ``raw_tomorrow`` -- each a list of ``{from, to, rate}``.
 
 Two adaptations are needed:
 
-* **Scale.** Predbat is a UK tool and treats rates as pence per kWh; several of its
-  defaults and thresholds are tuned to that magnitude. Values here are published in
-  cents so those defaults behave. Predbat's display will label them ``p``.
+* **Shape and scale.** Predbat treats ``start`` / ``end`` / ``value`` entries as
+  currency-unit values and multiplies them by 100. The ``from`` / ``to`` / ``rate``
+  form is already denominated in pence, so cents can be supplied unchanged and keep
+  the same useful magnitude. Predbat's display will label them ``p``.
 * **Slot length.** Predbat plans in 30-minute slots aligned to :00 and :30 by
   default, so the hourly curve is resampled before partitioning.
 """
@@ -16,7 +17,7 @@ Two adaptations are needed:
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from typing import Any, Literal, Protocol
+from typing import Literal, Protocol, TypedDict
 
 from ..models import PriceCurve
 from ..timeutil import now_pacific, to_pacific
@@ -26,6 +27,11 @@ from .slots import local_day_window, resample
 CENTS_PER_DOLLAR = 100.0
 
 Direction = Literal["import", "export"]
+
+
+PredbatRate = TypedDict("PredbatRate", {"from": str, "to": str, "rate": float})
+PredbatAttributes = dict[str, list[PredbatRate]]
+PredbatPayload = dict[str, PredbatAttributes]
 
 
 class ForecastEngine(Protocol):
@@ -41,7 +47,7 @@ def raw_attributes(
     minutes: int = 30,
     scale: float = CENTS_PER_DOLLAR,
     today: date | None = None,
-) -> dict[str, list[dict[str, Any]]]:
+) -> PredbatAttributes:
     """Build the ``raw_today`` / ``raw_tomorrow`` pair for one direction.
 
     Partition is by Pacific calendar date rather than by offset from now, which is
@@ -51,7 +57,7 @@ def raw_attributes(
     """
     anchor = today if today is not None else now_pacific().date()
     tomorrow = anchor + timedelta(days=1)
-    buckets: dict[str, list[dict[str, Any]]] = {"raw_today": [], "raw_tomorrow": []}
+    buckets: dict[str, list[PredbatRate]] = {"raw_today": [], "raw_tomorrow": []}
 
     for slot in resample(curve, minutes):
         day = slot.start.date()
@@ -64,9 +70,9 @@ def raw_attributes(
         price = slot.import_price if direction == "import" else slot.export_price
         buckets[key].append(
             {
-                "start": slot.start.isoformat(),
-                "end": slot.end.isoformat(),
-                "value": round(price.total * scale, 5),
+                "from": slot.start.isoformat(),
+                "to": slot.end.isoformat(),
+                "rate": round(price.total * scale, 5),
             }
         )
     return buckets
@@ -78,7 +84,7 @@ def payload(
     *,
     minutes: int = 30,
     scale: float = CENTS_PER_DOLLAR,
-) -> dict[str, dict[str, list[dict[str, Any]]]]:
+) -> PredbatPayload:
     """Both directions, anchored to local midnight.
 
     Takes an engine rather than a curve on purpose. A forecast starting at the

@@ -81,6 +81,7 @@ ADDER_KEYS: dict[str, str] = {
     "wildfire hardening charge": "wildfire_hardening",
     "recovery bond charge": "recovery_bond_charge",
     "recovery bond credit": "recovery_bond_credit",
+    "bundled power charge indifference": "bundled_pcia",
     "bundled power charge indifference adjustment": "bundled_pcia",
 }
 
@@ -97,6 +98,16 @@ CARRIED_FORWARD = (
 
 #: Column header -> period key.
 PERIOD_KEYS = {"PEAK": "peak", "PART-PEAK": "part_peak", "OFF-PEAK": "off_peak"}
+
+
+def _energy_section(line: str) -> str | None:
+    """The component heading, with or without the newer inline period columns."""
+    match = re.match(
+        r"^(Generation|Distribution)\*{0,2}(?::|\s+(?:PEAK|PART-PEAK|OFF-PEAK)|$)",
+        line,
+        re.I,
+    )
+    return match.group(1).lower() if match else None
 
 
 @dataclass
@@ -119,7 +130,9 @@ class Extracted:
 def _period_columns(text: str) -> list[str]:
     """Which time-of-use periods this schedule prices, from the column header."""
     for line in text.splitlines():
-        if "Energy Rates by Component" in line:
+        if "Energy Rates by Component" in line or (
+            line.strip().startswith("Generation") and "PEAK" in line
+        ):
             found = [PERIOD_KEYS[k] for k in ("PEAK", "PART-PEAK", "OFF-PEAK") if k in line]
             # "PEAK" is a substring of "PART-PEAK"/"OFF-PEAK", so recover order
             # from the header's own left-to-right sequence.
@@ -133,16 +146,17 @@ def _period_columns(text: str) -> list[str]:
 def extract_unbundled(sheet: Page) -> tuple[list[str], dict[str, Any], dict[str, float]]:
     """Energy components by season/period, plus the flat riders."""
     periods = _period_columns(sheet.text)
+    energy_text = sheet.text.split("Base Services Charge Rates by Component", maxsplit=1)[0]
     energy: dict[str, dict[str, dict[str, float]]] = {}
     adders: dict[str, float] = {}
     section: str | None = None
 
-    for raw in sheet.text.splitlines():
+    for raw in energy_text.splitlines():
         line = raw.strip().rstrip("|").strip()
-        if re.fullmatch(r"(Generation|Distribution)\*{0,2}\s*:", line, re.I):
-            section = line.split("*")[0].strip(" :").lower()
+        if found := _energy_section(line):
+            section = found
 
-    for label, values in rate_lines(sheet.text):
+    for label, values in rate_lines(energy_text):
         low = label.lower()
         season = (
             "summer" if low.startswith("summer") else "winter" if low.startswith("winter") else None
@@ -165,10 +179,10 @@ def extract_unbundled(sheet: Page) -> tuple[list[str], dict[str, Any], dict[str,
     # Season rows need the Generation:/Distribution: header above them, so walk
     # the lines again carrying that state.
     section = None
-    for raw in sheet.text.splitlines():
+    for raw in energy_text.splitlines():
         line = raw.strip().rstrip("|").strip()
-        if re.fullmatch(r"(Generation|Distribution)\*{0,2}\s*:", line, re.I):
-            section = line.split("*")[0].strip(" :").lower()
+        if found := _energy_section(line):
+            section = found
             continue
         match = TRAILING_CELLS.search(line)
         if not match or section is None:
@@ -287,23 +301,29 @@ def extract_pcia(sheets: list[Page]) -> dict[int, float]:
     return {}
 
 
-def extract_baseline(sheets: list[Page], adders: dict[str, float]) -> dict[str, Any]:
+def extract_baseline(
+    sheets: list[Page],
+    adders: dict[str, float],
+    *,
+    rates: tuple[float, float] | None = None,
+) -> dict[str, Any]:
     """Conservation Incentive Adjustment rates and the daily baseline quantities.
 
     The credit a bill prints is the *spread* between the two CIA rates, which is
     why it is derived here rather than read off the sheet: the sheet never prints
     it as one number.
     """
-    within = over = None
-    for sheet in sheets:
-        for label, values in rate_lines(sheet.text):
-            low = clean_label(label)
-            if "conservation incentive adjustment" not in low or not values:
-                continue
-            if "over baseline" in low:
-                over = values[0]
-            elif "baseline" in low:
-                within = values[0]
+    within, over = rates or (None, None)
+    if rates is None:
+        for sheet in sheets:
+            for label, values in rate_lines(sheet.text):
+                low = clean_label(label)
+                if "conservation incentive adjustment" not in low or not values:
+                    continue
+                if "over baseline" in low:
+                    over = values[0]
+                elif "baseline" in low:
+                    within = values[0]
     if within is None or over is None:
         return {}
 
@@ -334,10 +354,68 @@ def extract_baseline(sheets: list[Page], adders: dict[str, float]) -> dict[str, 
     return baseline
 
 
-def extract(sheets: list[Page]) -> Extracted:
+def extract_flat_tiered(sheets: list[Page], unbundled: Page) -> Extracted:
+    """Extract E-1's tiered table into the marginal-price snapshot schema."""
+    energy_text = unbundled.text.split("Base Services Charge Rates by Component", maxsplit=1)[0]
+    components: dict[str, float] = {}
+    adders: dict[str, float] = {}
+    within = over = None
+    for label, values in rate_lines(energy_text):
+        if not values:
+            continue
+        low = clean_label(label)
+        if low in {"generation", "distribution"}:
+            components[low] = values[0]
+        elif key := ADDER_KEYS.get(low):
+            adders[key] = values[0]
+        elif low.startswith("tier 1 usage"):
+            within = values[0]
+        elif low.startswith("tier 2 usage"):
+            over = values[0]
+    if set(components) != {"generation", "distribution"} or within is None or over is None:
+        raise ExtractionError(
+            "E-1 unbundled table is missing generation, distribution, or CIA tier rates"
+        )
+    adders["conservation_incentive_adjustment"] = over
+
+    tier_2 = None
+    for sheet in sheets:
+        if "TOTAL BUNDLED RATES" not in sheet.text:
+            continue
+        for label, values in rate_lines(sheet.text):
+            if clean_label(label).startswith("tier 2 usage") and values:
+                tier_2 = values[0]
+                break
+        if tier_2 is not None:
+            break
+    if tier_2 is None:
+        raise ExtractionError("E-1 total table has no Tier 2 rate")
+
+    energy = {season: {"off_peak": dict(components)} for season in ("summer", "winter")}
+    totals = {season: {"off_peak": tier_2} for season in ("summer", "winter")}
+    result = Extracted(
+        periods=["off_peak"],
+        energy=energy,
+        adders=adders,
+        totals=totals,
+        base_services_charge=extract_base_services_charge(sheets),
+        pcia_vintages=extract_pcia(sheets),
+        baseline=extract_baseline(sheets, adders, rates=(within, over)),
+    )
+    result.rates_effective = unbundled.effective
+    result.rates_advice = unbundled.advice_letter
+    for sheet in sheets:
+        if sheet.advice_letter and sheet.sheet_number is not None:
+            result.provenance.append((sheet.sheet_number, sheet.advice_letter, sheet.effective))
+    return result
+
+
+def extract(sheets: list[Page], *, flat_tiered: bool = False) -> Extracted:
     unbundled = next((s for s in sheets if "UNBUNDLING" in s.text.upper()), None)
     if unbundled is None:
         raise ExtractionError("no 'UNBUNDLING OF ... TOTAL RATES' table found")
+    if flat_tiered:
+        return extract_flat_tiered(sheets, unbundled)
     periods, energy, adders = extract_unbundled(unbundled)
     baseline = extract_baseline(sheets, adders)
     result = Extracted(
@@ -453,8 +531,18 @@ def render(
     """Build the snapshot, carrying structure forward and rates from the sheet."""
     tariff_name = provider.schedule_names[slug]
     url = provider.schedules[slug].url
+    seasons = previous.get("seasons") or provider.schedule_seasons.get(slug)
+    periods = previous.get("periods") or provider.schedule_periods.get(slug)
+    if not seasons or not periods:
+        raise ExtractionError(
+            f"{provider.key}/{slug}: no verified season/period structure; "
+            "add it to the provider registry before generating the first snapshot"
+        )
+    drop_components = provider.cca_drop_components.get(
+        slug, tuple(previous.get("cca", {}).get("drop_components", ()))
+    )
     lines = [
-        f"# {provider.name} Schedule {tariff_name} -- retail time-of-use rates.",
+        f"# {provider.name} Schedule {tariff_name} -- residential retail rates.",
         "#",
         f"# Source: {url}",
         "#",
@@ -486,14 +574,14 @@ def render(
         "",
         "# Structure the sheet does not publish, carried forward from the previous",
         "# snapshot. Changing any of it is a deliberate human edit.",
-        f"has_baseline = {fmt(previous.get('has_baseline', False))}",
+        f"has_baseline = {fmt(previous.get('has_baseline', slug in provider.baseline_schedules))}",
         "",
         "[seasons]",
     ]
-    for key, value in previous.get("seasons", {}).items():
+    for key, value in seasons.items():
         lines.append(f"{key} = {fmt(value)}")
     lines += ["", "[periods]"]
-    for key, value in previous.get("periods", {}).items():
+    for key, value in periods.items():
         lines.append(f"{key} = {fmt(value)}")
 
     lines += ["", "# Season- and period-dependent components."]
@@ -535,7 +623,7 @@ def render(
         "# Riders a CCA or Direct Access customer does not pay, because PG&E is not",
         "# supplying their generation.",
         "[cca]",
-        f"drop_components = {fmt(previous.get('cca', {}).get('drop_components', []))}",
+        f"drop_components = {fmt(list(drop_components))}",
         "",
         "# Vintaged PCIA a CCA/DA customer pays instead of the bundled PCIA, keyed",
         "# by the year their generation service began.",
@@ -571,6 +659,14 @@ def render(
             "# No daily fixed charge on this schedule at this vintage. AB 205's Base",
             "# Services Charge began 2026-03-01; before it these schedules had none,",
             "# so the section is absent rather than zeroed.",
+        ]
+
+    if exemptions := provider.medical_exempt_components.get(slug):
+        lines += [
+            "",
+            "# Charges the schedule exempts for Medical Baseline customers.",
+            "[medical]",
+            f"exempt_components = {fmt(list(exemptions))}",
         ]
 
     if previous.get("discounts"):
@@ -616,13 +712,13 @@ def price_through_the_loader(slug: str, body: str, data: Extracted, provider: Ut
     # data, so point the reader at what we just rendered.
     tariff.snapshot_for = lambda moment: snapshot  # type: ignore[method-assign]
 
-    # 17:00 is in the peak period on all three schedules, in both seasons.
     problems: list[str] = []
     for season, moment in (
         ("summer", datetime(2026, 7, 15, 17, tzinfo=PACIFIC)),
         ("winter", datetime(2026, 1, 15, 17, tzinfo=PACIFIC)),
     ):
-        want = data.totals[season]["peak"]
+        period = str(tariff.period(moment, snapshot))
+        want = data.totals[season][period]
         try:
             got = tariff.price_at(moment).total
         except Exception as exc:
@@ -658,7 +754,7 @@ def regenerate(
     name = provider.sheet_name(slug)
     if len({m.group(1).upper() for p in pages if (m := SHEET_HEADER.search(p.text))}) > 1:
         pages = pages_for_schedule(pages, name)
-    data = extract(pages)
+    data = extract(pages, flat_tiered=slug == "e1")
     require_provenance(data)
     problems = verify(data)
     if problems:

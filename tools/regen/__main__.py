@@ -29,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
         "dataset",
         nargs="?",
         default="all",
-        choices=("all", "tariff", "accplus", "nsc", "cca", "tax"),
+        choices=("all", "tariff", "program", "accplus", "nsc", "cca", "tax"),
     )
     parser.add_argument("--provider")
     parser.add_argument("--pdf", type=Path)

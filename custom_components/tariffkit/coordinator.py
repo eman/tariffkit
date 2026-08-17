@@ -15,6 +15,7 @@ from tariffkit.account import AccountProfile, AccountRateEngine
 from tariffkit.config import CcaConfig, Config
 from tariffkit.errors import TariffKitError
 from tariffkit.interop import predbat_payload
+from tariffkit.interop.predbat import PredbatPayload
 from tariffkit.models import PricePoint, Supplier
 from tariffkit.timeutil import now_pacific
 
@@ -34,6 +35,8 @@ from .const import (
     CONF_DISCOUNT,
     CONF_FORECAST_HOURS,
     CONF_INTERCONNECTION_YEAR,
+    CONF_MEDICAL_BASELINE,
+    CONF_MEDICAL_KWH_PER_DAY,
     CONF_NSC_RATE,
     CONF_PREDBAT_ENABLED,
     CONF_PROFILE,
@@ -51,7 +54,6 @@ _LOGGER = logging.getLogger(__name__)
 
 JSONValue = str | int | float | bool | None
 Provenance = dict[str, object]
-PredbatPayload = dict[str, dict[str, list[dict[str, Any]]]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +187,12 @@ def config_from_entry(data: dict[str, Any]) -> Config:
         base_services_charge_tier=data.get(CONF_BSC_TIER, 3),
         baseline_territory=data.get(CONF_BASELINE_TERRITORY) or None,
         baseline_code=data.get(CONF_BASELINE_CODE, "basic"),
+        medical_baseline=bool(data.get(CONF_MEDICAL_BASELINE, False)),
+        medical_kwh_per_day=(
+            float(data[CONF_MEDICAL_KWH_PER_DAY])
+            if data.get(CONF_MEDICAL_KWH_PER_DAY) is not None
+            else None
+        ),
         cca=cca,
         nsc_rate=data.get(CONF_NSC_RATE),
     )

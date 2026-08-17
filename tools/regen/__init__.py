@@ -36,16 +36,16 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from . import accplus, cca, filings, nsc, tariff, tax
+from . import accplus, cca, filings, nsc, program, tariff, tax
 from .emit import DEFAULT_CACHE, Result
 from .fetch import fetch
-from .providers import CCAS, TAXES, UTILITIES, Cca, Source, Tax, Utility
+from .providers import CCAS, PROGRAMS, TAXES, UTILITIES, Cca, Program, Source, Tax, Utility
 from .sheets import ExtractionError
 
 #: Where downloaded documents are kept between runs.
 
 #: Datasets :func:`run` can build. Each maps to an entry in ``JOB_BUILDERS``.
-DATASETS = ("tariff", "accplus", "nsc", "cca", "tax")
+DATASETS = ("tariff", "program", "accplus", "nsc", "cca", "tax")
 
 #: Where to start looking for the filing that set a vintage. Covers the recent
 #: past; older dates widen the search rather than failing.
@@ -101,6 +101,13 @@ def _nsc_runner(util: Utility) -> Callable[[Path, bool], Result]:
 def _cca_runner(provider: Cca) -> Callable[[Path, bool], Result]:
     def run_one(pdf: Path, check: bool) -> Result:
         return cca.regenerate(provider, pdf, check=check)
+
+    return run_one
+
+
+def _program_runner(provider: Program) -> Callable[[Path, bool], Result]:
+    def run_one(pdf: Path, check: bool) -> Result:
+        return program.regenerate(provider, pdf, check=check)
 
     return run_one
 
@@ -172,10 +179,22 @@ def _cca_jobs(provider: str | None) -> Iterator[Job]:
         )
 
 
+def _program_jobs(provider: str | None) -> Iterator[Job]:
+    for key, entry in sorted(PROGRAMS.items()):
+        if provider and provider != key:
+            continue
+        yield Job(
+            f"{entry.data_slug}/{key}",
+            entry.source,
+            _program_runner(entry),
+        )
+
+
 #: Only the tariff builder needs the run's cache policy, because only it fetches
 #: a second document of its own.
 JOB_BUILDERS: dict[str, Callable[..., Iterator[Job]]] = {
     "tariff": _tariff_jobs,
+    "program": _program_jobs,
     "accplus": _accplus_jobs,
     "nsc": _nsc_jobs,
     "cca": _cca_jobs,

@@ -155,10 +155,13 @@ PCIA_VINTAGE = re.compile(r"(\d{4})\s+Vintaged\s+Power\s+Charge")
 # uses tariff codes. Keep this correspondence in the provider adapter rather
 # than making the core tariff model understand utility-specific wording.
 PRINTED_TARIFFS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bE-?1\b|Tiered", re.I), "E-1"),
     (re.compile(r"EV\s*2-?A", re.I), "EV2-A"),
     (re.compile(r"E-?ELEC|Electric\s+Home", re.I), "E-ELEC"),
     (re.compile(r"E-?TOU-?C|ETOUC", re.I), "E-TOU-C"),
+    (re.compile(r"E-?TOU-?D|ETOUD", re.I), "E-TOU-D"),
     (re.compile(r"Time-of-Use.*4\s*-\s*9", re.I), "E-TOU-C"),
+    (re.compile(r"Time-of-Use.*5\s*-\s*8", re.I), "E-TOU-D"),
 )
 
 #: Rows that are structure rather than charges.

@@ -13,9 +13,11 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from tariffkit.account import AccountEpoch, AccountError, AccountProfile
-from tariffkit.cca import available_rate_cards
+from tariffkit.cca import available_rate_cards, load_rate_card
 from tariffkit.config import VINTAGE_BY_YEAR, Config
-from tariffkit.errors import TariffKitError
+from tariffkit.errors import ConfigError, TariffKitError
+from tariffkit.models import Supplier
+from tariffkit.tariff.retail import SUPPORTED_TARIFFS
 from tariffkit.timeutil import now_pacific
 
 from .const import (
@@ -37,6 +39,8 @@ from .const import (
     CONF_EXPORT_ENABLED,
     CONF_FORECAST_HOURS,
     CONF_INTERCONNECTION_YEAR,
+    CONF_MEDICAL_BASELINE,
+    CONF_MEDICAL_KWH_PER_DAY,
     CONF_NSC_RATE,
     CONF_PREDBAT_ENABLED,
     CONF_PROFILE,
@@ -80,7 +84,7 @@ def _profile_schema(defaults: dict[str, Any], *, include_name: bool = True) -> v
         vol.Required(
             CONF_TARIFF,
             default=defaults.get(CONF_TARIFF, "E-ELEC"),
-        ): _select(["E-ELEC", "E-TOU-C", "EV2-A"]),
+        ): _select(list(SUPPORTED_TARIFFS)),
         vol.Required(
             CONF_EXPORT_ENABLED,
             default=defaults.get(CONF_EXPORT_ENABLED, True),
@@ -146,7 +150,7 @@ def _delivery_schema(
             )
         )
     )
-    if tariff == "E-TOU-C":
+    if tariff in {"E-1", "E-TOU-C"}:
         fields[
             vol.Optional(
                 CONF_BASELINE_TERRITORY,
@@ -159,6 +163,23 @@ def _delivery_schema(
                 default=defaults.get(CONF_BASELINE_CODE, "basic"),
             )
         ] = _select(["basic", "all_electric"], "baseline_code")
+    fields[
+        vol.Required(
+            CONF_MEDICAL_BASELINE,
+            default=defaults.get(CONF_MEDICAL_BASELINE, False),
+        )
+    ] = selector.BooleanSelector()
+    if defaults.get(CONF_MEDICAL_BASELINE):
+        fields[
+            vol.Required(
+                CONF_MEDICAL_KWH_PER_DAY,
+                default=defaults.get(CONF_MEDICAL_KWH_PER_DAY, 6000 / 365),
+            )
+        ] = selector.NumberSelector(
+            selector.NumberSelectorConfig(
+                min=0.001, max=100, step=0.001, mode=selector.NumberSelectorMode.BOX
+            )
+        )
     return vol.Schema(fields)
 
 
@@ -197,7 +218,7 @@ def _history_schema(defaults: dict[str, Any], *, effective: bool = False) -> vol
         ["bundled", "cca"], "supplier"
     )
     fields[vol.Required(CONF_TARIFF, default=defaults.get(CONF_TARIFF, "E-ELEC"))] = _select(
-        ["E-ELEC", "E-TOU-C", "EV2-A"]
+        list(SUPPORTED_TARIFFS)
     )
     if defaults.get(CONF_INTERCONNECTION_YEAR) is not None:
         fields[
@@ -230,7 +251,7 @@ def _history_schema(defaults: dict[str, Any], *, effective: bool = False) -> vol
             )
         )
     )
-    if defaults.get(CONF_TARIFF, "E-ELEC") == "E-TOU-C":
+    if defaults.get(CONF_TARIFF, "E-ELEC") in {"E-1", "E-TOU-C"}:
         fields[
             vol.Optional(
                 CONF_BASELINE_TERRITORY,
@@ -243,6 +264,23 @@ def _history_schema(defaults: dict[str, Any], *, effective: bool = False) -> vol
                 default=defaults.get(CONF_BASELINE_CODE, "basic"),
             )
         ] = _select(["basic", "all_electric"], "baseline_code")
+    fields[
+        vol.Required(
+            CONF_MEDICAL_BASELINE,
+            default=defaults.get(CONF_MEDICAL_BASELINE, False),
+        )
+    ] = selector.BooleanSelector()
+    if defaults.get(CONF_MEDICAL_BASELINE):
+        fields[
+            vol.Required(
+                CONF_MEDICAL_KWH_PER_DAY,
+                default=defaults.get(CONF_MEDICAL_KWH_PER_DAY, 6000 / 365),
+            )
+        ] = selector.NumberSelector(
+            selector.NumberSelectorConfig(
+                min=0.001, max=100, step=0.001, mode=selector.NumberSelectorMode.BOX
+            )
+        )
     if defaults.get(CONF_SUPPLIER, "bundled") == "cca":
         fields.update(
             {
@@ -346,6 +384,10 @@ def _normalize(user_input: dict[str, Any]) -> dict[str, Any]:
         data[CONF_FORECAST_HOURS] = int(data[CONF_FORECAST_HOURS])
     if CONF_PREDBAT_ENABLED in data:
         data[CONF_PREDBAT_ENABLED] = bool(data[CONF_PREDBAT_ENABLED])
+    if CONF_MEDICAL_BASELINE in data:
+        data[CONF_MEDICAL_BASELINE] = bool(data[CONF_MEDICAL_BASELINE])
+    if CONF_MEDICAL_KWH_PER_DAY in data:
+        data[CONF_MEDICAL_KWH_PER_DAY] = float(data[CONF_MEDICAL_KWH_PER_DAY])
     if data.get(CONF_PTO_DATE) in (None, ""):
         data[CONF_PTO_DATE] = None
     if data.get(CONF_VINTAGE) in (None, ""):
@@ -406,7 +448,16 @@ def _profile_without_epoch(profile: AccountProfile, effective: date) -> AccountP
 def _validate(data: dict[str, Any]) -> dict[str, str]:
     """Surface library-level config errors in the form rather than at runtime."""
     try:
-        config_from_entry(data)
+        config = config_from_entry(data)
+        if config.supplier is Supplier.CCA and config.cca and config.cca.rate_card:
+            card = load_rate_card(config.cca.rate_card, date.max)
+            tariff = config.tariff.lower().replace("-", "")
+            if tariff not in card.supported_schedules:
+                raise ConfigError(
+                    f"{card.provider} does not publish generation rates for "
+                    f"{config.tariff}; choose one of "
+                    f"{', '.join(sorted(card.supported_schedules))}"
+                )
     except (TariffKitError, TypeError, ValueError) as err:
         return {"base": "invalid_config", "detail": str(err)}
     return {}

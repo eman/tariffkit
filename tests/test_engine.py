@@ -270,6 +270,8 @@ class TestConfigValidation:
                 "supplier": "cca",
                 "interconnection_year": 2026,
                 "pto_date": "2026-06-03",
+                "medical_baseline": True,
+                "smartrate": False,
                 "cca": {"name": "MCE", "pcia_vintage": 2024},
             }
         )
@@ -277,6 +279,30 @@ class TestConfigValidation:
         assert config.pto_date == date(2026, 6, 3)
         assert config.cca is not None
         assert config.cca.name == "MCE"
+        assert Config.from_dict(config.to_dict()) == config
+
+    def test_smartrate_calendar_round_trips_as_dates(self) -> None:
+        config = Config.from_dict(
+            {
+                "smartrate": True,
+                "smartrate_events": ["2026-07-15"],
+                "smartrate_known_through": "2026-07-31",
+            }
+        )
+        assert config.smartrate_events == (date(2026, 7, 15),)
+        assert Config.from_dict(config.to_dict()) == config
+
+    def test_smartrate_rejects_cca_service(self) -> None:
+        with pytest.raises(ConfigError, match="bundled PG&E"):
+            Config(
+                supplier=Supplier.CCA,
+                cca=CcaConfig(name="MCE"),
+                smartrate=True,
+            )
+
+    def test_smartrate_requires_an_authoritative_horizon(self) -> None:
+        with pytest.raises(ConfigError, match="known_through"):
+            Config(smartrate=True)
 
     def test_canonical_utility_identifier_is_emitted(self) -> None:
         config = Config()

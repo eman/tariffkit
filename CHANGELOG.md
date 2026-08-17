@@ -5,6 +5,28 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+- PG&E's complete active single-family residential lineup is now covered:
+  generated E-1 and E-TOU-D snapshots join E-ELEC, E-TOU-C, and EV2-A.
+  E-1 preserves tiered baseline billing while exposing the over-baseline
+  marginal price, and E-TOU-D observes its weekday-only 5–8 p.m. peak and
+  tariff holiday calendar.
+- Generated, effective-dated D-CARE, D-MEDICAL, Rule 19 Medical Baseline, and
+  E-RSMART data now drive residential program adjustments. SmartRate accepts
+  explicit announced event dates and marks prices beyond the authoritative
+  event horizon incomplete rather than guessing future events.
+
+### Changed
+- Home Assistant now offers every active PG&E residential schedule and
+  Medical Baseline configuration while preserving existing profile and entity
+  identities.
+
+### Fixed
+- Predbat attributes now use its `from` / `to` / `rate` contract for values
+  already expressed in cents. Predbat no longer interprets TariffKit's cents as
+  currency units and multiplies them by 100, while Pacific-midnight anchoring
+  and complete 46-, 48-, and 50-slot tariff days remain unchanged.
+
 ## [0.2.3] - 2026-08-17
 
 ### Changed

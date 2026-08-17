@@ -227,7 +227,7 @@ returns zero for it — the correct answer, not missing data.
 ### Sheets revise independently
 
 A tariff book is a compilation and its pages carry their own advice letters. On
-all three schedules the totals page is Advice 7921-E effective 2026-06-01 while
+the TOU schedules the totals page can be Advice 7921-E effective 2026-06-01 while
 the unbundled rate table is 7846-E effective 2026-03-01, and the two reconcile
 exactly, so the values have been in force since March.
 
@@ -269,17 +269,19 @@ When an advice letter or rate card update changes one of these tables:
    sheets `regen_tariff.py` does this for you, naming the file from the sheet's
    own effective date.
 
-   Adding a whole **schedule** works the same way: a new directory named for
-   the tariff with `-` stripped (`E-TOU-C` → `etouc`) needs no code change, plus
-   an entry in `UTILITIES` in `tools/regen/providers.py`. Omit `[periods].part_peak` if
-   the schedule has none, and omit `[discounts]` if the sheet does not publish
-   CARE/FERA percentages — a requested discount then raises rather than
-   borrowing another schedule's figure.
-2. Transcribe each unbundled component from the tariff sheet, then fill in
-   `[totals]` from the sheet's own published totals.
-   `tests/test_eelec.py::test_components_sum_to_published_total` asserts the
-   components sum to the total exactly, which is what catches a mistyped
-   digit during transcription.
+   Adding a whole **schedule** works the same way: register its source and the
+   season/period structure stated in its Special Conditions, then run the
+   generator. It reads each unbundled component and refuses to write unless
+   they sum to the schedule's published totals.
+2. Residential overlays are generated independently because their vintages do
+   not move with the underlying rate plan:
+
+   ```bash
+   python -m tools.regen program
+   ```
+
+   This rebuilds D-CARE, D-MEDICAL, Rule 19 Medical Baseline quantities, and
+   E-RSMART from their own effective-dated documents.
 3. For a CCA rate card (e.g. `mce.toml`), cite the source URL/PDF in a
    comment, and update `tests/test_mce.py` (or add an equivalent test) to pin
    the new values, ideally reconciled against a real bill, the way the
@@ -298,9 +300,15 @@ When an advice letter or rate card update changes one of these tables:
 | Data | Source |
 |---|---|
 | Export rates (NBT) | [`PGE-Solar-Billing-Plan-Export-Rates.zip`](https://www.pge.com/assets/pge/docs/vanities/PGE-Solar-Billing-Plan-Export-Rates.zip), linked from `pge.com/eecvalues` |
+| E-1 retail rates and baseline quantities | [Schedule E-1 tariff sheet](https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-1.pdf) |
 | E-ELEC retail rates | [Schedule E-ELEC tariff sheet](https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-ELEC.pdf) |
 | E-TOU-C retail rates and baseline quantities | [Schedule E-TOU-C tariff sheet](https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-TOU-C.pdf) |
+| E-TOU-D retail rates | [Schedule E-TOU-D tariff sheet](https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-TOU-D.pdf) |
 | EV2-A retail rates | [Schedule EV2 tariff sheet](https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_EV2%20(Sch).pdf) |
+| CARE discount | [Schedule D-CARE](https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_D-CARE.pdf) |
+| Medical discount | [Schedule D-MEDICAL](https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_D-MEDICAL.pdf) |
+| Standard Medical Baseline quantity | [Electric Rule 19](https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_RULES_19.pdf) |
+| SmartRate charges and credits | [Schedule E-RSMART](https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-RSMART.pdf) |
 | PCIA vintages | Schedule E-ELEC, Sheet 5 ("Vintage Power Charge Indifference Adjustment") |
 | Franchise fee vintages | [Schedule E-FFS](https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-FFS.pdf), residential row |
 | ACC Plus adder | PG&E Schedule NBT |

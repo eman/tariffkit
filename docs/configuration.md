@@ -125,7 +125,7 @@ Bundled PG&E service needs no config file at all.
 
 | Key | Values | Notes |
 |---|---|---|
-| `tariff` | `E-ELEC`, `E-TOU-C`, `EV2-A` | Defaults to `E-ELEC` |
+| `tariff` | `E-1`, `E-ELEC`, `E-TOU-C`, `E-TOU-D`, `EV2-A` | Defaults to `E-ELEC` |
 | `supplier` | `bundled`, `cca` | `cca` requires a `[cca]` table |
 | `interconnection_year` | 2023–2026 | Picks the NBT vintage and ACC Plus rate |
 | `pto_date` | ISO date | Starts the nine-year rate lock |
@@ -133,8 +133,13 @@ Bundled PG&E service needs no config file at all.
 | `acc_plus_segment` | `residential`, `residential_low_income`, `none` | |
 | `discount` | `none`, `care`, `fera` | Requires `acc_plus_segment = "residential_low_income"` |
 | `base_services_charge_tier` | 1, 2, 3 | $/day, reported separately from $/kWh |
-| `baseline_territory` | `P`…`Z` | E-TOU-C only; your bill names it |
+| `baseline_territory` | `P`…`Z` | E-1 and E-TOU-C only; your bill names it |
 | `baseline_code` | `basic`, `all_electric` | PG&E's Code B / Code H |
+| `medical_baseline` | Boolean | Adds the standard allowance on E-1/E-TOU-C or applies D-MEDICAL on E-ELEC/E-TOU-D/EV2-A |
+| `medical_kwh_per_day` | Number or omitted | Overrides PG&E's generated 6,000 kWh/year standard medical quantity |
+| `smartrate` | Boolean | Enables event-driven E-RSMART pricing |
+| `smartrate_events` | ISO-date list | Authoritative SmartDay dates supplied by the caller |
+| `smartrate_known_through` | ISO date | Last date on which absence from the event list means “not an event” |
 
 `[cca]` keys: `name`, `rate_card`, `option`, `pcia_rate`, `pcia_vintage`,
 `franchise_fee_surcharge`, `generation_rates`, `export_generation_rate`.
@@ -157,23 +162,24 @@ bill can be several percent.
 
 ## Rate schedules
 
-Three residential schedules are vendored. Adding another is a data change, not a
-code change: drop a dated snapshot under
-`src/tariffkit/data/tariff/pge/<slug>/`.
+All five currently active single-family residential schedules are vendored as
+generated, effective-dated snapshots.
 
 | Schedule | Periods | Baseline |
 |---|---|---|
+| `E-1` | no TOU; marginal price is Tier 2 | yes |
 | `E-ELEC` | peak 4–9pm, part-peak 3–4pm and 9pm–12am, off-peak otherwise | no |
 | `EV2-A` | same shape as E-ELEC, different rates | no |
 | `E-TOU-C` | peak 4–9pm, **no part-peak** — off-peak otherwise | yes |
+| `E-TOU-D` | peak 5–8pm on non-holiday weekdays; off-peak otherwise | no |
 
-All three apply the same periods every day of the week, holidays included, and
-share the June–September summer season.
+All share the June–September summer season. E-TOU-D alone distinguishes
+non-holiday weekdays.
 
-### The E-TOU-C baseline credit
+### Tiered and baseline credits
 
-E-TOU-C credits $0.08140/kWh on usage within a baseline allowance. That is a
-*quantity*, not a time, so no marginal price can express it:
+E-1 and E-TOU-C credit usage within a baseline allowance. That is a *quantity*,
+not a time, so no marginal price can express it:
 
 ```python
 price = engine.price_at(moment).import_price
@@ -199,6 +205,21 @@ territory P all-electric is 15.2 kWh/day in summer against 26.0 in winter.
 **Without `baseline_territory` there is no credit line at all.** The quantities
 vary several-fold between territories, so guessing one would be worse than
 reporting none.
+
+### Medical Baseline and SmartRate
+
+`medical_baseline = true` follows the applicable published mechanism. E-1 and
+E-TOU-C add the standard 6,000 kWh/year allowance from Rule 19; E-ELEC,
+E-TOU-D, and EV2-A remove the Wildfire Fund Charge and apply D-MEDICAL's 12%
+volumetric credit. The Base Services Charge is not discounted.
+
+SmartRate events are not predictable tariff data. Set `smartrate = true`,
+provide announced dates in `smartrate_events`, and set
+`smartrate_known_through` to the last authoritative date. TariffKit applies the
+generated E-RSMART high-price charge and cycle credits. Prices after the known
+horizon carry `complete = false`; TariffKit never guesses an event from weather.
+The event list may be empty when no events have been announced, but enabling
+SmartRate without an authoritative horizon is rejected.
 
 ## Home Assistant
 

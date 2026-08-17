@@ -444,6 +444,30 @@ class TestBaselineCreditAcrossARateChange:
         assert bill.import_components["baseline_credit"] == pytest.approx(expected, abs=0.01)
 
 
+class TestSmartRateBilling:
+    def test_cycle_credit_excludes_the_event_high_price_period(self) -> None:
+        event = date(2026, 7, 15)
+        config = Config(
+            tariff="E-TOU-D",
+            smartrate=True,
+            smartrate_events=(event,),
+            smartrate_known_through=event,
+        )
+        readings = [
+            IntervalReading(datetime(2026, 7, 15, 15, tzinfo=PACIFIC), imported=10.0),
+            IntervalReading(datetime(2026, 7, 15, 17, tzinfo=PACIFIC), imported=2.0),
+        ]
+        bill = BillEngine(RateEngine(config)).compute(
+            readings,
+            BillingPeriod(event, event),
+            check=False,
+        )
+        assert bill.import_components["smartrate_high_price"] == pytest.approx(2 * 0.60)
+        assert bill.import_components["smartrate_credit"] == pytest.approx(
+            -10 * (0.00636 + 0.00167)
+        )
+
+
 class TestEnergyCommissionTax:
     """A statutory per-kWh surcharge, billed on the generation provider's page.
 

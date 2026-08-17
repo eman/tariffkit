@@ -4,6 +4,11 @@ Prices a billing cycle from interval meter data. Pure and dependency-free:
 readings in, decomposed charges out. It does not know or care where the readings
 came from.
 
+Tiered E-1/E-TOU-C baseline allowances, Medical Baseline, D-MEDICAL, CARE/FERA,
+and SmartRate are applied as separate bill components. SmartRate requires an
+authoritative list of announced event dates; a missing future event is never
+inferred from weather.
+
 ```bash
 tariffkit bill intervals.csv --start 2026-07-02 --end 2026-07-28
 tariffkit bill - --json < intervals.csv

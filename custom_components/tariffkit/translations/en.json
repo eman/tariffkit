@@ -29,7 +29,9 @@
           "discount": "CARE / FERA discount",
           "base_services_charge_tier": "Base Services Charge income tier",
           "baseline_territory": "Baseline territory",
-          "baseline_code": "Baseline heat-source code"
+          "baseline_code": "Baseline heat-source code",
+          "medical_baseline": "Medical Baseline enrollment",
+          "medical_kwh_per_day": "Medical Baseline kWh per day"
         }
       },
       "manual_cca": {
@@ -86,7 +88,9 @@
           "discount": "CARE / FERA discount",
           "base_services_charge_tier": "Base Services Charge income tier",
           "baseline_territory": "Baseline territory",
-          "baseline_code": "Baseline heat-source code"
+          "baseline_code": "Baseline heat-source code",
+          "medical_baseline": "Medical Baseline enrollment",
+          "medical_kwh_per_day": "Medical Baseline kWh per day"
         }
       },
       "settings_cca": {

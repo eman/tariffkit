@@ -1,14 +1,11 @@
 """PG&E residential retail import pricing.
 
 Schedule-agnostic: everything that differs between schedules lives in the
-vendored snapshot, so adding one is a data change. Currently vendored are
-E-ELEC, E-TOU-C, and EV2-A.
+vendored snapshot. The active residential portfolio is vendored: E-1, E-ELEC,
+E-TOU-C, E-TOU-D, and EV2-A. E-TOU-D's peak applies only on non-holiday
+weekdays; the other TOU schedules use the same periods every day.
 
-They share a shape that keeps pricing cheap: period boundaries are identical
-every day of the week including holidays, and do not shift by season. So a
-price is determined by (season, hour) alone.
-
-The one exception is E-TOU-C's baseline credit, which applies to the first N
+E-1 and E-TOU-C have a baseline credit, which applies to the first N
 kWh of a cycle. That is a quantity rather than a time, so no marginal price can
 express it. ``price_at`` returns the over-baseline price -- the right answer for
 a dispatch decision, since an allowance is normally spent early in the cycle --
@@ -23,14 +20,29 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from functools import lru_cache
 from importlib.resources import files
-from typing import Any
+from typing import Any, Final
 
 from ..cca import load_rate_card
 from ..config import Config
+from ..data.versioned import load as load_version
 from ..errors import ConfigError, DataError
 from ..models import ImportPrice, Season, Supplier, TouPeriod, Utility
+from ..timeutil import DayType, day_type
 
 TARIFF_DATA_ROOT = "tariff"
+SUPPORTED_TARIFFS: Final[tuple[str, ...]] = (
+    "E-1",
+    "E-ELEC",
+    "E-TOU-C",
+    "E-TOU-D",
+    "EV2-A",
+)
+FERA_DISCOUNT = 0.18
+
+
+def load_program(name: str, on: date) -> dict[str, Any]:
+    """One generated residential-program vintage."""
+    return load_version(f"tariff/pge/program/{name}", on, label=name).raw
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,9 +119,11 @@ class RetailTariff:
         return Season.WINTER
 
     def period(self, moment: datetime, snapshot: TariffSnapshot | None = None) -> TouPeriod:
-        """Resolve the TOU period. Identical every day of the week."""
+        """Resolve the TOU period, including schedule-defined day restrictions."""
         snapshot = snapshot or self.snapshot_for(moment)
         periods = snapshot.raw["periods"]
+        if periods.get("peak_weekdays_only") and day_type(moment) is DayType.WEEKEND:
+            return TouPeriod.OFF_PEAK
         hour = moment.hour
         for start, end in periods["peak"]:
             if start <= hour < end:
@@ -126,7 +140,17 @@ class RetailTariff:
         season = self.season(moment, snapshot)
         period = self.period(moment, snapshot)
         components, complete = self._components(snapshot, season, period, moment)
-        total = self._apply_discount(snapshot, components)
+        if self.config.smartrate:
+            smart_rate = load_program("ersmart", moment.date())
+            if self.config.smartrate_known_through is None or (
+                moment.date() > self.config.smartrate_known_through
+            ):
+                complete = False
+            if moment.date() in self.config.smartrate_events and int(
+                smart_rate["high_price_start"]
+            ) <= moment.hour < int(smart_rate["high_price_end"]):
+                components["smartrate_high_price"] = float(smart_rate["high_price_charge"])
+        total = self._apply_discount(snapshot, components, season, period, moment)
         return ImportPrice(
             total=round(total, 6),
             season=season,
@@ -159,7 +183,12 @@ class RetailTariff:
                 f"no baseline quantity for territory "
                 f"{self.config.baseline_territory!r}; vendored: {sorted(table)}"
             )
-        return float(territory[str(self.season(moment, snapshot))])
+        allowance = float(territory[str(self.season(moment, snapshot))])
+        if self.config.medical_baseline:
+            medical = load_program("medicalbaseline", moment.date())
+            standard = float(medical["standard_kwh_per_year"]) / 365
+            allowance += self.config.medical_kwh_per_day or standard
+        return allowance
 
     def _components(
         self,
@@ -231,27 +260,51 @@ class RetailTariff:
 
         return components, complete
 
-    def _apply_discount(self, snapshot: TariffSnapshot, components: dict[str, float]) -> float:
-        total = sum(components.values())
-        if self.config.discount == "none":
-            return total
-        discounts = snapshot.raw.get("discounts")
-        if not discounts or self.config.discount not in discounts:
-            # The percentage is schedule-specific and not every sheet prints it.
-            # Better to refuse than to borrow another schedule's figure.
-            raise ConfigError(
-                f"{snapshot.raw['tariff']} does not vendor a {self.config.discount.upper()} "
-                "discount; it is not published on that schedule's tariff sheet"
+    def _apply_discount(
+        self,
+        snapshot: TariffSnapshot,
+        components: dict[str, float],
+        season: Season,
+        period: TouPeriod,
+        moment: datetime,
+    ) -> float:
+        medical_credit = 0.0
+        if self.config.medical_baseline:
+            program_name = (
+                "dmedical"
+                if self.config.tariff in {"E-ELEC", "E-TOU-D", "EV2-A"}
+                else "medicalbaseline"
             )
-        rate = float(discounts[self.config.discount])
-        if self.config.discount == "care":
-            # The Wildfire Fund Charge is not levied on CARE sales at all, so it
-            # comes off before the percentage discount rather than being
-            # discounted alongside everything else.
-            for name in discounts.get("care_excludes", []):
-                if name in components:
-                    total -= components.pop(name)
-        return total * (1.0 - rate)
+            medical = load_program(program_name, moment.date())
+            exemptions = (
+                medical.get("exempt_components", [])
+                if program_name == "dmedical"
+                else snapshot.raw.get("medical", {}).get("exempt_components", [])
+            )
+            for name in exemptions:
+                components.pop(str(name), None)
+            if program_name == "dmedical":
+                bundled = dict(snapshot.raw["energy"][str(season)][str(period)])
+                bundled.update(snapshot.raw["adders"])
+                for name in medical["exempt_components"]:
+                    bundled.pop(str(name), None)
+                medical_credit = sum(bundled.values()) * float(medical["discount"])
+
+        total = sum(components.values())
+        if self.config.discount != "none":
+            if self.config.discount == "care":
+                care = load_program("dcare", moment.date())
+                rate = float(care["discount"])
+                for name in care["exempt_components"]:
+                    name = str(name)
+                    if name in components:
+                        total -= components.pop(name)
+            else:
+                rate = FERA_DISCOUNT
+            components[f"{self.config.discount}_discount"] = -total * rate
+        if medical_credit:
+            components["medical_discount"] = -medical_credit
+        return sum(components.values())
 
     def daily_fixed_charge(self, moment: datetime) -> float:
         """Base Services Charge in $/day.
