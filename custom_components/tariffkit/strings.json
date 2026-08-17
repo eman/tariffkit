@@ -207,13 +207,27 @@
         "name": "Export Price"
       },
       "spread": {
-        "name": "Import/Export Spread"
+        "name": "Export Minus Import"
       },
       "tou_period": {
-        "name": "TOU Period"
+        "name": "TOU Period",
+        "state": {
+          "peak": "Peak",
+          "part_peak": "Part-peak",
+          "off_peak": "Off-peak"
+        }
       },
       "forecast_through": {
-        "name": "Rate Forecast Through"
+        "name": "Rates Available Through"
+      },
+      "rate_data_status": {
+        "name": "Rate Data Status",
+        "state": {
+          "current": "Current",
+          "unlocked": "Outside guaranteed lock",
+          "illustrative": "Illustrative",
+          "incomplete": "Incomplete"
+        }
       }
     }
   },

@@ -1,4 +1,4 @@
-# Pacific Gas and Electric Net Surplus Compensation (NSC) rates, by true-up month.
+# Pacific Gas and Electric Company Net Surplus Compensation (NSC) rates, by true-up month.
 #
 # Source: https://www.pge.com/assets/pge/docs/clean-energy/solar/AB920-RateTable.pdf
 #
@@ -28,7 +28,7 @@
 # case rather than an edge one.
 
 schema = 1
-utility = "PGE"
+utility = "pacific_gas_and_electric"
 currency = "USD/kWh"
 source_url = "https://www.pge.com/assets/pge/docs/clean-energy/solar/AB920-RateTable.pdf"
 decision = "D.11-06-016"

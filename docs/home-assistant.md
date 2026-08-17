@@ -177,9 +177,10 @@ logged reason rather than guessing.
 |---|---|---|
 | Import Price | USD/kWh | |
 | Export Price | USD/kWh | |
-| Import/Export Spread | USD/kWh | export − import; excludes battery efficiency, degradation, and inverter losses |
-| TOU Period | enum: `peak` / `part_peak` / `off_peak` | |
-| Rate Forecast Through | timestamp | state is how far the cached forecast currently reaches; see [History and forecast timeline](#history-and-forecast-timeline) |
+| Export Minus Import | USD/kWh | export − import; excludes battery efficiency, degradation, and inverter losses |
+| TOU Period | enum displayed as Peak / Part-peak / Off-peak | |
+| Rates Available Through | timestamp | state is how far the cached forecast currently reaches; see [History and forecast timeline](#history-and-forecast-timeline) |
+| Rate Data Status | diagnostic enum | PTO date, export lock end, NBT vintage, tariff provenance, source, and quality flags |
 
 There is deliberately no fixed-charge entity: the AB 205 Base Services Charge
 is a $/day amount, not a $/kWh marginal price, and mixing it into an Energy
@@ -210,12 +211,17 @@ provenance as attributes:
 {{ state_attr('sensor.tariffkit_home_export_price', 'quality') }}
 ```
 
-Import/Export Spread carries `quality`, `provenance`, and a fixed `description`
+Export Minus Import carries `quality`, `provenance`, and a fixed `description`
 disclosing what it excludes. TOU Period carries `season` and `quality`. None
 of the four current-value sensors carry a forecast array any more — that
-lives on **Rate Forecast Through**, and EMHASS's two series are actions, not
+lives on **Rates Available Through**, and EMHASS's two series are actions, not
 attributes; see [History and forecast timeline](#history-and-forecast-timeline),
 [EMHASS](#emhass), and [Predbat](#predbat) below.
+
+**Rate Data Status** reports whether the active horizon is current, outside its
+guaranteed lock, illustrative, or incomplete. Its diagnostic attributes expose
+the PTO date, export-rate lock end, NBT vintage, tariff effective date and
+advice letter, source URL, and `complete` / `exact` / `locked` quality flags.
 
 > Large, frequently-changing attributes (the forecast's `rates` list, and
 > Predbat's `raw_today` / `raw_tomorrow` when enabled) are excluded from the
@@ -255,13 +261,13 @@ Home Assistant has no generic API for a sensor to publish *future* values
 into a graph — the recorder and every native History/Logbook view only ever
 show what a sensor's state *was*; the built-in state graph cannot plot a
 future timestamp no matter which card you use. TariffKit's forecast lives
-entirely in the **Rate Forecast Through** sensor's unrecorded `rates`
+entirely in the **Rates Available Through** sensor's unrecorded `rates`
 attribute: a list of `{start, end, import, export, spread}` points reaching
 from now out to the account's configured forecast horizon.
 
 **Fallback with no custom card:** add Import Price, Export Price, and
-Import/Export Spread to a native **History** graph card for the live,
-recorded past, and add **Rate Forecast Through** to an **Entities** card so
+Export Minus Import to a native **History** graph card for the live,
+recorded past, and add **Rates Available Through** to an **Entities** card so
 the forecast horizon and its `rates` attribute are at least inspectable. This
 works with nothing beyond what ships in Home Assistant Core, but does not
 draw the forecast as a line — only the native History path is limited that
@@ -327,7 +333,7 @@ short of it, so the solid line meets the dashed one with no gap between
 them; `stroke_dash` is what actually renders the forecast half dashed rather
 than merely faded, so recorded fact and forecast read as visually distinct
 at a glance even in a screenshot with no legend. Add a fifth series against
-Import/Export Spread, styled the same way, if you want it on the same axis.
+Export Minus Import, styled the same way, if you want it on the same axis.
 `curve: stepline` matches the flat, hourly-block nature of TOU pricing
 rather than interpolating between hours. If `quality.complete` or
 `quality.exact` is `false` for the active epoch or export vintage, style
@@ -393,7 +399,7 @@ returns
   "provenance": {
     "segments": [
       {"start": "2026-08-16T00:00:00-07:00", "end": "2026-08-17T00:00:00-07:00",
-       "utility": "PGE", "tariff": "E-ELEC", "account_profile": "home",
+       "utility": "pacific_gas_and_electric", "tariff": "E-ELEC", "account_profile": "home",
        "export_vintage": "nbt26", "tariff_source": "https://..."}
     ]
   }
@@ -440,7 +446,7 @@ response_variable: emhass
   "provenance": {
     "segments": [
       {"start": "2026-08-16T09:00:00-07:00", "end": "2026-08-17T09:00:00-07:00",
-       "utility": "PGE", "tariff": "E-ELEC", "account_profile": "home",
+       "utility": "pacific_gas_and_electric", "tariff": "E-ELEC", "account_profile": "home",
        "export_vintage": "nbt26", "tariff_source": "https://..."}
     ]
   }

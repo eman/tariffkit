@@ -28,7 +28,7 @@ from typing import Any
 from ..cca import load_rate_card
 from ..config import Config
 from ..errors import ConfigError, DataError
-from ..models import ImportPrice, Season, Supplier, TouPeriod
+from ..models import ImportPrice, Season, Supplier, TouPeriod, Utility
 
 TARIFF_DATA_ROOT = "tariff"
 
@@ -50,11 +50,11 @@ class TariffSnapshot:
 
 
 @lru_cache(maxsize=8)
-def _snapshots(utility: str, tariff: str) -> tuple[TariffSnapshot, ...]:
+def _snapshots(utility: Utility, tariff: str) -> tuple[TariffSnapshot, ...]:
     directory = (
         files("tariffkit.data")
         / TARIFF_DATA_ROOT
-        / utility.lower()
+        / utility.data_slug
         / tariff.lower().replace("-", "")
     )
     if not directory.is_dir():
@@ -64,19 +64,24 @@ def _snapshots(utility: str, tariff: str) -> tuple[TariffSnapshot, ...]:
         if not entry.name.endswith(".toml"):
             continue
         raw = tomllib.loads(entry.read_text(encoding="utf-8"))
+        try:
+            raw["utility"] = Utility(raw["utility"]).value
+        except (KeyError, ValueError) as exc:
+            raise DataError(f"{entry.name}: invalid utility identifier") from exc
         found.append(TariffSnapshot(date.fromisoformat(raw["effective"]), raw))
     if not found:
         raise DataError(f"no tariff snapshots for {utility}/{tariff}")
     return tuple(sorted(found, key=lambda s: s.effective))
 
 
-def load_snapshot(utility: str, tariff: str, on: date) -> TariffSnapshot:
+def load_snapshot(utility: Utility | str, tariff: str, on: date) -> TariffSnapshot:
     """The snapshot in force on ``on`` -- the latest one not in the future."""
-    snapshots = _snapshots(utility, tariff)
+    utility_id = Utility(utility)
+    snapshots = _snapshots(utility_id, tariff)
     applicable = [s for s in snapshots if s.effective <= on]
     if not applicable:
         raise DataError(
-            f"{utility}/{tariff}: no snapshot effective on or before {on}; "
+            f"{utility_id.value}/{tariff}: no snapshot effective on or before {on}; "
             f"earliest vendored is {snapshots[0].effective}"
         )
     return applicable[-1]

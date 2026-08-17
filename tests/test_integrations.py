@@ -89,6 +89,10 @@ class TestDiscovery:
         self, payloads: list[tuple[str, dict[str, Any]]]
     ) -> None:
         assert {p["device"]["identifiers"][0] for _, p in payloads} == {"tariffkit"}
+        assert {p["device"]["manufacturer"] for _, p in payloads} == {
+            "Pacific Gas and Electric Company"
+        }
+        assert {p["device"]["name"] for _, p in payloads} == {"PG&E Rates"}
         assert all(p["availability_topic"] == "tariffkit/status" for _, p in payloads)
 
     def test_unique_ids_are_distinct(self, payloads: list[tuple[str, dict[str, Any]]]) -> None:

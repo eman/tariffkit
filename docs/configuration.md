@@ -34,6 +34,15 @@ that command, and `--config`/`--account` cannot be combined. See
 [Selecting a profile](accounts.md#selecting-a-profile) for exactly how that
 choice is made.
 
+### Utility identity
+
+Profiles, configuration, and API payloads identify Pacific Gas and Electric
+with the unambiguous machine value `pacific_gas_and_electric`. User interfaces
+show `PG&E` or `Pacific Gas and Electric Company`. The distinct `pge` machine
+value means Portland General Electric; TariffKit recognizes that identity but
+does not yet ship Portland tariff data, so attempting to price it raises an
+explicit unsupported-utility error.
+
 ## Credentials
 
 Store long-lived credentials in the operating system's keyring rather than in

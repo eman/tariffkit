@@ -18,7 +18,7 @@
 # makes a silent mis-parse essentially impossible.
 
 schema = 1
-utility = "PGE"
+utility = "pacific_gas_and_electric"
 tariff = "EV2-A"
 effective = "2025-01-01"
 advice_letter = "7469-E"

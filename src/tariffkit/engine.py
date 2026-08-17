@@ -5,8 +5,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from .config import Config
+from .errors import DataError
 from .export.nbt import NbtExportRates
-from .models import PriceCurve, PricePoint
+from .models import PriceCurve, PricePoint, Utility
 from .tariff.retail import RetailTariff
 from .timeutil import PACIFIC, hour_floor, now_pacific, to_pacific
 
@@ -21,6 +22,8 @@ class RateEngine:
 
     def __init__(self, config: Config | None = None) -> None:
         self.config = config or Config()
+        if self.config.utility is not Utility.PACIFIC_GAS_AND_ELECTRIC:
+            raise DataError(f"{self.config.utility.display_name} pricing is not supported")
         self.tariff = RetailTariff(self.config)
         self.export_rates = NbtExportRates(self.config)
 
@@ -69,7 +72,7 @@ class RateEngine:
         snapshot = self.tariff.snapshot_for(when)
         low, high = self.export_rates.covered_years
         return {
-            "utility": self.config.utility,
+            "utility": self.config.utility.value,
             "tariff": self.config.tariff,
             "supplier": str(self.config.supplier),
             "tariff_effective": snapshot.effective.isoformat(),
@@ -78,5 +81,6 @@ class RateEngine:
             "export_vintage": self.export_rates.vintage,
             "export_years": [low, high],
             "acc_plus": self.export_rates.acc_plus,
+            "pto_date": self.config.pto_date.isoformat() if self.config.pto_date else None,
             "lock_end": self.config.lock_end.isoformat() if self.config.lock_end else None,
         }

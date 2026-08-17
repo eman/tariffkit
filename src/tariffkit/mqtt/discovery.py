@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..models import Utility
+
 DEVICE_ID = "tariffkit"
 
 #: (object_id, name, state topic suffix, icon)
@@ -19,10 +21,11 @@ SENSORS: tuple[tuple[str, str, str, str], ...] = (
 
 
 def _device(engine_info: dict[str, Any]) -> dict[str, Any]:
+    utility = Utility(engine_info.get("utility", Utility.PACIFIC_GAS_AND_ELECTRIC))
     return {
         "identifiers": [DEVICE_ID],
-        "name": "PG&E Rates",
-        "manufacturer": str(engine_info.get("utility", "PGE")),
+        "name": f"{utility.short_name} Rates",
+        "manufacturer": utility.display_name,
         "model": f"{engine_info.get('tariff', 'E-ELEC')} / {engine_info.get('export_vintage', '')}",
         "sw_version": _version(),
     }

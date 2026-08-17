@@ -140,7 +140,7 @@ def render(provider: Utility, rates: dict[str, float], source_url: str) -> str:
                 "# case rather than an edge one.",
                 "",
                 "schema = 1",
-                f'utility = "{provider.key.upper()}"',
+                f'utility = "{provider.identifier}"',
                 'currency = "USD/kWh"',
                 f'source_url = "{source_url}"',
                 'decision = "D.11-06-016"',

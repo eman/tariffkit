@@ -35,7 +35,7 @@ async def async_setup(hass: HomeAssistant, config: dict[str, object]) -> bool:
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: TariffKitConfigEntry) -> bool:
-    """Migrate flat and version-2 entries into profile data plus options."""
+    """Migrate entries into canonical profile data plus options."""
     if entry.version >= CONFIG_VERSION:
         return True
     try:

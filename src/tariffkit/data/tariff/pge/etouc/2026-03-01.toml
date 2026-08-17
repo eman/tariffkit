@@ -1,4 +1,4 @@
-# PG&E Schedule E-TOU-C -- retail time-of-use rates.
+# Pacific Gas and Electric Company Schedule E-TOU-C -- retail time-of-use rates.
 #
 # Source: https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-TOU-C.pdf
 #
@@ -26,7 +26,7 @@
 # makes a silent mis-parse essentially impossible.
 
 schema = 1
-utility = "PGE"
+utility = "pacific_gas_and_electric"
 tariff = "E-TOU-C"
 effective = "2026-03-01"
 advice_letter = "7846-E"
@@ -193,8 +193,10 @@ drop_components = ["generation", "bundled_pcia"]
 2025 = -0.01011
 2026 = -0.01011
 
-# Schedule E-FFS franchise fee surcharge. A different schedule, so it is
-# carried forward rather than read from this sheet.
+# Franchise fee surcharge, which a CCA/DA customer pays and a bundled one
+# does not. Published in a separate schedule (E-FFS) and read from it,
+# because carrying it forward would let that schedule be reissued without
+# anything noticing -- it is live rate data on every CCA price.
 [cca.franchise_fee_vintages]
 2009 = 0.00064
 2010 = 0.00061

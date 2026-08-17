@@ -262,6 +262,7 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
                 "export_vintage",
                 "export_years",
                 "acc_plus",
+                "pto_date",
                 "lock_end",
                 "account_profile",
             )

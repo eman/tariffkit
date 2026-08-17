@@ -15,6 +15,7 @@ from typing import Any
 
 from .data import versioned
 from .errors import ConfigError, DataError
+from .models import Utility
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,7 +116,12 @@ def load_rate_card(provider: str, on: date) -> CcaRateCard:
         ) from exc
     if version.raw.get("schema") != 1:
         raise DataError(f"{provider}: unsupported rate card schema {version.raw.get('schema')}")
-    return CcaRateCard(provider=str(version.raw["provider"]), raw=version.raw)
+    raw = dict(version.raw)
+    try:
+        raw["utility"] = Utility(raw["utility"]).value
+    except (KeyError, ValueError) as exc:
+        raise DataError(f"{provider}: invalid utility identifier") from exc
+    return CcaRateCard(provider=str(raw["provider"]), raw=raw)
 
 
 def available_rate_cards() -> tuple[str, ...]:

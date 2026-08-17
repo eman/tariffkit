@@ -11,7 +11,7 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-from tariffkit import Config, RateEngine, Season, TouPeriod
+from tariffkit import Config, RateEngine, Season, TouPeriod, Utility
 from tariffkit.billing.engine import BillEngine
 from tariffkit.billing.models import Bill, BillingPeriod, IntervalReading
 from tariffkit.errors import ConfigError
@@ -26,7 +26,7 @@ def cells() -> list[tuple[str, str, str]]:
     """(tariff, season, period) for every rate the sheets publish."""
     found = []
     for tariff in SCHEDULES:
-        totals = load_snapshot("PGE", tariff, EFFECTIVE).raw["totals"]
+        totals = load_snapshot(Utility.PACIFIC_GAS_AND_ELECTRIC, tariff, EFFECTIVE).raw["totals"]
         for season, periods in totals.items():
             found.extend((tariff, season, period) for period in periods)
     return found
@@ -40,7 +40,7 @@ def test_components_sum_to_published_total(tariff: str, season: str, period: str
     On E-TOU-C the total is the over-baseline one, because [adders] carries the
     over-baseline Conservation Incentive Adjustment.
     """
-    raw = load_snapshot("PGE", tariff, EFFECTIVE).raw
+    raw = load_snapshot(Utility.PACIFIC_GAS_AND_ELECTRIC, tariff, EFFECTIVE).raw
     total = sum(raw["energy"][season][period].values()) + sum(raw["adders"].values())
     assert total == pytest.approx(raw["totals"][season][period], abs=5e-6)
 
@@ -49,7 +49,7 @@ def test_components_sum_to_published_total(tariff: str, season: str, period: str
 def test_every_published_cell_is_reachable_by_pricing(tariff: str) -> None:
     """Guards against a rate table nothing can select, e.g. a stray period."""
     engine = RateEngine(Config(tariff=tariff))
-    totals = load_snapshot("PGE", tariff, EFFECTIVE).raw["totals"]
+    totals = load_snapshot(Utility.PACIFIC_GAS_AND_ELECTRIC, tariff, EFFECTIVE).raw["totals"]
     priced = {
         (str(p.import_price.season), str(p.import_price.period))
         for month in (7, 12)
@@ -111,9 +111,14 @@ class TestSharedRiders:
 
     @pytest.mark.parametrize("table", ["pcia_vintages", "franchise_fee_vintages"])
     def test_all_schedules_agree(self, table: str) -> None:
-        reference = load_snapshot("PGE", "E-ELEC", EFFECTIVE).raw["cca"][table]
+        reference = load_snapshot(Utility.PACIFIC_GAS_AND_ELECTRIC, "E-ELEC", EFFECTIVE).raw["cca"][
+            table
+        ]
         for tariff in SCHEDULES:
-            assert load_snapshot("PGE", tariff, EFFECTIVE).raw["cca"][table] == reference, tariff
+            assert (
+                load_snapshot(Utility.PACIFIC_GAS_AND_ELECTRIC, tariff, EFFECTIVE).raw["cca"][table]
+                == reference
+            ), tariff
 
     @pytest.mark.parametrize("tariff", SCHEDULES)
     def test_base_services_charge_is_the_same_ab205_charge(self, tariff: str) -> None:
@@ -149,7 +154,7 @@ class TestBaseline:
 
     def test_credit_is_the_spread_between_the_two_cia_rates(self) -> None:
         """The bill prints one credit; the sheet implements it as two rates."""
-        raw = load_snapshot("PGE", "E-TOU-C", EFFECTIVE).raw["baseline"]
+        raw = load_snapshot(Utility.PACIFIC_GAS_AND_ELECTRIC, "E-TOU-C", EFFECTIVE).raw["baseline"]
         assert raw["over_rate"] - raw["within_rate"] == pytest.approx(raw["credit"])
         price = RateEngine(Config(tariff="E-TOU-C")).price_at(self.midday(12)).import_price
         assert price.baseline_credit == pytest.approx(0.08140)

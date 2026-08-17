@@ -25,6 +25,7 @@ from .models import (
     Season,
     Supplier,
     TouPeriod,
+    Utility,
 )
 from .timeutil import PACIFIC, DayType, now_pacific
 
@@ -47,6 +48,7 @@ __all__ = [
     "Supplier",
     "TariffKitError",
     "TouPeriod",
+    "Utility",
     "__version__",
     "now_pacific",
 ]

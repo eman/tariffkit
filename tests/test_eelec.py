@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-from tariffkit import Config, Season, Supplier, TouPeriod
+from tariffkit import Config, Season, Supplier, TouPeriod, Utility
 from tariffkit.config import CcaConfig
 from tariffkit.errors import ConfigError
 from tariffkit.tariff.retail import RetailTariff, load_snapshot
@@ -38,7 +38,7 @@ def test_components_sum_to_published_total(season: str, period: str, published: 
 
     This is the check that catches a mistyped digit in the vendored tariff.
     """
-    snapshot = load_snapshot("PGE", "E-ELEC", date(2026, 6, 1))
+    snapshot = load_snapshot(Utility.PACIFIC_GAS_AND_ELECTRIC, "E-ELEC", date(2026, 6, 1))
     energy = snapshot.raw["energy"][season][period]
     total = sum(energy.values()) + sum(snapshot.raw["adders"].values())
     assert total == pytest.approx(published, abs=5e-6)
@@ -125,10 +125,14 @@ def test_effective_dated_snapshot_selection() -> None:
     (Advice 7846-E, effective 2026-03-01), not from the later reissue of the
     totals page; see tools/regen_tariff.py::pick_effective.
     """
-    assert load_snapshot("PGE", "E-ELEC", date(2026, 7, 1)).effective == date(2026, 3, 1)
-    assert load_snapshot("PGE", "E-ELEC", date(2026, 4, 15)).effective == date(2026, 3, 1)
+    assert load_snapshot(
+        Utility.PACIFIC_GAS_AND_ELECTRIC, "E-ELEC", date(2026, 7, 1)
+    ).effective == date(2026, 3, 1)
+    assert load_snapshot(
+        Utility.PACIFIC_GAS_AND_ELECTRIC, "E-ELEC", date(2026, 4, 15)
+    ).effective == date(2026, 3, 1)
     with pytest.raises(Exception, match="no snapshot effective"):
-        load_snapshot("PGE", "E-ELEC", date(2020, 1, 1))
+        load_snapshot(Utility.PACIFIC_GAS_AND_ELECTRIC, "E-ELEC", date(2020, 1, 1))
 
 
 def test_base_services_charge_is_daily_and_excluded_from_energy_price(
@@ -212,7 +216,7 @@ class TestCca:
         pcia_vintage is documented as resolving both; this is what makes that
         true rather than true-for-now.
         """
-        cca = load_snapshot("PGE", "E-ELEC", date(2026, 6, 1)).raw["cca"]
+        cca = load_snapshot(Utility.PACIFIC_GAS_AND_ELECTRIC, "E-ELEC", date(2026, 6, 1)).raw["cca"]
         assert set(cca["pcia_vintages"]) == set(cca["franchise_fee_vintages"])
 
     @pytest.mark.parametrize(

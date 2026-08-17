@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .errors import ConfigError
-from .models import Supplier
+from .models import Supplier, Utility
 
 AccPlusSegment = Literal["residential", "residential_low_income", "none"]
 Discount = Literal["none", "care", "fera"]
@@ -80,7 +80,7 @@ class CcaConfig:
 class Config:
     """Everything needed to price a kWh for one service agreement."""
 
-    utility: str = "PGE"
+    utility: Utility = Utility.PACIFIC_GAS_AND_ELECTRIC
     tariff: str = "E-ELEC"
     supplier: Supplier = Supplier.BUNDLED
 
@@ -117,6 +117,7 @@ class Config:
     nsc_rate: float | None = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "utility", Utility(self.utility))
         # Coerce the string forms of the enums. Supplier is a StrEnum, so a
         # plain "cca" compares equal to Supplier.CCA but is not it -- and every
         # branch that matters tests identity. Constructing Config directly with
@@ -195,7 +196,7 @@ class Config:
     def to_dict(self) -> dict[str, Any]:
         """A JSON-compatible representation suitable for API request bodies."""
         data: dict[str, Any] = {
-            "utility": self.utility,
+            "utility": self.utility.value,
             "tariff": self.tariff,
             "supplier": self.supplier.value,
             "interconnection_year": self.interconnection_year,

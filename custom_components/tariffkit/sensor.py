@@ -13,12 +13,13 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from tariffkit.models import TouPeriod
+from tariffkit.models import TouPeriod, Utility
 
 from .const import (
     ATTR_GENERATED_AT,
@@ -105,6 +106,29 @@ def _forecast_attrs(data: TariffKitData) -> dict[str, Any]:
     }
 
 
+def _rate_data_status(data: TariffKitData) -> str:
+    if not data.quality.complete:
+        return "incomplete"
+    if not data.quality.exact:
+        return "illustrative"
+    if not data.quality.locked:
+        return "unlocked"
+    return "current"
+
+
+def _rate_data_attrs(data: TariffKitData) -> dict[str, Any]:
+    provenance = data.provenance
+    return {
+        "pto_date": provenance.get("pto_date"),
+        "export_rate_lock_end": provenance.get("lock_end"),
+        "export_vintage": provenance.get("export_vintage"),
+        "tariff_effective": provenance.get("tariff_effective"),
+        "tariff_advice_letter": provenance.get("tariff_advice_letter"),
+        ATTR_QUALITY: data.quality.to_dict(),
+        "source_url": provenance.get("tariff_source"),
+    }
+
+
 @dataclass(frozen=True, kw_only=True)
 class TariffKitSensorDescription(SensorEntityDescription):
     """Adds typed value and attribute extractors to a sensor description."""
@@ -166,9 +190,20 @@ SENSORS: tuple[TariffKitSensorDescription, ...] = (
         key="forecast_through",
         translation_key="forecast_through",
         device_class=SensorDeviceClass.TIMESTAMP,
+        entity_category=EntityCategory.DIAGNOSTIC,
         icon="mdi:chart-timeline-variant",
         value_fn=lambda data: data.forecast[-1].end,
         attrs_fn=_forecast_attrs,
+    ),
+    TariffKitSensorDescription(
+        key="rate_data_status",
+        translation_key="rate_data_status",
+        device_class=SensorDeviceClass.ENUM,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        options=["current", "unlocked", "illustrative", "incomplete"],
+        icon="mdi:database-check",
+        value_fn=_rate_data_status,
+        attrs_fn=_rate_data_attrs,
     ),
 )
 
@@ -224,7 +259,7 @@ class TariffKitSensor(CoordinatorEntity[TariffKitCoordinator], SensorEntity):
         profile_name = self.coordinator.profile.name
         name = f"TariffKit — {profile_name}" if profile_name else "TariffKit Rates"
         utility = info.get("utility")
-        manufacturer = utility if isinstance(utility, str) and utility else "TariffKit"
+        manufacturer = Utility(utility).display_name if isinstance(utility, str) else "TariffKit"
         tariff = info.get("tariff")
         model = tariff if isinstance(tariff, str) and tariff else "unknown"
         vintage = info.get("export_vintage")

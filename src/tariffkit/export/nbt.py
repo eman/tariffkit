@@ -15,7 +15,7 @@ from typing import Any
 from ..config import FLOATING_VINTAGE, Config
 from ..data import read_data_json_gz, versioned
 from ..errors import ConfigError, DataError, OutOfRangeError
-from ..models import ExportPrice, Supplier
+from ..models import ExportPrice, Supplier, Utility
 from ..timeutil import MONTHS, DayType, day_type, export_hour
 
 #: Where a utility's ACC Plus adder table lives. Keyed by utility rather than
@@ -32,9 +32,10 @@ def _matrix(vintage: str) -> dict[str, Any]:
     return payload
 
 
-def _acc_plus_table(utility: str, on: date) -> dict[str, Any]:
-    relative = ACC_PLUS_DIR.format(utility=utility.lower())
-    return versioned.load(relative, on, label=f"{utility} ACC Plus").raw
+def _acc_plus_table(utility: Utility | str, on: date) -> dict[str, Any]:
+    utility_id = Utility(utility)
+    relative = ACC_PLUS_DIR.format(utility=utility_id.data_slug)
+    return versioned.load(relative, on, label=f"{utility_id.short_name} ACC Plus").raw
 
 
 class NbtExportRates:

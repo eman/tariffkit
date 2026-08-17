@@ -28,6 +28,40 @@ class Supplier(StrEnum):
     CCA = "cca"
 
 
+class Utility(StrEnum):
+    """Stable utility identities used by profiles and API payloads."""
+
+    PACIFIC_GAS_AND_ELECTRIC = "pacific_gas_and_electric"
+    PORTLAND_GENERAL_ELECTRIC = "pge"
+
+    @property
+    def data_slug(self) -> str:
+        """Private filesystem key for this utility's vendored data."""
+        match self:
+            case Utility.PACIFIC_GAS_AND_ELECTRIC:
+                return "pge"
+            case Utility.PORTLAND_GENERAL_ELECTRIC:
+                return "portland_general_electric"
+
+    @property
+    def short_name(self) -> str:
+        """Recognizable user-facing abbreviation."""
+        match self:
+            case Utility.PACIFIC_GAS_AND_ELECTRIC:
+                return "PG&E"
+            case Utility.PORTLAND_GENERAL_ELECTRIC:
+                return "PGE"
+
+    @property
+    def display_name(self) -> str:
+        """Full user-facing company name."""
+        match self:
+            case Utility.PACIFIC_GAS_AND_ELECTRIC:
+                return "Pacific Gas and Electric Company"
+            case Utility.PORTLAND_GENERAL_ELECTRIC:
+                return "Portland General Electric"
+
+
 @dataclass(frozen=True, slots=True)
 class ImportPrice:
     """What a kWh drawn from the grid costs, marginally."""

@@ -28,7 +28,7 @@ from homeassistant.components.energy.validate import (
     _async_validate_price_entity,
 )
 from homeassistant.config_entries import SOURCE_USER
-from homeassistant.const import Platform
+from homeassistant.const import EntityCategory, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
@@ -115,6 +115,7 @@ async def test_setup_exposes_energy_price_entities_and_service_device(
     device = device_registry.async_get_device({(DOMAIN, entry.entry_id)}, set())
     assert device is not None
     assert device.entry_type is DeviceEntryType.SERVICE
+    assert device.manufacturer == "Pacific Gas and Electric Company"
     assert device.configuration_url is None or device.configuration_url.startswith(
         ("http://", "https://")
     )
@@ -248,6 +249,38 @@ async def test_forecast_entity_is_compact_and_unrecorded(
     }
     assert ATTR_RAW_TODAY in TariffKitSensor._unrecorded_attributes
     assert "rates" in TariffKitSensor._unrecorded_attributes
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_diagnostic_entities_explain_forecast_and_rate_data(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    await _setup_entry(hass, entry)
+
+    registry = er.async_get(hass)
+    forecast_id = _entity_id(hass, entry, "forecast_through")
+    status_id = _entity_id(hass, entry, "rate_data_status")
+    forecast_entry = registry.async_get(forecast_id)
+    status_entry = registry.async_get(status_id)
+    assert forecast_entry is not None
+    assert status_entry is not None
+    assert forecast_entry.entity_category is EntityCategory.DIAGNOSTIC
+    assert status_entry.entity_category is EntityCategory.DIAGNOSTIC
+
+    status = hass.states.get(status_id)
+    assert status is not None
+    assert status.state == "current"
+    assert status.attributes["pto_date"] == "2026-06-03"
+    assert status.attributes["export_rate_lock_end"] == "2035-06-02"
+    assert status.attributes["export_vintage"] == "NBT26"
+    assert status.attributes["tariff_effective"] == "2026-03-01"
+    assert status.attributes["tariff_advice_letter"] == "7846-E"
+    assert status.attributes["quality"] == {
+        "complete": True,
+        "exact": True,
+        "locked": True,
+    }
+    assert status.attributes["source_url"].startswith("https://")
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
