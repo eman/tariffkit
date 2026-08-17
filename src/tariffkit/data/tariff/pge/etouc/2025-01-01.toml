@@ -1,4 +1,4 @@
-# Pacific Gas and Electric Schedule E-TOU-C -- retail time-of-use rates.
+# Pacific Gas and Electric Company Schedule E-TOU-C -- residential retail rates.
 #
 # Source: https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-TOU-C.pdf
 #
@@ -211,6 +211,10 @@ drop_components = ["generation", "bundled_pcia"]
 # No daily fixed charge on this schedule at this vintage. AB 205's Base
 # Services Charge began 2026-03-01; before it these schedules had none,
 # so the section is absent rather than zeroed.
+
+# Charges the schedule exempts for Medical Baseline customers.
+[medical]
+exempt_components = ["wildfire_fund_charge"]
 
 # The sheet's own published totals; the components above sum to these.
 [totals.summer]

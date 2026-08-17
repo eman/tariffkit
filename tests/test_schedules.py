@@ -214,6 +214,14 @@ class TestMedicalBaseline:
         )
         assert point.import_price.total == pytest.approx(0.40702 - 0.00591)
 
+    def test_2025_etouc_medical_customer_is_exempt_from_wildfire_charge(self) -> None:
+        moment = datetime(2025, 12, 15, 12, tzinfo=PACIFIC)
+        regular = RetailTariff(Config(tariff="E-TOU-C")).price_at(moment)
+        medical = RetailTariff(Config(tariff="E-TOU-C", medical_baseline=True)).price_at(moment)
+        wildfire_charge = regular.components["wildfire_fund_charge"]
+        assert "wildfire_fund_charge" not in medical.components
+        assert medical.total == pytest.approx(regular.total - wildfire_charge)
+
     def test_d_medical_is_twelve_percent_after_wildfire_exemption(self) -> None:
         point = RateEngine(Config(tariff="E-TOU-D", medical_baseline=True)).price_at(
             datetime(2026, 12, 15, 17, tzinfo=PACIFIC)

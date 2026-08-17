@@ -35,7 +35,7 @@ def _money(text: str, pattern: str) -> float:
 def extract(provider: Program, pages: list[Page]) -> tuple[date, str, dict[str, object]]:
     text = "\n".join(page.text for page in pages)
     if provider.key == "dcare":
-        effective, advice = _effective(pages, "D-CARE Discount:")
+        effective, advice = _effective(pages, "ELECTRIC SCHEDULE D-CARE Sheet 2")
         return (
             effective,
             advice,
@@ -51,7 +51,7 @@ def extract(provider: Program, pages: list[Page]) -> tuple[date, str, dict[str, 
             },
         )
     if provider.key == "dmedical":
-        effective, advice = _effective(pages, "12 percent discount")
+        effective, advice = _effective(pages, "ELECTRIC SCHEDULE D-MEDICAL Sheet 1")
         return (
             effective,
             advice,
@@ -62,7 +62,7 @@ def extract(provider: Program, pages: list[Page]) -> tuple[date, str, dict[str, 
             },
         )
     if provider.key == "medicalbaseline":
-        effective, advice = _effective(pages, "6,000 kWh per year")
+        effective, advice = _effective(pages, "ELECTRIC RULE NO. 19 Sheet 1")
         return (
             effective,
             advice,
@@ -72,7 +72,7 @@ def extract(provider: Program, pages: list[Page]) -> tuple[date, str, dict[str, 
             },
         )
     if provider.key == "ersmart":
-        effective, advice = _effective(pages, "$0.60000")
+        effective, advice = _effective(pages, "ELECTRIC SCHEDULE E-RSMART Sheet 2")
         return (
             effective,
             advice,

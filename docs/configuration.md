@@ -218,6 +218,8 @@ provide announced dates in `smartrate_events`, and set
 `smartrate_known_through` to the last authoritative date. TariffKit applies the
 generated E-RSMART high-price charge and cycle credits. Prices after the known
 horizon carry `complete = false`; TariffKit never guesses an event from weather.
+The event list may be empty when no events have been announced, but enabling
+SmartRate without an authoritative horizon is rejected.
 
 ## Home Assistant
 

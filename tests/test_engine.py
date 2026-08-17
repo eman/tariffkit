@@ -300,9 +300,9 @@ class TestConfigValidation:
                 smartrate=True,
             )
 
-    def test_smartrate_events_require_an_authoritative_horizon(self) -> None:
+    def test_smartrate_requires_an_authoritative_horizon(self) -> None:
         with pytest.raises(ConfigError, match="known_through"):
-            Config(smartrate=True, smartrate_events=(date(2026, 7, 15),))
+            Config(smartrate=True)
 
     def test_canonical_utility_identifier_is_emitted(self) -> None:
         config = Config()

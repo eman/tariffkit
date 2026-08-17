@@ -158,8 +158,8 @@ class Config:
             raise ConfigError("SmartRate is available only with bundled PG&E generation")
         if self.smartrate_events and not self.smartrate:
             raise ConfigError("smartrate_events requires smartrate=true")
-        if self.smartrate_events and self.smartrate_known_through is None:
-            raise ConfigError("smartrate_events requires smartrate_known_through")
+        if self.smartrate and self.smartrate_known_through is None:
+            raise ConfigError("smartrate=true requires smartrate_known_through")
         if self.smartrate_known_through is not None and any(
             event > self.smartrate_known_through for event in self.smartrate_events
         ):
