@@ -29,7 +29,7 @@ the percentages, since they drift as tests and flow branches are added.
 | `common-modules` | Met | Config/options schemas, the coordinator, and profile helpers are each in their own module rather than duplicated per flow step. |
 | `config-flow-test-coverage` | Partial | Exercised for the manual/import branch, conditional delivery fields, multi-entry setup, and the options menu grouping, but `config_flow.py` measures 50% statement coverage today (see [Measuring test coverage](#measuring-test-coverage)) -- the CCA and history sub-flows are the largest gaps. |
 | `config-flow` | Met | UI-only, no YAML. `ConfigEntry.data` holds the profile; `ConfigEntry.options` holds forecast/Predbat settings. `data_description` is not used in any step. |
-| `dependency-transparency` | Met | An exact-pinned `tariffkit==0.2.2` requirement; see [The dependency](home-assistant.md#the-dependency). |
+| `dependency-transparency` | Met | An exact-pinned `tariffkit==0.2.3` requirement; see [The dependency](home-assistant.md#the-dependency). |
 | `docs-actions` | Met | [Actions](home-assistant.md#actions). |
 | `docs-triggers` | Not applicable | The integration provides no triggers. |
 | `docs-conditions` | Not applicable | The integration provides no conditions. |
