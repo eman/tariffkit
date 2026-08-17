@@ -104,39 +104,64 @@ class TestResampleAcrossDst:
 
 
 class TestPredbat:
+    @staticmethod
+    def _interpreted_rate(entry: dict[str, object]) -> float:
+        """Model the two rate shapes accepted by Predbat 8.48.4."""
+        if {"from", "to", "rate"} <= entry.keys():
+            return float(entry["rate"])
+        if {"start", "end", "value"} <= entry.keys():
+            return float(entry["value"]) * 100
+        raise AssertionError(f"unsupported Predbat rate entry: {entry!r}")
+
     def test_publishes_both_attributes(self, curve: PriceCurve) -> None:
         attrs = raw_attributes(curve, direction="import", today=date(2026, 7, 15))
         assert set(attrs) == {"raw_today", "raw_tomorrow"}
 
-    def test_entry_shape_is_start_end_value(self, curve: PriceCurve) -> None:
+    def test_entry_shape_is_from_to_rate(self, curve: PriceCurve) -> None:
         entry = raw_attributes(curve, direction="import", today=date(2026, 7, 15))["raw_today"][0]
-        assert set(entry) == {"start", "end", "value"}
-        assert datetime.fromisoformat(entry["start"]).utcoffset() is not None
+        assert set(entry) == {"from", "to", "rate"}
+        assert datetime.fromisoformat(entry["from"]).utcoffset() is not None
 
     def test_values_are_cents_not_dollars(self, curve: PriceCurve) -> None:
         attrs = raw_attributes(curve, direction="import", today=date(2026, 7, 15))
         dollars = curve[0].import_price.total
-        assert attrs["raw_today"][0]["value"] == pytest.approx(dollars * CENTS_PER_DOLLAR)
-        assert attrs["raw_today"][0]["value"] > 1  # a cents-scale figure, not 0.33
+        assert attrs["raw_today"][0]["rate"] == pytest.approx(dollars * CENTS_PER_DOLLAR)
+        assert attrs["raw_today"][0]["rate"] > 1  # a cents-scale figure, not 0.33
+
+    def test_predbat_does_not_rescale_rate_shape(self) -> None:
+        entry: dict[str, object] = {
+            "from": "2026-07-15T00:00:00-07:00",
+            "to": "2026-07-15T00:30:00-07:00",
+            "rate": 39.026,
+        }
+        assert self._interpreted_rate(entry) == 39.026
+
+    def test_contract_fixture_detects_legacy_shape_rescaling(self) -> None:
+        entry: dict[str, object] = {
+            "start": "2026-07-15T00:00:00-07:00",
+            "end": "2026-07-15T00:30:00-07:00",
+            "value": 39.026,
+        }
+        assert self._interpreted_rate(entry) == pytest.approx(3902.6)
 
     def test_scale_is_overridable(self, curve: PriceCurve) -> None:
         attrs = raw_attributes(curve, direction="import", today=date(2026, 7, 15), scale=1.0)
-        assert attrs["raw_today"][0]["value"] == pytest.approx(curve[0].import_price.total)
+        assert attrs["raw_today"][0]["rate"] == pytest.approx(curve[0].import_price.total)
 
     def test_export_direction_reads_the_export_side(self, curve: PriceCurve) -> None:
         imports = raw_attributes(curve, direction="import", today=date(2026, 7, 15))
         exports = raw_attributes(curve, direction="export", today=date(2026, 7, 15))
-        assert exports["raw_today"][0]["value"] == pytest.approx(
+        assert exports["raw_today"][0]["rate"] == pytest.approx(
             curve[0].export_price.total * CENTS_PER_DOLLAR
         )
-        assert exports["raw_today"][0]["value"] != imports["raw_today"][0]["value"]
+        assert exports["raw_today"][0]["rate"] != imports["raw_today"][0]["rate"]
 
     def test_partitions_by_pacific_calendar_date(self, curve: PriceCurve) -> None:
         attrs = raw_attributes(curve, direction="import", today=date(2026, 7, 15))
-        assert {datetime.fromisoformat(e["start"]).date() for e in attrs["raw_today"]} == {
+        assert {datetime.fromisoformat(e["from"]).date() for e in attrs["raw_today"]} == {
             date(2026, 7, 15)
         }
-        assert {datetime.fromisoformat(e["start"]).date() for e in attrs["raw_tomorrow"]} == {
+        assert {datetime.fromisoformat(e["from"]).date() for e in attrs["raw_tomorrow"]} == {
             date(2026, 7, 16)
         }
 
@@ -148,7 +173,7 @@ class TestPredbat:
     def test_entries_are_ordered_and_gapless(self, curve: PriceCurve) -> None:
         entries = raw_attributes(curve, direction="import", today=date(2026, 7, 15))["raw_today"]
         for earlier, later in pairwise(entries):
-            assert earlier["end"] == later["start"]
+            assert earlier["to"] == later["from"]
 
     def test_short_horizon_leaves_tomorrow_empty(self, engine: RateEngine) -> None:
         """How Predbat already represents 'tomorrow is not published yet'."""
@@ -223,12 +248,12 @@ class TestPredbatPayload:
 
     def test_today_starts_at_midnight_not_the_current_hour(self, engine: RateEngine) -> None:
         out = predbat_payload(engine, pt(2026, 7, 15, 18))
-        first = datetime.fromisoformat(out["import"]["raw_today"][0]["start"])
+        first = datetime.fromisoformat(out["import"]["raw_today"][0]["from"])
         assert (first.hour, first.minute) == (0, 0)
 
     def test_today_and_tomorrow_join_without_a_gap(self, engine: RateEngine) -> None:
         out = predbat_payload(engine, pt(2026, 7, 15, 18))
-        assert out["import"]["raw_today"][-1]["end"] == out["import"]["raw_tomorrow"][0]["start"]
+        assert out["import"]["raw_today"][-1]["to"] == out["import"]["raw_tomorrow"][0]["from"]
 
     def test_covers_the_fall_back_day_completely(self, engine: RateEngine) -> None:
         out = predbat_payload(engine, pt(2026, 11, 1, 18))
@@ -240,7 +265,7 @@ class TestPredbatPayload:
 
     def test_import_and_export_differ(self, engine: RateEngine) -> None:
         out = predbat_payload(engine, pt(2026, 7, 15, 12))
-        assert out["import"]["raw_today"][0]["value"] != out["export"]["raw_today"][0]["value"]
+        assert out["import"]["raw_today"][0]["rate"] != out["export"]["raw_today"][0]["rate"]
 
     def test_serialises_without_a_custom_encoder(self, engine: RateEngine) -> None:
         """No stray datetime objects left in the payload."""

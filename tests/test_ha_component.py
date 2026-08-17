@@ -187,6 +187,46 @@ async def test_manual_export_setup_allows_blank_pto_date(hass: HomeAssistant) ->
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
+async def test_manual_cca_rejects_schedule_absent_from_rate_card(
+    hass: HomeAssistant,
+) -> None:
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": SOURCE_USER},
+    )
+    flow_id = result["flow_id"]
+    await hass.config_entries.flow.async_configure(flow_id, {"next_step_id": "manual"})
+    result = await hass.config_entries.flow.async_configure(
+        flow_id,
+        {
+            "profile_name": "unsupported-cca",
+            "supplier": "cca",
+            "tariff": "E-1",
+            "export_enabled": False,
+        },
+    )
+    assert result["step_id"] == "manual_delivery"
+    result = await hass.config_entries.flow.async_configure(
+        flow_id,
+        {"base_services_charge_tier": 3},
+    )
+    assert result["step_id"] == "manual_cca"
+    result = await hass.config_entries.flow.async_configure(
+        flow_id,
+        {
+            "cca_rate_card": "MCE",
+            "cca_option": "light_green",
+            "cca_pcia_vintage": 2026,
+        },
+    )
+    assert result["type"] == "form"
+    assert result["errors"] == {"base": "invalid_config"}
+    assert (
+        "does not publish generation rates for E-1" in result["description_placeholders"]["detail"]
+    )
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_initial_import_and_multiple_entries_are_supported(
     hass: HomeAssistant,
 ) -> None:

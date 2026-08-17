@@ -77,6 +77,14 @@ class Utility:
     #: Slug -> how the sheet header spells the schedule, where that differs from
     #: the tariff name. PG&E bills "EV2-A" but heads its sheets "EV2".
     sheet_aliases: dict[str, str] = field(default_factory=dict)
+    #: Structure stated in each schedule's Special Conditions but absent from
+    #: its rate tables. This bootstraps a newly generated schedule; later
+    #: vintages carry the verified structure forward.
+    schedule_seasons: dict[str, dict[str, str]] = field(default_factory=dict)
+    schedule_periods: dict[str, dict[str, object]] = field(default_factory=dict)
+    baseline_schedules: frozenset[str] = frozenset()
+    cca_drop_components: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    medical_exempt_components: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     def sheet_name(self, slug: str) -> str:
         """How this schedule identifies itself in a sheet header."""
@@ -100,21 +108,41 @@ class Cca:
     tariff_url: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class Program:
+    """A residential overlay published as its own tariff schedule."""
+
+    key: str
+    utility: str
+    data_slug: str
+    source: Source
+
+
 PACIFIC_GAS_AND_ELECTRIC = Utility(
     key="pge",
     identifier="pacific_gas_and_electric",
     short_name="PG&E",
     name="Pacific Gas and Electric Company",
     schedules={
+        "e1": Source("https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-1.pdf"),
         "eelec": Source("https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-ELEC.pdf"),
         "etouc": Source(
             "https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-TOU-C.pdf"
+        ),
+        "etoud": Source(
+            "https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-TOU-D.pdf"
         ),
         "ev2a": Source(
             "https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_EV2%20(Sch).pdf"
         ),
     },
-    schedule_names={"eelec": "E-ELEC", "etouc": "E-TOU-C", "ev2a": "EV2-A"},
+    schedule_names={
+        "e1": "E-1",
+        "eelec": "E-ELEC",
+        "etouc": "E-TOU-C",
+        "etoud": "E-TOU-D",
+        "ev2a": "EV2-A",
+    },
     export_adder=Source("https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_NBT.pdf"),
     export_rates=Source(
         "https://www.pge.com/assets/pge/docs/vanities/PGE-Solar-Billing-Plan-Export-Rates.zip"
@@ -125,6 +153,23 @@ PACIFIC_GAS_AND_ELECTRIC = Utility(
     nsc_rates=Source("https://www.pge.com/assets/pge/docs/clean-energy/solar/AB920-RateTable.pdf"),
     advice_letter_url=ADVICE_LETTER_URL,
     sheet_aliases={"ev2a": "EV2"},
+    schedule_seasons={
+        "e1": {"summer_start": "06-01", "summer_end": "09-30"},
+        "etoud": {"summer_start": "06-01", "summer_end": "09-30"},
+    },
+    schedule_periods={
+        "e1": {"peak": []},
+        "etoud": {"peak": [[17, 20]], "peak_weekdays_only": True},
+    },
+    baseline_schedules=frozenset({"e1"}),
+    cca_drop_components={
+        "e1": ("generation", "bundled_pcia"),
+        "etoud": ("generation", "bundled_pcia"),
+    },
+    medical_exempt_components={
+        "e1": ("wildfire_fund_charge",),
+        "etouc": ("wildfire_fund_charge",),
+    },
 )
 
 MCE = Cca(
@@ -142,6 +187,31 @@ MCE = Cca(
     tariff_url=(
         "https://mcecleanenergy.org/wp-content/uploads/2024/12/MCE-Solar-Billing-Plan-Tariff_120424.pdf"
     ),
+)
+
+D_CARE = Program(
+    key="dcare",
+    utility="pacific_gas_and_electric",
+    data_slug="pge",
+    source=Source("https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_D-CARE.pdf"),
+)
+D_MEDICAL = Program(
+    key="dmedical",
+    utility="pacific_gas_and_electric",
+    data_slug="pge",
+    source=Source("https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_D-MEDICAL.pdf"),
+)
+MEDICAL_BASELINE = Program(
+    key="medicalbaseline",
+    utility="pacific_gas_and_electric",
+    data_slug="pge",
+    source=Source("https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_RULES_19.pdf"),
+)
+E_RSMART = Program(
+    key="ersmart",
+    utility="pacific_gas_and_electric",
+    data_slug="pge",
+    source=Source("https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-RSMART.pdf"),
 )
 
 
@@ -195,6 +265,9 @@ CA_ENERGY_RESOURCES = Tax(
 UTILITIES: dict[str, Utility] = {PACIFIC_GAS_AND_ELECTRIC.key: PACIFIC_GAS_AND_ELECTRIC}
 TAXES: dict[str, Tax] = {CA_ENERGY_RESOURCES.key: CA_ENERGY_RESOURCES}
 CCAS: dict[str, Cca] = {MCE.key: MCE}
+PROGRAMS: dict[str, Program] = {
+    program.key: program for program in (D_CARE, D_MEDICAL, MEDICAL_BASELINE, E_RSMART)
+}
 
 
 def utility(key: str) -> Utility:

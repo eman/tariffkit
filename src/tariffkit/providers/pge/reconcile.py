@@ -29,10 +29,11 @@ from tariffkit.account.errors import AccountError
 from tariffkit.billing import BillingPeriod
 from tariffkit.config import Config
 from tariffkit.models import Supplier
+from tariffkit.tariff.retail import SUPPORTED_TARIFFS as RETAIL_TARIFFS
 
 from .statements import Statement, StatementAgreement, StatementError, read_statement
 
-SUPPORTED_TARIFFS: Final[frozenset[str]] = frozenset({"E-ELEC", "E-TOU-C", "EV2-A"})
+SUPPORTED_TARIFFS: Final[frozenset[str]] = frozenset(RETAIL_TARIFFS)
 _DIGEST = re.compile(r"^[0-9a-fA-F]{64}$")
 _PROVIDER = "pge"
 

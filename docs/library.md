@@ -72,7 +72,7 @@ forecast_lists(curve, since=now_pacific())
 #  'prediction_horizon': 95}              EMHASS runtime parameters, dollars
 
 predbat_payload(engine)
-# {'import': {'raw_today': [{'start': ..., 'end': ..., 'value': 55.214}, ...],
+# {'import': {'raw_today': [{'from': ..., 'to': ..., 'rate': 55.214}, ...],
 #             'raw_tomorrow': [...]},
 #  'export': {...}}                       Predbat entity attributes, cents
 ```
@@ -80,7 +80,9 @@ predbat_payload(engine)
 Three things to know:
 
 - **Predbat values are cents, EMHASS values are dollars.** Predbat assumes pence
-  per kWh and several of its thresholds are tuned to that magnitude.
+  per kWh and several of its thresholds are tuned to that magnitude. The
+  `from` / `to` / `rate` shape tells Predbat the values are already in that
+  scale.
 - **`predbat_payload` takes an engine, not a curve**, because Predbat's
   `raw_today` means a calendar day. It builds its own curve anchored to local
   midnight; handing it a forecast starting at the current hour would leave the

@@ -33,6 +33,11 @@ class CcaRateCard:
     def source_url(self) -> str:
         return str(self.raw.get("source_url", ""))
 
+    @property
+    def supported_schedules(self) -> frozenset[str]:
+        """PG&E schedule slugs for which this card publishes generation rates."""
+        return frozenset(self.raw["generation"])
+
     def generation(
         self, schedule: str, season: str, period: str, option: str = "light_green"
     ) -> float:

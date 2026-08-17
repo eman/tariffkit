@@ -16,7 +16,7 @@ import pytest
 
 pytest.importorskip("pypdf")
 
-from tools.regen import accplus, cca, franchise, nsc, providers, sheets, tax
+from tools.regen import accplus, cca, franchise, nsc, program, providers, sheets, tax
 from tools.regen import tariff as rt
 from tools.regen.sheets import ExtractionError
 
@@ -91,6 +91,48 @@ def sheet(text: str, number: int = 3, advice: str = "7846-E", eff: date | None =
         effective=eff or date(2026, 3, 1),
         text=text,
     )
+
+
+class TestResidentialPrograms:
+    def test_dcare_discount_and_exemptions(self) -> None:
+        _, _, values = program.extract(
+            providers.D_CARE,
+            [sheet("D-CARE Discount: 35.000 % (Percent)")],
+        )
+        assert values["discount"] == pytest.approx(0.35)
+        assert "wildfire_hardening" in values["exempt_components"]
+
+    def test_dmedical_discount(self) -> None:
+        _, _, values = program.extract(
+            providers.D_MEDICAL,
+            [sheet("Customers receive a 12 percent discount")],
+        )
+        assert values["discount"] == pytest.approx(0.12)
+
+    def test_standard_medical_quantity(self) -> None:
+        _, _, values = program.extract(
+            providers.MEDICAL_BASELINE,
+            [sheet("6,000 kWh per year divided by 365 days")],
+        )
+        assert values["standard_kwh_per_year"] == 6000
+
+    def test_smartrate_rates(self) -> None:
+        text = """
+High Price Period Usage $0.60000
+All Non-High- Price Period ($0.00636) x Number ($0.00167) x Number
+"""
+        effective, advice, values = program.extract(
+            providers.E_RSMART,
+            [
+                sheet("SmartDay High-", number=1, advice="7747-E", eff=date(2025, 10, 31)),
+                sheet(text, number=2, advice="6560-E", eff=date(2022, 5, 1)),
+            ],
+        )
+        assert effective == date(2022, 5, 1)
+        assert advice == "6560-E"
+        assert values["high_price_charge"] == pytest.approx(0.60)
+        assert values["program_credit"] == pytest.approx(0.00636)
+        assert values["participation_credit"] == pytest.approx(0.00167)
 
 
 class TestCells:
@@ -286,6 +328,8 @@ def test_every_vendored_snapshot_still_reconciles() -> None:
     files = sorted(root.rglob("*.toml"))
     assert files, "no vendored tariff snapshots found"
     for path in files:
+        if "program" in path.parts:
+            continue
         data = tomllib.loads(path.read_text(encoding="utf-8"))
         flat = sum(data["adders"].values())
         for season, by_period in data["energy"].items():

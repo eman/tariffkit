@@ -159,14 +159,19 @@ def test_base_services_charge_tiers() -> None:
     assert charges == pytest.approx([0.19713, 0.39688, 0.79343])
 
 
-def test_care_discount_drops_wildfire_fund_charge() -> None:
-    """CARE sales are not levied the Wildfire Fund Charge at all."""
+def test_care_discount_drops_exempt_surcharges() -> None:
+    """CARE sales exclude the charges identified by D-CARE."""
     moment = pt(2026, 7, 15, 17)
     care = RetailTariff(
         Config(discount="care", acc_plus_segment="residential_low_income")
     ).price_at(moment)
-    assert "wildfire_fund_charge" not in care.components
-    assert care.total == pytest.approx((0.55214 - 0.00591) * 0.65, abs=1e-6)
+    assert {
+        "wildfire_fund_charge",
+        "wildfire_hardening",
+        "recovery_bond_charge",
+        "recovery_bond_credit",
+    }.isdisjoint(care.components)
+    assert care.total == pytest.approx((0.55214 - 0.00591 - 0.00391) * 0.65, abs=1e-6)
 
 
 class TestCca:

@@ -116,7 +116,7 @@ The import and export attribute topics carry ready-made payloads for both:
 # [0.55214, 0.55214, 0.41273, ...]   dollars, 30-min slots, positional
 
 {{ state_attr('sensor.tariffkit_import_price', 'raw_today') }}
-# [{"start": "...", "end": "...", "value": 55.214}, ...]   cents, 30-min slots
+# [{"from": "...", "to": "...", "rate": 55.214}, ...]   cents, 30-min slots
 ```
 
 Setup is identical to the custom component, including the cents-for-pence

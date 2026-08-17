@@ -159,8 +159,8 @@ def test_attributes_carry_the_predbat_rate_lists(publisher: MqttPublisher) -> No
 
     assert len(payload["raw_today"]) == 48  # a full calendar day, not from 19:00
     assert len(payload["raw_tomorrow"]) == 48
-    assert set(payload["raw_today"][0]) == {"start", "end", "value"}
-    assert payload["raw_today"][0]["start"].endswith("T00:00:00-07:00")
+    assert set(payload["raw_today"][0]) == {"from", "to", "rate"}
+    assert payload["raw_today"][0]["from"].endswith("T00:00:00-07:00")
 
 
 def test_predbat_values_are_cents(publisher: MqttPublisher) -> None:
@@ -168,8 +168,8 @@ def test_predbat_values_are_cents(publisher: MqttPublisher) -> None:
     publisher.publish_now(datetime(2026, 9, 15, 19, tzinfo=PACIFIC))
     payload = json.loads(client_of(publisher).topics()["tariffkit/export_price/attributes"])
 
-    at_seven_pm = [e for e in payload["raw_today"] if e["start"].endswith("T19:00:00-07:00")]
-    assert at_seven_pm[0]["value"] == 60.385  # the state topic publishes 0.60385
+    at_seven_pm = [e for e in payload["raw_today"] if e["from"].endswith("T19:00:00-07:00")]
+    assert at_seven_pm[0]["rate"] == 60.385  # the state topic publishes 0.60385
 
 
 def test_attributes_carry_the_emhass_series(publisher: MqttPublisher) -> None:

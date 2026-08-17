@@ -14,8 +14,10 @@ integrations. The first data provider supports PG&E residential rate plans under
 **NEM 3.0 / the Net Billing Tariff (NBT)**; the package identity is deliberately
 not tied to one utility or tariff program.
 
-Three schedules are vendored: **E-ELEC** (Electric Home), **E-TOU-C**
-(Time-of-Use, peak 4–9 p.m. every day), and **EV2-A** (Home Charging).
+The complete active single-family residential portfolio is vendored:
+**E-1**, **E-ELEC**, **E-TOU-C**, **E-TOU-D**, and **EV2-A**. CARE, FERA,
+Medical Baseline/D-MEDICAL, and event-injected SmartRate adjustments are
+modeled separately from their underlying plans.
 
 Under NBT your export credit is not a time-of-use schedule: it is an hourly
 Avoided Cost Calculator value that swings from about $0.06/kWh at midday to
@@ -47,9 +49,9 @@ component. `tariffkit` collapses it at build time, verifying losslessness cell b
 cell, so the entire five-vintage dataset ships inside the wheel at **268 KiB**
 and every lookup is a few list indexes.
 
-The retail side is similar: these schedules' period boundaries are identical every day
-of the week including holidays and do not shift by season, so an import price is
-fully determined by `(season, hour)`.
+The retail side is similar: generated effective-dated tables hold every active
+schedule. E-TOU-D additionally selects weekday versus weekend/observed-holiday
+periods from the vendored tariff calendar.
 
 Nothing here touches the network at runtime.
 

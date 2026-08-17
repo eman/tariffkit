@@ -84,7 +84,8 @@ first choice:
      setup, but export prices remain marked `locked: false` until TariffKit can
      calculate the nine-year lock end), ACC Plus segment, and CARE/FERA
      discount appear only when export is enabled; baseline territory and code
-     appear only for E-TOU-C; Base Services Charge income tier is always asked.
+     appear only for E-1 and E-TOU-C; Base Services Charge income tier and
+     Medical Baseline enrollment are always asked.
   3. **CCA product** — only when you chose a Community Choice Aggregator as
      your supplier: its vendored rate card and product option. Raw
      generation-rate overrides are not asked here — they are an advanced,
@@ -507,7 +508,9 @@ metric_octopus_export: 'sensor.tariffkit_home_export_price'
 Entries are 30-minute slots aligned to `:00` and `:30`, matching Predbat's
 default `plan_interval_minutes: 30`. Both days are always complete: the lists
 are anchored to local midnight, not to the current hour, so Predbat never has
-to backfill a partial day by copying the previous one.
+to backfill a partial day by copying the previous one. Each entry uses
+Predbat's `from` / `to` / `rate` shape; `rate` is already expressed in cents,
+so Predbat does not apply another 100x currency conversion.
 
 > **Rates are published in cents, and Predbat will label them `p`.** Predbat is
 > a UK tool: it assumes pence per kWh, and several of its thresholds and

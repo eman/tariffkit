@@ -21,6 +21,7 @@ from ..config import Config
 from ..engine import RateEngine
 from ..errors import DataError
 from ..models import ImportPrice, Season, TouPeriod
+from ..tariff.retail import load_program
 from ..timeutil import PACIFIC, hour_floor, to_pacific
 from .models import Bill, BillingPeriod, IntervalReading, UsageBucket
 from .netting import check_coverage
@@ -139,6 +140,9 @@ class BillEngine:
         credit = self._baseline_credit(in_period, period)
         if credit:
             import_components["baseline_credit"] = credit
+        smart_rate_credit = self._smartrate_credit(in_period, period)
+        if smart_rate_credit:
+            import_components["smartrate_credit"] = smart_rate_credit
 
         if uncompensated:
             warnings.append(
@@ -299,6 +303,28 @@ class BillEngine:
             if remaining <= 0:
                 break
         return credit
+
+    def _smartrate_credit(
+        self, readings: Sequence[IntervalReading], period: BillingPeriod
+    ) -> float:
+        """Credits non-high-price imports once for each SmartDay in the cycle."""
+        config = self.rates.config
+        if not config.smartrate:
+            return 0.0
+        events = {event for event in config.smartrate_events if period.start <= event <= period.end}
+        if not events:
+            return 0.0
+        terms = load_program("ersmart", period.end)
+        start = int(terms["high_price_start"])
+        end = int(terms["high_price_end"])
+        eligible = 0.0
+        for reading in readings:
+            moment = to_pacific(reading.start)
+            if moment.date() in events and start <= moment.hour < end:
+                continue
+            eligible += reading.imported
+        credit = float(terms["program_credit"]) + float(terms["participation_credit"])
+        return -eligible * credit * len(events)
 
     def _fixed_charges(self, period: BillingPeriod) -> dict[str, float]:
         """Charges billed per day rather than per kWh.

@@ -12,10 +12,13 @@ from tariffkit.models import Supplier
 from tariffkit.providers.pge.statements import Statement
 
 PRINTED_SCHEDULES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bE-?1\b|Tiered", re.I), "E-1"),
     (re.compile(r"EV\s*2-?A", re.I), "EV2-A"),
     (re.compile(r"E-?ELEC|Electric\s+Home", re.I), "E-ELEC"),
     (re.compile(r"E-?TOU-?C", re.I), "E-TOU-C"),
+    (re.compile(r"E-?TOU-?D", re.I), "E-TOU-D"),
     (re.compile(r"Time-of-Use.*4\s*-\s*9", re.I), "E-TOU-C"),
+    (re.compile(r"Time-of-Use.*5\s*-\s*8", re.I), "E-TOU-D"),
 )
 
 

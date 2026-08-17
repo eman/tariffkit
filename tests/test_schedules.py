@@ -11,14 +11,14 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-from tariffkit import Config, RateEngine, Season, TouPeriod, Utility
+from tariffkit import CcaConfig, Config, RateEngine, Season, Supplier, TouPeriod, Utility
 from tariffkit.billing.engine import BillEngine
 from tariffkit.billing.models import Bill, BillingPeriod, IntervalReading
 from tariffkit.errors import ConfigError
-from tariffkit.tariff.retail import RetailTariff, load_snapshot
+from tariffkit.tariff.retail import SUPPORTED_TARIFFS, RetailTariff, load_snapshot
 from tariffkit.timeutil import PACIFIC
 
-SCHEDULES = ("E-ELEC", "E-TOU-C", "EV2-A")
+SCHEDULES = SUPPORTED_TARIFFS
 EFFECTIVE = date(2026, 6, 1)
 
 
@@ -43,6 +43,31 @@ def test_components_sum_to_published_total(tariff: str, season: str, period: str
     raw = load_snapshot(Utility.PACIFIC_GAS_AND_ELECTRIC, tariff, EFFECTIVE).raw
     total = sum(raw["energy"][season][period].values()) + sum(raw["adders"].values())
     assert total == pytest.approx(raw["totals"][season][period], abs=5e-6)
+
+
+@pytest.mark.parametrize(
+    ("tariff", "hour", "period"),
+    [("E-1", 12, "off_peak"), ("E-TOU-D", 17, "peak")],
+)
+def test_new_schedules_replace_bundled_generation_for_cca(
+    tariff: str,
+    hour: int,
+    period: str,
+) -> None:
+    config = Config(
+        tariff=tariff,
+        supplier=Supplier.CCA,
+        cca=CcaConfig(
+            name="test",
+            pcia_rate=0.01,
+            franchise_fee_surcharge=0.001,
+            generation_rates={"summer": {period: 0.1}},
+        ),
+    )
+    price = RetailTariff(config).price_at(datetime(2026, 7, 15, hour, tzinfo=PACIFIC))
+    assert "generation" not in price.components
+    assert "bundled_pcia" not in price.components
+    assert price.components["cca_generation"] == pytest.approx(0.1)
 
 
 @pytest.mark.parametrize("tariff", SCHEDULES)
@@ -96,7 +121,7 @@ class TestPeriods:
         tariff = RetailTariff(Config(tariff="EV2-A"))
         assert tariff.period(datetime(2026, 12, 15, hour, tzinfo=PACIFIC)) is expected
 
-    @pytest.mark.parametrize("tariff", SCHEDULES)
+    @pytest.mark.parametrize("tariff", ["E-ELEC", "E-TOU-C", "EV2-A"])
     def test_periods_do_not_shift_by_day_of_week(self, tariff: str) -> None:
         """None of these schedules distinguishes weekends or holidays."""
         engine = RetailTariff(Config(tariff=tariff))
@@ -104,6 +129,29 @@ class TestPeriods:
         days = [datetime(2026, 7, 6 + n, 17, tzinfo=PACIFIC) for n in range(7)]
         days.append(datetime(2026, 7, 3, 17, tzinfo=PACIFIC))
         assert {engine.period(day) for day in days} == {TouPeriod.PEAK}
+
+    def test_e1_is_not_time_dependent(self) -> None:
+        tariff = RetailTariff(Config(tariff="E-1"))
+        assert {
+            tariff.period(datetime(2026, 7, 15, hour, tzinfo=PACIFIC)) for hour in range(24)
+        } == {TouPeriod.OFF_PEAK}
+
+    @pytest.mark.parametrize(
+        ("moment", "expected"),
+        [
+            (datetime(2026, 7, 6, 16, tzinfo=PACIFIC), TouPeriod.OFF_PEAK),
+            (datetime(2026, 7, 6, 17, tzinfo=PACIFIC), TouPeriod.PEAK),
+            (datetime(2026, 7, 6, 19, tzinfo=PACIFIC), TouPeriod.PEAK),
+            (datetime(2026, 7, 6, 20, tzinfo=PACIFIC), TouPeriod.OFF_PEAK),
+            (datetime(2026, 7, 11, 18, tzinfo=PACIFIC), TouPeriod.OFF_PEAK),
+            (datetime(2026, 7, 3, 18, tzinfo=PACIFIC), TouPeriod.OFF_PEAK),
+        ],
+        ids=["before", "start", "inside", "end", "weekend", "observed-holiday"],
+    )
+    def test_etoud_weekday_and_holiday_boundaries(
+        self, moment: datetime, expected: TouPeriod
+    ) -> None:
+        assert RetailTariff(Config(tariff="E-TOU-D")).period(moment) is expected
 
 
 class TestSharedRiders:
@@ -129,35 +177,118 @@ class TestSharedRiders:
 
 
 class TestDiscounts:
-    @pytest.mark.parametrize("tariff", ["E-TOU-C", "EV2-A"])
-    def test_unpublished_discount_raises_rather_than_borrowing(self, tariff: str) -> None:
-        """The CARE percentage is schedule-specific and these sheets omit it."""
+    @pytest.mark.parametrize("tariff", SCHEDULES)
+    def test_care_is_available_on_every_active_schedule(self, tariff: str) -> None:
         config = Config(tariff=tariff, discount="care", acc_plus_segment="residential_low_income")
-        with pytest.raises(ConfigError, match="does not vendor a CARE discount"):
-            RetailTariff(config).price_at(datetime(2026, 12, 15, 17, tzinfo=PACIFIC))
+        price = RetailTariff(config).price_at(datetime(2026, 12, 15, 17, tzinfo=PACIFIC))
+        assert price.total == pytest.approx(sum(price.components.values()))
+        assert price.components["care_discount"] < 0
 
-    def test_eelec_still_applies_its_published_discount(self) -> None:
+    def test_care_exemptions_are_removed_before_the_discount(self) -> None:
         config = Config(discount="care", acc_plus_segment="residential_low_income")
         price = RetailTariff(config).price_at(datetime(2026, 7, 15, 17, tzinfo=PACIFIC))
-        assert price.total == pytest.approx((0.55214 - 0.00591) * 0.65, abs=1e-6)
+        assert price.total == pytest.approx((0.55214 - 0.00591 - 0.00391) * 0.65, abs=1e-6)
+
+    @pytest.mark.parametrize("tariff", SCHEDULES)
+    def test_fera_is_available_on_every_active_schedule(self, tariff: str) -> None:
+        config = Config(tariff=tariff, discount="fera", acc_plus_segment="residential_low_income")
+        price = RetailTariff(config).price_at(datetime(2026, 12, 15, 17, tzinfo=PACIFIC))
+        assert price.total == pytest.approx(sum(price.components.values()))
+        assert price.components["fera_discount"] < 0
+
+
+class TestMedicalBaseline:
+    def test_tiered_schedule_adds_the_standard_medical_quantity(self) -> None:
+        moment = datetime(2026, 12, 15, 12, tzinfo=PACIFIC)
+        ordinary = RetailTariff(Config(tariff="E-1", baseline_territory="X")).baseline_allowance(
+            moment
+        )
+        medical = RetailTariff(
+            Config(tariff="E-1", baseline_territory="X", medical_baseline=True)
+        ).baseline_allowance(moment)
+        assert medical - ordinary == pytest.approx(6000 / 365)
+
+    def test_tiered_medical_customer_is_exempt_from_wildfire_charge(self) -> None:
+        point = RateEngine(Config(tariff="E-1", medical_baseline=True)).price_at(
+            datetime(2026, 12, 15, 12, tzinfo=PACIFIC)
+        )
+        assert point.import_price.total == pytest.approx(0.40702 - 0.00591)
+
+    def test_d_medical_is_twelve_percent_after_wildfire_exemption(self) -> None:
+        point = RateEngine(Config(tariff="E-TOU-D", medical_baseline=True)).price_at(
+            datetime(2026, 12, 15, 17, tzinfo=PACIFIC)
+        )
+        assert point.import_price.total == pytest.approx((0.38747 - 0.00591) * 0.88)
+
+    def test_d_medical_does_not_reduce_the_daily_fixed_charge(self) -> None:
+        moment = datetime(2026, 12, 15, 12, tzinfo=PACIFIC)
+        assert RetailTariff(Config(tariff="E-TOU-D", medical_baseline=True)).daily_fixed_charge(
+            moment
+        ) == pytest.approx(0.79343)
+
+
+class TestSmartRate:
+    def config(self, *events: date, known_through: date = date(2026, 7, 31)) -> Config:
+        return Config(
+            tariff="E-TOU-D",
+            smartrate=True,
+            smartrate_events=events,
+            smartrate_known_through=known_through,
+        )
+
+    def test_event_high_price_period_adds_sixty_cents(self) -> None:
+        moment = datetime(2026, 7, 15, 17, tzinfo=PACIFIC)
+        ordinary = RateEngine(Config(tariff="E-TOU-D")).price_at(moment).import_price
+        event = RateEngine(self.config(date(2026, 7, 15))).price_at(moment).import_price
+        assert event.total - ordinary.total == pytest.approx(0.60)
+        assert event.components["smartrate_high_price"] == pytest.approx(0.60)
+
+    def test_event_charge_is_absent_outside_four_to_nine(self) -> None:
+        moment = datetime(2026, 7, 15, 15, tzinfo=PACIFIC)
+        ordinary = RateEngine(Config(tariff="E-TOU-D")).price_at(moment).import_price
+        event = RateEngine(self.config(date(2026, 7, 15))).price_at(moment).import_price
+        assert event.total == ordinary.total
+
+    def test_rate_sheet_vintage_covers_2025_events(self) -> None:
+        event = RetailTariff(
+            Config(
+                tariff="E-ELEC",
+                smartrate=True,
+                smartrate_events=(date(2025, 7, 15),),
+                smartrate_known_through=date(2025, 7, 31),
+            )
+        ).price_at(datetime(2025, 7, 15, 17, tzinfo=PACIFIC))
+        assert event.components["smartrate_high_price"] == pytest.approx(0.60)
+
+    def test_unknown_future_event_calendar_marks_price_incomplete(self) -> None:
+        point = RateEngine(self.config(known_through=date(2026, 7, 14))).price_at(
+            datetime(2026, 7, 15, 17, tzinfo=PACIFIC)
+        )
+        assert point.import_price.complete is False
 
 
 class TestBaseline:
     def midday(self, month: int, day: int = 15) -> datetime:
         return datetime(2026, month, day, 12, tzinfo=PACIFIC)
 
-    @pytest.mark.parametrize("tariff", ["E-ELEC", "EV2-A"])
+    @pytest.mark.parametrize("tariff", ["E-ELEC", "E-TOU-D", "EV2-A"])
     def test_schedules_without_a_baseline_report_no_credit(self, tariff: str) -> None:
         price = RateEngine(Config(tariff=tariff)).price_at(self.midday(12)).import_price
         assert price.baseline_credit == 0.0
         assert RetailTariff(Config(tariff=tariff)).baseline_allowance(self.midday(12)) == 0.0
 
-    def test_credit_is_the_spread_between_the_two_cia_rates(self) -> None:
+    @pytest.mark.parametrize(
+        ("tariff", "expected"),
+        [("E-1", 0.08141), ("E-TOU-C", 0.08140)],
+    )
+    def test_credit_is_the_spread_between_the_two_cia_rates(
+        self, tariff: str, expected: float
+    ) -> None:
         """The bill prints one credit; the sheet implements it as two rates."""
-        raw = load_snapshot(Utility.PACIFIC_GAS_AND_ELECTRIC, "E-TOU-C", EFFECTIVE).raw["baseline"]
+        raw = load_snapshot(Utility.PACIFIC_GAS_AND_ELECTRIC, tariff, EFFECTIVE).raw["baseline"]
         assert raw["over_rate"] - raw["within_rate"] == pytest.approx(raw["credit"])
-        price = RateEngine(Config(tariff="E-TOU-C")).price_at(self.midday(12)).import_price
-        assert price.baseline_credit == pytest.approx(0.08140)
+        price = RateEngine(Config(tariff=tariff)).price_at(self.midday(12)).import_price
+        assert price.baseline_credit == pytest.approx(expected)
 
     def test_marginal_price_is_the_over_baseline_one(self) -> None:
         """Right for dispatch: an allowance is normally spent early in a cycle."""
