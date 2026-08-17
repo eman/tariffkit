@@ -92,7 +92,7 @@ Start from an up-to-date branch based on `main`. Curate `Unreleased`, choose the
 next version, and run:
 
 ```bash
-VERSION=0.2.2
+VERSION=0.2.3
 uv run python -m tools.release prepare "$VERSION"
 uv run python -m tools.release check --version "$VERSION" --tag "v$VERSION"
 uv run python -m tools.release available "$VERSION" --repository pypi
@@ -112,7 +112,7 @@ and comparison links. Review every change, then open a release PR. The PR must
 pass normal CI, HACS validation, and hassfest. Merge it without creating a tag
 or GitHub release.
 
-For a release candidate, use a version such as `0.2.2rc1` and follow the same
+For a release candidate, use a version such as `0.2.3rc1` and follow the same
 process. A later candidate or stable release gets a new version; published
 candidate files are never replaced.
 
@@ -139,7 +139,7 @@ Resolve any failure in a new PR. Do not bypass a release check.
    TestPyPI for TariffKit and PyPI for its dependencies:
 
    ```bash
-   VERSION=0.2.2
+   VERSION=0.2.3
    uvx --from "tariffkit==$VERSION" \
      --index https://test.pypi.org/simple \
      --default-index https://pypi.org/simple \
@@ -163,7 +163,7 @@ unchanged in the same Actions artifact and is attached only to GitHub.
 Install from PyPI without using the checkout:
 
 ```bash
-VERSION=0.2.2
+VERSION=0.2.3
 uvx --refresh --from "tariffkit==$VERSION" tariffkit --version
 uvx --refresh --from "tariffkit[all]==$VERSION" tariffkit info
 gh release download "v$VERSION" --repo eman/tariffkit --dir release-assets

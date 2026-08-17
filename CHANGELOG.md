@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-08-17
+
 ### Changed
 - Pacific Gas and Electric now has the unambiguous machine identifier
   `pacific_gas_and_electric`, while Home Assistant and MQTT present `PG&E` or
@@ -17,6 +19,10 @@ All notable changes to this project are documented here. This project follows
   Status** entity are grouped under diagnostics, where PTO date, export lock
   end, NBT vintage, tariff provenance, source, and quality flags explain the
   active rates without crowding the primary price controls.
+
+### Fixed
+- The PyPI project page now loads the TariffKit banner from an absolute URL
+  instead of an unresolved repository-relative path.
 
 ## [0.2.2] - 2026-08-16
 
@@ -234,7 +240,8 @@ Initial release.
 - Holiday calendars are extracted per vintage from the source data rather than
   recomputed, because the vintage files disagree in far-future years.
 
-[Unreleased]: https://github.com/eman/tariffkit/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/eman/tariffkit/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/eman/tariffkit/releases/tag/v0.2.3
 [0.2.2]: https://github.com/eman/tariffkit/releases/tag/v0.2.2
 [0.2.1]: https://github.com/eman/tariffkit/releases/tag/v0.2.1
 [0.2.0]: https://github.com/eman/tariffkit/releases/tag/v0.2.0

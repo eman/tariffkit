@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="images/banner.svg" alt="TariffKit — electricity pricing, billing, and energy integrations" width="100%">
+  <img src="https://raw.githubusercontent.com/eman/tariffkit/main/images/banner.svg" alt="TariffKit — electricity pricing, billing, and energy integrations" width="100%">
 </p>
 
 # TariffKit

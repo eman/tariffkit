@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tariffkit"
-version = "0.2.2"
+version = "0.2.3"
 description = "Offline electricity tariff pricing, billing, and integration tools"
 readme = "README.md"
 license = "MIT"
