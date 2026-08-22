@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from tariffkit.account import AccountProfile, AccountRateEngine
@@ -221,11 +223,45 @@ def config_from_entry(data: dict[str, Any]) -> Config:
     )
 
 
+def device_model(info: Mapping[str, Any]) -> str:
+    """The device's rate identity: tariff, export vintage, and any CCA."""
+    tariff = info.get("tariff")
+    model = tariff if isinstance(tariff, str) and tariff else "unknown"
+    vintage = info.get("export_vintage")
+    if vintage:
+        model = f"{model} / {vintage}"
+    # On a CCA account the utility still delivers, so it stays the manufacturer
+    # and the generation supplier joins the rate identity here.
+    generation = _generation_supplier(info)
+    if generation:
+        model = f"{model} · {generation}"
+    return model
+
+
+def _generation_supplier(info: Mapping[str, Any]) -> str | None:
+    """Name the CCA supplying generation, with its product tier when known.
+
+    Returns None for bundled accounts, where PG&E supplies generation too and
+    naming it again on the model line would say nothing.
+    """
+    if str(info.get("supplier")) != str(Supplier.CCA):
+        return None
+    name = info.get("cca_name") or info.get("cca_rate_card")
+    if not isinstance(name, str) or not name:
+        return None
+    name = name if info.get("cca_name") else name.upper()
+    option = info.get("cca_option")
+    if isinstance(option, str) and option:
+        return f"{name} {option.replace('_', ' ').title()}"
+    return name
+
+
 class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
     """Recompute current and forecast rates at a short boundary-safe interval."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.entry = entry
+        self._device_model: str | None = None
         self.profile: AccountProfile = profile_from_entry({**entry.data, **entry.options})
         self.engine = AccountRateEngine(self.profile)
         self.forecast_hours = int(
@@ -260,9 +296,28 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
 
     async def _async_update_data(self) -> TariffKitData:
         try:
-            return await self.hass.async_add_executor_job(self._compute)
+            data = await self.hass.async_add_executor_job(self._compute)
         except TariffKitError as err:
             raise UpdateFailed(str(err)) from err
+        self._sync_device_identity(data.provenance)
+        return data
+
+    def _sync_device_identity(self, provenance: Provenance) -> None:
+        """Keep the device's rate identity current as the profile changes epoch.
+
+        DeviceInfo is read once, when the platform registers the entities, so an
+        account that crosses into an epoch on a different tariff, export vintage
+        or generation supplier would otherwise keep showing the old identity
+        until the entry is reloaded.
+        """
+        model = device_model(provenance)
+        if model == self._device_model:
+            return
+        registry = dr.async_get(self.hass)
+        device = registry.async_get_device(identifiers={(DOMAIN, self.entry.entry_id)})
+        if device is not None:
+            registry.async_update_device(device.id, model=model)
+        self._device_model = model
 
     def _predbat_for(self, moment: datetime) -> PredbatPayload | None:
         if not self.predbat_enabled:
@@ -287,6 +342,9 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
                 "utility",
                 "tariff",
                 "supplier",
+                "cca_name",
+                "cca_rate_card",
+                "cca_option",
                 "tariff_effective",
                 "tariff_advice_letter",
                 "tariff_source",

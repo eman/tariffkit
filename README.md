@@ -66,6 +66,8 @@ Nothing here touches the network at runtime.
 | [MQTT](docs/mqtt.md) | Publishing, with Home Assistant discovery |
 | [REST API](docs/web.md) | HTTP service |
 | [Home Assistant](docs/home-assistant.md) | Custom component, Energy dashboard, stacked component charts, account history, response actions, opt-in Predbat |
+| [Predbat](docs/predbat.md) | Installing TariffKit and Predbat together, end to end |
+| [Predbat on Sigenergy](docs/predbat-sigenergy.md) | Sigenergy SigenStor specifics: entity mapping, sign and unit conversions, control |
 | [Home Assistant quality checklist](docs/home-assistant-quality.md) | Self-assessment against the Integration Quality Scale, with exemptions |
 | [Containers](docs/containers.md) | Local Home Assistant development stack and API/MQTT deployment proposal |
 | [Maintaining rate data](docs/data.md) | Regenerating export rates, updating the retail tariff and CCA cards |

@@ -4,3 +4,11 @@ logger:
   default: info
   logs:
     custom_components.tariffkit: debug
+
+# Predbat publishes multi-KB attribute blobs (plan_html, load_energy, metric, ...)
+# on every update, which the recorder rejects at 16 KB with a warning each time.
+# Its own domain carries none of the history we want; sensor.predbat_* is unaffected.
+recorder:
+  exclude:
+    domains:
+      - predbat

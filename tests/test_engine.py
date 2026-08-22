@@ -359,6 +359,28 @@ def test_describe_reports_provenance(engine: RateEngine) -> None:
     assert info["lock_end"] == "2035-06-02"
 
 
+def test_describe_names_the_cca_only_when_it_supplies_generation() -> None:
+    """The supplier decides, not the mere presence of a CcaConfig.
+
+    Nothing rejects a bundled Config that still carries a CcaConfig -- a
+    profile mid-switch is the obvious way to end up with one -- and reporting
+    a CCA beside supplier='bundled' would contradict itself.
+    """
+    cca = CcaConfig(name="MCE", rate_card="mce", option="light_green")
+
+    supplied = RateEngine(Config(tariff="E-ELEC", supplier=Supplier.CCA, cca=cca)).describe()
+    assert supplied["supplier"] == "cca"
+    assert supplied["cca_name"] == "MCE"
+    assert supplied["cca_rate_card"] == "mce"
+    assert supplied["cca_option"] == "light_green"
+
+    stray = RateEngine(Config(tariff="E-ELEC", supplier=Supplier.BUNDLED, cca=cca)).describe()
+    assert stray["supplier"] == "bundled"
+    assert stray["cca_name"] is None
+    assert stray["cca_rate_card"] is None
+    assert stray["cca_option"] is None
+
+
 def test_describe_resolves_provenance_at_the_requested_time(engine: RateEngine) -> None:
     assert engine.describe(pt(2025, 2, 1, 0))["tariff_effective"] == "2025-01-01"
     assert engine.describe(pt(2026, 2, 1, 0))["tariff_effective"] == "2026-01-01"

@@ -182,6 +182,19 @@ historical or future price rather than the current snapshot:
 engine.describe(moment)
 ```
 
+On a CCA account, `describe()` also names who supplies generation. The utility
+keeps delivering either way, so `utility` is unchanged and these sit alongside
+it rather than replacing it:
+
+| Key | |
+|---|---|
+| `cca_name` | The free-text name from `CcaConfig`, e.g. `"MCE"` |
+| `cca_rate_card` | Vendored card the generation rates came from, e.g. `"mce"` |
+| `cca_option` | Product tier on that card, e.g. `"light_green"` |
+
+All three are `None` for a bundled account, where the utility supplies
+generation too and naming it again would say nothing.
+
 ## Errors
 
 All inherit `TariffKitError`:

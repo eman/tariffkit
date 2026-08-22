@@ -159,6 +159,11 @@ _PROVENANCE_KEYS = (
     "utility",
     "tariff",
     "supplier",
+    # A CCA supplies generation while the utility still delivers, so a consumer
+    # reading the generation component needs to know whose rate it came from.
+    "cca_name",
+    "cca_rate_card",
+    "cca_option",
     "tariff_effective",
     "tariff_advice_letter",
     "tariff_source",
