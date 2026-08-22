@@ -823,9 +823,7 @@ class TestGenerationSupplierInServiceProvenance:
     """
 
     @pytest.mark.usefixtures("enable_custom_integrations")
-    async def test_cca_appears_in_the_response_provenance(
-        self, hass: HomeAssistant
-    ) -> None:
+    async def test_cca_appears_in_the_response_provenance(self, hass: HomeAssistant) -> None:
         entry = _entry(profile=_cca_profile())
         await _setup_entry(hass, entry)
 
@@ -864,9 +862,7 @@ class TestPermissionToOperateSensors:
     """PTO and the lock end were attributes only; they get their own rows now."""
 
     @pytest.mark.usefixtures("enable_custom_integrations")
-    async def test_dates_are_published_as_diagnostic_sensors(
-        self, hass: HomeAssistant
-    ) -> None:
+    async def test_dates_are_published_as_diagnostic_sensors(self, hass: HomeAssistant) -> None:
         profile = profile_payload(
             AccountProfile(
                 (
@@ -891,9 +887,7 @@ class TestPermissionToOperateSensors:
         assert lock.state == "2035-06-02"
 
     @pytest.mark.usefixtures("enable_custom_integrations")
-    async def test_missing_pto_leaves_both_dates_unknown(
-        self, hass: HomeAssistant
-    ) -> None:
+    async def test_missing_pto_leaves_both_dates_unknown(self, hass: HomeAssistant) -> None:
         """A system awaiting Permission To Operate has neither date to show."""
         profile = profile_payload(
             AccountProfile(

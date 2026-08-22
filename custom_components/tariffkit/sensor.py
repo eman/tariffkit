@@ -336,8 +336,6 @@ async def async_setup_entry(
     async_add_entities(TariffKitSensor(coordinator, entry, description) for description in SENSORS)
 
 
-
-
 def _provenance_date(info: Mapping[str, Any], key: str) -> date | None:
     """Read an ISO date out of provenance, tolerating absence.
 
