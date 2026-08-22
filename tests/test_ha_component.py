@@ -858,3 +858,57 @@ class TestGenerationSupplierInServiceProvenance:
         )
         assert result is not None
         assert result["provenance"]["segments"][0]["cca_name"] is None
+
+
+class TestPermissionToOperateSensors:
+    """PTO and the lock end were attributes only; they get their own rows now."""
+
+    @pytest.mark.usefixtures("enable_custom_integrations")
+    async def test_dates_are_published_as_diagnostic_sensors(
+        self, hass: HomeAssistant
+    ) -> None:
+        profile = profile_payload(
+            AccountProfile(
+                (
+                    AccountEpoch(
+                        effective=date(1970, 1, 1),
+                        config=Config(tariff="E-ELEC", pto_date=date(2026, 6, 3)),
+                    ),
+                )
+            )
+        )
+        entry = _entry(profile=profile)
+        await _setup_entry(hass, entry)
+
+        pto = hass.states.get(_entity_id(hass, entry, "pto_date"))
+        assert pto is not None
+        assert pto.state == "2026-06-03"
+        assert pto.attributes["device_class"] == "date"
+
+        # Nine years of lock, so the end follows from PTO alone.
+        lock = hass.states.get(_entity_id(hass, entry, "lock_end"))
+        assert lock is not None
+        assert lock.state == "2035-06-02"
+
+    @pytest.mark.usefixtures("enable_custom_integrations")
+    async def test_missing_pto_leaves_both_dates_unknown(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A system awaiting Permission To Operate has neither date to show."""
+        profile = profile_payload(
+            AccountProfile(
+                (
+                    AccountEpoch(
+                        effective=date(1970, 1, 1),
+                        config=Config(tariff="E-ELEC", pto_date=None),
+                    ),
+                )
+            )
+        )
+        entry = _entry(profile=profile)
+        await _setup_entry(hass, entry)
+
+        pto = hass.states.get(_entity_id(hass, entry, "pto_date"))
+        lock = hass.states.get(_entity_id(hass, entry, "lock_end"))
+        assert pto is not None and pto.state == "unknown"
+        assert lock is not None and lock.state == "unknown"

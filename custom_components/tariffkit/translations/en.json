@@ -265,6 +265,12 @@
       },
       "export_other": {
         "name": "Export Other"
+      },
+      "pto_date": {
+        "name": "Permission To Operate"
+      },
+      "lock_end": {
+        "name": "Export Rate Lock Ends"
       }
     }
   },

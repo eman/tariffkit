@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 from urllib.parse import urlparse
 
@@ -48,6 +49,16 @@ from .coordinator import (
 PARALLEL_UPDATES = 0
 UNIT = "USD/kWh"
 DAILY_UNIT = "USD/day"
+PTO_DESCRIPTION = (
+    "Permission To Operate: the date PG&E authorized the system to export. It "
+    "starts the nine-year export rate lock and selects the NBT vintage. Blank "
+    "until the utility issues it, which is why export prices stay unlocked "
+    "without one."
+)
+LOCK_END_DESCRIPTION = (
+    "Last day the locked export rate vintage is guaranteed, nine years after "
+    "Permission To Operate. Prices beyond it are illustrative."
+)
 FIXED_CHARGE_DESCRIPTION = (
     "AB 205 Base Services Charge, billed per day of service. It is not a per-kWh "
     "price, so it does not belong in a stacked price chart and is not part of "
@@ -275,6 +286,24 @@ SENSORS: tuple[TariffKitSensorDescription, ...] = (
         attrs_fn=_forecast_attrs,
     ),
     TariffKitSensorDescription(
+        key="pto_date",
+        translation_key="pto_date",
+        device_class=SensorDeviceClass.DATE,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:solar-power-variant",
+        value_fn=lambda data: _provenance_date(data.provenance, "pto_date"),
+        attrs_fn=lambda data: {"description": PTO_DESCRIPTION},
+    ),
+    TariffKitSensorDescription(
+        key="lock_end",
+        translation_key="lock_end",
+        device_class=SensorDeviceClass.DATE,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:lock-clock",
+        value_fn=lambda data: _provenance_date(data.provenance, "lock_end"),
+        attrs_fn=lambda data: {"description": LOCK_END_DESCRIPTION},
+    ),
+    TariffKitSensorDescription(
         key="daily_fixed_charge",
         translation_key="daily_fixed_charge",
         native_unit_of_measurement=DAILY_UNIT,
@@ -307,6 +336,21 @@ async def async_setup_entry(
     async_add_entities(TariffKitSensor(coordinator, entry, description) for description in SENSORS)
 
 
+
+
+def _provenance_date(info: Mapping[str, Any], key: str) -> date | None:
+    """Read an ISO date out of provenance, tolerating absence.
+
+    Both dates are optional: pto_date is blank until the utility issues it, and
+    lock_end cannot be derived without it.
+    """
+    raw = info.get(key)
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return None
 
 
 def _generation_supplier(info: Mapping[str, Any]) -> str | None:
