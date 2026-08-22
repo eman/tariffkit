@@ -724,6 +724,10 @@ rather than a hardcoded number. If you have changed EMHASS's
 
 ## Predbat
 
+> For a step-by-step guide to installing and wiring both sides together —
+> including Predbat's own setup, verification, and troubleshooting — see
+> [Predbat](predbat.md). This section covers what the integration publishes.
+
 Disabled by default. Enable it in **Configure → Forecast and Predbat**
 ("Enable Predbat compatibility") — until then, the import and export sensors
 carry no `raw_today` / `raw_tomorrow` attributes and the integration never
