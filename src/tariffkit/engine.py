@@ -71,10 +71,16 @@ class RateEngine:
         when = to_pacific(moment or now_pacific())
         snapshot = self.tariff.snapshot_for(when)
         low, high = self.export_rates.covered_years
+        cca = self.config.cca
         return {
             "utility": self.config.utility.value,
             "tariff": self.config.tariff,
             "supplier": str(self.config.supplier),
+            # Who supplies generation, when that is not the utility. PG&E still
+            # delivers, so this names the CCA rather than replacing the utility.
+            "cca_name": cca.name if cca else None,
+            "cca_rate_card": cca.rate_card if cca else None,
+            "cca_option": cca.option if cca else None,
             "tariff_effective": snapshot.effective.isoformat(),
             "tariff_advice_letter": snapshot.advice_letter,
             "tariff_source": snapshot.source_url,

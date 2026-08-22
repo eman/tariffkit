@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -25,7 +25,7 @@ from tariffkit.components import (
     ComponentGroup,
     split_components,
 )
-from tariffkit.models import ExportPrice, ImportPrice, TouPeriod, Utility
+from tariffkit.models import ExportPrice, ImportPrice, Supplier, TouPeriod, Utility
 
 from .const import (
     ATTR_GENERATED_AT,
@@ -307,6 +307,26 @@ async def async_setup_entry(
     async_add_entities(TariffKitSensor(coordinator, entry, description) for description in SENSORS)
 
 
+
+
+def _generation_supplier(info: Mapping[str, Any]) -> str | None:
+    """Name the CCA supplying generation, with its product tier when known.
+
+    Returns None for bundled accounts, where PG&E supplies generation too and
+    naming it again on the model line would say nothing.
+    """
+    if str(info.get("supplier")) != str(Supplier.CCA):
+        return None
+    name = info.get("cca_name") or info.get("cca_rate_card")
+    if not isinstance(name, str) or not name:
+        return None
+    name = name if info.get("cca_name") else name.upper()
+    option = info.get("cca_option")
+    if isinstance(option, str) and option:
+        return f"{name} {option.replace('_', ' ').title()}"
+    return name
+
+
 class TariffKitSensor(CoordinatorEntity[TariffKitCoordinator], SensorEntity):
     """A sensor backed by the shared typed coordinator result."""
 
@@ -355,6 +375,11 @@ class TariffKitSensor(CoordinatorEntity[TariffKitCoordinator], SensorEntity):
         vintage = info.get("export_vintage")
         if vintage:
             model = f"{model} / {vintage}"
+        # On a CCA account the utility still delivers, so it stays the
+        # manufacturer and the generation supplier joins the rate identity here.
+        generation = _generation_supplier(info)
+        if generation:
+            model = f"{model} · {generation}"
         return DeviceInfo(
             identifiers={(DOMAIN, self.coordinator.entry.entry_id)},
             name=name,

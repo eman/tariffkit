@@ -38,7 +38,8 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from tariffkit import Config
 from tariffkit.account import AccountEpoch, AccountProfile
 from tariffkit.components import EXPORT_GROUPS, IMPORT_GROUPS
-from tariffkit.models import ExportPrice, ImportPrice, PricePoint
+from tariffkit.config import CcaConfig
+from tariffkit.models import ExportPrice, ImportPrice, PricePoint, Supplier
 from tariffkit.timeutil import PACIFIC
 
 
@@ -747,3 +748,113 @@ async def test_dst_forecast_uses_absolute_hours(
     assert spring.end.astimezone(ZoneInfo("UTC")) - spring.start.astimezone(ZoneInfo("UTC")) == (
         fall.end.astimezone(ZoneInfo("UTC")) - fall.start.astimezone(ZoneInfo("UTC"))
     )
+
+
+def _cca_profile(name: str = "MCE", option: str = "light_green") -> dict[str, object]:
+    """A profile whose generation comes from a CCA rather than the utility."""
+    return profile_payload(
+        AccountProfile(
+            (
+                AccountEpoch(
+                    effective=date(1970, 1, 1),
+                    config=Config(
+                        tariff="E-ELEC",
+                        supplier=Supplier.CCA,
+                        cca=CcaConfig(name=name, rate_card="mce", option=option),
+                    ),
+                ),
+            )
+        )
+    )
+
+
+class TestGenerationSupplierOnDevice:
+    """The device model names the CCA, while the utility stays the manufacturer.
+
+    PG&E delivers either way, so replacing the manufacturer would misstate who
+    runs the wires; the CCA belongs to the rate identity instead.
+    """
+
+    @pytest.mark.usefixtures("enable_custom_integrations")
+    async def test_bundled_account_names_no_generation_supplier(
+        self, hass: HomeAssistant, device_registry: DeviceRegistry
+    ) -> None:
+        entry = _entry()
+        await _setup_entry(hass, entry)
+
+        device = device_registry.async_get_device({(DOMAIN, entry.entry_id)}, set())
+        assert device is not None
+        assert device.model is not None
+        assert "·" not in device.model
+        assert device.manufacturer == "Pacific Gas and Electric Company"
+
+    @pytest.mark.usefixtures("enable_custom_integrations")
+    async def test_cca_account_names_the_cca_and_its_product(
+        self, hass: HomeAssistant, device_registry: DeviceRegistry
+    ) -> None:
+        entry = _entry(profile=_cca_profile())
+        await _setup_entry(hass, entry)
+
+        device = device_registry.async_get_device({(DOMAIN, entry.entry_id)}, set())
+        assert device is not None
+        assert device.model is not None
+        assert device.model.endswith("· MCE Light Green")
+        # The utility still delivers, so it keeps the manufacturer slot.
+        assert device.manufacturer == "Pacific Gas and Electric Company"
+
+    @pytest.mark.usefixtures("enable_custom_integrations")
+    async def test_unnamed_cca_falls_back_to_the_rate_card(
+        self, hass: HomeAssistant, device_registry: DeviceRegistry
+    ) -> None:
+        entry = _entry(profile=_cca_profile(name=""))
+        await _setup_entry(hass, entry)
+
+        device = device_registry.async_get_device({(DOMAIN, entry.entry_id)}, set())
+        assert device is not None
+        assert device.model is not None
+        assert device.model.endswith("· MCE Light Green")
+
+
+class TestGenerationSupplierInServiceProvenance:
+    """get_rates names the CCA too.
+
+    The generation component of a CCA price comes from the CCA's rate card, so
+    a caller reading that number needs to know whose card it was.
+    """
+
+    @pytest.mark.usefixtures("enable_custom_integrations")
+    async def test_cca_appears_in_the_response_provenance(
+        self, hass: HomeAssistant
+    ) -> None:
+        entry = _entry(profile=_cca_profile())
+        await _setup_entry(hass, entry)
+
+        result = await hass.services.async_call(
+            DOMAIN,
+            SERVICE_GET_RATES,
+            {"config_entry": entry.entry_id, "date": "2026-08-15", "horizon": 1},
+            blocking=True,
+            return_response=True,
+        )
+        assert result is not None
+        segment = result["provenance"]["segments"][0]
+        assert segment["cca_name"] == "MCE"
+        assert segment["cca_rate_card"] == "mce"
+        assert segment["cca_option"] == "light_green"
+        # The utility still delivers, so it is not displaced by the CCA.
+        assert segment["utility"] == "pacific_gas_and_electric"
+
+    @pytest.mark.usefixtures("enable_custom_integrations")
+    async def test_bundled_account_reports_no_cca(self, hass: HomeAssistant) -> None:
+        entry = _entry()
+        await _setup_entry(hass, entry)
+
+        result = await hass.services.async_call(
+            DOMAIN,
+            SERVICE_GET_RATES,
+            {"config_entry": entry.entry_id, "date": "2026-08-15", "horizon": 1},
+            blocking=True,
+            return_response=True,
+        )
+        assert result is not None
+        assert result["provenance"]["segments"][0]["cca_name"] is None
