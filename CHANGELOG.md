@@ -24,9 +24,12 @@ All notable changes to this project are documented here. This project follows
   a `groups` key in every `to_dict` payload, and `tariffkit.components` expose
   them to library and REST callers.
 - Home Assistant gains a sensor per component group in each direction, and the
-  forecast's `rates` attribute carries the same roll-up per hour, so a stacked
-  chart can cover the recorded past and the next 48 hours from one card. The
-  MQTT publisher publishes the same series with matching discovery payloads.
+  forecast's `rates` attribute carries the same roll-up per hour, so both the
+  recorded past and the next 48 hours can be drawn as stacked charts -- one
+  card each, because stacking recorded and forecast points together would
+  double-count the current hour. The MQTT publisher publishes the same series
+  with matching discovery payloads, each band carrying its price's quality
+  flags.
 - Home Assistant now exposes the AB 205 Base Services Charge as **Daily Fixed
   Charge** in `USD/day`. The unit keeps it out of the Energy dashboard's price
   pickers and out of any `USD/kWh` stack, which is why it can be published at

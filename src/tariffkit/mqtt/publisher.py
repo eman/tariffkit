@@ -255,10 +255,24 @@ class MqttPublisher:
             # only the lines behind each band.
             totals = price.grouped()
             lines_by_group = split_components(price.components, groups)
+            # Every band repeats its direction's own quality flags. A band is a
+            # slice of that price, so it is exactly as trustworthy -- and a
+            # subscriber reading one band must not have to know that a second
+            # topic is where it would learn the value is delivery-only or past
+            # its rate lock. Taken from to_dict() so the two cannot drift, and
+            # so each direction carries only the flags it actually has.
+            flags = {
+                key: value
+                for key, value in price.to_dict().items()
+                if key in {"complete", "locked", "exact"}
+            }
             for group in groups:
                 suffix = f"components/{direction}/{group}"
                 self._publish(suffix, f"{totals[group]:.5f}")
-                self._publish(f"{suffix}/attributes", dict(lines_by_group[group]))
+                self._publish(
+                    f"{suffix}/attributes",
+                    {"components": dict(lines_by_group[group]), **flags},
+                )
 
     def publish_now(self, moment: datetime | None = None) -> PricePoint:
         now = moment or now_pacific()

@@ -74,7 +74,7 @@ across the internet or an untrusted LAN.
 | `tariffkit/daily_fixed_charge` | `0.79343` (USD/day, not per kWh) |
 | `tariffkit/components/import/{generation,distribution,transmission,surcharges,credits,other}` | `0.15377` — one stackable band of the import price |
 | `tariffkit/components/export/{generation,delivery,credits,other}` | `0.88896` — one stackable band of the export credit |
-| `tariffkit/components/{direction}/{group}/attributes` | The tariff lines rolled into that band |
+| `tariffkit/components/{direction}/{group}/attributes` | `components` — the tariff lines rolled into that band — plus that direction's quality flags (`complete`, and `locked` / `exact` on export) |
 | `tariffkit/forecast` | Full JSON curve |
 | `tariffkit/{import_price,export_price}/attributes` | Component breakdown and group roll-up, plus EMHASS and Predbat payloads |
 | `tariffkit/spread/attributes` | Flat hourly forecast list |
@@ -102,7 +102,9 @@ The component-group sensors are `sensor.tariffkit_import_generation`,
 `_import_credits`, `_import_other`, and on the export side `_export_generation`,
 `_export_delivery`, `_export_credits`, `_export_other`. Each is in `USD/kWh`
 and the groups of a direction sum to that direction's price, so stacking them
-in a chart reproduces Import Price or Export Price exactly — see
+in a chart reproduces Import Price or Export Price exactly. Each band repeats
+its price's quality flags, so a subscriber reading one band alone can still
+tell a delivery-only value from a complete one — see
 [Component breakdown](home-assistant.md#component-breakdown) for what each
 group contains and a ready-made stacked chart.
 

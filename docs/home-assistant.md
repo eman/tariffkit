@@ -286,7 +286,7 @@ attribute, so the roll-up is auditable from the entity itself:
 The same roll-up rides on each hour of the forecast, as `import_components`
 and `export_components` on the **Rates Available Through** sensor's `rates`
 attribute — grouped rather than per-line, because a 48-hour horizon times
-fifteen lines is a lot of attribute for a chart that would draw five bands
+fifteen lines is a lot of attribute for a chart that would draw six bands
 anyway.
 
 Grouping is a presentation, not a billing rule. TariffKit's billing ledger
@@ -309,7 +309,10 @@ the recorded half. Put them in one stacked card and the current hour is counted
 twice. Each half stacks correctly on its own, so give each its own card.
 
 **The recorded past.** Every series is bucketed identically, so the bands line
-up:
+up. All six bands are listed, including the two that read zero on a bundled
+account with no discount: that is what makes the stack equal the price rather
+than merely resemble it, and it means the card keeps working when you enroll
+in CARE or switch to a CCA.
 
 ```yaml
 type: custom:apexcharts-card
@@ -348,6 +351,22 @@ series:
       duration: 15min
   - entity: sensor.tariffkit_home_import_surcharges
     name: Surcharges
+    type: area
+    curve: stepline
+    extend_to: now
+    group_by:
+      func: last
+      duration: 15min
+  - entity: sensor.tariffkit_home_import_credits
+    name: Credits
+    type: area
+    curve: stepline
+    extend_to: now
+    group_by:
+      func: last
+      duration: 15min
+  - entity: sensor.tariffkit_home_import_other
+    name: Other
     type: area
     curve: stepline
     extend_to: now
@@ -404,17 +423,39 @@ series:
       return entity.attributes.rates.map((r) => {
         return [new Date(r.start).getTime(), r.import_components.surcharges];
       });
+  - entity: sensor.tariffkit_home_rates_available_through
+    name: Credits
+    type: area
+    curve: stepline
+    data_generator: |
+      return entity.attributes.rates.map((r) => {
+        return [new Date(r.start).getTime(), r.import_components.credits];
+      });
+  - entity: sensor.tariffkit_home_rates_available_through
+    name: Other
+    type: area
+    curve: stepline
+    data_generator: |
+      return entity.attributes.rates.map((r) => {
+        return [new Date(r.start).getTime(), r.import_components.other];
+      });
 ```
 
-Add the `credits` and `other` bands the same way if the account has them. A
-negative band — a CARE discount, or the bundled PCIA credit inside Generation —
-stacks downward, which is the honest picture: it is a number that reduces the
-price, and the stack still totals the price.
+Keep `other` on the chart even though it should always read zero. It is where
+a tariff line TariffKit has not classified yet would land, and a chart that
+omits it would simply stop adding up to the price — quietly, and looking
+exactly as it did the day before. That is the failure the band exists to make
+visible.
+
+A negative band — a CARE discount, or the bundled PCIA credit inside
+Generation — stacks downward, which is the honest picture: it is a number that
+reduces the price, and the stack still totals the price.
 
 For the export side, swap the entity prefixes to `export_` and read
-`r.export_components.{generation,delivery,credits}`. Do not mix the two
-directions in one stack: they are different quantities that happen to share a
-unit, and stacking a credit on top of a charge totals nothing meaningful.
+`r.export_components.{generation,delivery,credits,other}` — all four bands, for
+the same reason. Do not mix the two directions in one stack: they are different
+quantities that happen to share a unit, and stacking a credit on top of a
+charge totals nothing meaningful.
 
 Native History cards cannot stack, and cannot draw the forecast half at all
 (see [History and forecast timeline](#history-and-forecast-timeline)). With
