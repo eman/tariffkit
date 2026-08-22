@@ -11,6 +11,7 @@ import pytest
 
 from tariffkit import Config, RateEngine
 from tariffkit.account import AccountEpoch, AccountProfile, NamedProfileRepository
+from tariffkit.components import EXPORT_GROUPS, IMPORT_GROUPS
 from tariffkit.errors import ConfigError
 from tariffkit.mqtt.publisher import OFFLINE, ONLINE, MqttPublisher, MqttSettings
 from tariffkit.timeutil import PACIFIC
@@ -151,6 +152,29 @@ def test_attributes_carry_the_component_breakdown(publisher: MqttPublisher) -> N
     assert payload["components"]["acc_plus"] == 0.0088
     assert payload["vintage"] == "NBT26"
     assert payload["locked"] is True
+
+
+def test_component_topics_stack_to_the_price(publisher: MqttPublisher) -> None:
+    """A dashboard stacking the group topics must land on the price topic."""
+    publisher.publish_now(datetime(2026, 9, 15, 19, tzinfo=PACIFIC))
+    topics = client_of(publisher).topics()
+
+    for direction, groups in (("import", IMPORT_GROUPS), ("export", EXPORT_GROUPS)):
+        stack = sum(float(topics[f"tariffkit/components/{direction}/{group}"]) for group in groups)
+        assert stack == pytest.approx(float(topics[f"tariffkit/{direction}_price"]), abs=5e-5)
+
+    lines = json.loads(topics["tariffkit/components/export/generation/attributes"])
+    assert lines == {"generation": 0.59312}
+
+
+def test_daily_fixed_charge_is_published_per_day(publisher: MqttPublisher) -> None:
+    """Published beside the prices, never inside them."""
+    publisher.publish_now(datetime(2026, 9, 15, 19, tzinfo=PACIFIC))
+    topics = client_of(publisher).topics()
+
+    assert float(topics["tariffkit/daily_fixed_charge"]) > 0
+    payload = json.loads(topics["tariffkit/import_price/attributes"])
+    assert "base_services_charge" not in payload["components"]
 
 
 def test_attributes_carry_the_predbat_rate_lists(publisher: MqttPublisher) -> None:

@@ -7,6 +7,12 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
+from .components import (
+    EXPORT_GROUPS,
+    IMPORT_GROUPS,
+    ComponentGroup,
+    group_components,
+)
 from .timeutil import DayType
 
 
@@ -83,12 +89,21 @@ class ImportPrice:
     #: sees a whole cycle and applies it; 0.0 on schedules without a baseline.
     baseline_credit: float = 0.0
 
+    def grouped(self) -> dict[ComponentGroup, float]:
+        """``components`` rolled up into the fixed import groups.
+
+        The groups sum back to ``total`` within per-component rounding, which is
+        what makes them safe to draw as a stack against the price itself.
+        """
+        return group_components(self.components, IMPORT_GROUPS)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "total": self.total,
             "season": str(self.season),
             "period": str(self.period),
             "components": dict(self.components),
+            "groups": {str(group): value for group, value in self.grouped().items()},
             "complete": self.complete,
             "baseline_credit": self.baseline_credit,
         }
@@ -112,12 +127,17 @@ class ExportPrice:
     #: illustration only, but the value may be off by one hour slot.
     exact: bool = True
 
+    def grouped(self) -> dict[ComponentGroup, float]:
+        """``components`` rolled up into the fixed export groups."""
+        return group_components(self.components, EXPORT_GROUPS)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "total": self.total,
             "vintage": self.vintage,
             "day_type": str(self.day_type),
             "components": dict(self.components),
+            "groups": {str(group): value for group, value in self.grouped().items()},
             "locked": self.locked,
             "complete": self.complete,
             "exact": self.exact,

@@ -182,11 +182,16 @@ logged reason rather than guessing.
 | TOU Period | enum displayed as Peak / Part-peak / Off-peak | |
 | Rates Available Through | timestamp | state is how far the cached forecast currently reaches; see [History and forecast timeline](#history-and-forecast-timeline) |
 | Rate Data Status | diagnostic enum | PTO date, export lock end, NBT vintage, tariff provenance, source, and quality flags |
+| Import Generation / Distribution / Transmission / Surcharges / Credits / Other | USD/kWh | the import price, split into stackable bands; see [Component breakdown](#component-breakdown) |
+| Export Generation / Delivery / Credits / Other | USD/kWh | the export credit, split the same way |
+| Daily Fixed Charge | USD/day | AB 205 Base Services Charge; **not** a per-kWh price and not part of the stack |
 
-There is deliberately no fixed-charge entity: the AB 205 Base Services Charge
-is a $/day amount, not a $/kWh marginal price, and mixing it into an Energy
-dashboard produces nonsense. Read it separately via
-`engine.daily_fixed_charge()` if you need it (see [Library](library.md)).
+Daily Fixed Charge is reported in `USD/day`, not `USD/kWh`, because that is
+what it is: a fixed daily amount, not a marginal price. The unit keeps it out
+of the Energy dashboard's price pickers and out of any chart stacked against
+`USD/kWh` series, which is the outcome you want — adding it to a marginal
+price would misprice every kWh. Use it in a bill total, or read the same
+number from `engine.daily_fixed_charge()` (see [Library](library.md)).
 
 Every sensor sits under one device, named from your account or profile name —
 `TariffKit — home` for a profile named `home`, or plain `TariffKit Rates` if
@@ -204,7 +209,7 @@ those entities are deterministically `sensor.tariffkit_import_price`,
 `sensor.tariffkit_export_price`, `sensor.tariffkit_spread`, and
 `sensor.tariffkit_tou_period`.
 
-Import and export carry the component breakdown, quality flags, and
+Import and export carry the per-line component breakdown, quality flags, and
 provenance as attributes:
 
 ```yaml
@@ -231,6 +236,190 @@ advice letter, source URL, and `complete` / `exact` / `locked` quality flags.
 > times a day would bloat it for no gain. The current numeric state of every
 > sensor is still recorded normally, which is what native History graphs and
 > the Energy dashboard read.
+>
+> Carrying the component breakdown makes `rates` about three times larger —
+> roughly 18 KB at the default 48-hour horizon, 64 KB at the 168-hour maximum.
+> None of it reaches the database: Home Assistant strips unrecorded attributes
+> before it checks its 16 KiB attribute-size limit, so the size warning that
+> limit exists to raise cannot fire here. What it does cost is the in-memory
+> state and the push to connected dashboards, once an hour when the price
+> changes. If you run a long horizon and do not chart the breakdown, lowering
+> **Forecast hours** is the lever.
+
+## Component breakdown
+
+A price is not one number; it is a stack of tariff components, and which of
+them moved is usually the interesting part. The tariff's own vocabulary is too
+fine to chart — fifteen-odd import lines on a bundled schedule, more with a
+CCA, and the set changes when a discount or a rate plan does — so TariffKit
+rolls those lines up into a fixed set of groups and exposes one sensor per
+group per direction.
+
+| Group | Import | Export | What is in it |
+|---|---|---|---|
+| Generation | ✓ | ✓ | Generation supply from PG&E or a CCA, the PCIA (or the bundled PCIA credit), a CCA cost relief credit, a CCA solar bonus, and a SmartRate event charge |
+| Distribution | ✓ | | Distribution, and the Conservation Incentive Adjustment that implements the baseline credit |
+| Transmission | ✓ | | Transmission, transmission rate adjustments, reliability services |
+| Delivery | | ✓ | The export rate's delivery component, which every Solar Billing Plan customer earns. PG&E does not publish it split into distribution and transmission, so it is one band |
+| Surcharges | ✓ | | Public purpose programs, nuclear decommissioning, competition transition, energy cost recovery, wildfire fund and wildfire hardening, new system generation, recovery bonds (charge and its offsetting credit), and the CCA franchise fee surcharge |
+| Credits | ✓ | ✓ | CARE, FERA and Medical Baseline discounts; ACC Plus on the export side |
+| Other | ✓ | ✓ | Anything TariffKit has not classified. Normally zero — a non-zero reading means a schedule grew a line and the mapping has not caught up |
+
+Two properties make these safe to chart:
+
+* **They sum to the price.** The import groups add up to Import Price and the
+  export groups to Export Price, to within per-component rounding. A stack of
+  all of them is the price sensor, drawn as its parts.
+* **The set never varies.** Every group exists whether or not the account pays
+  that kind of charge — a bundled customer's Credits band sits at zero rather
+  than the entity disappearing — so a chart written today survives switching to
+  a CCA, enrolling in CARE, or a rate change that adds a component.
+
+Each group sensor carries the tariff lines behind it as a `components`
+attribute, so the roll-up is auditable from the entity itself:
+
+```yaml
+{{ state_attr('sensor.tariffkit_home_import_surcharges', 'components') }}
+# {"public_purpose_programs": 0.02644, "wildfire_fund_charge": 0.00595, ...}
+```
+
+The same roll-up rides on each hour of the forecast, as `import_components`
+and `export_components` on the **Rates Available Through** sensor's `rates`
+attribute — grouped rather than per-line, because a 48-hour horizon times
+fifteen lines is a lot of attribute for a chart that would draw five bands
+anyway.
+
+Grouping is a presentation, not a billing rule. TariffKit's billing ledger
+classifies the same components again and differently, for a different
+question: which export credits may offset which charges. Neither is derived
+from the other.
+
+### A stacked chart
+
+With [apexcharts-card](https://github.com/RomRider/apexcharts-card), each group
+becomes one band of a stacked area chart: `stacked: true`, one series per group.
+
+**Use two cards, not one.** Unlike the single-line chart in [History and
+forecast timeline](#history-and-forecast-timeline), a stacked chart cannot mix
+recorded and forecast series safely. Stacking adds series at each point on the
+x axis, and the two halves do not share an x grid: the recorded series are
+bucketed by `group_by`, the forecast series land on hour boundaries, and the
+forecast's first point is the *start of the current hour* — which is already in
+the recorded half. Put them in one stacked card and the current hour is counted
+twice. Each half stacks correctly on its own, so give each its own card.
+
+**The recorded past.** Every series is bucketed identically, so the bands line
+up:
+
+```yaml
+type: custom:apexcharts-card
+stacked: true
+graph_span: 24h
+now:
+  show: true
+  label: Now
+header:
+  show: true
+  title: Import price by component (recorded)
+series:
+  - entity: sensor.tariffkit_home_import_generation
+    name: Generation
+    type: area
+    curve: stepline
+    extend_to: now
+    group_by:
+      func: last
+      duration: 15min
+  - entity: sensor.tariffkit_home_import_distribution
+    name: Distribution
+    type: area
+    curve: stepline
+    extend_to: now
+    group_by:
+      func: last
+      duration: 15min
+  - entity: sensor.tariffkit_home_import_transmission
+    name: Transmission
+    type: area
+    curve: stepline
+    extend_to: now
+    group_by:
+      func: last
+      duration: 15min
+  - entity: sensor.tariffkit_home_import_surcharges
+    name: Surcharges
+    type: area
+    curve: stepline
+    extend_to: now
+    group_by:
+      func: last
+      duration: 15min
+```
+
+**The forecast.** Every series is read from the same `rates` array, so the
+timestamps are identical across bands by construction:
+
+```yaml
+type: custom:apexcharts-card
+stacked: true
+graph_span: 48h
+span:
+  start: hour
+now:
+  show: true
+  label: Now
+header:
+  show: true
+  title: Import price by component (next 48 hours)
+series:
+  - entity: sensor.tariffkit_home_rates_available_through
+    name: Generation
+    type: area
+    curve: stepline
+    data_generator: |
+      return entity.attributes.rates.map((r) => {
+        return [new Date(r.start).getTime(), r.import_components.generation];
+      });
+  - entity: sensor.tariffkit_home_rates_available_through
+    name: Distribution
+    type: area
+    curve: stepline
+    data_generator: |
+      return entity.attributes.rates.map((r) => {
+        return [new Date(r.start).getTime(), r.import_components.distribution];
+      });
+  - entity: sensor.tariffkit_home_rates_available_through
+    name: Transmission
+    type: area
+    curve: stepline
+    data_generator: |
+      return entity.attributes.rates.map((r) => {
+        return [new Date(r.start).getTime(), r.import_components.transmission];
+      });
+  - entity: sensor.tariffkit_home_rates_available_through
+    name: Surcharges
+    type: area
+    curve: stepline
+    data_generator: |
+      return entity.attributes.rates.map((r) => {
+        return [new Date(r.start).getTime(), r.import_components.surcharges];
+      });
+```
+
+Add the `credits` and `other` bands the same way if the account has them. A
+negative band — a CARE discount, or the bundled PCIA credit inside Generation —
+stacks downward, which is the honest picture: it is a number that reduces the
+price, and the stack still totals the price.
+
+For the export side, swap the entity prefixes to `export_` and read
+`r.export_components.{generation,delivery,credits}`. Do not mix the two
+directions in one stack: they are different quantities that happen to share a
+unit, and stacking a credit on top of a charge totals nothing meaningful.
+
+Native History cards cannot stack, and cannot draw the forecast half at all
+(see [History and forecast timeline](#history-and-forecast-timeline)). With
+nothing but Home Assistant Core, add the group sensors to a History card and
+read them as separate lines.
 
 ## Energy dashboard
 
@@ -263,8 +452,11 @@ into a graph — the recorder and every native History/Logbook view only ever
 show what a sensor's state *was*; the built-in state graph cannot plot a
 future timestamp no matter which card you use. TariffKit's forecast lives
 entirely in the **Rates Available Through** sensor's unrecorded `rates`
-attribute: a list of `{start, end, import, export, spread}` points reaching
-from now out to the account's configured forecast horizon.
+attribute: a list of `{start, end, import, export, spread, import_components,
+export_components}` points reaching from now out to the account's configured
+forecast horizon. The two `*_components` maps are the grouped breakdown from
+[Component breakdown](#component-breakdown), which is what a stacked forecast
+chart is drawn from.
 
 **Fallback with no custom card:** add Import Price, Export Price, and
 Export Minus Import to a native **History** graph card for the live,
@@ -308,7 +500,7 @@ series:
     group_by:
       func: last
       duration: 15min
-  - entity: sensor.tariffkit_home_rate_forecast_through
+  - entity: sensor.tariffkit_home_rates_available_through
     name: Import (forecast)
     color: "#b87333"
     stroke_dash: 6
@@ -317,7 +509,7 @@ series:
       return entity.attributes.rates.map((r) => {
         return [new Date(r.start).getTime(), r.import];
       });
-  - entity: sensor.tariffkit_home_rate_forecast_through
+  - entity: sensor.tariffkit_home_rates_available_through
     name: Export (forecast)
     color: "#2a9d8f"
     stroke_dash: 6
@@ -578,7 +770,7 @@ template:
   - sensor:
       - name: Cheapest import hour today
         state: >
-          {% set points = state_attr('sensor.tariffkit_home_rate_forecast_through', 'rates') %}
+          {% set points = state_attr('sensor.tariffkit_home_rates_available_through', 'rates') %}
           {{ (points | sort(attribute='import') | first).start if points else 'unknown' }}
 ```
 

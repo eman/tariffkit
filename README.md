@@ -65,7 +65,7 @@ Nothing here touches the network at runtime.
 | [Bill calculator](docs/billing.md) | Computing a cycle from interval meter data |
 | [MQTT](docs/mqtt.md) | Publishing, with Home Assistant discovery |
 | [REST API](docs/web.md) | HTTP service |
-| [Home Assistant](docs/home-assistant.md) | Custom component, Energy dashboard, account history, response actions, opt-in Predbat |
+| [Home Assistant](docs/home-assistant.md) | Custom component, Energy dashboard, stacked component charts, account history, response actions, opt-in Predbat |
 | [Home Assistant quality checklist](docs/home-assistant-quality.md) | Self-assessment against the Integration Quality Scale, with exemptions |
 | [Containers](docs/containers.md) | Local Home Assistant development stack and API/MQTT deployment proposal |
 | [Maintaining rate data](docs/data.md) | Regenerating export rates, updating the retail tariff and CCA cards |

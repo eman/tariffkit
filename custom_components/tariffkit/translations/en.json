@@ -232,6 +232,39 @@
           "illustrative": "Illustrative",
           "incomplete": "Incomplete"
         }
+      },
+      "daily_fixed_charge": {
+        "name": "Daily Fixed Charge"
+      },
+      "import_generation": {
+        "name": "Import Generation"
+      },
+      "import_distribution": {
+        "name": "Import Distribution"
+      },
+      "import_transmission": {
+        "name": "Import Transmission"
+      },
+      "import_surcharges": {
+        "name": "Import Surcharges"
+      },
+      "import_credits": {
+        "name": "Import Credits"
+      },
+      "import_other": {
+        "name": "Import Other"
+      },
+      "export_generation": {
+        "name": "Export Generation"
+      },
+      "export_delivery": {
+        "name": "Export Delivery"
+      },
+      "export_credits": {
+        "name": "Export Credits"
+      },
+      "export_other": {
+        "name": "Export Other"
       }
     }
   },

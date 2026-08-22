@@ -37,6 +37,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from tariffkit import Config
 from tariffkit.account import AccountEpoch, AccountProfile
+from tariffkit.components import EXPORT_GROUPS, IMPORT_GROUPS
 from tariffkit.models import ExportPrice, ImportPrice, PricePoint
 from tariffkit.timeutil import PACIFIC
 
@@ -286,9 +287,67 @@ async def test_forecast_entity_is_compact_and_unrecorded(
         "import",
         "export",
         "spread",
+        "import_components",
+        "export_components",
     }
     assert ATTR_RAW_TODAY in TariffKitSensor._unrecorded_attributes
     assert "rates" in TariffKitSensor._unrecorded_attributes
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_forecast_carries_stackable_component_groups(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """Every forecast hour breaks down into groups that sum back to its price."""
+    await _setup_entry(hass, entry)
+
+    state = hass.states.get(_entity_id(hass, entry, "forecast_through"))
+    assert state is not None
+    for point in state.attributes["rates"]:
+        assert set(point["import_components"]) == {str(group) for group in IMPORT_GROUPS}
+        assert set(point["export_components"]) == {str(group) for group in EXPORT_GROUPS}
+        assert sum(point["import_components"].values()) == pytest.approx(point["import"])
+        assert sum(point["export_components"].values()) == pytest.approx(point["export"])
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_component_entities_stack_to_the_price(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """The group entities exist for every group and add up to their direction."""
+    await _setup_entry(hass, entry)
+
+    for direction, groups in (("import", IMPORT_GROUPS), ("export", EXPORT_GROUPS)):
+        price = hass.states.get(_entity_id(hass, entry, f"{direction}_price"))
+        assert price is not None
+        stack = 0.0
+        for group in groups:
+            state = hass.states.get(_entity_id(hass, entry, f"{direction}_{group}"))
+            assert state is not None, f"missing {direction} {group} entity"
+            assert state.attributes["unit_of_measurement"] == "USD/kWh"
+            assert state.attributes["direction"] == direction
+            stack += float(state.state)
+        assert stack == pytest.approx(float(price.state))
+
+    generation = hass.states.get(_entity_id(hass, entry, "import_generation"))
+    assert generation is not None
+    # The tariff's own lines stay visible behind the roll-up.
+    assert "generation" in generation.attributes["components"]
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_daily_fixed_charge_is_reported_per_day(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """The Base Services Charge is exposed, in USD/day, outside the price stack."""
+    await _setup_entry(hass, entry)
+
+    state = hass.states.get(_entity_id(hass, entry, "daily_fixed_charge"))
+    assert state is not None
+    assert float(state.state) > 0
+    assert state.attributes["unit_of_measurement"] == "USD/day"
+    # Energy dashboard price validation must not accept a per-day amount.
+    assert "USD/day" not in ENERGY_PRICE_UNITS
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
