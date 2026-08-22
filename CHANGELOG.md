@@ -15,6 +15,25 @@ All notable changes to this project are documented here. This project follows
   E-RSMART data now drive residential program adjustments. SmartRate accepts
   explicit announced event dates and marks prices beyond the authoritative
   event horizon incomplete rather than guessing future events.
+- Prices now decompose into a fixed set of chartable component groups —
+  generation, distribution, transmission, surcharges, credits, and a catch-all
+  other on the import side; generation, delivery, credits, and other on the
+  export side. The groups sum back to the price they came from and do not vary
+  with the tariff, supplier, or discount, so a chart built against them
+  survives an account change. `ImportPrice.grouped()`, `ExportPrice.grouped()`,
+  a `groups` key in every `to_dict` payload, and `tariffkit.components` expose
+  them to library and REST callers.
+- Home Assistant gains a sensor per component group in each direction, and the
+  forecast's `rates` attribute carries the same roll-up per hour, so both the
+  recorded past and the next 48 hours can be drawn as stacked charts -- one
+  card each, because stacking recorded and forecast points together would
+  double-count the current hour. The MQTT publisher publishes the same series
+  with matching discovery payloads, each band carrying its price's quality
+  flags.
+- Home Assistant now exposes the AB 205 Base Services Charge as **Daily Fixed
+  Charge** in `USD/day`. The unit keeps it out of the Energy dashboard's price
+  pickers and out of any `USD/kWh` stack, which is why it can be published at
+  all: it is a fixed daily amount, not a marginal price.
 
 ### Changed
 - Home Assistant now offers every active PG&E residential schedule and

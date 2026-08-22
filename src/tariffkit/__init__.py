@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from importlib.metadata import version
 
+from .components import ComponentGroup
 from .config import CcaConfig, Config
 from .engine import RateEngine
 from .errors import ConfigError, DataError, OutOfRangeError, TariffKitError
@@ -34,6 +35,7 @@ __version__ = version("tariffkit")
 __all__ = [
     "PACIFIC",
     "CcaConfig",
+    "ComponentGroup",
     "Config",
     "ConfigError",
     "DataError",

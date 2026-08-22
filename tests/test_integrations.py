@@ -12,6 +12,7 @@ import pytest
 from tariffkit import Config, RateEngine
 from tariffkit.account import AccountEpoch, AccountProfile, NamedProfileRepository
 from tariffkit.cli import main
+from tariffkit.components import EXPORT_GROUPS, IMPORT_GROUPS
 from tariffkit.mqtt.discovery import discovery_payloads
 
 
@@ -68,7 +69,26 @@ class TestDiscovery:
 
     def test_covers_every_sensor(self, payloads: list[tuple[str, dict[str, Any]]]) -> None:
         keys = {topic.split("/")[-2] for topic, _ in payloads}
-        assert keys == {"import_price", "export_price", "spread", "tou_period"}
+        assert keys == {
+            "import_price",
+            "export_price",
+            "spread",
+            "tou_period",
+            "daily_fixed_charge",
+            *(f"import_{group}" for group in IMPORT_GROUPS),
+            *(f"export_{group}" for group in EXPORT_GROUPS),
+        }
+
+    def test_component_sensors_share_the_price_unit(
+        self, payloads: list[tuple[str, dict[str, Any]]]
+    ) -> None:
+        """A group is a slice of the price, so it is charted on the same axis."""
+        by_id = {p["object_id"]: p for _, p in payloads}
+        for direction, groups in (("import", IMPORT_GROUPS), ("export", EXPORT_GROUPS)):
+            for group in groups:
+                payload = by_id[f"tariffkit_{direction}_{group}"]
+                assert payload["unit_of_measurement"] == "USD/kWh"
+                assert payload["state_topic"] == f"tariffkit/components/{direction}/{group}"
 
     def test_topics_are_under_the_discovery_prefix(
         self, payloads: list[tuple[str, dict[str, Any]]]
@@ -82,7 +102,10 @@ class TestDiscovery:
         for topic, payload in payloads:
             if topic.endswith("tou_period/config"):
                 continue
-            assert payload["unit_of_measurement"] == "USD/kWh"
+            # The Base Services Charge is the one non-marginal amount here; it
+            # is deliberately not in USD/kWh so nothing stacks it against one.
+            expected = "USD/day" if topic.endswith("daily_fixed_charge/config") else "USD/kWh"
+            assert payload["unit_of_measurement"] == expected
             assert "device_class" not in payload
 
     def test_entities_share_one_device_and_an_availability_topic(

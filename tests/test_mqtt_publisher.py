@@ -9,8 +9,9 @@ from typing import Any
 
 import pytest
 
-from tariffkit import Config, RateEngine
+from tariffkit import CcaConfig, Config, RateEngine, Supplier
 from tariffkit.account import AccountEpoch, AccountProfile, NamedProfileRepository
+from tariffkit.components import EXPORT_GROUPS, IMPORT_GROUPS
 from tariffkit.errors import ConfigError
 from tariffkit.mqtt.publisher import OFFLINE, ONLINE, MqttPublisher, MqttSettings
 from tariffkit.timeutil import PACIFIC
@@ -151,6 +152,54 @@ def test_attributes_carry_the_component_breakdown(publisher: MqttPublisher) -> N
     assert payload["components"]["acc_plus"] == 0.0088
     assert payload["vintage"] == "NBT26"
     assert payload["locked"] is True
+
+
+def test_component_topics_stack_to_the_price(publisher: MqttPublisher) -> None:
+    """A dashboard stacking the group topics must land on the price topic."""
+    publisher.publish_now(datetime(2026, 9, 15, 19, tzinfo=PACIFIC))
+    topics = client_of(publisher).topics()
+
+    for direction, groups in (("import", IMPORT_GROUPS), ("export", EXPORT_GROUPS)):
+        stack = sum(float(topics[f"tariffkit/components/{direction}/{group}"]) for group in groups)
+        assert stack == pytest.approx(float(topics[f"tariffkit/{direction}_price"]), abs=5e-5)
+
+    payload = json.loads(topics["tariffkit/components/export/generation/attributes"])
+    assert payload["components"] == {"generation": 0.59312}
+    # A band is a slice of its price, so it repeats that price's quality flags
+    # rather than making a subscriber correlate two topics to trust a number.
+    assert payload["complete"] is True
+    assert payload["locked"] is True
+    assert payload["exact"] is True
+
+    imported = json.loads(topics["tariffkit/components/import/generation/attributes"])
+    # A retail schedule is published, not vintaged, so the import side has only
+    # the one flag -- the same set its own price topic carries.
+    assert set(imported) == {"components", "complete"}
+
+
+def test_component_topics_carry_an_incomplete_flag() -> None:
+    """The flag has to track the price, not be published as a constant true."""
+    engine = RateEngine(Config(supplier=Supplier.CCA, cca=CcaConfig(name="Unconfigured CCA")))
+    publisher = MqttPublisher(engine, MqttSettings(broker="broker.local"), client=FakeClient())
+    publisher.publish_now(datetime(2026, 9, 15, 19, tzinfo=PACIFIC))
+    topics = client_of(publisher).topics()
+
+    # No CCA generation rate configured: the price is delivery-only and says so,
+    # and every band of it has to say so too.
+    assert json.loads(topics["tariffkit/export_price/attributes"])["complete"] is False
+    for group in EXPORT_GROUPS:
+        payload = json.loads(topics[f"tariffkit/components/export/{group}/attributes"])
+        assert payload["complete"] is False, group
+
+
+def test_daily_fixed_charge_is_published_per_day(publisher: MqttPublisher) -> None:
+    """Published beside the prices, never inside them."""
+    publisher.publish_now(datetime(2026, 9, 15, 19, tzinfo=PACIFIC))
+    topics = client_of(publisher).topics()
+
+    assert float(topics["tariffkit/daily_fixed_charge"]) > 0
+    payload = json.loads(topics["tariffkit/import_price/attributes"])
+    assert "base_services_charge" not in payload["components"]
 
 
 def test_attributes_carry_the_predbat_rate_lists(publisher: MqttPublisher) -> None:

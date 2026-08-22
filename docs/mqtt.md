@@ -71,8 +71,12 @@ across the internet or an untrusted LAN.
 | `tariffkit/export_price` | `0.07212` |
 | `tariffkit/spread` | `-0.30055` (export − import) |
 | `tariffkit/tou_period` | `off_peak` |
+| `tariffkit/daily_fixed_charge` | `0.79343` (USD/day, not per kWh) |
+| `tariffkit/components/import/{generation,distribution,transmission,surcharges,credits,other}` | `0.15377` — one stackable band of the import price |
+| `tariffkit/components/export/{generation,delivery,credits,other}` | `0.88896` — one stackable band of the export credit |
+| `tariffkit/components/{direction}/{group}/attributes` | `components` — the tariff lines rolled into that band — plus that direction's quality flags (`complete`, and `locked` / `exact` on export) |
 | `tariffkit/forecast` | Full JSON curve |
-| `tariffkit/{import_price,export_price}/attributes` | Component breakdown, plus EMHASS and Predbat payloads |
+| `tariffkit/{import_price,export_price}/attributes` | Component breakdown and group roll-up, plus EMHASS and Predbat payloads |
 | `tariffkit/spread/attributes` | Flat hourly forecast list |
 | `tariffkit/status` | `online` / `offline` (last will) |
 
@@ -88,9 +92,25 @@ mosquitto_sub -h 192.168.1.100 -t 'tariffkit/#' -v
 ## Home Assistant
 
 With discovery enabled (the default), a **PG&E Rates** device appears with
-Import Price, Export Price, Export Spread, and TOU Period. The `status` topic
-is wired as the availability topic, so a crashed publisher shows the sensors as
+Import Price, Export Price, Export Spread, TOU Period, Daily Fixed Charge, and
+one sensor per component group in each direction. The `status` topic is wired
+as the availability topic, so a crashed publisher shows the sensors as
 unavailable rather than leaving stale prices looking live.
+
+The component-group sensors are `sensor.tariffkit_import_generation`,
+`_import_distribution`, `_import_transmission`, `_import_surcharges`,
+`_import_credits`, `_import_other`, and on the export side `_export_generation`,
+`_export_delivery`, `_export_credits`, `_export_other`. Each is in `USD/kWh`
+and the groups of a direction sum to that direction's price, so stacking them
+in a chart reproduces Import Price or Export Price exactly. Each band repeats
+its price's quality flags, so a subscriber reading one band alone can still
+tell a delivery-only value from a complete one — see
+[Component breakdown](home-assistant.md#component-breakdown) for what each
+group contains and a ready-made stacked chart.
+
+Daily Fixed Charge is `USD/day` rather than `USD/kWh` on purpose: it is the AB
+205 Base Services Charge, billed per day of service, so nothing can stack it
+against a marginal price by accident.
 
 The 48-hour forecast rides along as an attribute on the spread sensor, shaped
 as a flat hourly list:

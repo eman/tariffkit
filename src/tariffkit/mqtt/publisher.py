@@ -21,6 +21,7 @@ from ..account import (
     NamedProfileRepository,
     configured_profile_name,
 )
+from ..components import EXPORT_GROUPS, IMPORT_GROUPS, split_components
 from ..config import default_config_path
 from ..engine import RateEngine
 from ..errors import ConfigError
@@ -236,6 +237,43 @@ class MqttPublisher:
             self._client.publish(topic, json.dumps(payload), retain=True)
         log.info("published Home Assistant discovery config")
 
+    def _publish_components(self, point: PricePoint) -> None:
+        """One retained topic per direction and component group, plus its lines.
+
+        The groups of a direction sum to that direction's price, so a dashboard
+        can stack them and get the price back. Each group's attributes topic
+        carries the tariff lines rolled into it, which is what makes the
+        roll-up auditable from the broker alone.
+        """
+        for direction, price, groups in (
+            ("import", point.import_price, IMPORT_GROUPS),
+            ("export", point.export_price, EXPORT_GROUPS),
+        ):
+            # State from ``grouped()`` rather than re-summing here, so the
+            # broker and the custom component cannot drift apart if the
+            # roll-up's rounding ever changes; ``split_components`` supplies
+            # only the lines behind each band.
+            totals = price.grouped()
+            lines_by_group = split_components(price.components, groups)
+            # Every band repeats its direction's own quality flags. A band is a
+            # slice of that price, so it is exactly as trustworthy -- and a
+            # subscriber reading one band must not have to know that a second
+            # topic is where it would learn the value is delivery-only or past
+            # its rate lock. Taken from to_dict() so the two cannot drift, and
+            # so each direction carries only the flags it actually has.
+            flags = {
+                key: value
+                for key, value in price.to_dict().items()
+                if key in {"complete", "locked", "exact"}
+            }
+            for group in groups:
+                suffix = f"components/{direction}/{group}"
+                self._publish(suffix, f"{totals[group]:.5f}")
+                self._publish(
+                    f"{suffix}/attributes",
+                    {"components": dict(lines_by_group[group]), **flags},
+                )
+
     def publish_now(self, moment: datetime | None = None) -> PricePoint:
         now = moment or now_pacific()
         point = self.engine.price_at(now)
@@ -245,6 +283,8 @@ class MqttPublisher:
         self._publish("export_price", f"{point.export_price.total:.5f}")
         self._publish("spread", f"{point.spread:.5f}")
         self._publish("tou_period", str(point.import_price.period))
+        self._publish("daily_fixed_charge", f"{self.engine.daily_fixed_charge(point.start):.5f}")
+        self._publish_components(point)
 
         # Component breakdown plus the payloads other energy systems read, so the
         # broker path is as interoperable as the custom component. raw_today and

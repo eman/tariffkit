@@ -19,7 +19,13 @@ from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from tariffkit.models import TouPeriod, Utility
+from tariffkit.components import (
+    EXPORT_GROUPS,
+    IMPORT_GROUPS,
+    ComponentGroup,
+    split_components,
+)
+from tariffkit.models import ExportPrice, ImportPrice, TouPeriod, Utility
 
 from .const import (
     ATTR_GENERATED_AT,
@@ -41,6 +47,23 @@ from .coordinator import (
 
 PARALLEL_UPDATES = 0
 UNIT = "USD/kWh"
+DAILY_UNIT = "USD/day"
+FIXED_CHARGE_DESCRIPTION = (
+    "AB 205 Base Services Charge, billed per day of service. It is not a per-kWh "
+    "price, so it does not belong in a stacked price chart and is not part of "
+    "Import Price."
+)
+#: Icons per component group, so a stacked chart's legend is legible in the
+#: entity list too.
+GROUP_ICONS: dict[ComponentGroup, str] = {
+    ComponentGroup.GENERATION: "mdi:factory",
+    ComponentGroup.DISTRIBUTION: "mdi:home-lightning-bolt",
+    ComponentGroup.TRANSMISSION: "mdi:transmission-tower",
+    ComponentGroup.DELIVERY: "mdi:transmission-tower",
+    ComponentGroup.SURCHARGES: "mdi:bank",
+    ComponentGroup.CREDITS: "mdi:sale",
+    ComponentGroup.OTHER: "mdi:dots-horizontal",
+}
 SPREAD_DESCRIPTION = (
     "Export compensation minus avoided import cost; excludes battery efficiency, "
     "degradation, and inverter losses."
@@ -137,6 +160,62 @@ class TariffKitSensorDescription(SensorEntityDescription):
     attrs_fn: Callable[[TariffKitData], dict[str, Any]] | None = None
 
 
+def _price_for(data: TariffKitData, direction: str) -> ImportPrice | ExportPrice:
+    return data.point.import_price if direction == "import" else data.point.export_price
+
+
+def _component_sensor(direction: str, group: ComponentGroup) -> TariffKitSensorDescription:
+    """One stackable series: this direction's price, restricted to one group.
+
+    The groups for a direction sum to that direction's price, so charting all of
+    them stacked reproduces Import Price or Export Price exactly. The series
+    exists whether or not the account pays that kind of charge -- a bundled
+    customer's ``credits`` band sits at zero rather than the entity vanishing --
+    because a chart configuration should not have to change when a discount or a
+    CCA does.
+    """
+    groups = IMPORT_GROUPS if direction == "import" else EXPORT_GROUPS
+
+    def value(data: TariffKitData) -> float:
+        return _price_for(data, direction).grouped()[group]
+
+    def attrs(data: TariffKitData) -> dict[str, Any]:
+        price = _price_for(data, direction)
+        # A retail schedule is published, not vintaged, so only the export side
+        # can be unlocked or inexact -- the import flags are constants.
+        quality = (
+            TariffKitQuality(complete=price.complete, exact=True, locked=True)
+            if isinstance(price, ImportPrice)
+            else TariffKitQuality(complete=price.complete, exact=price.exact, locked=price.locked)
+        )
+        return {
+            # The tariff's own lines behind this band, so the roll-up is
+            # auditable from the entity rather than only from the source.
+            "components": dict(split_components(price.components, groups)[group]),
+            "direction": direction,
+            ATTR_QUALITY: _quality_attributes(quality),
+        }
+
+    return TariffKitSensorDescription(
+        key=f"{direction}_{group}",
+        translation_key=f"{direction}_{group}",
+        native_unit_of_measurement=UNIT,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=5,
+        icon=GROUP_ICONS[group],
+        value_fn=value,
+        attrs_fn=attrs,
+    )
+
+
+def _component_sensors() -> tuple[TariffKitSensorDescription, ...]:
+    return tuple(
+        _component_sensor(direction, group)
+        for direction, groups in (("import", IMPORT_GROUPS), ("export", EXPORT_GROUPS))
+        for group in groups
+    )
+
+
 SENSORS: tuple[TariffKitSensorDescription, ...] = (
     TariffKitSensorDescription(
         key="import_price",
@@ -196,6 +275,16 @@ SENSORS: tuple[TariffKitSensorDescription, ...] = (
         attrs_fn=_forecast_attrs,
     ),
     TariffKitSensorDescription(
+        key="daily_fixed_charge",
+        translation_key="daily_fixed_charge",
+        native_unit_of_measurement=DAILY_UNIT,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=5,
+        icon="mdi:cash-clock",
+        value_fn=lambda data: round(data.daily_fixed_charge, 6),
+        attrs_fn=lambda data: {"description": FIXED_CHARGE_DESCRIPTION},
+    ),
+    TariffKitSensorDescription(
         key="rate_data_status",
         translation_key="rate_data_status",
         device_class=SensorDeviceClass.ENUM,
@@ -205,6 +294,7 @@ SENSORS: tuple[TariffKitSensorDescription, ...] = (
         value_fn=_rate_data_status,
         attrs_fn=_rate_data_attrs,
     ),
+    *_component_sensors(),
 )
 
 

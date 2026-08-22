@@ -66,14 +66,25 @@ pricing service.
   "start": "2026-09-15T19:00:00-07:00",
   "end": "2026-09-15T20:00:00-07:00",
   "import": { "total": 0.55214, "season": "summer", "period": "peak",
-              "components": { "...": 0.0 }, "complete": true },
+              "components": { "...": 0.0 },
+              "groups": { "generation": 0.31214, "distribution": 0.17,
+                          "transmission": 0.05, "surcharges": 0.02,
+                          "credits": 0.0, "other": 0.0 },
+              "complete": true },
   "export": { "total": 0.60385, "vintage": "NBT26", "day_type": "Weekday",
               "components": { "generation": 0.59312, "delivery": 0.00193,
                               "acc_plus": 0.0088 },
+              "groups": { "generation": 0.59312, "delivery": 0.00193,
+                          "credits": 0.0088, "other": 0.0 },
               "locked": true, "complete": true, "exact": true },
   "spread": 0.05171
 }
 ```
+
+`components` is the tariff sheet's own vocabulary, so its keys vary with the
+schedule, supplier, and any discount. `groups` is the same money rolled up
+into a fixed set of keys that sums back to `total` — stable enough to chart
+against. See [Component breakdown](home-assistant.md#component-breakdown).
 
 Check the flags before acting on a price:
 
