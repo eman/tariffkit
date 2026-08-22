@@ -75,12 +75,12 @@ the percentages, since they drift as tests and flow branches are added.
 | `docs-troubleshooting` | Met | [Troubleshooting](home-assistant.md#troubleshooting). |
 | `docs-use-cases` | Partial | Energy dashboard, EMHASS, and Predbat use cases are each covered in their own section, but the page has no single "why would I use this" overview tying them together. |
 | `dynamic-devices` | Not applicable | Exactly one static device per entry; nothing is discovered or added later. |
-| `entity-category` | Met | `Rates Available Through` and `Rate Data Status` are diagnostic metadata; current prices and TOU period remain primary entities. |
+| `entity-category` | Met | `Rates Available Through` and `Rate Data Status` are diagnostic metadata; current prices, component groups, the daily fixed charge, and TOU period remain primary entities. |
 | `entity-device-class` | Met | `TOU Period` and `Rate Data Status` use `SensorDeviceClass.ENUM`, while `Rates Available Through` uses `TIMESTAMP`. The three price entities set none: HA's `MONETARY` class requires `state_class: total`, which is incompatible with a continuously-changing live rate at `state_class: measurement`, so leaving it unset is the correct choice, not a gap. |
-| `entity-disabled-by-default` | Not applicable | All six entities support the primary display or rate troubleshooting and remain enabled by default. |
+| `entity-disabled-by-default` | Partial | The seventeen entities are all enabled. The eleven component-group and fixed-charge entities are narrower than the price entities, which argues for disabling them, but each is a slice of a primary entity that changes at most hourly, so the recorder and statistics cost is a few hundred rows a day -- and the stacked-chart feature they exist for is inert until they are enabled. Enabled by default is the deliberate trade; disable the ones you do not chart. |
 | `entity-translations` | Met | `translation_key` plus `strings.json`/`translations/en.json` names for every entity. |
 | `exception-translations` | **Not met** | Action validation errors (`ServiceValidationError`) use raw f-string messages rather than `translation_domain`/`translation_key`/`translation_placeholders`. |
-| `icon-translations` | Met | `icons.json`. |
+| `icon-translations` | Partial | `icons.json` carries the action icons. Entity icons are set as `icon=` on the entity descriptions instead, which predates the component-group entities and is the legacy path; moving them into `icons.json` under each `translation_key` would satisfy the rule fully. |
 | `reconfiguration-flow` | Partial | There is no formal `async_step_reconfigure`; the same outcome -- changing account, delivery, or CCA settings without removing the entry -- is reached through the options flow's **Account pricing settings** step instead. |
 | `repair-issues` | Not applicable | Nothing the integration does needs a repair flow: a bad config fails setup with a translated form error instead of loading and then requiring intervention. |
 | `stale-devices` | Not applicable | One static device per entry; there is nothing to go stale. |

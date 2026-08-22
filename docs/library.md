@@ -122,6 +122,31 @@ point.export_price.components
 # {'generation': 0.59312, 'delivery': 0.00193, 'acc_plus': 0.0088}
 ```
 
+That vocabulary is the tariff sheet's own, so the set of keys changes with the
+schedule, the supplier and any discount. For charting, or anywhere a fixed set
+of series is needed, roll it up into groups instead:
+
+```python
+point.import_price.grouped()
+# {<ComponentGroup.GENERATION: 'generation'>: 0.15377,
+#  <ComponentGroup.DISTRIBUTION: 'distribution'>: 0.16922,
+#  <ComponentGroup.TRANSMISSION: 'transmission'>: 0.05104,
+#  <ComponentGroup.SURCHARGES: 'surcharges'>: 0.01623,
+#  <ComponentGroup.CREDITS: 'credits'>: 0.0,
+#  <ComponentGroup.OTHER: 'other'>: 0.0}
+
+point.export_price.grouped()  # generation, delivery, credits, other
+```
+
+The groups for a direction are fixed and sum back to that direction's total,
+so they can be stacked against the price itself. `ComponentGroup.OTHER` is a
+safety valve: an unrecognized component still counts toward the total instead
+of being silently dropped. `tariffkit.components.split_components` gives the
+same roll-up with each group's underlying tariff lines kept, and `group_of`
+answers for a single component name. See
+[Component breakdown](home-assistant.md#component-breakdown) for what each
+group contains.
+
 ## Fixed charges are separate
 
 ```python

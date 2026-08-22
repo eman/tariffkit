@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from tariffkit.account import AccountProfile, AccountRateEngine
+from tariffkit.components import ComponentGroup
 from tariffkit.config import CcaConfig, Config
 from tariffkit.errors import TariffKitError
 from tariffkit.interop import predbat_payload
@@ -91,15 +92,29 @@ class TariffKitQuality:
         }
 
 
+def _group_values(grouped: dict[ComponentGroup, float]) -> dict[str, float]:
+    """Group enum keys as plain strings, so the mapping is JSON-serializable."""
+    return {str(group): value for group, value in grouped.items()}
+
+
 @dataclass(frozen=True, slots=True)
 class TariffKitForecastPoint:
-    """The compact, component-free representation used by the chart entity."""
+    """The compact representation used by the chart entity.
+
+    Carries the grouped component breakdown rather than the tariff's own
+    per-line one: five or six numbers an hour that a stacked chart can draw
+    directly, instead of the fifteen-odd lines behind them. The per-line detail
+    stays on the current-hour price entities, where there is one hour of it
+    rather than a whole horizon.
+    """
 
     start: datetime
     end: datetime
     import_price: float
     export_price: float
     spread: float
+    import_components: dict[str, float]
+    export_components: dict[str, float]
 
     @classmethod
     def from_point(cls, point: PricePoint) -> TariffKitForecastPoint:
@@ -109,15 +124,19 @@ class TariffKitForecastPoint:
             import_price=point.import_price.total,
             export_price=point.export_price.total,
             spread=round(point.spread, 6),
+            import_components=_group_values(point.import_price.grouped()),
+            export_components=_group_values(point.export_price.grouped()),
         )
 
-    def to_dict(self) -> dict[str, JSONValue]:
+    def to_dict(self) -> dict[str, JSONValue | dict[str, float]]:
         return {
             "start": self.start.isoformat(),
             "end": self.end.isoformat(),
             "import": self.import_price,
             "export": self.export_price,
             "spread": self.spread,
+            "import_components": dict(self.import_components),
+            "export_components": dict(self.export_components),
         }
 
 
@@ -129,6 +148,10 @@ class TariffKitData:
     forecast: tuple[TariffKitForecastPoint, ...]
     quality: TariffKitQuality
     provenance: Provenance
+    #: Base Services Charge in USD/day. Kept beside the per-kWh prices rather
+    #: than inside them: it is a fixed daily amount, so adding it to a marginal
+    #: price would misprice every kWh.
+    daily_fixed_charge: float
     generated_at: datetime = field(compare=False)
     predbat: PredbatPayload | None = None
     predbat_warning: str | None = None
@@ -281,6 +304,7 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
             forecast=tuple(TariffKitForecastPoint.from_point(rate) for rate in curve_points),
             quality=TariffKitQuality.from_points(curve_points),
             provenance=provenance,
+            daily_fixed_charge=self.engine.daily_fixed_charge(point.start),
             # Keep generated time out of equality so minute polling does not
             # fan out unchanged entity states and websocket attributes.
             generated_at=now_pacific(),
