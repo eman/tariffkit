@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from .config import Config
 from .errors import DataError
 from .export.nbt import NbtExportRates
-from .models import PriceCurve, PricePoint, Utility
+from .models import PriceCurve, PricePoint, Supplier, Utility
 from .tariff.retail import RetailTariff
 from .timeutil import PACIFIC, hour_floor, now_pacific, to_pacific
 
@@ -71,13 +71,16 @@ class RateEngine:
         when = to_pacific(moment or now_pacific())
         snapshot = self.tariff.snapshot_for(when)
         low, high = self.export_rates.covered_years
-        cca = self.config.cca
+        # Who supplies generation, when that is not the utility. PG&E still
+        # delivers, so this names the CCA rather than replacing the utility.
+        # Gated on the supplier rather than on cca being set: a Config may carry
+        # a CcaConfig while bundled -- nothing rejects that -- and reporting a
+        # CCA next to supplier='bundled' would contradict itself.
+        cca = self.config.cca if self.config.supplier is Supplier.CCA else None
         return {
             "utility": self.config.utility.value,
             "tariff": self.config.tariff,
             "supplier": str(self.config.supplier),
-            # Who supplies generation, when that is not the utility. PG&E still
-            # delivers, so this names the CCA rather than replacing the utility.
             "cca_name": cca.name if cca else None,
             "cca_rate_card": cca.rate_card if cca else None,
             "cca_option": cca.option if cca else None,
