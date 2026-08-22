@@ -21,6 +21,7 @@ from custom_components.tariffkit.const import (
 from custom_components.tariffkit.coordinator import TariffKitQuality
 from custom_components.tariffkit.profile import profile_payload
 from custom_components.tariffkit.sensor import TariffKitSensor
+from freezegun.api import FrozenDateTimeFactory
 from homeassistant.components.energy.validate import (
     ENERGY_PRICE_UNIT_ERROR,
     ENERGY_PRICE_UNITS,
@@ -856,6 +857,51 @@ class TestGenerationSupplierInServiceProvenance:
         )
         assert result is not None
         assert result["provenance"]["segments"][0]["cca_name"] is None
+
+
+class TestDeviceIdentityFollowsTheProfile:
+    """DeviceInfo is read once at registration, so epoch changes need a sync."""
+
+    @pytest.mark.usefixtures("enable_custom_integrations")
+    async def test_switching_to_a_cca_epoch_updates_the_device_model(
+        self, hass: HomeAssistant, device_registry: DeviceRegistry, freezer: FrozenDateTimeFactory
+    ) -> None:
+        profile = profile_payload(
+            AccountProfile(
+                (
+                    AccountEpoch(
+                        effective=date(1970, 1, 1),
+                        config=Config(tariff="E-ELEC"),
+                    ),
+                    AccountEpoch(
+                        effective=date(2026, 9, 1),
+                        config=Config(
+                            tariff="E-ELEC",
+                            supplier=Supplier.CCA,
+                            cca=CcaConfig(name="MCE", rate_card="mce"),
+                        ),
+                    ),
+                )
+            )
+        )
+        entry = _entry(profile=profile)
+        freezer.move_to("2026-08-15T12:00:00-07:00")
+        await _setup_entry(hass, entry)
+
+        device = device_registry.async_get_device({(DOMAIN, entry.entry_id)}, set())
+        assert device is not None and device.model is not None
+        assert "MCE" not in device.model
+
+        # Cross into the CCA epoch. Without the registry sync the model would
+        # keep naming the old identity until the entry was reloaded.
+        freezer.move_to("2026-09-15T12:00:00-07:00")
+        coordinator = entry.runtime_data
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+        device = device_registry.async_get_device({(DOMAIN, entry.entry_id)}, set())
+        assert device is not None and device.model is not None
+        assert device.model.endswith("· MCE Light Green")
 
 
 class TestPermissionToOperateSensors:

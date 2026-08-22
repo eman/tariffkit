@@ -64,12 +64,12 @@ off by default, and until you enable them Predbat has nothing to read.
 | Setting | Set it to |
 |---|---|
 | Enable Predbat compatibility | **on** |
-| Forecast horizon | **48 hours or more** (the default is 48; the range is 1–168) |
 
-A horizon shorter than 48 hours leaves `raw_tomorrow` empty for part of the day,
-which Predbat reads as "tomorrow's rates are not published yet" and plans around
-— not an error, but a worse plan than you could have. Leave it at 48 unless you
-have a reason.
+That is the only setting Predbat needs. **The forecast horizon on the same page
+does not affect it** — the Predbat payload is built from the engine rather than
+from the shared forecast, and is always anchored to local midnight so that today
+and tomorrow are complete by construction. Set the horizon for whatever else you
+use the forecast for; it cannot truncate `raw_tomorrow`.
 
 Leaving the toggle off costs nothing: the integration never computes the payload
 at all rather than computing and hiding it.
@@ -104,7 +104,10 @@ What to check:
 - **48 entries each** — 30-minute slots aligned to `:00` and `:30`, matching
   Predbat's default `plan_interval_minutes: 30`. Both days are always complete,
   because the lists are anchored to local midnight rather than to the current
-  hour, so Predbat never has to backfill a partial day.
+  hour, so Predbat never has to backfill a partial day. On the two DST
+  changeover days the correct count is **50 in autumn and 46 in spring**, since
+  the local day genuinely has 25 or 23 hours — that is right output, not a
+  fault.
 - **`rate` is a cents-scale number** (33.358, not 0.33358). See
   [Currency](#currency).
 - **No `predbat_warning` attribute.** If one is present, read it — see
@@ -117,9 +120,14 @@ Predbat installs either as a Home Assistant add-on or as an AppDaemon app; its
 both and is the authority. Follow it through to the point where Predbat starts
 and writes `predbat.*` entities, then come back here for the rate wiring.
 
-The one detail worth knowing for the next step: Predbat looks for `apps.yaml` in
-`/config`, `/conf`, `/homeassistant`, and its working directory, in that order.
-Which one applies depends on how you installed it.
+The one detail worth knowing for the next step is where `apps.yaml` lives, which
+depends entirely on how you installed Predbat — the add-on, AppDaemon and
+standalone layouts all differ, and its installation guide names the path for
+each. Predbat picks its config root from the first of `/config`, `/conf`,
+`/homeassistant` and its working directory that **exists**, so on a host where
+an unrelated `/config` is present it can settle somewhere you did not intend.
+If it cannot find your file, its log prints the root it chose (`Config root is
+...`) — start there rather than guessing.
 
 ## 5. Point Predbat at TariffKit
 
@@ -127,6 +135,10 @@ Two lines in `apps.yaml`:
 
 ```yaml
 pred_bat:
+  # Predbat keeps its own time zone, and it defaults to Europe/London.
+  # Setting Home Assistant to Pacific does not change it. See Time zone below.
+  timezone: America/Los_Angeles
+
   metric_octopus_import: 'sensor.tariffkit_home_import_price'
   metric_octopus_export: 'sensor.tariffkit_home_export_price'
 ```
@@ -237,14 +249,23 @@ The optimisation is correct. Only the currency symbol lies.
 
 ## Time zone
 
-**Your Home Assistant instance must be set to `America/Los_Angeles`**
-(**Settings → System → General → Time zone**).
+**Two settings must both say `America/Los_Angeles`**, and they are independent:
+
+| Where | |
+|---|---|
+| Home Assistant | **Settings → System → General → Time zone** |
+| Predbat | `timezone:` in `apps.yaml` — **defaults to `Europe/London`** |
+
+Predbat reads its own `timezone` key and falls back to `Europe/London` when it
+is absent, so an instance can have Home Assistant correctly on Pacific while
+Predbat still indexes the tariff against a London day. Setting one does not set
+the other, and only the Home Assistant half produces a `predbat_warning`, so a
+missing `timezone:` in `apps.yaml` fails silently.
 
 `raw_today` and `raw_tomorrow` are anchored to the Pacific calendar day, because
-that is what PG&E's tariff day means. Predbat derives its slot indices from Home
-Assistant's local midnight. On an instance left at another time zone, the first
-several hours of `raw_today` land in Predbat's yesterday and the whole plan
-shifts by the offset.
+that is what PG&E's tariff day means. Predbat derives its slot indices from
+local midnight. Left at another zone, the first several hours of `raw_today`
+land in Predbat's yesterday and the whole plan shifts by the offset.
 
 With Predbat mode enabled on a non-Pacific instance, the price sensors carry a
 `predbat_warning` attribute saying exactly this.
@@ -264,7 +285,8 @@ one of each pair mask the other.
 | `Import rates are all zero, not able to compute a plan` | Same cause — this is the downstream symptom of the line above |
 | Rates off by exactly 100x | Something between TariffKit and Predbat is rescaling. Read the attributes directly in Developer tools; TariffKit's `rate` should already be cents |
 | Plan shifted by a fixed number of hours | Home Assistant is not on `America/Los_Angeles`. See [Time zone](#time-zone) |
-| `raw_tomorrow` empty or short | Forecast horizon below 48 hours (step 2) |
+| Plan shifted by exactly 8 hours | `timezone:` missing from `apps.yaml`, so Predbat defaults to `Europe/London`. Home Assistant's own setting does not cover this |
+| `raw_today` has 50 or 46 entries | Correct on the DST changeover days. See [3](#3-confirm-the-attributes-are-there) |
 | Standing charge shows as zero | `metric_standing_charge` still holds Predbat's stock Octopus regex, which matches nothing. See [Standing charge](#standing-charge) |
 | Thousands of `exceed maximum size of 16384 bytes` warnings | Predbat's attribute blobs hitting the recorder. See [Quieting the logs](#quieting-the-logs) |
 | Warnings about `octopus_intelligent_slot`, `octopus_ready_time`, `octopus_charge_limit`, `octopus_saving_session` | Expected. Those are Octopus Intelligent features; with no Octopus integration they correctly disable themselves |

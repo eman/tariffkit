@@ -69,9 +69,9 @@ pred_bat:
   battery_power:
     - sensor.sigen_plant_battery_power
 
-  # Sign conventions -- see below, these are not defaults
+  # Sign conventions -- see below, neither is Predbat's default
   grid_power_invert: true
-  battery_power_invert: false
+  battery_power_invert: true
 
   # Battery state
   soc_percent:
@@ -99,18 +99,26 @@ same moment. So `grid_power_invert: true` is required. Without it Predbat
 believes you are importing while you export, and every dispatch decision
 inverts. This is the single most consequential setting on this page.
 
-Battery power is the one to verify rather than trust. The integration exposes
-two binary sensors that make it unambiguous:
+**Battery power is inverted too.** Sigenergy reports negative while
+discharging, where Predbat's convention is positive:
+
+```
+binary_sensor.sigen_plant_battery_discharging = on
+sensor.sigen_plant_battery_power              = -1.503
+```
+
+Hence `battery_power_invert: true`. Confirm it on your own system rather than
+taking it on trust, because firmware and integration versions differ — the two
+binary sensors make it unambiguous:
 
 ```
 binary_sensor.sigen_plant_battery_charging
 binary_sensor.sigen_plant_battery_discharging
 ```
 
-Watch `sensor.sigen_plant_battery_power` while one of those is `on`. If the
-value is positive while *discharging*, keep `battery_power_invert: false`. If it
-is positive while *charging*, set it to `true`. Do not infer this from a reading
-of `0.0`.
+Watch `sensor.sigen_plant_battery_power` while one of them is `on`. Positive
+while *discharging* means set `battery_power_invert: false`; positive while
+*charging* means leave it `true`. Do not infer it from a reading of `0.0`.
 
 ## Units
 
@@ -171,8 +179,10 @@ Predbat also accepts `soc_percent` plus `soc_max` alone; supplying a wrong
 This is where a Sigenergy setup usually stops, and it is worth understanding
 before you plan around it.
 
-The local Modbus integration is **read-rich and write-poor**. A typical install
-publishes ~130 sensors but a control surface of only:
+The local Modbus integration is **read-only by default**. Its writable EMS
+controls — Remote EMS enable and mode, active-power targets, ESS charge and
+discharge power limits — are opt-in, and a default install leaves them disabled.
+What you see until you enable them is a control surface of roughly:
 
 ```
 number.sigen_inverter_active_power_percentage_adjustment
@@ -181,18 +191,24 @@ number.sigen_inverter_dc_charger_max_charging_power_limit      (EV charger)
 number.sigen_inverter_dc_charger_max_discharging_power_limit   (EV charger)
 ```
 
-There is no battery charge/discharge power control, no target SOC, no reserve,
-and no writable operating-mode select — `sensor.sigen_plant_ems_work_mode` is a
-sensor, not a `select`. Predbat's `SIG` profile expects power-based charge
-control (`output_charge_control: "power"`), and none of the above provides it
-for the ESS.
+with `sensor.sigen_plant_ems_work_mode` present as a read-only sensor rather
+than a writable `select`. None of that gives the ESS the power-based charge
+control Predbat's `SIG` profile expects
+(`output_charge_control: "power"`), which is why a fresh install looks as though
+Predbat cannot drive the battery at all.
+
+It is a configuration state, not a hard limit. Check the integration's options
+for its read-only / Remote EMS setting before concluding control is impossible;
+exactly which entities appear depends on integration version and inverter
+firmware, and your plant may also need remote control permitted on the
+Sigenergy side.
 
 Three ways forward:
 
 | Option | What it gives you |
 |---|---|
 | **Monitoring only** | Predbat plans and shows what it *would* do. Genuinely useful for validating a tariff before committing to automation. Set **Read Only mode** in Predbat's own settings |
-| **Remote EMS via Modbus** | If your integration and plant permit RW Modbus, enabling remote EMS exposes writable power setpoints. Availability depends on integration version and Sigenergy's own permissions |
+| **Remote EMS via Modbus** | The usual answer. Turn off the integration's read-only option and enable Remote EMS to expose writable power setpoints, then map them to Predbat's charge/discharge controls. Availability depends on integration version, firmware, and Sigenergy's own permissions |
 | **Predbat's Sigenergy Cloud API component** | Predbat's supported control path: OAuth2 against Sigenergy's OpenAPI plus its MQTT broker for charge/discharge commands. Needs an AppKey/AppSecret from Sigenergy, and is independent of the Modbus integration |
 
 Start with monitoring. The rate plumbing from [Predbat](predbat.md) and the
@@ -227,7 +243,7 @@ Check each figure against Home Assistant:
 | `soc_max` shows a round default (8, 24) | `soc_max` unmapped or unreadable; Predbat fell back |
 | `pv_today` reads 0 all day despite production | Mapped to `daily_pv_energy` (Sigenergy PV only) instead of `pv_daily_generation`. See [1](#1-choose-plant-level-entities) |
 | Battery charges when it should discharge | `battery_power_invert` backwards. Verify with the binary sensors |
-| Plans look right but nothing happens | Expected without a control path. See [Control](#control) |
+| Plans look right but nothing happens | No writable control entities. The integration is most likely still read-only; see [Control](#control) |
 
 ## See also
 
