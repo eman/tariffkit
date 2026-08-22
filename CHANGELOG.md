@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-22
+
 ### Added
 - PG&E's complete active single-family residential lineup is now covered:
   generated E-1 and E-TOU-D snapshots join E-ELEC, E-TOU-C, and EV2-A.
@@ -281,7 +283,8 @@ Initial release.
 - Holiday calendars are extracted per vintage from the source data rather than
   recomputed, because the vintage files disagree in far-future years.
 
-[Unreleased]: https://github.com/eman/tariffkit/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/eman/tariffkit/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/eman/tariffkit/releases/tag/v0.3.0
 [0.2.3]: https://github.com/eman/tariffkit/releases/tag/v0.2.3
 [0.2.2]: https://github.com/eman/tariffkit/releases/tag/v0.2.2
 [0.2.1]: https://github.com/eman/tariffkit/releases/tag/v0.2.1
