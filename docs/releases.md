@@ -73,11 +73,14 @@ publisher**, select **GitHub Actions** and enter:
 Click **Add** and verify the displayed registration. The only intended
 difference from TestPyPI is the environment name: production uses `pypi`.
 In the GitHub repository's **Settings → General → Releases**, enable release
-immutability. GitHub environments named `testpypi` and `pypi` must exist;
-restrict both to `main` and require approval on `pypi`.
+immutability. GitHub environments named `testpypi` and `pypi` must exist.
+Restrict `testpypi` to `main`. Restrict `pypi` to the `main` branch and the
+`v*` tag pattern, because publishing runs from the release tag rather than
+from a branch. Neither environment requires a reviewer: pushing the tag is the
+release decision.
 Protect `main` with the CI and security checks required for merge. Restrict
-tag creation to maintainers and release automation where repository rulesets
-support it.
+tag creation to maintainers, because a `v*` tag publishes to PyPI without a
+further prompt.
 
 Do not create PyPI API-token secrets. The workflow receives short-lived OIDC
 credentials from the protected environments. Do not manually create the
@@ -94,69 +97,74 @@ next version, and run:
 ```bash
 VERSION=0.3.0
 uv run python -m tools.release prepare "$VERSION"
-uv run python -m tools.release check --version "$VERSION" --tag "v$VERSION"
-uv run python -m tools.release available "$VERSION" --repository pypi
-git diff --check
 git diff
-```
-
-If TestPyPI staging is planned, also check it before opening the release PR:
-
-```bash
-uv run python -m tools.release available "$VERSION" --repository testpypi
 ```
 
 The preparation command updates the project and lockfile versions, the Home
 Assistant manifest and exact requirement, versioned documentation, changelog,
-and comparison links. Review every change, then open a release PR. The PR must
-pass normal CI, HACS validation, and hassfest. Merge it without creating a tag
-or GitHub release.
+and comparison links. It validates release identity before it returns, and the
+release workflow revalidates identity and version availability, so no separate
+local check is required.
+
+Review every change, then open a release PR. The PR must pass normal CI, HACS
+validation, and hassfest. Merge it without creating a tag.
 
 For a release candidate, use a version such as `0.3.0rc1` and follow the same
 process. A later candidate or stable release gets a new version; published
 candidate files are never replaced.
 
-## Rehearse without publishing
-
-From the repository's **Actions → Release → Run workflow** menu, select `main`,
-enter the exact prepared version, and select `dry-run`. The workflow performs
-release identity checks, tests, artifact-boundary checks, clean installation,
-sdist reconstruction, deterministic HACS ZIP construction, checksums, and
-release-note extraction. It does not request an OIDC token, create a tag, or
-publish anything. Download the run artifact and confirm `tariffkit.zip`
-contains `manifest.json` and `__init__.py` at ZIP root, not beneath another
-`custom_components` directory.
-
-Resolve any failure in a new PR. Do not bypass a release check.
-
 ## Publish
 
-1. Dispatch **Actions → Release → Run workflow** from `main` with the exact
-   version and `release` mode. Enable **Stage the exact artifacts on TestPyPI**
-   only when its account and pending publisher are ready.
-2. If TestPyPI staging is enabled, wait for it and the draft GitHub release to
-   complete. Install the staged command in an isolated uv environment, using
-   TestPyPI for TariffKit and PyPI for its dependencies:
+Push the release tag at the merged commit on `main`:
 
-   ```bash
-   VERSION=0.3.0
-   uvx --from "tariffkit==$VERSION" \
-     --index https://test.pypi.org/simple \
-     --default-index https://pypi.org/simple \
-     tariffkit --version
-   ```
+```bash
+VERSION=0.3.0
+git checkout main
+git pull
+git tag "v$VERSION"
+git push origin "v$VERSION"
+```
 
-3. If TestPyPI staging is enabled, inspect its description, metadata, wheel,
-   sdist, hashes, and attestations. In every release, inspect the draft GitHub
-   release notes and confirm the wheel, sdist, and `tariffkit.zip` hashes match
-   `SHA256SUMS`.
-4. Approve the pending `pypi` environment deployment. The workflow uploads the
-   already-tested files to PyPI, then publishes the prepared GitHub draft. Do
-   not create or move the release tag manually.
+The tag starts the Release workflow, which verifies that the tagged commit is
+on `main`, that the tag matches the committed version, and that PyPI has no
+such version. It then runs the tests, artifact-boundary checks, clean
+installation, sdist reconstruction, and deterministic HACS ZIP construction,
+uploads the wheel and sdist to PyPI with attestations, and publishes the GitHub
+release with the wheel, sdist, `tariffkit.zip`, and `SHA256SUMS`.
 
-When enabled, TestPyPI receives the exact Python files later sent to PyPI and
-GitHub. The HACS ZIP is never placed in the PyPI upload directory; it travels
-unchanged in the same Actions artifact and is attached only to GitHub.
+Nothing is published unless every check passes, and there is no approval
+prompt. Pushing the tag is the release decision, so push it only from a
+reviewed release commit already merged to `main`.
+
+## Rehearse without publishing
+
+Rehearsal is optional for a routine release, because the tag-triggered run
+performs the same validation before it publishes anything. Use it when the
+release workflow itself changed, or to stage on TestPyPI.
+
+From the repository's **Actions → Release → Run workflow** menu, select `main`
+and leave the version blank to rehearse the committed version. The run
+validates and builds without requesting a PyPI token, creating a tag, or
+publishing. Download the run artifact to inspect the exact files.
+
+To stage the rehearsed artifacts on TestPyPI, enable **Stage the rehearsed
+artifacts on TestPyPI**, then install the staged command in an isolated uv
+environment, using TestPyPI for TariffKit and PyPI for its dependencies:
+
+```bash
+VERSION=0.3.0
+uvx --from "tariffkit==$VERSION" \
+  --index https://test.pypi.org/simple \
+  --default-index https://pypi.org/simple \
+  tariffkit --version
+```
+
+TestPyPI staging is optional: account or verification problems there must not
+block a production release. The HACS ZIP is never placed in the PyPI upload
+directory; it travels unchanged in the same Actions artifact and is attached
+only to GitHub.
+
+Resolve any failure in a new PR. Do not bypass a release check.
 
 ## Verify a published release
 
@@ -189,16 +197,17 @@ PyPI dependency and complete the config flow.
 
 ## Recover from a failed release
 
-**Before TestPyPI publication:** fix the source or workflow in a new PR and
-rerun the same version only if neither package index contains it.
-
-**After TestPyPI but before PyPI:** cancel production. Delete the draft GitHub
-release and its tag only after confirming PyPI has no files for that version.
-Prepare a new version; do not overwrite the TestPyPI release.
+**When the tagged run fails before publishing:** nothing reached PyPI and no
+GitHub release exists. Fix the source or workflow in a new PR, delete the tag,
+and push it again at the new commit on `main`.
 
 ```bash
-gh release delete "v$VERSION" --repo eman/tariffkit --yes --cleanup-tag
+git push origin ":refs/tags/v$VERSION"
+git tag -d "v$VERSION"
 ```
+
+**After TestPyPI staging but before a production tag:** prepare a new version;
+do not overwrite the TestPyPI release.
 
 **After any PyPI file is uploaded:** treat the version and uploaded files as
 immutable. Retry only when the publisher explicitly supports completing a
