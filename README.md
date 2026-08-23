@@ -7,7 +7,7 @@
 [![CI](https://github.com/eman/tariffkit/actions/workflows/ci.yml/badge.svg)](https://github.com/eman/tariffkit/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/tariffkit)](https://pypi.org/project/tariffkit/)
 [![Python 3.14.2](https://img.shields.io/badge/python-3.14.2-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/eman/tariffkit/blob/main/LICENSE)
 
 An offline electricity tariff engine for pricing, billing, and energy-system
 integrations. The first data provider supports PG&E residential rate plans under
@@ -59,20 +59,20 @@ Nothing here touches the network at runtime.
 
 | | |
 |---|---|
-| [Configuration](docs/configuration.md) | Settings, CCA setup, reading your bill |
-| [Library](docs/library.md) | Embedding in Python |
-| [Named account profiles](docs/accounts.md) | Tracking a changing service agreement over time, importing PG&E statements |
-| [Bill calculator](docs/billing.md) | Computing a cycle from interval meter data |
-| [MQTT](docs/mqtt.md) | Publishing, with Home Assistant discovery |
-| [REST API](docs/web.md) | HTTP service |
-| [Home Assistant](docs/home-assistant.md) | Custom component, Energy dashboard, stacked component charts, account history, response actions, opt-in Predbat |
-| [Predbat](docs/predbat.md) | Installing TariffKit and Predbat together, end to end |
-| [Predbat on Sigenergy](docs/predbat-sigenergy.md) | Sigenergy SigenStor specifics: entity mapping, sign and unit conversions, control |
-| [Home Assistant quality checklist](docs/home-assistant-quality.md) | Self-assessment against the Integration Quality Scale, with exemptions |
-| [Containers](docs/containers.md) | Local Home Assistant development stack and API/MQTT deployment proposal |
-| [Maintaining rate data](docs/data.md) | Regenerating export rates, updating the retail tariff and CCA cards |
-| [Packaging strategy](docs/packaging_strategy.md) | Architecture decision, boundaries, and release model |
-| [Release procedure](docs/releases.md) | Versioning, Trusted Publishing, verification, and recovery |
+| [Configuration](https://github.com/eman/tariffkit/blob/main/docs/configuration.md) | Settings, CCA setup, reading your bill |
+| [Library](https://github.com/eman/tariffkit/blob/main/docs/library.md) | Embedding in Python |
+| [Named account profiles](https://github.com/eman/tariffkit/blob/main/docs/accounts.md) | Tracking a changing service agreement over time, importing PG&E statements |
+| [Bill calculator](https://github.com/eman/tariffkit/blob/main/docs/billing.md) | Computing a cycle from interval meter data |
+| [MQTT](https://github.com/eman/tariffkit/blob/main/docs/mqtt.md) | Publishing, with Home Assistant discovery |
+| [REST API](https://github.com/eman/tariffkit/blob/main/docs/web.md) | HTTP service |
+| [Home Assistant](https://github.com/eman/tariffkit/blob/main/docs/home-assistant.md) | Custom component, Energy dashboard, stacked component charts, account history, response actions, opt-in Predbat |
+| [Predbat](https://github.com/eman/tariffkit/blob/main/docs/predbat.md) | Installing TariffKit and Predbat together, end to end |
+| [Predbat on Sigenergy](https://github.com/eman/tariffkit/blob/main/docs/predbat-sigenergy.md) | Sigenergy SigenStor specifics: entity mapping, sign and unit conversions, control |
+| [Home Assistant quality checklist](https://github.com/eman/tariffkit/blob/main/docs/home-assistant-quality.md) | Self-assessment against the Integration Quality Scale, with exemptions |
+| [Containers](https://github.com/eman/tariffkit/blob/main/docs/containers.md) | Local Home Assistant development stack and API/MQTT deployment proposal |
+| [Maintaining rate data](https://github.com/eman/tariffkit/blob/main/docs/data.md) | Regenerating export rates, updating the retail tariff and CCA cards |
+| [Packaging strategy](https://github.com/eman/tariffkit/blob/main/docs/packaging_strategy.md) | Architecture decision, boundaries, and release model |
+| [Release procedure](https://github.com/eman/tariffkit/blob/main/docs/releases.md) | Versioning, Trusted Publishing, verification, and recovery |
 
 ## Works with
 
@@ -88,8 +88,8 @@ Predbat opt-in.
 | **EMHASS** | `tariffkit.get_emhass_forecast` action, called with any window | `load_cost_forecast` / `prod_price_forecast` attributes, always published |
 | **Predbat** | `raw_today` / `raw_tomorrow` attributes, only once enabled in options | `raw_today` / `raw_tomorrow` attributes, always published |
 
-See [docs/home-assistant.md](docs/home-assistant.md) and
-[docs/mqtt.md](docs/mqtt.md) for setup of each.
+See [docs/home-assistant.md](https://github.com/eman/tariffkit/blob/main/docs/home-assistant.md) and
+[docs/mqtt.md](https://github.com/eman/tariffkit/blob/main/docs/mqtt.md) for setup of each.
 
 ## Install
 
@@ -149,7 +149,7 @@ base_services_charge_tier = 3
 `TARIFFKIT_*` environment variables override any file setting.
 Long-lived PG&E, Home Assistant, InfluxDB, and MQTT credentials can be stored
 outside that file with `tariffkit credentials set`; see
-[Configuration](docs/configuration.md#credentials).
+[Configuration](https://github.com/eman/tariffkit/blob/main/docs/configuration.md#credentials).
 
 ### What the numbers include
 
@@ -204,7 +204,7 @@ franchise_fee_surcharge = 0.00042  # $/kWh, from your bill
 ```
 
 For other CCAs, supply `generation_rates` directly; see
-[docs/configuration.md](docs/configuration.md). Until generation rates and a
+[docs/configuration.md](https://github.com/eman/tariffkit/blob/main/docs/configuration.md). Until generation rates and a
 franchise fee are configured, CCA mode returns delivery-only prices flagged
 `complete = False` rather than quietly understating your rates.
 
@@ -233,11 +233,11 @@ rather than as silent drift. Export files are updated by **October 1** of any
 year the CPUC adopts a new Avoided Cost Calculator; retail rates change more
 often, via advice letters — three times in the first half of 2026 alone — which
 is why a superseded vintage can be rebuilt from the filing that adopted it. See
-[docs/data.md](docs/data.md).
+[docs/data.md](https://github.com/eman/tariffkit/blob/main/docs/data.md).
 
 ## Data sources
 
-See [docs/data.md](docs/data.md#data-sources) for the source of every vendored
+See [docs/data.md](https://github.com/eman/tariffkit/blob/main/docs/data.md#data-sources) for the source of every vendored
 table and why OpenEI's URDB is deliberately not used.
 
 ## License
