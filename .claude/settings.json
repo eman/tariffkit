@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(gh release create *)",
+      "Bash(gh release delete *)",
+      "Bash(gh release edit *)",
+      "Bash(gh release view *)",
+      "Bash(gh release download *)",
+      "Bash(gh run delete *)",
+      "Bash(gh run list *)",
+      "Bash(gh run view *)",
+      "Bash(gh workflow run *)",
+      "Bash(git tag *)",
+      "Bash(git push origin v*)",
+      "Bash(git push origin :refs/tags/*)",
+      "Bash(uv run python -m tools.release *)"
+    ]
+  }
+}
