@@ -9,7 +9,7 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import selector
 
 from tariffkit.account import AccountEpoch, AccountError, AccountProfile
@@ -386,8 +386,19 @@ def _meters_schema(defaults: dict[str, Any]) -> vol.Schema:
     only useful answer here is a cumulative kWh counter -- the thing the
     recorder keeps long-term statistics for.
     """
+    # The `filter` form, not the flat `domain=`/`device_class=` keywords: those
+    # are `_LegacyEntityFilterSelectorConfig`, kept for backwards compatibility
+    # and explicitly feature frozen upstream.
+    #
+    # No selector can filter on state_class, and a `device_class: energy` sensor
+    # may well be a `measurement` reading rather than a cumulative counter, so
+    # `_meter_problem` rejects those after the fact.
     energy = selector.EntitySelector(
-        selector.EntitySelectorConfig(domain="sensor", device_class="energy")
+        selector.EntitySelectorConfig(
+            filter=selector.EntityWithDeviceFilterSelectorConfig(
+                domain="sensor", device_class="energy"
+            )
+        )
     )
     return vol.Schema(
         {
@@ -435,6 +446,42 @@ def _meter_defaults(
         CONF_GRID_EXPORT_ENTITY: settings.export_entity or "",
         CONF_CYCLE_START_DAY: settings.cycle_start_day,
     }
+
+
+#: The only sensors whose recorder statistics carry a usable hourly `change`.
+COUNTER_STATE_CLASSES = frozenset({"total", "total_increasing"})
+
+
+def _meter_problem(hass: HomeAssistant, values: dict[str, Any]) -> str:
+    """Why these meter entities cannot drive a running total, or an empty string.
+
+    Both checks catch a configuration that would otherwise produce confident
+    nonsense rather than an error: one entity named twice bills every hour as
+    an import *and* credits it as an export, and a `measurement` sensor has no
+    meaningful cumulative `change` for the recorder to difference.
+    """
+    grid_import = values.get(CONF_GRID_IMPORT_ENTITY) or ""
+    grid_export = values.get(CONF_GRID_EXPORT_ENTITY) or ""
+    if grid_import and grid_import == grid_export:
+        return (
+            f"{grid_import} is named for both directions. One counter cannot be "
+            "both what the grid delivered and what it received; every hour would "
+            "be billed as an import and credited as an export at once."
+        )
+    for entity_id in (grid_import, grid_export):
+        if not entity_id:
+            continue
+        state = hass.states.get(entity_id)
+        if state is None:
+            continue
+        state_class = str(state.attributes.get("state_class") or "")
+        if state_class and state_class not in COUNTER_STATE_CLASSES:
+            return (
+                f"{entity_id} has state_class '{state_class}'. Running totals need a "
+                "cumulative counter ('total' or 'total_increasing'); a measurement "
+                "sensor has no hourly change for the recorder to difference."
+            )
+    return ""
 
 
 def _normalize(user_input: dict[str, Any]) -> dict[str, Any]:
@@ -872,11 +919,20 @@ class TariffKitOptionsFlow(OptionsFlow):
     async def async_step_meters(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Change which entities feed the running totals, or stop feeding them."""
         if user_input is not None:
-            return self._save_profile(self._profile(), **_meter_values(user_input))
+            problem = _meter_problem(self.hass, user_input)
+            if not problem:
+                return self._save_profile(self._profile(), **_meter_values(user_input))
+            return self.async_show_form(
+                step_id="meters",
+                data_schema=_meters_schema(_meter_defaults(user_input, None)),
+                errors={"base": "invalid_meters"},
+                description_placeholders={"detail": problem},
+            )
         values = self._values()
         return self.async_show_form(
             step_id="meters",
             data_schema=_meters_schema(_meter_defaults(values, self._profile())),
+            description_placeholders={"detail": ""},
         )
 
     async def async_step_history(

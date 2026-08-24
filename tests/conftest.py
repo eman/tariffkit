@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -27,7 +29,7 @@ def isolated_user_config(
 
 
 @pytest.fixture(autouse=True, scope="session")
-def recorder_migration_annotations() -> None:
+def recorder_migration_annotations() -> Iterator[None]:
     """Make the recorder's deferred type names resolvable at runtime.
 
     ``pytest-homeassistant-custom-component`` patches
@@ -43,6 +45,17 @@ def recorder_migration_annotations() -> None:
     from homeassistant.helpers import recorder as recorder_helper
     from sqlalchemy.orm.session import Session
 
-    migration.Recorder = Recorder
-    recorder_helper.Session = Session
-    migration.Session = Session
+    patched = (
+        (migration, "Recorder", Recorder),
+        (migration, "Session", Session),
+        (recorder_helper, "Session", Session),
+    )
+    for module, name, value in patched:
+        setattr(module, name, value)
+    yield
+    # Undo it: these are third-party modules shared with every other test in the
+    # run, and a fixture that mutates them permanently is one more thing that
+    # can explain a confusing failure somewhere else.
+    for module, name, _ in patched:
+        with suppress(AttributeError):
+            delattr(module, name)

@@ -30,13 +30,15 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN, UnitOfEnergy
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util.unit_conversion import EnergyConverter
 
 from tariffkit.account import AccountProfile
-from tariffkit.billing import Bill, BillingPeriod, IntervalReading
+from tariffkit.billing import Bill, BillingPeriod, IntervalReading, UsageBucket
 from tariffkit.billing.engine import Segment, compute_segments
+from tariffkit.billing.netting import find_gaps, find_overlaps
 from tariffkit.errors import TariffKitError
 from tariffkit.timeutil import PACIFIC, hour_floor, to_pacific
 
@@ -49,8 +51,9 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-#: Home Assistant's own energy units, and the one the billing engine speaks.
-KWH = "kWh"
+#: The unit the billing engine speaks. Home Assistant's own constant, so a
+#: rename upstream is a type error here rather than a silent mismatch.
+KWH = UnitOfEnergy.KILO_WATT_HOUR
 
 #: Ceiling on implied power for one hour, in kW. Mirrors
 #: ``tariffkit.sources.homeassistant.MAX_INTERVAL_KW``: a statistics series that
@@ -107,10 +110,14 @@ class MeterSettings:
 
 
 #: How long after a statement's period ends its evidence still fixes the
-#: current cycle's start. A real PG&E cycle runs 27 to 33 days, so a gap wider
-#: than this means at least one statement has been issued that the profile has
-#: not imported, and the next boundary is no longer derivable from what it knows.
-STALE_EVIDENCE = timedelta(days=35)
+#: current cycle's start. A real PG&E cycle runs 27 to 33 days, so a wider gap
+#: means at least one statement has been issued that the profile never imported
+#: and the next boundary is no longer derivable from what it knows.
+#:
+#: Measured from the day the derived cycle opened, so the bound is one less than
+#: the longest real cycle: at 32 days elapsed the cycle-to-date spans 33 days,
+#: and anything beyond that would report a period no bill could have.
+STALE_EVIDENCE = timedelta(days=32)
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,6 +219,8 @@ class MeteredUsage:
     cycle_source: str = "calendar_month"
     #: Configured entities the recorder had no statistics for.
     missing: tuple[str, ...] = ()
+    #: Hours discarded as implausible; their energy is not in the totals.
+    dropped: int = 0
 
     def for_today(self) -> tuple[IntervalReading, ...]:
         return tuple(r for r in self.readings if self.today.contains(r.start))
@@ -244,11 +253,19 @@ class UsageReader:
         #: Statement evidence, which fixes the cycle boundary far better
         #: than a fixed day of the month can.
         self.periods = tuple(periods)
-        self._key: tuple[date, datetime] | None = None
-        self._hours: dict[str, dict[datetime, float]] = {}
+        self._key: tuple[date, float] | None = None
+        # Keyed by epoch seconds, deliberately. Two aware datetimes in one zone
+        # compare and hash by wall clock and ignore ``fold`` (PEP 495), so
+        # 01:00 PDT and 01:00 PST on a fall-back Sunday are equal keys: the
+        # second hour overwrites the first and an hour of metered energy is
+        # silently deleted for the rest of the cycle. A float cannot collide.
+        self._hours: dict[str, dict[float, float]] = {}
         self._baseline: dict[str, float] = {}
-        self._baseline_slot: dict[str, datetime] = {}
+        self._baseline_slot: dict[str, float] = {}
         self._missing: tuple[str, ...] = ()
+        #: Hours discarded as implausible. Counted rather than only logged:
+        #: a dropped hour is real energy that is not in the total.
+        self._dropped = 0
 
     async def async_usage(self, now: datetime) -> MeteredUsage | None:
         """Readings from the cycle's first midnight through ``now``.
@@ -266,7 +283,7 @@ class UsageReader:
         today = moment.date()
         cycle = resolve_cycle(today, self.settings.cycle_start_day, self.periods)
         hour = hour_floor(moment)
-        key = (cycle.start, hour)
+        key = (cycle.start, hour.timestamp())
         if key != self._key:
             await self._async_refresh(cycle.start, hour)
             self._key = key
@@ -276,44 +293,58 @@ class UsageReader:
         """Pull completed hours for the cycle so far out of long-term statistics."""
         from homeassistant.components.recorder.statistics import statistics_during_period
         from homeassistant.helpers.recorder import get_instance
-        from sqlalchemy.exc import SQLAlchemyError
 
         opens = datetime(start.year, start.month, start.day, tzinfo=PACIFIC)
+        # One hour earlier than the cycle, and its rows are dropped below. It is
+        # fetched only for its recorded `state`, which is the baseline the live
+        # partial hour differences against -- without it the cycle's first hour
+        # has nothing to measure from and every entity reads zero until 01:00.
+        window = opens - timedelta(hours=1)
         entities = set(self.settings.entities)
         try:
             rows = await get_instance(self.hass).async_add_executor_job(
                 statistics_during_period,
                 self.hass,
-                opens,
+                window,
                 hour,
                 entities,
                 "hour",
                 {"energy": KWH},
                 {"change", "state"},
             )
-        except SQLAlchemyError as err:
+        except Exception as err:
+            # Deliberately broad. The recorder raises SQLAlchemy errors from its
+            # own dependency, which this integration does not declare and must
+            # not import to name -- recorder owns that pin. Narrowing to a class
+            # borrowed transitively would break the day recorder changes engine.
+            # An optional feature must not take the rate entities down with it,
+            # so anything from the query becomes one recoverable error.
             raise HomeAssistantError(f"recorder could not read statistics: {err}") from err
         self._hours = {}
         self._baseline = {}
         self._baseline_slot = {}
+        dropped = 0
         for entity in entities:
             series = rows.get(entity) or []
-            hours: dict[datetime, float] = {}
+            hours: dict[float, float] = {}
             for row in series:
                 change = row.get("change")
                 if change is None:
                     continue
-                slot = datetime.fromtimestamp(row["start"], tz=PACIFIC)
+                slot = float(row["start"])
                 # A statistics series that restarted reports its whole
                 # accumulated total as one hour's change. Dropping it loses that
                 # hour's real energy; keeping it would charge for a year of it.
+                if slot < opens.timestamp():
+                    continue
                 if change < 0 or change > MAX_INTERVAL_KW:
                     _LOGGER.warning(
                         "Ignoring implausible change of %.1f kWh for %s at %s",
                         change,
                         entity,
-                        slot.isoformat(),
+                        datetime.fromtimestamp(slot, tz=PACIFIC).isoformat(),
                     )
+                    dropped += 1
                     continue
                 hours[slot] = change
             self._hours[entity] = hours
@@ -321,9 +352,10 @@ class UsageReader:
                 recorded = row.get("state")
                 if recorded is not None:
                     self._baseline[entity] = float(recorded)
-                    self._baseline_slot[entity] = datetime.fromtimestamp(row["start"], tz=PACIFIC)
+                    self._baseline_slot[entity] = float(row["start"])
                     break
-        self._missing = tuple(sorted(e for e in entities if not rows.get(e)))
+        self._missing = tuple(sorted(e for e in entities if not self._hours.get(e)))
+        self._dropped = dropped
 
     def _live(self, entity: str) -> float:
         """The counter's advance since the last statistic that recorded a state.
@@ -339,7 +371,7 @@ class UsageReader:
         compile redistributes it.
         """
         state = self.hass.states.get(entity)
-        if state is None or state.state in ("unknown", "unavailable", None, ""):
+        if state is None or state.state in (STATE_UNKNOWN, STATE_UNAVAILABLE, None, ""):
             return 0.0
         try:
             value = float(state.state)
@@ -368,7 +400,7 @@ class UsageReader:
         for slot in sorted(set(imports) | set(exports)):
             readings.append(
                 IntervalReading(
-                    slot,
+                    datetime.fromtimestamp(slot, tz=PACIFIC),
                     imported=imports.get(slot, 0.0),
                     exported=exports.get(slot, 0.0),
                 )
@@ -378,7 +410,10 @@ class UsageReader:
         live_import = self._live(grid_import) if grid_import else 0.0
         live_export = self._live(grid_export) if grid_export else 0.0
         if live_import or live_export:
-            fresh = hour - timedelta(hours=1)
+            # Epoch arithmetic, not wall clock: `hour - timedelta(hours=1)`
+            # lands on a non-existent time in the spring-forward gap and on an
+            # ambiguous one in autumn, so it misjudges staleness twice a year.
+            fresh = hour.timestamp() - 3600.0
             readings.append(
                 IntervalReading(
                     hour,
@@ -407,7 +442,95 @@ class UsageReader:
             imported_today=sum(r.imported for r in readings if day.contains(r.start)),
             exported_today=sum(r.exported for r in readings if day.contains(r.start)),
             missing=self._missing,
+            dropped=self._dropped,
         )
+
+
+def coverage_warnings(
+    readings: Sequence[IntervalReading], period: BillingPeriod
+) -> tuple[str, ...]:
+    """Ways the readings fail ``period`` that an open period does not excuse.
+
+    :func:`tariffkit.billing.netting.check_coverage` also reports the elapsed
+    shortfall, which for a running total is always true and says nothing: the
+    rest of the day has not happened yet. Everything else it looks for is real.
+    A meter outage leaves a gap, and silence about a gap is how a cycle quietly
+    becomes a smaller number that still calls itself complete -- which is the
+    failure this package exists to refuse.
+    """
+    if not readings:
+        return (f"no readings in {period.start}..{period.end}",)
+    ordered = sorted(readings, key=lambda reading: reading.start)
+    found: list[str] = []
+    gaps = list(find_gaps(ordered))
+    if gaps:
+        opens, closes = gaps[0]
+        found.append(
+            f"{len(gaps)} gap(s) in the metered series; first from "
+            f"{opens.isoformat()} to {closes.isoformat()}"
+        )
+    overlaps = list(find_overlaps(ordered))
+    if overlaps:
+        found.append(f"{len(overlaps)} overlapping interval(s); first at {overlaps[0].isoformat()}")
+    guessed = [reading for reading in ordered if reading.estimated]
+    if guessed:
+        energy = sum(reading.imported + reading.exported for reading in guessed)
+        found.append(
+            f"{len(guessed)} interval(s) totalling {energy:.1f} kWh were reconstructed "
+            f"across a gap, so their time-of-use split is a guess even though the "
+            f"total is not"
+        )
+    return tuple(found)
+
+
+def _combine(later: Mapping[str, float], earlier: Mapping[str, float]) -> dict[str, float]:
+    keys = set(later) | set(earlier)
+    return {key: later.get(key, 0.0) - earlier.get(key, 0.0) for key in sorted(keys)}
+
+
+def subtract(later: Bill, earlier: Bill, period: BillingPeriod) -> Bill:
+    """``later`` minus ``earlier``, presented as the bill for ``period``.
+
+    Used to get one day's share of a cycle rather than pricing that day alone.
+    The difference matters because parts of a bill are cumulative over the
+    cycle, not additive over its days: the baseline allowance is granted per
+    cycle and consumed in day order, so pricing a single day in isolation grants
+    it one day's allowance no matter how much the cycle had banked. A heavy day
+    is then capped at a daily allowance it would never really have been capped
+    at, and the day's total can exceed the cycle that contains it.
+
+    Differencing two cycle-to-date bills has neither problem by construction:
+    the day's figures sum to the cycle exactly, and no day can exceed it.
+    """
+    buckets: dict[tuple[object, object], UsageBucket] = {}
+    for bucket in later.buckets:
+        buckets[(bucket.season, bucket.period)] = bucket
+    merged: list[UsageBucket] = []
+    for bucket in earlier.buckets:
+        slot = (bucket.season, bucket.period)
+        head = buckets.pop(slot, None)
+        merged.append(
+            UsageBucket(
+                season=bucket.season,
+                period=bucket.period,
+                imported=(head.imported if head else 0.0) - bucket.imported,
+                exported=(head.exported if head else 0.0) - bucket.exported,
+                import_charge=(head.import_charge if head else 0.0) - bucket.import_charge,
+                export_credit=(head.export_credit if head else 0.0) - bucket.export_credit,
+            )
+        )
+    merged.extend(buckets.values())
+    return Bill(
+        period=period,
+        buckets=tuple(sorted(merged, key=lambda b: (b.season, b.period))),
+        import_components=_combine(later.import_components, earlier.import_components),
+        export_components=_combine(later.export_components, earlier.export_components),
+        fixed_components=_combine(later.fixed_components, earlier.fixed_components),
+        # The cycle's warnings, because the day was derived from it: a gap
+        # three days ago still makes today's share of the cycle uncertain.
+        warnings=later.warnings,
+        complete=later.complete and earlier.complete,
+    )
 
 
 def segments(profile: AccountProfile, period: BillingPeriod) -> list[Segment]:
@@ -435,10 +558,13 @@ def price(
 ) -> tuple[Bill | None, str]:
     """Price ``readings`` over ``period``, or say why it could not be priced.
 
-    Coverage checking is off: a running total is always missing the rest of the
-    day, and warning about that every minute says nothing. The engine's *pricing*
-    warnings -- an uncovered tax vintage, a stale CCA card, exports before
-    Permission To Operate -- still come through, because those are real.
+    The engine's own coverage check stays off, because its elapsed-shortfall
+    warning is always true of a running total and says nothing. The problems it
+    would also have caught -- gaps, overlaps, reconstructed intervals -- are
+    real, and :func:`coverage_warnings` reports those separately rather than
+    letting them go with the noise. The engine's *pricing* warnings (an
+    uncovered tax vintage, a stale CCA card, exports before Permission To
+    Operate) come through here as always.
 
     Refusing is the honest answer when the account history does not reach back to
     the start of the period, which a cycle that opened before the profile's first

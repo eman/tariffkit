@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -425,9 +426,10 @@ async def test_money_entities_explain_themselves_without_bloating_the_recorder(
         assert _state(hass, entry, key).attributes["description"]
     assert "cycle" in _state(hass, entry, "net_cost_cycle").attributes["description"]
 
-    # The time-of-use breakdown is rewritten every minute on six entities, so
-    # it must not reach the database.
+    # Rewritten every minute across six entities, so neither the breakdown nor
+    # the fixed prose beside it may reach the database.
     assert "buckets" in TariffKitSensor._unrecorded_attributes
+    assert "description" in TariffKitSensor._unrecorded_attributes
     assert _state(hass, entry, "net_cost_today").attributes["buckets"]
 
 
@@ -595,3 +597,106 @@ async def test_the_cycle_entity_says_where_its_boundary_came_from(
     assert cycle.attributes["period_start"] == "2026-07-30"
     # The daily entity has no cycle boundary to report.
     assert "cycle_boundary" not in _state(hass, entry, "net_cost_today").attributes
+
+
+def test_the_fall_back_hour_is_two_distinct_slots() -> None:
+    """Two aware datetimes in one zone compare by wall clock, ignoring fold.
+
+    On the November fall-back Sunday 01:00 PDT and 01:00 PST are an hour apart
+    and `==` each other (PEP 495), so keying hourly statistics by a Pacific
+    datetime silently drops one of them -- and the energy with it, for the rest
+    of the cycle. Keying by epoch seconds cannot collide.
+    """
+    pdt = datetime(2025, 11, 2, 1, 0, tzinfo=PACIFIC, fold=0)
+    pst = datetime(2025, 11, 2, 1, 0, tzinfo=PACIFIC, fold=1)
+    assert pst.timestamp() - pdt.timestamp() == 3600.0
+    assert pdt == pst, "the collision this guards against still exists in Python"
+
+    by_datetime = {pdt: 1.0, pst: 1.0}
+    by_epoch = {pdt.timestamp(): 1.0, pst.timestamp(): 1.0}
+    assert len(by_datetime) == 1, "datetime keys collide"
+    assert len(by_epoch) == 2, "epoch keys must not"
+
+
+def test_evidence_never_implies_a_cycle_longer_than_a_real_one() -> None:
+    """A cycle runs 27-33 days; the staleness bound must refuse before 34."""
+    periods = [_period((2026, 6, 30), (2026, 7, 28))]
+    spans = {}
+    for day in (date(2026, 8, 29), date(2026, 8, 30), date(2026, 8, 31), date(2026, 9, 1)):
+        cycle = resolve_cycle(day, 30, periods)
+        spans[day] = ((day - cycle.start).days + 1, cycle.source)
+    assert spans[date(2026, 8, 29)] == (32, "statement")
+    assert spans[date(2026, 8, 30)] == (33, "statement")
+    # Beyond a real cycle, so the evidence is stale and it says so.
+    assert spans[date(2026, 8, 31)][1] == "day_of_month"
+    assert all(span <= 33 for span, source in spans.values() if source == "statement")
+
+
+def test_one_entity_cannot_be_both_directions() -> None:
+    """Naming one counter twice would bill each hour and credit it at once."""
+    from custom_components.tariffkit.config_flow import _meter_problem
+
+    class _Hass:
+        states = SimpleNamespace(get=lambda _e: None)
+
+    problem = _meter_problem(
+        _Hass(),
+        {CONF_GRID_IMPORT_ENTITY: IMPORT_ENTITY, CONF_GRID_EXPORT_ENTITY: IMPORT_ENTITY},
+    )
+    assert "both directions" in problem
+
+
+def test_a_measurement_sensor_is_rejected_as_a_counter() -> None:
+    """`device_class: energy` is not enough; no selector can filter state_class."""
+    from custom_components.tariffkit.config_flow import _meter_problem
+
+    class _Hass:
+        states = SimpleNamespace(
+            get=lambda _e: SimpleNamespace(attributes={"state_class": "measurement"})
+        )
+
+    assert "state_class" in _meter_problem(_Hass(), {CONF_GRID_IMPORT_ENTITY: IMPORT_ENTITY})
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_narrowing_the_meters_removes_the_entities_it_no_longer_creates(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Otherwise they linger forever as `unavailable` with no way back."""
+    freezer.move_to(NOW)
+    entry = _entry(_meter_options())
+    await _setup(hass, entry)
+    assert _entity_id(hass, entry, "export_credit_today") is not None
+
+    hass.config_entries.async_update_entry(
+        entry, options={**entry.options, CONF_GRID_EXPORT_ENTITY: ""}
+    )
+    await hass.async_block_till_done()
+
+    for gone in (
+        "export_credit_today",
+        "export_credit_cycle",
+        "energy_received_today",
+        "energy_received_cycle",
+    ):
+        assert _entity_id(hass, entry, gone) is None, f"{gone} was left behind"
+    # The import side, and every rate entity, survive untouched.
+    assert _entity_id(hass, entry, "energy_delivered_today") is not None
+    assert _entity_id(hass, entry, "export_price") is not None
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_without_a_recorder_the_entities_say_so(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """No `recorder_mock` here, so the recorder is genuinely absent."""
+    freezer.move_to(NOW)
+    entry = _entry(_meter_options())
+    await _setup(hass, entry)
+
+    state = _state(hass, entry, "net_cost_today")
+    assert state.state == "unknown"
+    assert state.attributes["quality"]["complete"] is False
+    assert any("recorder" in w for w in state.attributes["warnings"])
+    # And the rate entities are entirely unaffected.
+    assert _state(hass, entry, "import_price").state not in ("unknown", "unavailable")

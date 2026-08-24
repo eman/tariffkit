@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -15,7 +15,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from tariffkit.account import AccountProfile, AccountRateEngine
-from tariffkit.billing import Bill
+from tariffkit.billing import Bill, BillingPeriod
 from tariffkit.components import ComponentGroup
 from tariffkit.config import CcaConfig, Config
 from tariffkit.errors import TariffKitError
@@ -53,7 +53,15 @@ from .const import (
     DEFAULT_PREDBAT_ENABLED,
     DOMAIN,
 )
-from .energy import MeteredUsage, MeterSettings, UsageReader, price, statement_periods
+from .energy import (
+    MeteredUsage,
+    MeterSettings,
+    UsageReader,
+    coverage_warnings,
+    price,
+    statement_periods,
+    subtract,
+)
 from .profile import profile_from_entry
 
 _LOGGER = logging.getLogger(__name__)
@@ -167,19 +175,35 @@ class TariffKitUsage:
     #: `unknown` has to be able to say what stopped it.
     today_reason: str = ""
     cycle_reason: str = ""
+    #: Gaps, overlaps and reconstructed intervals in the metered series. Real
+    #: problems, unlike the "the day is not over yet" shortfall the engine's own
+    #: coverage check would also report.
+    coverage: tuple[str, ...] = ()
 
     @property
     def complete(self) -> bool:
         """False when a bill is missing, unpriced, or the meters are silent."""
         if self.today is None or self.cycle is None:
             return False
-        return self.today.complete and self.cycle.complete and not self.metered.missing
+        return (
+            self.today.complete
+            and self.cycle.complete
+            and not self.metered.missing
+            and not self.metered.dropped
+            and not self.coverage
+        )
 
     def warnings(self, span: str = "cycle") -> tuple[str, ...]:
         """Why a span's figure may be wrong, from the meters and from pricing."""
         found: list[str] = [
             f"no recorder statistics for {entity}" for entity in self.metered.missing
         ]
+        if self.metered.dropped:
+            found.append(
+                f"{self.metered.dropped} hour(s) were discarded as implausible, so "
+                f"their energy is missing from these totals"
+            )
+        found.extend(self.coverage)
         bill = self.today if span == "today" else self.cycle
         reason = self.today_reason if span == "today" else self.cycle_reason
         if reason:
@@ -206,6 +230,9 @@ class TariffKitData:
     predbat_warning: str | None = None
     #: None whenever no meter entities are configured, which is the default.
     usage: TariffKitUsage | None = None
+    #: Why ``usage`` is absent despite meters being configured. Empty when
+    #: there is nothing to explain.
+    usage_note: str = ""
 
     def chart_attributes(self) -> dict[str, object]:
         return {
@@ -333,6 +360,7 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
                 entry.data.get(CONF_PREDBAT_ENABLED, DEFAULT_PREDBAT_ENABLED),
             )
         )
+        self._usage_note = ""
         self._predbat_key: tuple[date, date] | None = None
         self._predbat: PredbatPayload | None = None
         self._predbat_warning: str | None = None
@@ -367,11 +395,20 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         """
         if self._usage is None:
             return None
+        if "recorder" not in self.hass.config.components:
+            self._usage_note = (
+                "Home Assistant's recorder is not enabled, so there are no "
+                "statistics to read the meters from"
+            )
+            return None
         try:
-            return await self._usage.async_usage(now_pacific())
+            metered = await self._usage.async_usage(now_pacific())
         except (HomeAssistantError, ValueError) as err:
             _LOGGER.warning("Unable to read metered energy: %s", err)
+            self._usage_note = f"could not read metered energy: {err}"
             return None
+        self._usage_note = ""
+        return metered
 
     def _sync_device_identity(self, provenance: Provenance) -> None:
         """Keep the device's rate identity current as the profile changes epoch.
@@ -440,21 +477,64 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
             predbat=self._predbat_for(point.start),
             predbat_warning=self._predbat_warning,
             usage=self._usage_for(metered),
+            usage_note=self._usage_note,
         )
 
     def _usage_for(self, metered: MeteredUsage | None) -> TariffKitUsage | None:
         """Price the day and the cycle to date over the same readings."""
         if metered is None:
             return None
-        today, today_reason = price(self.profile, metered.for_today(), metered.today)
         cycle, cycle_reason = price(self.profile, metered.readings, metered.cycle)
+        today, today_reason = self._day_share(metered, cycle, cycle_reason)
         return TariffKitUsage(
             metered=metered,
             today=today,
             cycle=cycle,
             today_reason=today_reason,
             cycle_reason=cycle_reason,
+            coverage=coverage_warnings(metered.readings, metered.cycle),
         )
+
+    def _day_share(
+        self, metered: MeteredUsage, cycle: Bill | None, cycle_reason: str
+    ) -> tuple[Bill | None, str]:
+        """Today as the cycle's movement, not as a one-day bill.
+
+        Parts of a bill are cumulative over a cycle rather than additive over
+        its days -- the baseline allowance most of all, which is granted per
+        cycle and consumed in day order. Pricing today on its own grants it a
+        single day's allowance however much the cycle had banked, which
+        overstates a heavy day and can make it cost more than the cycle
+        containing it. Differencing two cycle-to-date bills cannot do either.
+        """
+        if cycle is None:
+            # No cycle to take a share of. Pricing the day alone is the old
+            # behaviour and is exact on any schedule without a baseline
+            # allowance, which is most of them -- so give the number and name
+            # the caveat rather than withholding a figure that is usually right.
+            alone, reason = price(self.profile, metered.for_today(), metered.today)
+            if alone is None:
+                return None, reason or cycle_reason
+            return replace(
+                alone,
+                warnings=(
+                    *alone.warnings,
+                    "the billing cycle could not be priced, so today is priced on its "
+                    "own; on a schedule with a baseline allowance that grants one day's "
+                    "allowance rather than the cycle's, which can overstate a heavy day",
+                ),
+            ), ""
+        opened = metered.cycle.start
+        today = metered.today.start
+        if today <= opened:
+            # The cycle's first day is the whole cycle so far.
+            return cycle, ""
+        earlier_period = BillingPeriod(opened, today - timedelta(days=1))
+        earlier_readings = [r for r in metered.readings if earlier_period.contains(r.start)]
+        earlier, reason = price(self.profile, earlier_readings, earlier_period)
+        if earlier is None:
+            return None, reason
+        return subtract(cycle, earlier, metered.today), ""
 
     @property
     def current_hour(self) -> datetime:

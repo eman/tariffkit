@@ -191,10 +191,10 @@ logged reason rather than guessing.
 | Import Generation / Distribution / Transmission / Surcharges / Credits / Other | USD/kWh | the import price, split into stackable bands; see [Component breakdown](#component-breakdown) |
 | Export Generation / Delivery / Credits / Other | USD/kWh | the export credit, split the same way |
 | Daily Fixed Charge | USD/day | AB 205 Base Services Charge; **not** a per-kWh price and not part of the stack |
-| Energy Delivered / Received Today | kWh | metered grid import and export since local midnight; only with [Metered energy](#metered-energy) configured |
-| Energy Cost / Export Credit / Net Cost Today | USD | today's running charge, credit, and net; only with [Metered energy](#metered-energy) configured |
-| Energy Delivered / Received This Cycle | kWh | the same two counters over the billing cycle to date |
-| Energy Cost / Export Credit / Net Cost This Cycle | USD | the same three figures over the billing cycle to date |
+| Energy delivered / received today | kWh | metered grid import and export since **Pacific** midnight — the tariff's billing day, not the instance's local one; only with [Metered energy](#metered-energy) configured |
+| Energy cost / Export credit / Net cost today | USD | today's running charge, credit, and net, reported in USD regardless of the instance's configured currency; only with [Metered energy](#metered-energy) configured |
+| Energy delivered / received this cycle | kWh | the same two counters over the billing cycle to date |
+| Energy cost / Export credit / Net cost this cycle | USD | the same three figures over the billing cycle to date |
 
 Daily Fixed Charge is reported in `USD/day`, not `USD/kWh`, because that is
 what it is: a fixed daily amount, not a marginal price. The unit keeps it out
@@ -489,7 +489,13 @@ recreated:
 | Billing cycle start day | Fallback only — the day of the month your meter is read. `0` uses the calendar month. Ignored whenever the profile carries statement evidence |
 
 Both entities are optional and independent. Name neither and none of the
-running-total entities are created at all. Name only the import counter — a
+running-total entities are created at all. Naming fewer than before removes the
+entities that can no longer be answered, rather than leaving them behind as
+permanently unavailable.
+
+An account profile imported from the CLI already carries its own
+`meter_sources.ha` mapping, so the entities may exist before you ever open this
+step — the form shows what it inherited, and clearing a field overrides it. Name only the import counter — a
 site with no solar — and the export-credit entities are left out rather than
 sitting at a permanent zero: a credit the meters cannot answer for is not a
 series with nothing in it.
@@ -514,11 +520,15 @@ rather than billed.
 Two consequences worth knowing:
 
 - **The recorder is required for this feature.** It is a default integration;
-  if you have disabled it, the rate entities carry on and the running totals
-  are simply absent.
+  if you have disabled it, the rate entities carry on untouched and the running
+  totals read `unknown` with the reason in their `warnings` attribute.
 - **A restart loses nothing.** The totals are re-derived from statistics on
   every refresh, so they survive restarts, reloads, and configuring the
   integration halfway through a day.
+- **A gap is reported, not absorbed.** If the recorder was down for part of the
+  cycle the energy is genuinely missing, so the figure is understated — the
+  entity says so in `warnings` and sets `quality.complete` to false rather than
+  presenting a smaller number as if it were finished.
 
 ### What the totals mean
 
@@ -528,6 +538,15 @@ month-end bill cannot drift apart in their arithmetic. That buys time-of-use
 bucketing, the Energy Commission Tax, the baseline credit where a schedule has
 one, and the rule that exports before Permission To Operate are metered but
 earn nothing.
+
+Today's figures are the **cycle's movement across today**, not a one-day bill.
+That distinction is not pedantry: parts of a bill are cumulative over a cycle
+rather than additive over its days — the baseline allowance most of all, which
+is granted per cycle and consumed in day order. Pricing today alone would grant
+it a single day's allowance however much the cycle had banked, overstating a
+heavy day and letting it cost more than the cycle containing it. Taking the
+difference between two cycle-to-date bills has neither problem: the days sum to
+the cycle exactly, and no day can exceed it.
 
 - **Energy Cost** is the day's (or cycle's) import charges including statutory
   per-kWh taxes, and excluding the fixed charge.
@@ -561,7 +580,7 @@ themselves. Billing periods are contiguous, each beginning the day after the
 last one ended, so the *open* cycle's start follows from the most recent
 statement without waiting for the one that will close it.
 
-The `cycle_boundary` attribute on every cycle entity says which was used:
+The `cycle_boundary` attribute on the three cycle **money** entities says which was used:
 
 | Value | Means |
 |---|---|

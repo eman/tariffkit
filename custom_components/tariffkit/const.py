@@ -57,6 +57,8 @@ SUPPORTED_RESOLUTIONS = (15, 30, 60)
 #: The running totals' time-of-use breakdown. Named here because it is
 #: excluded from the recorder alongside the other large attributes.
 ATTR_BUCKETS = "buckets"
+#: Fixed explanatory prose on an entity; excluded from the recorder.
+ATTR_DESCRIPTION = "description"
 ATTR_RATES = "rates"
 ATTR_QUALITY = "quality"
 ATTR_GENERATED_AT = "generated_at"

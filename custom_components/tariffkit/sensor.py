@@ -15,9 +15,10 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.const import EntityCategory, UnitOfEnergy
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from tariffkit.billing import Bill, BillingPeriod
@@ -32,6 +33,7 @@ from tariffkit.timeutil import PACIFIC
 
 from .const import (
     ATTR_BUCKETS,
+    ATTR_DESCRIPTION,
     ATTR_GENERATED_AT,
     ATTR_LOAD_COST,
     ATTR_PROD_PRICE,
@@ -367,6 +369,20 @@ RECEIVED_DESCRIPTION = (
 )
 
 
+def _absent(data: TariffKitData, description: str) -> dict[str, Any]:
+    """Attributes for an entity that has no reading to report.
+
+    An entity that is configured, present, and silent is the worst outcome
+    available: it neither gives a number nor says what stopped it. The
+    coordinator records why, so say it here.
+    """
+    return {
+        ATTR_QUALITY: {"complete": False},
+        "warnings": [data.usage_note] if data.usage_note else [],
+        ATTR_DESCRIPTION: description,
+    }
+
+
 def _bill(data: TariffKitData, span: str) -> Bill | None:
     usage = data.usage
     if usage is None:
@@ -403,7 +419,7 @@ def _money_attrs(span: str, description: str) -> Callable[[TariffKitData], dict[
         usage = data.usage
         bill = _bill(data, span)
         if usage is None:
-            return {}
+            return _absent(data, description)
         if bill is None:
             # An unexplained `unknown` is the worst of both worlds: it neither
             # gives a number nor says what stopped it.
@@ -411,7 +427,7 @@ def _money_attrs(span: str, description: str) -> Callable[[TariffKitData], dict[
                 ATTR_QUALITY: {"complete": False},
                 "warnings": list(usage.warnings(span)),
                 **({"cycle_boundary": usage.metered.cycle_source} if span == "cycle" else {}),
-                "description": description,
+                ATTR_DESCRIPTION: description,
             }
         found: dict[str, Any] = {
             "period_start": bill.period.start.isoformat(),
@@ -428,10 +444,13 @@ def _money_attrs(span: str, description: str) -> Callable[[TariffKitData], dict[
             "export_credits": round(-bill.export_credits, 4),
             "fixed_charges": round(bill.fixed_charges, 4),
             ATTR_BUCKETS: [bucket.to_dict() for bucket in bill.buckets],
-            ATTR_QUALITY: {"complete": bill.complete and not usage.metered.missing},
+            ATTR_QUALITY: {"complete": usage.complete},
+            "compensated_kwh": round(bill.exported_kwh, 4),
             "warnings": list(usage.warnings(span)),
             **({"cycle_boundary": usage.metered.cycle_source} if span == "cycle" else {}),
-            "description": f"{description} {CYCLE_DESCRIPTION}" if span == "cycle" else description,
+            ATTR_DESCRIPTION: (
+                f"{description} {CYCLE_DESCRIPTION}" if span == "cycle" else description
+            ),
         }
         return found
 
@@ -442,10 +461,15 @@ def _energy_attrs(span: str, direction: str) -> Callable[[TariffKitData], dict[s
     def attrs(data: TariffKitData) -> dict[str, Any]:
         usage = data.usage
         if usage is None:
-            return {}
+            return _absent(
+                data,
+                DELIVERED_DESCRIPTION if direction == "import" else RECEIVED_DESCRIPTION,
+            )
         period = _period(data, span)
         found: dict[str, Any] = {
-            "description": DELIVERED_DESCRIPTION if direction == "import" else RECEIVED_DESCRIPTION,
+            ATTR_DESCRIPTION: DELIVERED_DESCRIPTION
+            if direction == "import"
+            else RECEIVED_DESCRIPTION,
             "source_entity": usage.metered.source(direction),
         }
         if period is not None:
@@ -471,7 +495,6 @@ def _reset_at(span: str) -> Callable[[TariffKitData], datetime | None]:
 def _money_sensor(
     span: str,
     key: str,
-    icon: str,
     description: str,
     value: Callable[[Bill], float],
 ) -> TariffKitSensorDescription:
@@ -486,7 +509,6 @@ def _money_sensor(
         native_unit_of_measurement=MONEY_UNIT,
         state_class=SensorStateClass.TOTAL,
         suggested_display_precision=2,
-        icon=icon,
         value_fn=state,
         attrs_fn=_money_attrs(span, description),
         last_reset_fn=_reset_at(span),
@@ -512,9 +534,6 @@ def _energy_sensor(span: str, direction: str) -> TariffKitSensorDescription:
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL,
         suggested_display_precision=3,
-        icon="mdi:transmission-tower-import"
-        if direction == "import"
-        else "mdi:transmission-tower-export",
         value_fn=state,
         attrs_fn=_energy_attrs(span, direction),
         last_reset_fn=_reset_at(span),
@@ -537,41 +556,61 @@ def usage_sensors(meters: MeterSettings) -> tuple[TariffKitSensorDescription, ..
             found.append(_energy_sensor(span, "import"))
         if meters.export_entity:
             found.append(_energy_sensor(span, "export"))
-        found.append(
-            _money_sensor(
-                span,
-                "energy_cost",
-                "mdi:cash-minus",
-                COST_DESCRIPTION,
-                lambda b: b.energy_charges + b.taxes,
+        if meters.import_entity:
+            found.append(
+                _money_sensor(
+                    span,
+                    "energy_cost",
+                    COST_DESCRIPTION,
+                    lambda b: b.energy_charges + b.taxes,
+                )
             )
-        )
         if meters.export_entity:
             found.append(
                 _money_sensor(
                     span,
                     "export_credit",
-                    "mdi:cash-plus",
                     CREDIT_DESCRIPTION,
                     lambda b: -b.export_credits,
                 )
             )
-        found.append(
-            _money_sensor(span, "net_cost", "mdi:cash-sync", NET_DESCRIPTION, lambda b: b.total)
-        )
+        found.append(_money_sensor(span, "net_cost", NET_DESCRIPTION, lambda b: b.total))
     return tuple(found)
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: TariffKitConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     coordinator: TariffKitCoordinator = entry.runtime_data
     descriptions = (*SENSORS, *usage_sensors(coordinator.meters))
+    _prune_removed(hass, entry, descriptions)
     async_add_entities(
         TariffKitSensor(coordinator, entry, description) for description in descriptions
     )
+
+
+@callback
+def _prune_removed(
+    hass: HomeAssistant,
+    entry: TariffKitConfigEntry,
+    descriptions: tuple[TariffKitSensorDescription, ...],
+) -> None:
+    """Drop registry entries for entities this configuration no longer creates.
+
+    The usage entities exist only while the meters that answer them are
+    configured, so clearing an export counter -- or all of them -- shrinks the
+    set. Nothing removes a registry entry on its own, so without this the
+    entities that went away linger forever as `unavailable`, and the only cure
+    is deleting each by hand. Reload runs this before adding, so narrowing the
+    configuration cleans up in the same pass that applies it.
+    """
+    registry = er.async_get(hass)
+    wanted = {f"{entry.entry_id}_{description.key}" for description in descriptions}
+    for existing in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if existing.unique_id not in wanted:
+            registry.async_remove(existing.entity_id)
 
 
 def _provenance_date(info: Mapping[str, Any], key: str) -> date | None:
@@ -605,6 +644,11 @@ class TariffKitSensor(CoordinatorEntity[TariffKitCoordinator], SensorEntity):
             # the forecast curve: it is rewritten every minute on six entities,
             # and the state that a history graph actually draws is the total.
             ATTR_BUCKETS,
+            # Fixed explanatory prose. The recorder hashes the whole attribute
+            # dict, so the numbers beside it changing every minute means this
+            # text is re-stored every minute too -- several hundred bytes per
+            # entity per tick, for a string that never differs.
+            ATTR_DESCRIPTION,
         }
     )
 

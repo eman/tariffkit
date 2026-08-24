@@ -168,7 +168,7 @@
       },
       "meters": {
         "title": "Metered energy",
-        "description": "Optional. Name the cumulative kWh counters for grid import and grid export and TariffKit adds running cost, credit, and net entities for today and for the billing cycle. Leave them blank to price rates only.\n\nThese counters do not have to reset daily; the recorder's own statistics supply each hour's change.",
+        "description": "Optional. Name the cumulative kWh counters for grid import and grid export and TariffKit adds running cost, credit, and net entities for today and for the billing cycle. Leave them blank to price rates only.\n\nThese counters do not have to reset daily; the recorder's own statistics supply each hour's change.\n\n{detail}",
         "data": {
           "grid_import_entity": "Energy delivered (grid import)",
           "grid_export_entity": "Energy received (grid export)",
@@ -183,7 +183,8 @@
     },
     "error": {
       "invalid_config": "Invalid configuration: {detail}",
-      "invalid_profile": "Invalid account profile: {detail}"
+      "invalid_profile": "Invalid account profile: {detail}",
+      "invalid_meters": "That meter configuration cannot work: {detail}"
     },
     "abort": {
       "invalid_profile": "This account profile has no pricing configuration in force yet."
