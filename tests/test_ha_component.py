@@ -154,6 +154,9 @@ async def test_initial_flow_branches_to_manual_import_and_conditional_delivery(
         flow_id,
         {"base_services_charge_tier": 3},
     )
+    assert result["step_id"] == "meters"
+
+    result = await hass.config_entries.flow.async_configure(flow_id, {"billing_cycle_start_day": 0})
     assert result["type"] == "create_entry"
     assert result["data"][CONF_PROFILE]["name"] == "import-only"
 
@@ -186,6 +189,9 @@ async def test_manual_export_setup_allows_blank_pto_date(hass: HomeAssistant) ->
             "base_services_charge_tier": 3,
         },
     )
+    assert result["step_id"] == "meters"
+
+    result = await hass.config_entries.flow.async_configure(flow_id, {"billing_cycle_start_day": 0})
     assert result["type"] == "create_entry"
 
 

@@ -10,10 +10,12 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from tariffkit.account import AccountProfile, AccountRateEngine
+from tariffkit.billing import Bill
 from tariffkit.components import ComponentGroup
 from tariffkit.config import CcaConfig, Config
 from tariffkit.errors import TariffKitError
@@ -51,6 +53,7 @@ from .const import (
     DEFAULT_PREDBAT_ENABLED,
     DOMAIN,
 )
+from .energy import MeteredUsage, MeterSettings, UsageReader, price
 from .profile import profile_from_entry
 
 _LOGGER = logging.getLogger(__name__)
@@ -143,6 +146,43 @@ class TariffKitForecastPoint:
 
 
 @dataclass(frozen=True, slots=True)
+class TariffKitUsage:
+    """What the meters have moved so far, and what it costs.
+
+    Two bills over the same readings: the day, which is what a dashboard tile
+    wants, and the cycle to date, which is what the next statement is heading
+    towards. Both come from the billing engine rather than from a running
+    multiplication, so a tile and a reconciled statement agree by construction.
+
+    Note what a cycle-to-date total is not: export credits under Net Billing
+    carry from one cycle to the next and settle at the annual true-up, so this
+    is the cycle's own charges and credits, not a balance owed. The ledger in
+    :mod:`tariffkit.billing.ledger` is where carryover lives.
+    """
+
+    metered: MeteredUsage
+    today: Bill | None
+    cycle: Bill | None
+
+    @property
+    def complete(self) -> bool:
+        """False when a bill is missing, unpriced, or the meters are silent."""
+        if self.today is None or self.cycle is None:
+            return False
+        return self.today.complete and self.cycle.complete and not self.metered.missing
+
+    def warnings(self, span: str = "cycle") -> tuple[str, ...]:
+        """Why a span's figure may be wrong, from the meters and from pricing."""
+        found: list[str] = [
+            f"no recorder statistics for {entity}" for entity in self.metered.missing
+        ]
+        bill = self.today if span == "today" else self.cycle
+        if bill is not None:
+            found.extend(bill.warnings)
+        return tuple(found)
+
+
+@dataclass(frozen=True, slots=True)
 class TariffKitData:
     """All state needed by entities, diagnostics, and response actions."""
 
@@ -157,6 +197,8 @@ class TariffKitData:
     generated_at: datetime = field(compare=False)
     predbat: PredbatPayload | None = None
     predbat_warning: str | None = None
+    #: None whenever no meter entities are configured, which is the default.
+    usage: TariffKitUsage | None = None
 
     def chart_attributes(self) -> dict[str, object]:
         return {
@@ -264,6 +306,8 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         self._device_model: str | None = None
         self.profile: AccountProfile = profile_from_entry({**entry.data, **entry.options})
         self.engine = AccountRateEngine(self.profile)
+        self.meters = MeterSettings.from_entry({**entry.data, **entry.options}, self.profile)
+        self._usage = UsageReader(hass, self.meters) if self.meters.configured else None
         self.forecast_hours = int(
             entry.options.get(
                 CONF_FORECAST_HOURS,
@@ -295,12 +339,28 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         )
 
     async def _async_update_data(self) -> TariffKitData:
+        metered = await self._async_metered()
         try:
-            data = await self.hass.async_add_executor_job(self._compute)
+            data = await self.hass.async_add_executor_job(self._compute, metered)
         except TariffKitError as err:
             raise UpdateFailed(str(err)) from err
         self._sync_device_identity(data.provenance)
         return data
+
+    async def _async_metered(self) -> MeteredUsage | None:
+        """Read the meters, or nothing if they are unconfigured or unreadable.
+
+        A recorder that cannot answer costs the usage entities their value for
+        this tick; it must not cost the rate entities theirs, which is why this
+        degrades to None rather than failing the update.
+        """
+        if self._usage is None:
+            return None
+        try:
+            return await self._usage.async_usage(now_pacific())
+        except (HomeAssistantError, ValueError) as err:
+            _LOGGER.warning("Unable to read metered energy: %s", err)
+            return None
 
     def _sync_device_identity(self, provenance: Provenance) -> None:
         """Keep the device's rate identity current as the profile changes epoch.
@@ -331,7 +391,7 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
             self._predbat_key = key
         return self._predbat
 
-    def _compute(self) -> TariffKitData:
+    def _compute(self, metered: MeteredUsage | None = None) -> TariffKitData:
         point = self.engine.price_now()
         curve = self.engine.forecast(self.forecast_hours, start=point.start)
         curve_points = tuple(curve.points)
@@ -368,6 +428,17 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
             generated_at=now_pacific(),
             predbat=self._predbat_for(point.start),
             predbat_warning=self._predbat_warning,
+            usage=self._usage_for(metered),
+        )
+
+    def _usage_for(self, metered: MeteredUsage | None) -> TariffKitUsage | None:
+        """Price the day and the cycle to date over the same readings."""
+        if metered is None:
+            return None
+        return TariffKitUsage(
+            metered=metered,
+            today=price(self.profile, metered.for_today(), metered.today),
+            cycle=price(self.profile, metered.readings, metered.cycle),
         )
 
     @property

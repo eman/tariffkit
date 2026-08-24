@@ -24,11 +24,11 @@ the percentages, since they drift as tests and flow branches are added.
 | Rule | Status | Note |
 |---|---|---|
 | `action-setup` | Met | Actions register in `async_setup`, once per instance, before any entry loads. |
-| `appropriate-polling` | Met | `DataUpdateCoordinator(update_interval=timedelta(minutes=1))`; there is nothing to poll, only a cheap local recompute, so a short interval costs nothing. |
+| `appropriate-polling` | Met | `DataUpdateCoordinator(update_interval=timedelta(minutes=1))`; there is nothing to poll, only a cheap local recompute, so a short interval costs nothing. With [Metered energy](home-assistant.md#metered-energy) configured, each tick also reads entity state, but the recorder is queried once an hour rather than once a minute -- completed hours cannot change, so re-reading them sixty times would learn nothing. |
 | `brands` | Partial | Assets ship in the repository; not yet submitted to `home-assistant/brands`, so a generic icon shows until then. |
 | `common-modules` | Met | Config/options schemas, the coordinator, and profile helpers are each in their own module rather than duplicated per flow step. |
 | `config-flow-test-coverage` | Partial | Exercised for the manual/import branch, conditional delivery fields, multi-entry setup, and the options menu grouping, but `config_flow.py` measures 50% statement coverage today (see [Measuring test coverage](#measuring-test-coverage)) -- the CCA and history sub-flows are the largest gaps. |
-| `config-flow` | Met | UI-only, no YAML. `ConfigEntry.data` holds the profile; `ConfigEntry.options` holds forecast/Predbat settings. `data_description` is not used in any step. |
+| `config-flow` | Met | UI-only, no YAML. `ConfigEntry.data` holds the profile; `ConfigEntry.options` holds forecast/Predbat and metered-energy settings. `data_description` is used in the metered-energy step and not yet in the others. |
 | `dependency-transparency` | Met | An exact-pinned `tariffkit==0.3.0` requirement; see [The dependency](home-assistant.md#the-dependency). |
 | `docs-actions` | Met | [Actions](home-assistant.md#actions). |
 | `docs-triggers` | Not applicable | The integration provides no triggers. |
@@ -50,9 +50,9 @@ the percentages, since they drift as tests and flow branches are added.
 |---|---|---|
 | `action-exceptions` | Met | Both actions raise `ServiceValidationError` with a message naming the problem; see [Actions](home-assistant.md#actions). |
 | `config-entry-unloading` | Met | `async_unload_entry` unloads platforms; reload (options save, or manual reload) recreates entities cleanly. |
-| `docs-configuration-parameters` | Met | [Configure](home-assistant.md#configure) and [Account history](home-assistant.md#account-history) cover every field, including which ones are conditional. |
+| `docs-configuration-parameters` | Met | [Configure](home-assistant.md#configure), [Account history](home-assistant.md#account-history), and [Metered energy](home-assistant.md#metered-energy) cover every field, including which ones are conditional. |
 | `docs-installation-parameters` | Met | Folded into installation instructions above; the wizard has no separate installation-time parameters beyond the profile fields. |
-| `entity-unavailable` | Not applicable | Nothing marks an entity unavailable while its entry is loaded -- there is no partial-failure mode between "computes fine" and "entry fails to load entirely" for a purely local calculation. |
+| `entity-unavailable` | Not applicable | Nothing marks an entity unavailable while its entry is loaded -- there is no partial-failure mode between "computes fine" and "entry fails to load entirely" for a purely local calculation. The metered-energy entities report `unknown` rather than unavailable when the recorder cannot answer, and say so in their `quality` and `warnings` attributes; the rate entities are unaffected by a recorder failure. |
 | `integration-owner` | Met | `manifest.json` lists `"codeowners": ["@eman"]`. |
 | `log-when-unavailable` | Not applicable | No network/device dependency to go offline or reconnect. |
 | `parallel-updates` | Met | `sensor.py` declares `PARALLEL_UPDATES = 0`; entities have no independent I/O to serialize. |

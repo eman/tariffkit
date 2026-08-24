@@ -34,10 +34,13 @@ from .const import (
     CONF_CCA_PCIA_RATE,
     CONF_CCA_PCIA_VINTAGE,
     CONF_CCA_RATE_CARD,
+    CONF_CYCLE_START_DAY,
     CONF_DISCOUNT,
     CONF_EFFECTIVE,
     CONF_EXPORT_ENABLED,
     CONF_FORECAST_HOURS,
+    CONF_GRID_EXPORT_ENTITY,
+    CONF_GRID_IMPORT_ENTITY,
     CONF_INTERCONNECTION_YEAR,
     CONF_MEDICAL_BASELINE,
     CONF_MEDICAL_KWH_PER_DAY,
@@ -49,11 +52,13 @@ from .const import (
     CONF_SUPPLIER,
     CONF_TARIFF,
     CONF_VINTAGE,
+    DEFAULT_CYCLE_START_DAY,
     DEFAULT_FORECAST_HOURS,
     DEFAULT_PREDBAT_ENABLED,
     DOMAIN,
 )
 from .coordinator import config_from_entry
+from .energy import MeterSettings
 from .profile import (
     LEGACY_EFFECTIVE,
     config_defaults,
@@ -370,6 +375,68 @@ def _options_schema(defaults: dict[str, Any]) -> vol.Schema:
     )
 
 
+def _meters_schema(defaults: dict[str, Any]) -> vol.Schema:
+    """Point the running-cost entities at the site's two grid counters.
+
+    Both are optional and independent. A site with no solar has nothing to name
+    for export; a site whose export counter is the only one integrated can still
+    say so. Naming neither leaves the running-total entities out entirely.
+
+    The selector filters to energy sensors rather than all of them, because the
+    only useful answer here is a cumulative kWh counter -- the thing the
+    recorder keeps long-term statistics for.
+    """
+    energy = selector.EntitySelector(
+        selector.EntitySelectorConfig(domain="sensor", device_class="energy")
+    )
+    return vol.Schema(
+        {
+            vol.Optional(
+                CONF_GRID_IMPORT_ENTITY,
+                description={"suggested_value": defaults.get(CONF_GRID_IMPORT_ENTITY) or None},
+            ): energy,
+            vol.Optional(
+                CONF_GRID_EXPORT_ENTITY,
+                description={"suggested_value": defaults.get(CONF_GRID_EXPORT_ENTITY) or None},
+            ): energy,
+            vol.Required(
+                CONF_CYCLE_START_DAY,
+                default=int(defaults.get(CONF_CYCLE_START_DAY, DEFAULT_CYCLE_START_DAY) or 0),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=31, step=1, mode=selector.NumberSelectorMode.BOX
+                )
+            ),
+        }
+    )
+
+
+def _meter_values(user_input: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the meters step into options the coordinator can read.
+
+    A cleared entity selector comes back as an absent key, not an empty string,
+    so the keys are written explicitly -- otherwise clearing one would fall back
+    to an imported profile's mapping instead of clearing it.
+    """
+    day = int(user_input.get(CONF_CYCLE_START_DAY, DEFAULT_CYCLE_START_DAY) or 0)
+    return {
+        CONF_GRID_IMPORT_ENTITY: user_input.get(CONF_GRID_IMPORT_ENTITY) or "",
+        CONF_GRID_EXPORT_ENTITY: user_input.get(CONF_GRID_EXPORT_ENTITY) or "",
+        CONF_CYCLE_START_DAY: day if 1 <= day <= 31 else DEFAULT_CYCLE_START_DAY,
+    }
+
+
+def _meter_defaults(
+    values: dict[str, Any], profile: AccountProfile | None = None
+) -> dict[str, Any]:
+    settings = MeterSettings.from_entry(values, profile)
+    return {
+        CONF_GRID_IMPORT_ENTITY: settings.import_entity or "",
+        CONF_GRID_EXPORT_ENTITY: settings.export_entity or "",
+        CONF_CYCLE_START_DAY: settings.cycle_start_day,
+    }
+
+
 def _normalize(user_input: dict[str, Any]) -> dict[str, Any]:
     data = dict(user_input)
     year = data.get(CONF_INTERCONNECTION_YEAR)
@@ -515,21 +582,47 @@ def _manual_config_data(
 class TariffKitConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 3
 
-    async def _create_profile(self, data: dict[str, Any]) -> ConfigFlowResult:
+    def _build_profile(self, data: dict[str, Any]) -> AccountProfile:
         config = config_from_entry(data)
         name = _profile_name(data.get(CONF_PROFILE_NAME, ""))
         if not name:
             raise AccountError("profile name is required")
-        profile = AccountProfile(
+        return AccountProfile(
             epochs=(AccountEpoch(LEGACY_EFFECTIVE, config),),
             name=name,
         )
-        await self.async_set_unique_id(f"profile:{name}")
+
+    async def _create_profile(
+        self, data: dict[str, Any], options: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        profile = self._build_profile(data)
+        await self.async_set_unique_id(f"profile:{profile.name}")
         self._abort_if_unique_id_configured()
         return self.async_create_entry(
             title=_entry_title(profile),
             data={CONF_PROFILE: profile_payload(profile)},
+            options=options or {},
         )
+
+    async def async_step_meters(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Optionally name the grid counters that drive the running totals.
+
+        Last, and skippable by submitting it empty: an account can be priced
+        without ever naming a meter, and making setup depend on having one
+        integrated already would gate the rates on the usage.
+        """
+        data = getattr(self, "_manual_config", {})
+        if user_input is not None:
+            try:
+                return await self._create_profile(data, _meter_values(user_input))
+            except (AccountError, TariffKitError) as err:
+                return self.async_show_form(
+                    step_id="meters",
+                    data_schema=_meters_schema(user_input),
+                    errors={"base": "invalid_config"},
+                    description_placeholders={"detail": str(err)},
+                )
+        return self.async_show_form(step_id="meters", data_schema=_meters_schema({}))
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         if user_input is not None:
@@ -573,9 +666,12 @@ class TariffKitConfigFlow(ConfigFlow, domain=DOMAIN):
                     description_placeholders={"detail": errors["detail"]},
                 )
             try:
-                return await self._create_profile(
-                    {**data, CONF_PROFILE_NAME: identity.get(CONF_PROFILE_NAME, "")}
-                )
+                self._manual_config = {
+                    **data,
+                    CONF_PROFILE_NAME: identity.get(CONF_PROFILE_NAME, ""),
+                }
+                self._build_profile(self._manual_config)
+                return await self.async_step_meters()
             except (AccountError, TariffKitError) as err:
                 return self.async_show_form(
                     step_id="manual_delivery",
@@ -612,9 +708,12 @@ class TariffKitConfigFlow(ConfigFlow, domain=DOMAIN):
                     description_placeholders={"detail": errors["detail"]},
                 )
             try:
-                return await self._create_profile(
-                    {**data, CONF_PROFILE_NAME: identity.get(CONF_PROFILE_NAME, "")}
-                )
+                self._manual_config = {
+                    **data,
+                    CONF_PROFILE_NAME: identity.get(CONF_PROFILE_NAME, ""),
+                }
+                self._build_profile(self._manual_config)
+                return await self.async_step_meters()
             except (AccountError, TariffKitError) as err:
                 return self.async_show_form(
                     step_id="manual_cca",
@@ -669,11 +768,13 @@ class TariffKitOptionsFlow(OptionsFlow):
                 return await self.async_step_settings()
             if action == "forecast":
                 return await self.async_step_forecast()
+            if action == "meters":
+                return await self.async_step_meters()
             if action == "history":
                 return await self.async_step_history()
         return self.async_show_menu(
             step_id="init",
-            menu_options=["settings", "forecast", "history"],
+            menu_options=["settings", "forecast", "meters", "history"],
         )
 
     def _values(self) -> dict[str, Any]:
@@ -798,6 +899,16 @@ class TariffKitOptionsFlow(OptionsFlow):
         return self.async_show_form(
             step_id="forecast",
             data_schema=_options_schema(self._values()),
+        )
+
+    async def async_step_meters(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Change which entities feed the running totals, or stop feeding them."""
+        if user_input is not None:
+            return self._save_profile(self._profile(), **_meter_values(user_input))
+        values = self._values()
+        return self.async_show_form(
+            step_id="meters",
+            data_schema=_meters_schema(_meter_defaults(values, self._profile())),
         )
 
     async def async_step_history(

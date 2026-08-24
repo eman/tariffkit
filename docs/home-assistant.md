@@ -92,6 +92,10 @@ first choice:
      per-account detail that reaches the integration only through
      **Import TariffKit profile** below, or later through account history's
      own edit form once a profile carries them.
+  4. **Metered energy** — optional, and the last step. Name the cumulative
+     kWh counters for grid import and grid export and TariffKit adds running
+     cost, credit, and net entities; leave them blank to price rates only.
+     See [Metered energy](#metered-energy).
 - **Import TariffKit profile** — paste JSON produced by `tariffkit account
   export NAME` (or another Home Assistant instance's **Export profile**,
   under [Account history](#account-history)). This is the only path that
@@ -121,12 +125,13 @@ place, without a restart.
 
 ## Account history
 
-**Configure** opens a menu with three choices:
+**Configure** opens a menu with four choices:
 
 | Menu item | Does |
 |---|---|
 | Account pricing settings | The same staged wizard as setup (account/tariff → delivery/export → CCA product), editing the epoch in force today. An import-only epoch reopens with export still off, rather than defaulting back on and re-asking for delivery fields you never entered. |
 | Forecast and Predbat | Forecast horizon and the Predbat compatibility toggle. Stored as options; changing either never touches account history. |
+| Metered energy | The grid import and export counters and the billing cycle start day. See [Metered energy](#metered-energy). Stored as options; clearing both entities removes the running-total entities on reload. |
 | **Account history** | Opens the sub-menu below. |
 
 Its entry holds a whole [named account profile](accounts.md) — an ordered,
@@ -185,6 +190,10 @@ logged reason rather than guessing.
 | Import Generation / Distribution / Transmission / Surcharges / Credits / Other | USD/kWh | the import price, split into stackable bands; see [Component breakdown](#component-breakdown) |
 | Export Generation / Delivery / Credits / Other | USD/kWh | the export credit, split the same way |
 | Daily Fixed Charge | USD/day | AB 205 Base Services Charge; **not** a per-kWh price and not part of the stack |
+| Energy Delivered / Received Today | kWh | metered grid import and export since local midnight; only with [Metered energy](#metered-energy) configured |
+| Energy Cost / Export Credit / Net Cost Today | USD | today's running charge, credit, and net; only with [Metered energy](#metered-energy) configured |
+| Energy Delivered / Received This Cycle | kWh | the same two counters over the billing cycle to date |
+| Energy Cost / Export Credit / Net Cost This Cycle | USD | the same three figures over the billing cycle to date |
 
 Daily Fixed Charge is reported in `USD/day`, not `USD/kWh`, because that is
 what it is: a fixed daily amount, not a marginal price. The unit keeps it out
@@ -461,6 +470,90 @@ Native History cards cannot stack, and cannot draw the forecast half at all
 (see [History and forecast timeline](#history-and-forecast-timeline)). With
 nothing but Home Assistant Core, add the group sensors to a History card and
 read them as separate lines.
+
+## Metered energy
+
+Optional. Point TariffKit at the two cumulative kWh counters your meter or
+meter reader publishes and it prices what actually moved, not just what a kWh
+would have cost:
+
+**Configure → Metered energy**, or the last step of manual setup:
+
+| Field | What it is |
+|---|---|
+| Energy delivered (grid import) | Cumulative kWh the grid has delivered to the site |
+| Energy received (grid export) | Cumulative kWh the site has sent to the grid |
+| Billing cycle start day | The day of the month your meter is read, from a recent statement. `0` uses the calendar month |
+
+Both entities are optional and independent. Name neither and none of the
+running-total entities are created at all. Name only the import counter — a
+site with no solar — and the export-credit entities are left out rather than
+sitting at a permanent zero: a credit the meters cannot answer for is not a
+series with nothing in it.
+
+### The counters do not have to reset
+
+They usually do not. The Rainforest Eagle-100's
+`sensor.eagle_100_energy_delivered` and `sensor.eagle_100_energy_received` are
+monotonic counters that only ever climb, and today's energy is a *difference*
+between two points on one.
+
+TariffKit does that arithmetic out of the recorder's own long-term statistics,
+which is where it belongs: a statistic's hourly `change` already absorbs
+counter restarts, integration reloads, and the Eagle's meter-session drops.
+Statistics compile at the top of the hour, so the hour in progress is read
+live off the entity state instead — the last completed hour's recorded value
+is a baseline the counter has advanced from. Anything implausible (a negative
+change, or more than 100 kW for an hour, which is a restarted statistics
+series reporting its whole accumulated total) is dropped with a log line
+rather than billed.
+
+Two consequences worth knowing:
+
+- **The recorder is required for this feature.** It is a default integration;
+  if you have disabled it, the rate entities carry on and the running totals
+  are simply absent.
+- **A restart loses nothing.** The totals are re-derived from statistics on
+  every refresh, so they survive restarts, reloads, and configuring the
+  integration halfway through a day.
+
+### What the totals mean
+
+Readings are priced by `tariffkit.billing.BillEngine` — the same code that
+reconciles against a printed PG&E statement, so a dashboard tile and a
+month-end bill cannot drift apart in their arithmetic. That buys time-of-use
+bucketing, the Energy Commission Tax, the baseline credit where a schedule has
+one, and the rule that exports before Permission To Operate are metered but
+earn nothing.
+
+- **Energy Cost** is the day's (or cycle's) import charges including statutory
+  per-kWh taxes, and excluding the fixed charge.
+- **Export Credit** is what the exports earned, as a positive number.
+- **Net Cost** is charges minus credits **plus the whole of the Base Services
+  Charge for each day so far**. It is incurred for the day of service, not
+  earned by the hour, which is how a statement bills it. Positive means owed,
+  negative means in credit.
+
+Every money entity carries its own bill as attributes — `energy_charges`,
+`taxes`, `export_credits`, `fixed_charges`, `imported_kwh`, `exported_kwh`,
+the time-of-use `buckets`, `quality`, and any pricing `warnings` — so a
+surprising figure is auditable from the entity:
+
+```yaml
+{{ state_attr('sensor.tariffkit_home_net_cost_today', 'buckets') }}
+{{ state_attr('sensor.tariffkit_home_net_cost_cycle', 'warnings') }}
+```
+
+The cycle figures are **cycle to date**, not a balance due. Under Net Billing
+an export credit carries into the next cycle and settles at the annual
+true-up; that is a stateful ledger
+(`tariffkit.billing.ledger`, see [Billing](billing.md)), not something a
+running total can show. If your billing cycle start day is left at `0` the
+"cycle" is simply the calendar month, which will not line up with a statement.
+
+Energy Delivered and Energy Received report what the meter saw. Energy
+Received's `compensated_kwh` attribute reports what the tariff will pay for,
+which is less whenever a site exported before its PTO date.
 
 ## Energy dashboard
 
@@ -779,12 +872,17 @@ the entry is loaded, forecast hours and Predbat mode, the active price
 point's start/tariff/supplier, aggregate quality flags, the Predbat time zone
 warning (if any), a trimmed provenance block (utility, tariff, supplier,
 tariff effective date, export vintage), the cached forecast's span, Home
-Assistant's configured time zone, and today's Pacific calendar date.
+Assistant's configured time zone, and today's Pacific calendar date. With
+[Metered energy](#metered-energy) configured it also carries whether each
+direction is set, the billing cycle start day, and the day's and cycle's
+computed bills — including how many hours the recorder supplied.
 
 It deliberately omits the account's full profile, its observations, and any
 meter-source mapping — nothing that could identify the account or reveal how
 its bill has been reconciled, only what a report needs to say "here is which
-rate rules were active and how trustworthy they are."
+rate rules were active and how trustworthy they are." The metered-energy block
+follows the same rule: it reports *that* an import or export entity is
+configured, never which entity, and its bills carry no entity names.
 
 ## Automation examples
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -14,12 +14,13 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import EntityCategory
+from homeassistant.const import EntityCategory, UnitOfEnergy
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from tariffkit.billing import Bill, BillingPeriod
 from tariffkit.components import (
     EXPORT_GROUPS,
     IMPORT_GROUPS,
@@ -27,8 +28,10 @@ from tariffkit.components import (
     split_components,
 )
 from tariffkit.models import ExportPrice, ImportPrice, TouPeriod, Utility
+from tariffkit.timeutil import PACIFIC
 
 from .const import (
+    ATTR_BUCKETS,
     ATTR_GENERATED_AT,
     ATTR_LOAD_COST,
     ATTR_PROD_PRICE,
@@ -46,6 +49,7 @@ from .coordinator import (
     TariffKitQuality,
     device_model,
 )
+from .energy import MeterSettings
 
 PARALLEL_UPDATES = 0
 UNIT = "USD/kWh"
@@ -170,6 +174,9 @@ class TariffKitSensorDescription(SensorEntityDescription):
 
     value_fn: Callable[[TariffKitData], Any]
     attrs_fn: Callable[[TariffKitData], dict[str, Any]] | None = None
+    #: Only the running totals set this: Home Assistant needs the reset
+    #: boundary to keep statistics for a total that goes back to zero.
+    last_reset_fn: Callable[[TariffKitData], datetime | None] | None = None
 
 
 def _price_for(data: TariffKitData, direction: str) -> ImportPrice | ExportPrice:
@@ -328,13 +335,231 @@ SENSORS: tuple[TariffKitSensorDescription, ...] = (
 )
 
 
+MONEY_UNIT = "USD"
+#: The two spans the running totals cover, and what each one's period is.
+SPANS = ("today", "cycle")
+COST_DESCRIPTION = (
+    "Import charges for the metered energy, statutory per-kWh taxes included "
+    "and the fixed daily charge excluded."
+)
+CREDIT_DESCRIPTION = (
+    "What the metered exports earned, as a positive number. Exports before "
+    "Permission To Operate earn nothing and are not counted."
+)
+NET_DESCRIPTION = (
+    "Charges minus credits, plus the whole of each day's Base Services Charge: "
+    "it is incurred for the day of service, not earned by the hour. Positive "
+    "means owed, negative means in credit. Priced by the same engine that "
+    "reconciles a printed statement, so it is a running bill rather than a "
+    "running multiplication."
+)
+CYCLE_DESCRIPTION = (
+    "Cycle to date. Under Net Billing an export credit carries into the next "
+    "cycle and settles at the annual true-up, so this is what the cycle has "
+    "earned and owes, not a balance due."
+)
+DELIVERED_DESCRIPTION = "Energy the grid delivered to the site: metered import."
+RECEIVED_DESCRIPTION = (
+    "Energy the grid received from the site: metered export. Exports before "
+    "Permission To Operate are metered here but earn no credit."
+)
+
+
+def _bill(data: TariffKitData, span: str) -> Bill | None:
+    usage = data.usage
+    if usage is None:
+        return None
+    return usage.today if span == "today" else usage.cycle
+
+
+def _period(data: TariffKitData, span: str) -> BillingPeriod | None:
+    usage = data.usage
+    if usage is None:
+        return None
+    return usage.metered.today if span == "today" else usage.metered.cycle
+
+
+def _last_reset(data: TariffKitData, span: str) -> datetime | None:
+    """Local midnight the span began, which is when the total went back to zero.
+
+    Home Assistant needs this to keep long-term statistics for a total that
+    resets. Pacific rather than the instance's own zone, because the tariff's
+    day is the billing day and a site running on another clock would otherwise
+    reset its total in the middle of a peak period.
+    """
+    period = _period(data, span)
+    if period is None:
+        return None
+    start = period.start
+    return datetime(start.year, start.month, start.day, tzinfo=PACIFIC)
+
+
+def _money_attrs(span: str, description: str) -> Callable[[TariffKitData], dict[str, Any]]:
+    """The bill behind one running total, so a surprising figure is auditable."""
+
+    def attrs(data: TariffKitData) -> dict[str, Any]:
+        usage = data.usage
+        bill = _bill(data, span)
+        if usage is None or bill is None:
+            return {}
+        found: dict[str, Any] = {
+            "period_start": bill.period.start.isoformat(),
+            "period_end": bill.period.end.isoformat(),
+            "days": bill.period.days,
+            "imported_kwh": round(usage.metered.imported_kwh, 4)
+            if span == "cycle"
+            else round(usage.metered.imported_today, 4),
+            "exported_kwh": round(usage.metered.exported_kwh, 4)
+            if span == "cycle"
+            else round(usage.metered.exported_today, 4),
+            "energy_charges": round(bill.energy_charges, 4),
+            "taxes": round(bill.taxes, 4),
+            "export_credits": round(-bill.export_credits, 4),
+            "fixed_charges": round(bill.fixed_charges, 4),
+            ATTR_BUCKETS: [bucket.to_dict() for bucket in bill.buckets],
+            ATTR_QUALITY: {"complete": bill.complete and not usage.metered.missing},
+            "warnings": list(usage.warnings(span)),
+            "description": f"{description} {CYCLE_DESCRIPTION}" if span == "cycle" else description,
+        }
+        return found
+
+    return attrs
+
+
+def _energy_attrs(span: str, direction: str) -> Callable[[TariffKitData], dict[str, Any]]:
+    def attrs(data: TariffKitData) -> dict[str, Any]:
+        usage = data.usage
+        if usage is None:
+            return {}
+        period = _period(data, span)
+        found: dict[str, Any] = {
+            "description": DELIVERED_DESCRIPTION if direction == "import" else RECEIVED_DESCRIPTION,
+            "source_entity": usage.metered.source(direction),
+        }
+        if period is not None:
+            found["period_start"] = period.start.isoformat()
+            found["period_end"] = period.end.isoformat()
+        bill = _bill(data, span)
+        if direction == "export" and bill is not None:
+            # What the tariff will actually pay for, which is less than the
+            # meter saw whenever a site exported before Permission To Operate.
+            found["compensated_kwh"] = round(bill.exported_kwh, 4)
+        return found
+
+    return attrs
+
+
+def _reset_at(span: str) -> Callable[[TariffKitData], datetime | None]:
+    def reset(data: TariffKitData) -> datetime | None:
+        return _last_reset(data, span)
+
+    return reset
+
+
+def _money_sensor(
+    span: str,
+    key: str,
+    icon: str,
+    description: str,
+    value: Callable[[Bill], float],
+) -> TariffKitSensorDescription:
+    def state(data: TariffKitData) -> float | None:
+        bill = _bill(data, span)
+        return None if bill is None else round(value(bill), 4)
+
+    return TariffKitSensorDescription(
+        key=f"{key}_{span}",
+        translation_key=f"{key}_{span}",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement=MONEY_UNIT,
+        state_class=SensorStateClass.TOTAL,
+        suggested_display_precision=2,
+        icon=icon,
+        value_fn=state,
+        attrs_fn=_money_attrs(span, description),
+        last_reset_fn=_reset_at(span),
+    )
+
+
+def _energy_sensor(span: str, direction: str) -> TariffKitSensorDescription:
+    key = "energy_delivered" if direction == "import" else "energy_received"
+
+    def state(data: TariffKitData) -> float | None:
+        usage = data.usage
+        if usage is None:
+            return None
+        metered = usage.metered
+        if direction == "import":
+            return round(metered.imported_kwh if span == "cycle" else metered.imported_today, 4)
+        return round(metered.exported_kwh if span == "cycle" else metered.exported_today, 4)
+
+    return TariffKitSensorDescription(
+        key=f"{key}_{span}",
+        translation_key=f"{key}_{span}",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        state_class=SensorStateClass.TOTAL,
+        suggested_display_precision=3,
+        icon="mdi:transmission-tower-import"
+        if direction == "import"
+        else "mdi:transmission-tower-export",
+        value_fn=state,
+        attrs_fn=_energy_attrs(span, direction),
+        last_reset_fn=_reset_at(span),
+    )
+
+
+def usage_sensors(meters: MeterSettings) -> tuple[TariffKitSensorDescription, ...]:
+    """The running-total entities the configured meters can actually support.
+
+    An account with no export entity gets no export-credit entity rather than a
+    permanent zero: unlike the component bands, which stay put so a chart never
+    has to be reconfigured, a credit that is structurally absent is not a series
+    with nothing in it -- it is a question the meters cannot answer.
+    """
+    if not meters.configured:
+        return ()
+    found: list[TariffKitSensorDescription] = []
+    for span in SPANS:
+        if meters.import_entity:
+            found.append(_energy_sensor(span, "import"))
+        if meters.export_entity:
+            found.append(_energy_sensor(span, "export"))
+        found.append(
+            _money_sensor(
+                span,
+                "energy_cost",
+                "mdi:cash-minus",
+                COST_DESCRIPTION,
+                lambda b: b.energy_charges + b.taxes,
+            )
+        )
+        if meters.export_entity:
+            found.append(
+                _money_sensor(
+                    span,
+                    "export_credit",
+                    "mdi:cash-plus",
+                    CREDIT_DESCRIPTION,
+                    lambda b: -b.export_credits,
+                )
+            )
+        found.append(
+            _money_sensor(span, "net_cost", "mdi:cash-sync", NET_DESCRIPTION, lambda b: b.total)
+        )
+    return tuple(found)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: TariffKitConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: TariffKitCoordinator = entry.runtime_data
-    async_add_entities(TariffKitSensor(coordinator, entry, description) for description in SENSORS)
+    descriptions = (*SENSORS, *usage_sensors(coordinator.meters))
+    async_add_entities(
+        TariffKitSensor(coordinator, entry, description) for description in descriptions
+    )
 
 
 def _provenance_date(info: Mapping[str, Any], key: str) -> date | None:
@@ -364,6 +589,10 @@ class TariffKitSensor(CoordinatorEntity[TariffKitCoordinator], SensorEntity):
             ATTR_RAW_TOMORROW,
             ATTR_LOAD_COST,
             ATTR_PROD_PRICE,
+            # The running totals' time-of-use breakdown, for the same reason as
+            # the forecast curve: it is rewritten every minute on six entities,
+            # and the state that a history graph actually draws is the total.
+            ATTR_BUCKETS,
         }
     )
 
@@ -413,3 +642,9 @@ class TariffKitSensor(CoordinatorEntity[TariffKitCoordinator], SensorEntity):
         if self.entity_description.attrs_fn is None:
             return None
         return self.entity_description.attrs_fn(self.coordinator.data)
+
+    @property
+    def last_reset(self) -> datetime | None:
+        if self.entity_description.last_reset_fn is None:
+            return None
+        return self.entity_description.last_reset_fn(self.coordinator.data)
