@@ -415,3 +415,37 @@ async def test_money_entities_explain_themselves_without_bloating_the_recorder(
     # it must not reach the database.
     assert "buckets" in TariffKitSensor._unrecorded_attributes
     assert _state(hass, entry, "net_cost_today").attributes["buckets"]
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_a_cycle_the_account_history_predates_says_why_it_is_unknown(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """A cycle opening before the profile's first epoch is refused, not guessed.
+
+    Pricing only the days the history covers would report a smaller number that
+    looks complete, so the bill is withheld -- but the entity has to say what
+    stopped it rather than reading a bare ``unknown``.
+    """
+    freezer.move_to(NOW)
+    profile = AccountProfile(
+        (AccountEpoch(date(2026, 8, 16), Config(tariff="E-ELEC")),),
+        name="late-history",
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Late history",
+        version=CONFIG_VERSION,
+        data={CONF_PROFILE: profile_payload(profile), CONF_FORECAST_HOURS: 4},
+        # The cycle opens 2026-08-12, four days before the profile begins.
+        options=_meter_options(**{CONF_CYCLE_START_DAY: 12}),
+    )
+    await _setup(hass, entry)
+
+    cycle = _state(hass, entry, "net_cost_cycle")
+    assert cycle.state == "unknown"
+    assert cycle.attributes["quality"]["complete"] is False
+    assert any("cannot price 2026-08-12" in w for w in cycle.attributes["warnings"])
+
+    # The day is inside the history, so it still prices normally.
+    assert _state(hass, entry, "net_cost_today").state not in ("unknown", "unavailable")

@@ -348,16 +348,24 @@ def segments(profile: AccountProfile, period: BillingPeriod) -> list[Segment]:
 
 def price(
     profile: AccountProfile, readings: Sequence[IntervalReading], period: BillingPeriod
-) -> Bill | None:
-    """Price ``readings`` over ``period``, or None if no epoch governs it.
+) -> tuple[Bill | None, str]:
+    """Price ``readings`` over ``period``, or say why it could not be priced.
 
     Coverage checking is off: a running total is always missing the rest of the
     day, and warning about that every minute says nothing. The engine's *pricing*
     warnings -- an uncovered tax vintage, a stale CCA card, exports before
     Permission To Operate -- still come through, because those are real.
+
+    Refusing is the honest answer when the account history does not reach back to
+    the start of the period, which a cycle that opened before the profile's first
+    epoch really does. Pricing the days it *does* cover would return a smaller
+    number that looks complete -- fewer days of Base Services Charge and none of
+    the energy -- and this codebase would rather return nothing than something
+    plausible and wrong. But nothing has to say why, or the entity is an
+    unexplained ``unknown``, so the reason travels with the refusal.
     """
     try:
-        return compute_segments(segments(profile, period), readings, check=False)
+        return compute_segments(segments(profile, period), readings, check=False), ""
     except (TariffKitError, ValueError) as err:
         _LOGGER.debug("Cannot price %s to %s: %s", period.start, period.end, err)
-        return None
+        return None, f"cannot price {period.start} to {period.end}: {err}"

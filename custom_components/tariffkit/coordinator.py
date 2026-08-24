@@ -163,6 +163,10 @@ class TariffKitUsage:
     metered: MeteredUsage
     today: Bill | None
     cycle: Bill | None
+    #: Why a span has no bill, empty when it has one. An entity that reads
+    #: `unknown` has to be able to say what stopped it.
+    today_reason: str = ""
+    cycle_reason: str = ""
 
     @property
     def complete(self) -> bool:
@@ -177,6 +181,9 @@ class TariffKitUsage:
             f"no recorder statistics for {entity}" for entity in self.metered.missing
         ]
         bill = self.today if span == "today" else self.cycle
+        reason = self.today_reason if span == "today" else self.cycle_reason
+        if reason:
+            found.append(reason)
         if bill is not None:
             found.extend(bill.warnings)
         return tuple(found)
@@ -435,10 +442,14 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         """Price the day and the cycle to date over the same readings."""
         if metered is None:
             return None
+        today, today_reason = price(self.profile, metered.for_today(), metered.today)
+        cycle, cycle_reason = price(self.profile, metered.readings, metered.cycle)
         return TariffKitUsage(
             metered=metered,
-            today=price(self.profile, metered.for_today(), metered.today),
-            cycle=price(self.profile, metered.readings, metered.cycle),
+            today=today,
+            cycle=cycle,
+            today_reason=today_reason,
+            cycle_reason=cycle_reason,
         )
 
     @property

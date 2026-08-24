@@ -400,8 +400,16 @@ def _money_attrs(span: str, description: str) -> Callable[[TariffKitData], dict[
     def attrs(data: TariffKitData) -> dict[str, Any]:
         usage = data.usage
         bill = _bill(data, span)
-        if usage is None or bill is None:
+        if usage is None:
             return {}
+        if bill is None:
+            # An unexplained `unknown` is the worst of both worlds: it neither
+            # gives a number nor says what stopped it.
+            return {
+                ATTR_QUALITY: {"complete": False},
+                "warnings": list(usage.warnings(span)),
+                "description": description,
+            }
         found: dict[str, Any] = {
             "period_start": bill.period.start.isoformat(),
             "period_end": bill.period.end.isoformat(),
