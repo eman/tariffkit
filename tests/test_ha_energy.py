@@ -15,7 +15,13 @@ from custom_components.tariffkit.const import (
     CONF_PROFILE,
     DOMAIN,
 )
-from custom_components.tariffkit.energy import MeterSettings, cycle_start
+from custom_components.tariffkit.energy import (
+    Cycle,
+    MeterSettings,
+    cycle_start,
+    resolve_cycle,
+    statement_periods,
+)
 from custom_components.tariffkit.profile import profile_payload
 from custom_components.tariffkit.sensor import TariffKitSensor
 from freezegun.api import FrozenDateTimeFactory
@@ -32,7 +38,13 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
 
 from tariffkit import Config
 from tariffkit.account import AccountEpoch, AccountProfile
-from tariffkit.account.model import MeterSource, MeterSources
+from tariffkit.account.model import (
+    AccountObservation,
+    MeterSource,
+    MeterSources,
+    ObservedAgreement,
+)
+from tariffkit.billing import BillingPeriod
 from tariffkit.timeutil import PACIFIC
 
 IMPORT_ENTITY = "sensor.grid_energy_delivered"
@@ -124,6 +136,7 @@ def _state(hass: HomeAssistant, entry: MockConfigEntry, key: str) -> State:
     ],
 )
 def test_cycle_start_clamps_to_the_month(day: date, start_day: int, expected: date) -> None:
+    """The fallback, used when no statement evidence exists."""
     assert cycle_start(day, start_day) == expected
 
 
@@ -498,3 +511,87 @@ async def test_metered_energy_is_configured_only_after_setup(hass: HomeAssistant
     # And the options menu is where it does appear.
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert "meters" in result["menu_options"]
+
+
+def _period(start: tuple[int, int, int], end: tuple[int, int, int]) -> BillingPeriod:
+    return BillingPeriod(date(*start), date(*end))
+
+
+def test_statement_evidence_beats_a_guessed_meter_read_day() -> None:
+    """Real cycles do not open on a fixed day, so evidence wins where it exists.
+
+    PG&E reads on business days, so consecutive cycles on one real account
+    opened on the 29th, the 30th, the 1st and the 3rd. Any fixed day of the
+    month is therefore wrong for most of them.
+    """
+    periods = [_period((2026, 6, 1), (2026, 6, 29)), _period((2026, 6, 30), (2026, 7, 28))]
+
+    # Inside a billed cycle: that cycle's own start, exactly.
+    assert resolve_cycle(date(2026, 7, 10), 30, periods) == Cycle(date(2026, 6, 30), "statement")
+
+    # After the last statement: cycles are contiguous, so the open one began
+    # the day after it ended -- derivable without waiting to be billed.
+    assert resolve_cycle(date(2026, 8, 24), 30, periods) == Cycle(date(2026, 7, 29), "statement")
+
+    # The guess would have been a day out, and the calendar month three.
+    assert cycle_start(date(2026, 8, 24), 30) == date(2026, 7, 30)
+    assert cycle_start(date(2026, 8, 24), 0) == date(2026, 8, 1)
+
+
+def test_stale_evidence_falls_back_rather_than_inventing_a_long_cycle() -> None:
+    """Evidence older than a cycle cannot fix the current boundary.
+
+    A statement has been issued that the profile never imported, so the next
+    boundary is not derivable. Trusting the old one would report a 90-day
+    "cycle" and charge Base Services Charge for every day of it.
+    """
+    periods = [_period((2026, 6, 30), (2026, 7, 28))]
+    assert resolve_cycle(date(2026, 8, 24), 30, periods).source == "statement"
+    stale = resolve_cycle(date(2026, 10, 1), 30, periods)
+    assert stale.source == "day_of_month"
+    assert stale.start == date(2026, 9, 30)
+
+
+def test_statement_periods_follow_the_bill_not_the_agreement() -> None:
+    """A cycle split by interconnection is one billing period, not two."""
+    profile = AccountProfile(
+        (AccountEpoch(date(2026, 1, 1), Config(tariff="E-ELEC")),),
+        name="split",
+        observations=(
+            AccountObservation(
+                agreements=(
+                    ObservedAgreement(
+                        provider="pge",
+                        statement_date=date(2026, 7, 7),
+                        period=_period((2026, 6, 1), (2026, 6, 2)),
+                        tariff="EV2-A",
+                    ),
+                    ObservedAgreement(
+                        provider="pge",
+                        statement_date=date(2026, 7, 7),
+                        period=_period((2026, 6, 3), (2026, 6, 29)),
+                        tariff="E-ELEC",
+                    ),
+                ),
+            ),
+        ),
+    )
+    (period,) = statement_periods(profile)
+    assert (period.start, period.end) == (date(2026, 6, 1), date(2026, 6, 29))
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_the_cycle_entity_says_where_its_boundary_came_from(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to(NOW)
+    entry = _entry(_meter_options(**{CONF_CYCLE_START_DAY: 30}))
+    await _setup(hass, entry)
+
+    cycle = _state(hass, entry, "net_cost_cycle")
+    # This profile carries no statement evidence, so it says so rather than
+    # implying the period matches a bill.
+    assert cycle.attributes["cycle_boundary"] == "day_of_month"
+    assert cycle.attributes["period_start"] == "2026-07-30"
+    # The daily entity has no cycle boundary to report.
+    assert "cycle_boundary" not in _state(hass, entry, "net_cost_today").attributes

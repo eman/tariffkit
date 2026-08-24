@@ -20,7 +20,11 @@ All notable changes to this project are documented here. This project follows
   time-of-use bucketing, the Energy Commission Tax, the baseline credit, the
   whole day's Base Services Charge, and the rule that exports before Permission
   To Operate earn nothing. A **Billing cycle start day** setting names the day
-  of the month the meter is read; left at 0 the cycle is the calendar month.
+  of the month the meter is read, but it is only a fallback: where the profile
+  carries imported statements the cycle boundary comes from the statements
+  themselves, which is the only way to match a real bill — PG&E reads on
+  business days, so consecutive cycles open on the 29th, the 30th, the 1st and
+  the 3rd. A `cycle_boundary` attribute reports which was used.
   Configuring no entities leaves the integration exactly as it was.
 
 ## [0.3.0] - 2026-08-22

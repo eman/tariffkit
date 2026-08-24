@@ -356,7 +356,9 @@ NET_DESCRIPTION = (
 CYCLE_DESCRIPTION = (
     "Cycle to date. Under Net Billing an export credit carries into the next "
     "cycle and settles at the annual true-up, so this is what the cycle has "
-    "earned and owes, not a balance due."
+    "earned and owes, not a balance due. The cycle_boundary attribute says "
+    "whether the period came from a real statement or from the configured "
+    "meter-read day, which only approximates one."
 )
 DELIVERED_DESCRIPTION = "Energy the grid delivered to the site: metered import."
 RECEIVED_DESCRIPTION = (
@@ -408,6 +410,7 @@ def _money_attrs(span: str, description: str) -> Callable[[TariffKitData], dict[
             return {
                 ATTR_QUALITY: {"complete": False},
                 "warnings": list(usage.warnings(span)),
+                **({"cycle_boundary": usage.metered.cycle_source} if span == "cycle" else {}),
                 "description": description,
             }
         found: dict[str, Any] = {
@@ -427,6 +430,7 @@ def _money_attrs(span: str, description: str) -> Callable[[TariffKitData], dict[
             ATTR_BUCKETS: [bucket.to_dict() for bucket in bill.buckets],
             ATTR_QUALITY: {"complete": bill.complete and not usage.metered.missing},
             "warnings": list(usage.warnings(span)),
+            **({"cycle_boundary": usage.metered.cycle_source} if span == "cycle" else {}),
             "description": f"{description} {CYCLE_DESCRIPTION}" if span == "cycle" else description,
         }
         return found

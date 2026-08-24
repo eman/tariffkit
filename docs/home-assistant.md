@@ -486,7 +486,7 @@ recreated:
 |---|---|
 | Energy delivered (grid import) | Cumulative kWh the grid has delivered to the site |
 | Energy received (grid export) | Cumulative kWh the site has sent to the grid |
-| Billing cycle start day | The day of the month your meter is read, from a recent statement. `0` uses the calendar month |
+| Billing cycle start day | Fallback only — the day of the month your meter is read. `0` uses the calendar month. Ignored whenever the profile carries statement evidence |
 
 Both entities are optional and independent. Name neither and none of the
 running-total entities are created at all. Name only the import counter — a
@@ -546,6 +546,33 @@ surprising figure is auditable from the entity:
 {{ state_attr('sensor.tariffkit_home_net_cost_today', 'buckets') }}
 {{ state_attr('sensor.tariffkit_home_net_cost_cycle', 'warnings') }}
 ```
+
+### Where the cycle boundary comes from
+
+A meter-read day is a guess, and usually a wrong one: PG&E reads on business
+days, so one real account's cycles opened on the 29th, the 30th, the 1st and
+the 3rd in consecutive months. No fixed day of the month matches more than a
+fraction of them.
+
+So TariffKit prefers evidence. If the profile carries imported statements — via
+[Account history](#account-history), or `tariffkit account sync` / `account
+import-statement` on the CLI — the cycle boundary comes from the statements
+themselves. Billing periods are contiguous, each beginning the day after the
+last one ended, so the *open* cycle's start follows from the most recent
+statement without waiting for the one that will close it.
+
+The `cycle_boundary` attribute on every cycle entity says which was used:
+
+| Value | Means |
+|---|---|
+| `statement` | A real billing period, exact |
+| `day_of_month` | The configured meter-read day; approximate |
+| `calendar_month` | No read day configured either; the 1st of the month |
+
+Evidence more than 35 days stale is ignored — a statement has been issued that
+the profile never imported, so the next boundary is no longer derivable, and
+trusting the old one would report a 90-day "cycle" and bill Base Services
+Charge for every day of it. It falls back and says so.
 
 The cycle figures are **cycle to date**, not a balance due. Under Net Billing
 an export credit carries into the next cycle and settles at the annual

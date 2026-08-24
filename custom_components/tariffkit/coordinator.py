@@ -53,7 +53,7 @@ from .const import (
     DEFAULT_PREDBAT_ENABLED,
     DOMAIN,
 )
-from .energy import MeteredUsage, MeterSettings, UsageReader, price
+from .energy import MeteredUsage, MeterSettings, UsageReader, price, statement_periods
 from .profile import profile_from_entry
 
 _LOGGER = logging.getLogger(__name__)
@@ -314,7 +314,11 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         self.profile: AccountProfile = profile_from_entry({**entry.data, **entry.options})
         self.engine = AccountRateEngine(self.profile)
         self.meters = MeterSettings.from_entry({**entry.data, **entry.options}, self.profile)
-        self._usage = UsageReader(hass, self.meters) if self.meters.configured else None
+        self._usage = (
+            UsageReader(hass, self.meters, statement_periods(self.profile))
+            if self.meters.configured
+            else None
+        )
         self.forecast_hours = int(
             entry.options.get(
                 CONF_FORECAST_HOURS,
