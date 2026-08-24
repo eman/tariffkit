@@ -431,6 +431,21 @@ def sync_profile(
     try:
         settings = _pge_settings(profile, config_path)
         with PgeSession(settings) as session:
+            # A resumed session arrives with a live session cookie and no CSRF
+            # token, because the token is one-shot and deliberately not cached.
+            # `login()` mints a fresh one off any authenticated page load and
+            # only signs in for real when it has to, so this is cheap and does
+            # not risk a device check.
+            #
+            # Skipping it leaves the first authenticated call to discover the
+            # missing token, and `apex`'s recovery cannot rescue that one: it
+            # falls back to `login(force=True)`, which fails while already
+            # signed in because the login page redirects to the community and
+            # the token it carries belongs to the wrong Lightning app. The
+            # surface was a bare "the session token is stale" -- or, when the
+            # portal answered with an empty list instead of an error, a silent
+            # "received 0 statement update(s)" on an account with 25 statements.
+            session.login()
             rows = session.bill_history()
             selected: list[tuple[str, str | None]] = []
             for row in rows:

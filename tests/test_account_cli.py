@@ -341,13 +341,23 @@ def test_account_sync_removes_private_cache_after_parsing(
     monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
 
     class Session:
+        def __init__(self) -> None:
+            self.signed_in = False
+
         def __enter__(self) -> Session:
             return self
 
         def __exit__(self, *args: object) -> None:
             return None
 
+        def login(self, *, force: bool = False) -> None:
+            self.signed_in = True
+
         def bill_history(self) -> list[dict[str, str]]:
+            # The portal lists nothing for a session that never minted a CSRF
+            # token, which is what a resumed session is until `login()` runs.
+            if not self.signed_in:
+                return []
             return [{"billId": "bill-1", "billDate": "2026-02-01"}]
 
         def download_bill(self, _bill_id: str) -> bytes:
@@ -355,7 +365,13 @@ def test_account_sync_removes_private_cache_after_parsing(
 
     import tariffkit.sources.pge as pge_module
 
-    monkeypatch.setattr(pge_module, "PgeSession", lambda _settings: Session())
+    opened: list[Session] = []
+
+    def _session(_settings: object) -> Session:
+        opened.append(Session())
+        return opened[-1]
+
+    monkeypatch.setattr(pge_module, "PgeSession", _session)
     monkeypatch.setattr(pge_module.PgeSettings, "load", lambda _path=None: object())
     reconcile_module = importlib.import_module("tariffkit.providers.pge.reconcile")
     monkeypatch.setattr(reconcile_module, "import_statement", lambda _path: imported)
@@ -364,6 +380,9 @@ def test_account_sync_removes_private_cache_after_parsing(
 
     assert len(proposals) == 1
     assert not tuple(cache.rglob("*.pdf"))
+    # Without this the statement list comes back empty and the sync reports
+    # "0 statement update(s)" against an account that has plenty.
+    assert opened[0].signed_in, "sync must sign in before listing statements"
 
 
 def test_account_selection_rejects_config_and_accepts_profile(

@@ -5,6 +5,19 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+- `tariffkit account sync` now signs in before asking the portal for the
+  statement list. A resumed session arrives with a live session cookie and no
+  CSRF token, because the token is one-shot and deliberately not cached, so the
+  first authenticated call failed -- either as a bare "the session token is
+  stale" or, when the portal answered with an empty list instead of an error, as
+  a silent "received 0 statement update(s)" against an account with 25
+  statements. `apex`'s own recovery could not rescue it: it falls back to a
+  forced re-login, which fails while already signed in because the login page
+  redirects to the community and the token it carries belongs to the wrong
+  Lightning app. `audit doctor` was unaffected because it calls `login()` first,
+  which is what made the two disagree.
+
 ## [0.3.0] - 2026-08-22
 
 ### Added
