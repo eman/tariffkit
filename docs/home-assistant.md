@@ -92,10 +92,6 @@ first choice:
      per-account detail that reaches the integration only through
      **Import TariffKit profile** below, or later through account history's
      own edit form once a profile carries them.
-  4. **Metered energy** — optional, and the last step. Name the cumulative
-     kWh counters for grid import and grid export and TariffKit adds running
-     cost, credit, and net entities; leave them blank to price rates only.
-     See [Metered energy](#metered-energy).
 - **Import TariffKit profile** — paste JSON produced by `tariffkit account
   export NAME` (or another Home Assistant instance's **Export profile**,
   under [Account history](#account-history)). This is the only path that
@@ -107,12 +103,17 @@ Every field is validated against the library before the entry is created, so
 an invalid combination is rejected in the form with the same error the CLI
 would raise, not discovered later at runtime.
 
-Forecast horizon and Predbat compatibility mode are **not** asked during
-setup — they default to sensible values (48 hours, Predbat off) and live
-under **Configure → Forecast and Predbat** afterward, as their own menu item
-rather than mixed into pricing settings. Keeping them out of initial setup
-means the two or three questions most people need to answer are the only
-ones on screen.
+Forecast horizon, Predbat compatibility mode, and metered energy are **not**
+asked during setup — they default to sensible values (48 hours, Predbat off,
+no meters) and live under **Configure → Forecast and Predbat** and
+**Configure → Metered energy** afterward, as their own menu items rather than
+mixed into pricing settings. Keeping them out of initial setup means the two
+or three questions most people need to answer are the only ones on screen.
+
+Metered energy in particular is deliberately not a setup question: pricing an
+account does not require a meter, and the counters are usually integrated
+after the tariff rather than before, so asking during setup would put a
+question in front of every new user that most of them cannot answer yet.
 
 Multiple TariffKit entries can coexist — one per account or service
 agreement, or more than one meter in the same household — since each gets
@@ -477,7 +478,9 @@ Optional. Point TariffKit at the two cumulative kWh counters your meter or
 meter reader publishes and it prices what actually moved, not just what a kWh
 would have cost:
 
-**Configure → Metered energy**, or the last step of manual setup:
+**Configure → Metered energy** — it is not part of initial setup, so an entry
+created before you integrated a meter picks it up later without being
+recreated:
 
 | Field | What it is |
 |---|---|

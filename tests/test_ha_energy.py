@@ -21,6 +21,7 @@ from custom_components.tariffkit.sensor import TariffKitSensor
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.components.recorder.models import StatisticMeanType
 from homeassistant.components.recorder.statistics import async_import_statistics
+from homeassistant.config_entries import SOURCE_USER
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, State
 from homeassistant.helpers import entity_registry as er
@@ -449,3 +450,51 @@ async def test_a_cycle_the_account_history_predates_says_why_it_is_unknown(
 
     # The day is inside the history, so it still prices normally.
     assert _state(hass, entry, "net_cost_today").state not in ("unknown", "unavailable")
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_metered_energy_is_configured_only_after_setup(hass: HomeAssistant) -> None:
+    """Setup never asks about meters; Configure is the only way in.
+
+    Pricing an account does not require a meter, so making setup mention one
+    puts a question in front of every new user that most of them cannot answer
+    yet -- the counters are often integrated after the tariff, not before.
+    """
+    from custom_components.tariffkit.config_flow import (
+        TariffKitConfigFlow,
+        TariffKitOptionsFlow,
+    )
+
+    assert not hasattr(TariffKitConfigFlow, "async_step_meters")
+    assert hasattr(TariffKitOptionsFlow, "async_step_meters")
+
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    flow_id = result["flow_id"]
+    await hass.config_entries.flow.async_configure(flow_id, {"next_step_id": "manual"})
+    result = await hass.config_entries.flow.async_configure(
+        flow_id,
+        {
+            "profile_name": "no-meters",
+            "supplier": "bundled",
+            "tariff": "E-ELEC",
+            "export_enabled": False,
+        },
+    )
+    assert result["step_id"] == "manual_delivery"
+    result = await hass.config_entries.flow.async_configure(
+        flow_id, {"base_services_charge_tier": 3}
+    )
+    # Straight to the entry: no meters step, and nothing written that would
+    # make the running-total entities appear.
+    assert result["type"] == "create_entry"
+    assert result.get("options", {}) == {}
+    await hass.async_block_till_done()
+
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    assert entry.runtime_data.meters.configured is False
+    for key in ("energy_delivered_today", "net_cost_today", "net_cost_cycle"):
+        assert _entity_id(hass, entry, key) is None
+
+    # And the options menu is where it does appear.
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert "meters" in result["menu_options"]

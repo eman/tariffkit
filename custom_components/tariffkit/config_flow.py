@@ -582,47 +582,21 @@ def _manual_config_data(
 class TariffKitConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 3
 
-    def _build_profile(self, data: dict[str, Any]) -> AccountProfile:
+    async def _create_profile(self, data: dict[str, Any]) -> ConfigFlowResult:
         config = config_from_entry(data)
         name = _profile_name(data.get(CONF_PROFILE_NAME, ""))
         if not name:
             raise AccountError("profile name is required")
-        return AccountProfile(
+        profile = AccountProfile(
             epochs=(AccountEpoch(LEGACY_EFFECTIVE, config),),
             name=name,
         )
-
-    async def _create_profile(
-        self, data: dict[str, Any], options: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        profile = self._build_profile(data)
-        await self.async_set_unique_id(f"profile:{profile.name}")
+        await self.async_set_unique_id(f"profile:{name}")
         self._abort_if_unique_id_configured()
         return self.async_create_entry(
             title=_entry_title(profile),
             data={CONF_PROFILE: profile_payload(profile)},
-            options=options or {},
         )
-
-    async def async_step_meters(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Optionally name the grid counters that drive the running totals.
-
-        Last, and skippable by submitting it empty: an account can be priced
-        without ever naming a meter, and making setup depend on having one
-        integrated already would gate the rates on the usage.
-        """
-        data = getattr(self, "_manual_config", {})
-        if user_input is not None:
-            try:
-                return await self._create_profile(data, _meter_values(user_input))
-            except (AccountError, TariffKitError) as err:
-                return self.async_show_form(
-                    step_id="meters",
-                    data_schema=_meters_schema(user_input),
-                    errors={"base": "invalid_config"},
-                    description_placeholders={"detail": str(err)},
-                )
-        return self.async_show_form(step_id="meters", data_schema=_meters_schema({}))
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         if user_input is not None:
@@ -666,12 +640,9 @@ class TariffKitConfigFlow(ConfigFlow, domain=DOMAIN):
                     description_placeholders={"detail": errors["detail"]},
                 )
             try:
-                self._manual_config = {
-                    **data,
-                    CONF_PROFILE_NAME: identity.get(CONF_PROFILE_NAME, ""),
-                }
-                self._build_profile(self._manual_config)
-                return await self.async_step_meters()
+                return await self._create_profile(
+                    {**data, CONF_PROFILE_NAME: identity.get(CONF_PROFILE_NAME, "")}
+                )
             except (AccountError, TariffKitError) as err:
                 return self.async_show_form(
                     step_id="manual_delivery",
@@ -708,12 +679,9 @@ class TariffKitConfigFlow(ConfigFlow, domain=DOMAIN):
                     description_placeholders={"detail": errors["detail"]},
                 )
             try:
-                self._manual_config = {
-                    **data,
-                    CONF_PROFILE_NAME: identity.get(CONF_PROFILE_NAME, ""),
-                }
-                self._build_profile(self._manual_config)
-                return await self.async_step_meters()
+                return await self._create_profile(
+                    {**data, CONF_PROFILE_NAME: identity.get(CONF_PROFILE_NAME, "")}
+                )
             except (AccountError, TariffKitError) as err:
                 return self.async_show_form(
                     step_id="manual_cca",
