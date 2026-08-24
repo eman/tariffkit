@@ -1,10 +1,10 @@
 {
   "entity": {
     "sensor": {
-      "energy_delivered_today": {
+      "grid_import_today": {
         "default": "mdi:transmission-tower-import"
       },
-      "energy_received_today": {
+      "grid_export_today": {
         "default": "mdi:transmission-tower-export"
       },
       "energy_cost_today": {
@@ -16,10 +16,10 @@
       "net_cost_today": {
         "default": "mdi:cash-sync"
       },
-      "energy_delivered_cycle": {
+      "grid_import_cycle": {
         "default": "mdi:transmission-tower-import"
       },
-      "energy_received_cycle": {
+      "grid_export_cycle": {
         "default": "mdi:transmission-tower-export"
       },
       "energy_cost_cycle": {

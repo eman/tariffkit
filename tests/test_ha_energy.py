@@ -166,7 +166,7 @@ async def test_no_meters_configured_creates_no_usage_entities(hass: HomeAssistan
     await _setup(hass, entry)
 
     assert _entity_id(hass, entry, "import_price") is not None
-    for key in ("energy_delivered_today", "net_cost_today", "net_cost_cycle"):
+    for key in ("grid_import_today", "net_cost_today", "net_cost_cycle"):
         assert _entity_id(hass, entry, key) is None
 
 
@@ -202,8 +202,8 @@ async def test_running_totals_price_metered_hours(
     entry = _entry(_meter_options())
     await _setup(hass, entry)
 
-    delivered = _state(hass, entry, "energy_delivered_today")
-    received = _state(hass, entry, "energy_received_today")
+    delivered = _state(hass, entry, "grid_import_today")
+    received = _state(hass, entry, "grid_export_today")
     # Three completed hours plus the counter's advance inside the current one.
     assert float(delivered.state) == pytest.approx(6.5)
     assert float(received.state) == pytest.approx(4.0)
@@ -241,7 +241,7 @@ async def test_running_totals_price_metered_hours(
     assert cycle.attributes["days"] == 24
     assert cycle.attributes["period_start"] == "2026-08-01"
     assert float(cycle.state) > float(net.state)
-    assert float(_state(hass, entry, "energy_delivered_cycle").state) == pytest.approx(6.5)
+    assert float(_state(hass, entry, "grid_import_cycle").state) == pytest.approx(6.5)
 
 
 @pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
@@ -269,10 +269,10 @@ async def test_counter_restart_does_not_charge_for_a_whole_series(
     entry = _entry(_meter_options(**{CONF_GRID_EXPORT_ENTITY: ""}))
     await _setup(hass, entry)
 
-    assert float(_state(hass, entry, "energy_delivered_today").state) == pytest.approx(2.0)
+    assert float(_state(hass, entry, "grid_import_today").state) == pytest.approx(2.0)
     # No export entity means no export questions to answer.
     assert _entity_id(hass, entry, "export_credit_today") is None
-    assert _entity_id(hass, entry, "energy_received_today") is None
+    assert _entity_id(hass, entry, "grid_export_today") is None
     assert _entity_id(hass, entry, "net_cost_today") is not None
 
 
@@ -304,7 +304,7 @@ async def test_energy_recorded_in_watt_hours_is_converted(
     await _setup(hass, entry)
 
     # 2 kWh of completed hours, plus 1 kWh the counter has moved since.
-    assert float(_state(hass, entry, "energy_delivered_today").state) == pytest.approx(3.0)
+    assert float(_state(hass, entry, "grid_import_today").state) == pytest.approx(3.0)
 
 
 @pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
@@ -378,7 +378,7 @@ async def test_the_hour_in_progress_tracks_the_counter_between_compiles(
 
     entry = _entry(_meter_options(**{CONF_GRID_EXPORT_ENTITY: ""}))
     await _setup(hass, entry)
-    assert float(_state(hass, entry, "energy_delivered_today").state) == pytest.approx(1.0)
+    assert float(_state(hass, entry, "grid_import_today").state) == pytest.approx(1.0)
 
     # The counter moves inside the hour, with no new statistic behind it.
     hass.states.async_set(
@@ -388,7 +388,7 @@ async def test_the_hour_in_progress_tracks_the_counter_between_compiles(
     await entry.runtime_data.async_refresh()
     await hass.async_block_till_done()
 
-    assert float(_state(hass, entry, "energy_delivered_today").state) == pytest.approx(1.75)
+    assert float(_state(hass, entry, "grid_import_today").state) == pytest.approx(1.75)
     # A counter that goes backwards is a reset, not negative energy.
     hass.states.async_set(
         IMPORT_ENTITY, "0.5", {"unit_of_measurement": "kWh", "device_class": "energy"}
@@ -396,7 +396,7 @@ async def test_the_hour_in_progress_tracks_the_counter_between_compiles(
     freezer.move_to(NOW.replace(minute=36))
     await entry.runtime_data.async_refresh()
     await hass.async_block_till_done()
-    assert float(_state(hass, entry, "energy_delivered_today").state) == pytest.approx(1.0)
+    assert float(_state(hass, entry, "grid_import_today").state) == pytest.approx(1.0)
 
 
 @pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
@@ -507,7 +507,7 @@ async def test_metered_energy_is_configured_only_after_setup(hass: HomeAssistant
 
     entry = hass.config_entries.async_entries(DOMAIN)[0]
     assert entry.runtime_data.meters.configured is False
-    for key in ("energy_delivered_today", "net_cost_today", "net_cost_cycle"):
+    for key in ("grid_import_today", "net_cost_today", "net_cost_cycle"):
         assert _entity_id(hass, entry, key) is None
 
     # And the options menu is where it does appear.
@@ -676,12 +676,12 @@ async def test_narrowing_the_meters_removes_the_entities_it_no_longer_creates(
     for gone in (
         "export_credit_today",
         "export_credit_cycle",
-        "energy_received_today",
-        "energy_received_cycle",
+        "grid_export_today",
+        "grid_export_cycle",
     ):
         assert _entity_id(hass, entry, gone) is None, f"{gone} was left behind"
     # The import side, and every rate entity, survive untouched.
-    assert _entity_id(hass, entry, "energy_delivered_today") is not None
+    assert _entity_id(hass, entry, "grid_import_today") is not None
     assert _entity_id(hass, entry, "export_price") is not None
 
 

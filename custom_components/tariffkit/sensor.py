@@ -362,10 +362,13 @@ CYCLE_DESCRIPTION = (
     "whether the period came from a real statement or from the configured "
     "meter-read day, which only approximates one."
 )
-DELIVERED_DESCRIPTION = "Energy the grid delivered to the site: metered import."
-RECEIVED_DESCRIPTION = (
-    "Energy the grid received from the site: metered export. Exports before "
-    "Permission To Operate are metered here but earn no credit."
+IMPORT_DESCRIPTION = (
+    "Energy taken from the grid, as the meter recorded it. A statement calls this energy delivered."
+)
+EXPORT_DESCRIPTION = (
+    "Energy sent to the grid, as the meter recorded it. A statement calls this "
+    "energy received. Exports before Permission To Operate are metered here but "
+    "earn no credit."
 )
 
 
@@ -463,13 +466,11 @@ def _energy_attrs(span: str, direction: str) -> Callable[[TariffKitData], dict[s
         if usage is None:
             return _absent(
                 data,
-                DELIVERED_DESCRIPTION if direction == "import" else RECEIVED_DESCRIPTION,
+                IMPORT_DESCRIPTION if direction == "import" else EXPORT_DESCRIPTION,
             )
         period = _period(data, span)
         found: dict[str, Any] = {
-            ATTR_DESCRIPTION: DELIVERED_DESCRIPTION
-            if direction == "import"
-            else RECEIVED_DESCRIPTION,
+            ATTR_DESCRIPTION: IMPORT_DESCRIPTION if direction == "import" else EXPORT_DESCRIPTION,
             "source_entity": usage.metered.source(direction),
         }
         if period is not None:
@@ -516,7 +517,7 @@ def _money_sensor(
 
 
 def _energy_sensor(span: str, direction: str) -> TariffKitSensorDescription:
-    key = "energy_delivered" if direction == "import" else "energy_received"
+    key = "grid_import" if direction == "import" else "grid_export"
 
     def state(data: TariffKitData) -> float | None:
         usage = data.usage

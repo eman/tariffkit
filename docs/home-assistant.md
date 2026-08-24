@@ -191,9 +191,9 @@ logged reason rather than guessing.
 | Import Generation / Distribution / Transmission / Surcharges / Credits / Other | USD/kWh | the import price, split into stackable bands; see [Component breakdown](#component-breakdown) |
 | Export Generation / Delivery / Credits / Other | USD/kWh | the export credit, split the same way |
 | Daily Fixed Charge | USD/day | AB 205 Base Services Charge; **not** a per-kWh price and not part of the stack |
-| Energy delivered / received today | kWh | metered grid import and export since **Pacific** midnight — the tariff's billing day, not the instance's local one; only with [Metered energy](#metered-energy) configured |
+| Grid import / export today | kWh | metered import and export since **Pacific** midnight — the tariff's billing day, not the instance's local one; only with [Metered energy](#metered-energy) configured |
 | Energy cost / Export credit / Net cost today | USD | today's running charge, credit, and net, reported in USD regardless of the instance's configured currency; only with [Metered energy](#metered-energy) configured |
-| Energy delivered / received this cycle | kWh | the same two counters over the billing cycle to date |
+| Grid import / export this cycle | kWh | the same two counters over the billing cycle to date |
 | Energy cost / Export credit / Net cost this cycle | USD | the same three figures over the billing cycle to date |
 
 Daily Fixed Charge is reported in `USD/day`, not `USD/kWh`, because that is
@@ -484,8 +484,8 @@ recreated:
 
 | Field | What it is |
 |---|---|
-| Energy delivered (grid import) | Cumulative kWh the grid has delivered to the site |
-| Energy received (grid export) | Cumulative kWh the site has sent to the grid |
+| Grid import (energy delivered) | Cumulative kWh taken from the grid. A statement calls this *energy delivered* |
+| Grid export (energy received) | Cumulative kWh sent to the grid. A statement calls this *energy received* |
 | Billing cycle start day | Fallback only — the day of the month your meter is read. `0` uses the calendar month. Ignored whenever the profile carries statement evidence |
 
 Both entities are optional and independent. Name neither and none of the
@@ -600,9 +600,12 @@ true-up; that is a stateful ledger
 running total can show. If your billing cycle start day is left at `0` the
 "cycle" is simply the calendar month, which will not line up with a statement.
 
-Energy Delivered and Energy Received report what the meter saw. Energy
-Received's `compensated_kwh` attribute reports what the tariff will pay for,
-which is less whenever a site exported before its PTO date.
+Grid Import and Grid Export report what the meter saw, named for the
+direction rather than for the meter's own vocabulary — a statement calls them
+*energy delivered* and *energy received*, which is unambiguous on paper and
+undecidable in an entity list. Grid Export's `compensated_kwh` attribute
+reports what the tariff will pay for, which is less whenever a site exported
+before its PTO date.
 
 ## Energy dashboard
 

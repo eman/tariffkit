@@ -11,8 +11,8 @@ All notable changes to this project are documented here. This project follows
   **Configure → Metered energy** — deliberately not part of initial setup,
   since pricing needs no meter and the counters are usually integrated after
   the tariff — and it adds running Energy Cost, Export Credit, and Net Cost
-  entities for today and for the billing cycle to date, alongside Energy
-  Delivered and Energy Received totals. The counters do not have to reset daily: each hour's energy
+  entities for today and for the billing cycle to date, alongside Grid Import
+  and Grid Export totals. The counters do not have to reset daily: each hour's energy
   comes from the recorder's own long-term statistics, which already absorb
   counter restarts and reload gaps, with the hour in progress read live off
   entity state. Readings are priced by `tariffkit.billing.BillEngine`, the same
