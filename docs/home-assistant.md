@@ -607,6 +607,119 @@ undecidable in an entity list. Grid Export's `compensated_kwh` attribute
 reports what the tariff will pay for, which is less whenever a site exported
 before its PTO date.
 
+## Backfilling history
+
+The running totals compute forward from the moment you name the meters.
+Everything before that is unreachable inside Home Assistant even though the
+recorder usually holds every reading needed to price it — which is the common
+case for anyone who was on the tariff before finding the setting.
+
+**Developer tools → Actions → TariffKit: Backfill metered usage**, or:
+
+```yaml
+action: tariffkit.backfill_usage
+data:
+  config_entry: <your entry>
+  start: "2026-06-03"     # optional; defaults to the profile's first epoch
+response_variable: backfilled
+```
+
+It prices every finished day in the window and writes five **external
+statistics** under a `tariffkit:` namespace:
+
+```
+tariffkit:<profile>_grid_import     kWh
+tariffkit:<profile>_grid_export     kWh
+tariffkit:<profile>_energy_cost     USD
+tariffkit:<profile>_export_credit   USD
+tariffkit:<profile>_net_cost        USD
+```
+
+Add them to a **Statistics graph** card, or to the Energy dashboard, the same
+way any long-term statistic is used. They are deliberately *not* written into
+the running-total entities' own series: a separate namespace has no seam to
+reconcile with what the live path is writing, and it leaves the recorder's own
+hourly compilation of those entities entirely alone. This is the shape Home
+Assistant's own `opower` integration uses to publish utility history.
+
+### What it will and will not tell you
+
+**One row per finished day, not per hour.** A bill is a daily and cyclical
+artefact: the Base Services Charge is per day, the energy surcharge is floored
+per day, and the baseline allowance is granted per cycle and consumed in day
+order. Only the energy charges and export credits are additive per hour, so an
+hourly series would have to invent an attribution for everything else. A day is
+the finest slice this can state exactly.
+
+**Each day is its cycle's movement across that day**, computed by differencing
+consecutive cycle-to-date bills — the same decomposition the Today entities
+use, and for the same reason. The days sum to their cycle exactly. They are not
+individually bounded by it: a heavy import day inside a month that exports for
+the rest can cost more on its own than the whole cycle does, because the later
+days earn credit against it.
+
+One attribution caveat. A SmartRate credit is earned against the cycle's whole
+eligible usage but falls due on the event day, so differencing books it entirely
+onto that day. The cycle total stays exact; the day it lands on reads a few
+dollars low and the days before it read correspondingly high.
+
+**The three dollar series do not reconcile with each other.** `energy_cost` is
+import charges plus taxes; `net_cost` also includes the Base Services Charge.
+So `net_cost` exceeds `energy_cost − export_credit` by the daily charge, around
+$24 a month. That is not an error; the fixed charge simply belongs to neither of
+the other two.
+
+**Today is excluded.** The window ends at yesterday; today is what the running
+totals are for.
+
+**Rerunning replaces, it does not append.** So run it again after correcting
+account history — the corrected settings reprice the whole window. This is also
+why nothing is stored about previous runs: there is no state to go stale. A
+rerun over a *narrower* window is safe too: the running total continues from
+whatever the series already held before the window, rather than restarting.
+
+**Only days the recorder has readings for are priced.** That holds at the
+window's edges *and* inside it: a start date earlier than your meter sensor
+existed does not manufacture months of daily charges, and a recorder outage in
+the middle leaves those days unpriced rather than billing them as zero-usage
+days. Each is reported in `warnings`, and `complete` in the response is false
+whenever anything was skipped or warned about.
+
+Coverage is judged **per meter**, not on the two directions combined. Import
+statistics with no export statistics would otherwise look like a site that
+simply never exported, and every credit it earned would vanish silently; instead
+the missing series is named in `warnings`.
+
+**Days are labelled in Pacific time.** On an instance more than seven hours west
+of Pacific the day boundaries shift by one; everywhere else they line up.
+
+**Renaming a profile starts a new set of series.** The old
+`tariffkit:<oldname>_*` statistics remain and are not cleaned up; delete them
+under **Developer tools → Statistics** if you do not want them.
+
+**A cycle that cannot be covered in full is skipped whole**, and named in the
+response's `skipped` list — whether the account history begins inside it or the
+requested window does. The days after the epoch have nothing to be
+marginal *to*, and pricing them as though the cycle began at the epoch would
+under-grant a baseline allowance the real cycle had been banking since its true
+start. Backdating the profile's first epoch is the fix; see
+[Account history](#account-history).
+
+The response reports what was written:
+
+```yaml
+days: 83
+first_day: "2026-06-03"
+last_day: "2026-08-24"
+grid_import_kwh: 412.881
+grid_export_kwh: 1974.2
+energy_cost: 88.41
+export_credit: 731.05
+net_cost: -576.02
+skipped: []
+warnings: []
+```
+
 ## Energy dashboard
 
 The price sensors work as-is. Home Assistant's price-entity validation

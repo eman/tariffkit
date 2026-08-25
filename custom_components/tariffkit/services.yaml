@@ -91,3 +91,29 @@ get_emhass_forecast:
             - "15"
             - "30"
             - "60"
+
+backfill_usage:
+  name: Backfill metered usage
+  description: >-
+    Price metered history into long-term statistics, so cost and credit for days
+    before the meters were configured appear in Home Assistant. Writes external
+    statistics under tariffkit:<profile>_*, one row per finished day. Rerunning
+    replaces the window rather than adding to it, so run it again after changing
+    account history.
+  fields:
+    config_entry:
+      name: TariffKit config entry
+      description: The loaded TariffKit entry to price with.
+      required: true
+      selector:
+        config_entry:
+          integration: tariffkit
+    start:
+      name: Start date
+      description: >-
+        First day to price. Defaults to the account profile's first epoch, which
+        is the earliest day it can price anything for. Snapped back to the start
+        of whichever billing cycle contains it, since a cycle can only be
+        decomposed from its own beginning.
+      selector:
+        date:

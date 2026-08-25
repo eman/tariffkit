@@ -266,6 +266,10 @@ class UsageReader:
         #: Hours discarded as implausible. Counted rather than only logged:
         #: a dropped hour is real energy that is not in the total.
         self._dropped = 0
+        #: Days a backfill read had to discard an implausible hour on.
+        self.discarded: tuple[date, ...] = ()
+        #: Configured meters the last backfill read could not fully cover.
+        self.absent: tuple[str, ...] = ()
 
     async def async_usage(self, now: datetime) -> MeteredUsage | None:
         """Readings from the cycle's first midnight through ``now``.
@@ -288,6 +292,107 @@ class UsageReader:
             await self._async_refresh(cycle.start, hour)
             self._key = key
         return self._assemble(cycle, today, hour, moment)
+
+    async def async_readings(self, opens: date, closes: date) -> list[IntervalReading]:
+        """Hourly readings across a closed past window, for backfilling.
+
+        Deliberately separate from the cached path the entities use: that one
+        tracks the running cycle and is keyed on the current hour, whereas this
+        asks a one-off question about a span that may be months long. Sharing
+        the cache would evict the live window on every backfill.
+
+        Only whole completed hours, and no live partial: every hour in a closed
+        window has been compiled, so there is nothing to read off entity state.
+        """
+        opens_at = datetime(opens.year, opens.month, opens.day, tzinfo=PACIFIC)
+        closes_at = datetime(closes.year, closes.month, closes.day, tzinfo=PACIFIC) + timedelta(
+            days=1
+        )
+        rows = await self._async_query(opens_at - timedelta(hours=1), closes_at)
+        hours: dict[float, list[float]] = {}
+        dropped: list[date] = []
+        # Per entity, not merged. Two directions summed into one series hide
+        # each other: continuous import rows against no export rows at all
+        # produce a gapless-looking series of `exported=0`, and every credit the
+        # site earned disappears without a gap ever being detected.
+        covered: dict[str, set[float]] = {}
+        for direction, entity in (
+            (0, self.settings.import_entity),
+            (1, self.settings.export_entity),
+        ):
+            if not entity:
+                continue
+            for row in rows.get(entity) or []:
+                change = row.get("change")
+                slot = float(row["start"])
+                if change is None or slot < opens_at.timestamp():
+                    continue
+                if change < 0 or change > MAX_INTERVAL_KW:
+                    # Loudly, unlike a silent skip: this is a statistics series
+                    # catching up after a gap, so real energy is being dropped
+                    # and the totals below it will be short by that much.
+                    _LOGGER.warning(
+                        "Backfill ignoring implausible change of %.1f kWh for %s at %s",
+                        change,
+                        entity,
+                        datetime.fromtimestamp(slot, tz=PACIFIC).isoformat(),
+                    )
+                    dropped.append(datetime.fromtimestamp(slot, tz=PACIFIC).date())
+                    continue
+                hours.setdefault(slot, [0.0, 0.0])[direction] += change
+                covered.setdefault(entity, set()).add(slot)
+        self.discarded = tuple(sorted(set(dropped)))
+        self.absent = self._absent_series(covered, opens_at, closes_at)
+        return [
+            IntervalReading(
+                datetime.fromtimestamp(slot, tz=PACIFIC),
+                imported=values[0],
+                exported=values[1],
+            )
+            for slot, values in sorted(hours.items())
+        ]
+
+    def _absent_series(
+        self, covered: Mapping[str, set[float]], opens_at: datetime, closes_at: datetime
+    ) -> tuple[str, ...]:
+        """Say which configured meters the window does not fully account for.
+
+        A meter with no statistics at all is the dangerous case: its direction
+        silently reads zero for every hour, so the totals look complete while an
+        entire side of the bill is missing.
+        """
+        expected = int((closes_at.timestamp() - opens_at.timestamp()) // 3600)
+        found: list[str] = []
+        for entity in self.settings.entities:
+            slots = covered.get(entity, set())
+            if not slots:
+                found.append(f"no recorder statistics at all for {entity} over this window")
+            elif expected and len(slots) < expected:
+                missing = expected - len(slots)
+                found.append(f"{entity} is missing {missing} of {expected} hour(s) in this window")
+        return tuple(found)
+
+    async def _async_query(
+        self, window: datetime, until: datetime
+    ) -> Mapping[str, Sequence[Mapping[str, Any]]]:
+        """One recorder call for the configured meters over ``window``..``until``."""
+        from homeassistant.components.recorder.statistics import statistics_during_period
+        from homeassistant.helpers.recorder import get_instance
+
+        try:
+            rows = await get_instance(self.hass).async_add_executor_job(
+                statistics_during_period,
+                self.hass,
+                window,
+                until,
+                set(self.settings.entities),
+                "hour",
+                {"energy": KWH},
+                {"change", "state"},
+            )
+        except Exception as err:
+            raise HomeAssistantError(f"recorder could not read statistics: {err}") from err
+        return rows
 
     async def _async_refresh(self, start: date, hour: datetime) -> None:
         """Pull completed hours for the cycle so far out of long-term statistics."""

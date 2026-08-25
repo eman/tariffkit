@@ -39,6 +39,9 @@
     },
     "get_emhass_forecast": {
       "service": "mdi:robot"
+    },
+    "backfill_usage": {
+      "service": "mdi:history"
     }
   }
 }

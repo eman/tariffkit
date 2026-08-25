@@ -45,6 +45,19 @@ All notable changes to this project are documented here. This project follows
   honoured, so such an entry gains the entities without anyone opening the
   form.
 
+- A `tariffkit.backfill_usage` action prices metered history into long-term
+  statistics, so cost and credit for days before the meters were configured
+  appear in Home Assistant rather than only through the CLI. It writes external
+  statistics under a `tariffkit:` namespace -- the shape `opower` uses for
+  utility history -- which leaves the running entities' own series and the
+  recorder's compilation of them untouched. One row per finished day, each being
+  its cycle's movement across that day, so the days sum to their cycle exactly.
+  Rerunning replaces the window rather than appending to it, which is how a
+  corrected account history is picked up; a rerun over a later window continues
+  the running total it finds rather than restarting it. Only days the recorder
+  actually holds readings for are priced, and coverage is judged per meter, so
+  one direction cannot vouch for the other.
+
 ### Fixed
 - Statement evidence is identified by what a statement says rather than by the
   bytes it arrived in, so re-importing evidence a profile already holds is a

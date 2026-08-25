@@ -46,6 +46,7 @@ DEFAULT_CYCLE_START_DAY = 0
 
 SERVICE_GET_RATES = "get_rates"
 SERVICE_GET_EMHASS_FORECAST = "get_emhass_forecast"
+SERVICE_BACKFILL_USAGE = "backfill_usage"
 CONF_CONFIG_ENTRY = "config_entry"
 CONF_START = "start"
 CONF_END = "end"

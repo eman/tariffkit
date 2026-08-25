@@ -5,19 +5,22 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Any
+from typing import Any, cast
 
 import voluptuous as vol
 from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import selector, service
 from homeassistant.util.json import JsonObjectType, JsonValueType
 
+from tariffkit.account import AccountProfile
 from tariffkit.errors import TariffKitError
 from tariffkit.interop import forecast_lists, resample
 from tariffkit.models import PriceCurve, PricePoint
 from tariffkit.timeutil import PACIFIC, hour_floor, now_pacific, to_pacific
 
+from . import backfill
 from .const import (
     CONF_CONFIG_ENTRY,
     CONF_DATE,
@@ -26,11 +29,13 @@ from .const import (
     CONF_RESOLUTION,
     CONF_START,
     DOMAIN,
+    SERVICE_BACKFILL_USAGE,
     SERVICE_GET_EMHASS_FORECAST,
     SERVICE_GET_RATES,
     SUPPORTED_RESOLUTIONS,
 )
 from .coordinator import TariffKitCoordinator, TariffKitQuality
+from .energy import resolve_cycle, statement_periods
 
 MAX_HOURS = 168
 
@@ -300,6 +305,104 @@ async def _get_emhass_forecast(hass: HomeAssistant, call: ServiceCall) -> Servic
     return _emhass_response(coordinator, start, end, resolution)
 
 
+_BACKFILL_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_CONFIG_ENTRY): cv.string,
+        vol.Optional(CONF_START): cv.string,
+    }
+)
+
+
+async def _backfill_usage(hass: HomeAssistant, call: ServiceCall) -> ServiceResponse:
+    """Price metered history into long-term statistics.
+
+    Recomputes the whole window every time rather than resuming where it left
+    off. External statistics replace a period rather than appending to it, so a
+    rerun is the supported way to pick up a corrected account history -- and a
+    backfill that only ever appended would leave the days before the correction
+    priced under settings the account no longer claims.
+    """
+    coordinator = _coordinator(hass, call.data[CONF_CONFIG_ENTRY])
+    if not coordinator.meters.configured:
+        raise ServiceValidationError(
+            "no meter entities are configured for this account; set them under "
+            "Configure -> Metered energy before backfilling"
+        )
+    if "recorder" not in hass.config.components:
+        raise ServiceValidationError(
+            "Home Assistant's recorder is not enabled, so there are no statistics to price"
+        )
+    profile = coordinator.profile
+    if not profile.name:
+        raise ServiceValidationError("backfilling needs a named account profile")
+
+    _check_publishable(profile.name)
+    opens = _backfill_start(call.data, profile)
+    # Read from the containing cycle's first day, not from the day asked for. A
+    # cycle can only be decomposed from its own start, so a window opening
+    # partway through one would otherwise lose it entirely -- and an epoch date
+    # is rarely a cycle boundary, so the default start lands mid-cycle routinely.
+    periods = statement_periods(profile)
+    opens = min(opens, resolve_cycle(opens, coordinator.meters.cycle_start_day, periods).start)
+    closes = now_pacific().date() - timedelta(days=1)
+    if opens > closes:
+        raise ServiceValidationError(
+            f"nothing to price: {opens} is not before today. Backfill covers whole "
+            "days that have finished; the running totals cover today."
+        )
+    readings = await coordinator.async_history(opens, closes)
+    result = await hass.async_add_executor_job(
+        backfill.build, profile, readings, opens, closes, coordinator.meters.cycle_start_day
+    )
+    result.warnings.extend(coordinator.uncovered_meters)
+    discarded = coordinator.discarded_history
+    if discarded:
+        # Days, not hours: the reader deduplicates by date, so a day that lost
+        # several hours counts once. Saying "hours" here would understate it.
+        result.warnings.append(
+            f"implausible readings were discarded on {len(discarded)} day(s) "
+            f"({discarded[0]}..{discarded[-1]}); that energy is missing from these "
+            f"totals, so they understate what was actually used"
+        )
+    await backfill.async_publish(hass, profile.name, result)
+    return cast(ServiceResponse, result.summary(profile.name))
+
+
+def _check_publishable(profile_name: str) -> None:
+    """Refuse a name no statistic id can carry, before doing any work.
+
+    Failing this late means failing after the recorder query and the whole
+    pricing pass, with a message from deep inside the recorder that names
+    neither the profile nor the field.
+    """
+    from homeassistant.components.recorder.statistics import VALID_STATISTIC_ID
+
+    for series in backfill.SERIES:
+        statistic_id = series.statistic_id(profile_name)
+        if not VALID_STATISTIC_ID.match(statistic_id):
+            raise ServiceValidationError(
+                f"the profile name {profile_name!r} cannot be published as a statistic "
+                f"({statistic_id!r} is not a valid statistic id). Rename the profile "
+                f"using only letters, digits and underscores"
+            )
+
+
+def _backfill_start(data: Mapping[str, Any], profile: AccountProfile) -> date:
+    """Where to begin, defaulting to the account's own first epoch.
+
+    Earlier than that has no configuration to price under, so it would be
+    refused cycle by cycle anyway; starting there means the default asks for
+    exactly as much history as the profile can answer for.
+    """
+    raw = data.get(CONF_START)
+    if raw in (None, ""):
+        return min(profile.effective_dates)
+    try:
+        return date.fromisoformat(str(raw)[:10])
+    except ValueError as err:
+        raise ServiceValidationError(f"start must be an ISO date, got {raw!r}") from err
+
+
 async def async_setup_services(hass: HomeAssistant) -> None:
     """Register response actions once for the integration."""
     if not hass.services.has_service(DOMAIN, SERVICE_GET_RATES):
@@ -324,6 +427,19 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             SERVICE_GET_EMHASS_FORECAST,
             handle_get_emhass_forecast,
             schema=_EMHASS_SCHEMA,
+            supports_response=SupportsResponse.ONLY,
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_BACKFILL_USAGE):
+
+        async def handle_backfill_usage(call: ServiceCall) -> ServiceResponse:
+            return await _backfill_usage(hass, call)
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_BACKFILL_USAGE,
+            handle_backfill_usage,
+            schema=_BACKFILL_SCHEMA,
             supports_response=SupportsResponse.ONLY,
         )
 
