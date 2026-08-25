@@ -614,12 +614,13 @@ def reconcile(
     # mind about a document, which is worth refusing rather than silently
     # recording twice. It can only fire for a statement read from a stable
     # source, such as the same saved PDF imported twice.
+    source_key = observation.source_key()
     same_source = next(
         (
             evidence
             for evidence in profile.observations
-            if evidence.source_digest is not None
-            and evidence.source_digest == observation.source_digest
+            if source_key
+            and evidence.source_key() == source_key
             and evidence.identity() != observation.identity()
         ),
         None,

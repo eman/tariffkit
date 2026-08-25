@@ -298,6 +298,61 @@ class TestAccountEvidence:
         restored = AccountProfile.from_dict(raw)
         assert len(restored.observations) == 1
 
+    def test_ocr_and_text_extraction_of_one_statement_agree(self) -> None:
+        """How a statement was read is not part of what it says.
+
+        The parser falls back to OCR automatically for PG&E statements before
+        November 2025, so the same document really can be extracted two ways. If
+        `extraction_mode` were part of the identity, one file imported before and
+        after that fallback engaged would look like two statements -- and the
+        same-document guard would call it a contradiction.
+        """
+
+        def read_as(mode: str) -> AccountObservation:
+            return AccountObservation(
+                agreements=(
+                    ObservedAgreement(
+                        provider="utility",
+                        statement_date=date(2025, 2, 1),
+                        period=BillingPeriod(date(2025, 1, 1), date(2025, 1, 31)),
+                        tariff="E-ELEC",
+                        extraction_mode=mode,
+                        source_digest="d" * 64,
+                    ),
+                ),
+                source_digest="d" * 64,
+            )
+
+        assert read_as("text").identity() == read_as("ocr").identity()
+        held = profile().with_observation(read_as("text")).with_observation(read_as("ocr"))
+        assert len(held.observations) == 1
+
+    def test_agreement_digests_still_guard_a_contradiction(self) -> None:
+        """An observation may carry only agreement-level digests.
+
+        `AccountObservation.source_digest` is optional, and the identity this
+        replaced fell back to the agreements' own digests. The same-document
+        guard keeps that fallback, so a contradiction is caught either way.
+        """
+
+        def read_as(tariff: str) -> AccountObservation:
+            return AccountObservation(
+                agreements=(
+                    ObservedAgreement(
+                        provider="utility",
+                        statement_date=date(2025, 2, 1),
+                        period=BillingPeriod(date(2025, 1, 1), date(2025, 1, 31)),
+                        tariff=tariff,
+                        source_digest="e" * 64,
+                    ),
+                ),
+            )
+
+        first, disagreeing = read_as("E-ELEC"), read_as("EV2-A")
+        assert first.source_key() == ("e" * 64,), "falls back to the agreement digest"
+        with pytest.raises(AccountError, match="same source document disagree"):
+            profile().with_observation(first).with_observation(disagreeing)
+
     def test_one_document_cannot_yield_two_different_readings(self) -> None:
         first = AccountObservation(
             agreements=(

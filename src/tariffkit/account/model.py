@@ -344,15 +344,22 @@ class ObservedAgreement:
         )
 
 
-def _agreement_facts(agreement: ObservedAgreement) -> dict[str, object]:
-    """One agreement's content, with the per-download digest left out.
+#: Fields describing how an agreement was *read* rather than what it says.
+#: ``source_digest`` changes every time the same bill is fetched again, and
+#: ``extraction_mode`` changes when the parser takes the OCR path instead of the
+#: text layer -- which it does automatically for PG&E statements before November
+#: 2025. Neither is printed on the statement, so neither can be part of its
+#: identity: including them would make one document read two ways look like two
+#: different documents, and would make the guard below call a re-read of the
+#: same file a contradiction.
+_PROVENANCE_FIELDS = ("source_digest", "extraction_mode")
 
-    ``source_digest`` is provenance -- which bytes this was read from -- not
-    part of what the statement says, and it changes every time the same bill is
-    fetched again.
-    """
+
+def _agreement_facts(agreement: ObservedAgreement) -> dict[str, object]:
+    """One agreement's content, with how it was read left out."""
     facts = agreement.to_dict()
-    facts.pop("source_digest", None)
+    for name in _PROVENANCE_FIELDS:
+        facts.pop(name, None)
     return facts
 
 
@@ -402,6 +409,24 @@ class AccountObservation:
             separators=(",", ":"),
         ).encode("utf-8")
         return (f"facts:{hashlib.sha256(canonical).hexdigest()}",)
+
+    def source_key(self) -> tuple[str, ...]:
+        """Which document this was read from, or empty when nothing says.
+
+        Provenance, not identity -- see :meth:`identity` for why bytes cannot
+        identify a statement. It keeps the shape the old identity had, top-level
+        digest falling back to the agreements' own, so an observation carrying
+        only agreement digests is still guarded against contradicting itself.
+        """
+        if self.source_digest is not None:
+            return (self.source_digest,)
+        return tuple(
+            sorted(
+                agreement.source_digest
+                for agreement in self.agreements
+                if agreement.source_digest is not None
+            )
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -481,18 +506,18 @@ class AccountProfile:
             unique.append(observation)
         # Two observations naming the same source document but disagreeing about
         # what it says is a contradiction the profile must not hold: one of them
-        # is a misreading, and nothing here can tell which. Keyed on the digest
-        # rather than on identity, because identity is now the facts themselves
-        # and two different fact-sets can never share one.
-        by_source: dict[str, AccountObservation] = {}
+        # is a misreading, and nothing here can tell which. Keyed on the source
+        # document rather than on identity, because identity is now the facts
+        # themselves and two different fact-sets can never share one.
+        by_source: dict[tuple[str, ...], AccountObservation] = {}
         for observation in unique:
-            digest = observation.source_digest
-            if digest is None:
+            key = observation.source_key()
+            if not key:
                 continue
-            previous = by_source.get(digest)
+            previous = by_source.get(key)
             if previous is not None and previous.identity() != observation.identity():
                 raise AccountError("profile observations from the same source document disagree")
-            by_source[digest] = observation
+            by_source[key] = observation
         object.__setattr__(self, "observations", tuple(unique))
         if not isinstance(self.meter_sources, MeterSources):
             raise AccountError("profile meter_sources must be MeterSources")
