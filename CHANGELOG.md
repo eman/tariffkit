@@ -53,7 +53,10 @@ All notable changes to this project are documented here. This project follows
   recorder's compilation of them untouched. One row per finished day, each being
   its cycle's movement across that day, so the days sum to their cycle exactly.
   Rerunning replaces the window rather than appending to it, which is how a
-  corrected account history is picked up.
+  corrected account history is picked up; a rerun over a later window continues
+  the running total it finds rather than restarting it. Only days the recorder
+  actually holds readings for are priced, and coverage is judged per meter, so
+  one direction cannot vouch for the other.
 
 ### Fixed
 - `tariffkit account sync` now signs in before asking the portal for the

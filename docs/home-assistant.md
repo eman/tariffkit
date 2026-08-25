@@ -678,12 +678,17 @@ why nothing is stored about previous runs: there is no state to go stale. A
 rerun over a *narrower* window is safe too: the running total continues from
 whatever the series already held before the window, rather than restarting.
 
-**Only days the recorder has readings for are priced.** The window is clipped to
-the evidence, so a start date earlier than your meter sensor existed does not
-manufacture months of daily charges for days nothing is known about — it says so
-in `warnings` instead. Gaps *inside* the window are reported the same way, and
-`complete` in the response is false whenever anything was skipped or warned
-about.
+**Only days the recorder has readings for are priced.** That holds at the
+window's edges *and* inside it: a start date earlier than your meter sensor
+existed does not manufacture months of daily charges, and a recorder outage in
+the middle leaves those days unpriced rather than billing them as zero-usage
+days. Each is reported in `warnings`, and `complete` in the response is false
+whenever anything was skipped or warned about.
+
+Coverage is judged **per meter**, not on the two directions combined. Import
+statistics with no export statistics would otherwise look like a site that
+simply never exported, and every credit it earned would vanish silently; instead
+the missing series is named in `warnings`.
 
 **Days are labelled in Pacific time.** On an instance more than seven hours west
 of Pacific the day boundaries shift by one; everywhere else they line up.

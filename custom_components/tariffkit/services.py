@@ -354,11 +354,14 @@ async def _backfill_usage(hass: HomeAssistant, call: ServiceCall) -> ServiceResp
     result = await hass.async_add_executor_job(
         backfill.build, profile, readings, opens, closes, coordinator.meters.cycle_start_day
     )
+    result.warnings.extend(coordinator.uncovered_meters)
     discarded = coordinator.discarded_history
     if discarded:
+        # Days, not hours: the reader deduplicates by date, so a day that lost
+        # several hours counts once. Saying "hours" here would understate it.
         result.warnings.append(
-            f"{len(discarded)} hour(s) were discarded as implausible, on "
-            f"{discarded[0]}..{discarded[-1]}; that energy is missing from these "
+            f"implausible readings were discarded on {len(discarded)} day(s) "
+            f"({discarded[0]}..{discarded[-1]}); that energy is missing from these "
             f"totals, so they understate what was actually used"
         )
     await backfill.async_publish(hass, profile.name, result)

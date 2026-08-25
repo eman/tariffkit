@@ -354,7 +354,13 @@ def test_a_hyphenated_profile_name_becomes_a_usable_statistic_id() -> None:
         for series in backfill.SERIES:
             statistic_id = series.statistic_id(name)
             assert VALID_STATISTIC_ID.match(statistic_id), statistic_id
-    assert backfill.SERIES[0].statistic_id("my-home") == "tariffkit:my_home_grid_import"
+    # Folding is lossy, so names that needed folding get a disambiguating
+    # digest: three profiles Home Assistant keeps apart must not share a series.
+    distinct = {backfill.statistic_slug(n) for n in ("my-home", "my_home", "my__home")}
+    assert len(distinct) == 3, distinct
+    # An already-valid name keeps its own spelling and pays nothing for this.
+    assert backfill.statistic_slug("home") == "home"
+    assert backfill.SERIES[0].statistic_id("home") == "tariffkit:home_grid_import"
 
 
 def test_days_without_evidence_are_not_billed() -> None:
@@ -433,3 +439,179 @@ def test_the_running_sum_continues_from_what_precedes_the_window() -> None:
     ]
     # The per-day figures are untouched by where the series happens to be.
     assert [r["state"] for r in fresh] == [r["state"] for r in continued]
+
+
+def test_interior_days_without_readings_are_not_billed_either() -> None:
+    """Clipping the window's edges is not enough; a gap inside it counts too.
+
+    A recorder outage in the middle of an otherwise covered window leaves days
+    with no evidence, and pricing them puts a daily fixed charge on days nothing
+    is known about. Skipping them leaves every other day's figure untouched,
+    because a skipped day's charges cancel between the two cycle-to-date bills
+    that bracket it.
+    """
+    profile = _profile()
+    readings = [
+        r
+        for r in _hours(date(2026, 7, 1), date(2026, 7, 20), imported=1.0)
+        if r.start.astimezone(PACIFIC).day not in (8, 9, 10)
+    ]
+    result = backfill.build(profile, readings, date(2026, 7, 1), date(2026, 7, 20), 1)
+
+    priced = {d.day for d in result.days}
+    assert date(2026, 7, 8) not in priced
+    assert date(2026, 7, 9) not in priced
+    assert date(2026, 7, 10) not in priced
+    assert len(result.days) == 17
+    assert any("no metered readings" in w and "unpriced" in w for w in result.warnings)
+    # The surviving days are unaffected -- each is still its own marginal share.
+    assert all(d.net_cost > 0 for d in result.days)
+    assert result.summary("probe")["complete"] is False
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_a_later_rerun_continues_the_sum_it_finds(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """The case the first idempotency test could not reach.
+
+    Backfill a wide window, then backfill only a later cycle. The second run
+    rewrites rows that sit *after* rows the first run left in place, so its sums
+    must continue from them. Restarting at zero splices a reset into a live
+    series and the recorder derives a large negative day at the boundary.
+    """
+    import json
+
+    from custom_components.tariffkit.const import (
+        CONF_CYCLE_START_DAY,
+        CONF_FORECAST_HOURS,
+        CONF_GRID_IMPORT_ENTITY,
+        CONF_PROFILE,
+        DOMAIN,
+    )
+    from homeassistant.components.recorder.statistics import (
+        async_import_statistics,
+        statistics_during_period,
+    )
+    from homeassistant.helpers.recorder import get_instance
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+    from pytest_homeassistant_custom_component.components.recorder.common import (
+        async_wait_recording_done,
+    )
+
+    freezer.move_to(NOW)
+    rows, total = [], 0.0
+    start = datetime(2026, 5, 1, tzinfo=PACIFIC) - timedelta(hours=1)
+    while start < NOW:
+        total += 1.0
+        rows.append({"start": start, "state": total, "sum": total})
+        start += timedelta(hours=1)
+    async_import_statistics(hass, _meta(IMPORT_ENTITY), rows)
+    await async_wait_recording_done(hass)
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="probe",
+        version=3,
+        data={CONF_PROFILE: json.loads(_profile().to_json()), CONF_FORECAST_HOURS: 4},
+        options={CONF_GRID_IMPORT_ENTITY: IMPORT_ENTITY, CONF_CYCLE_START_DAY: 1},
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    async def run(day: str) -> dict:
+        response = await hass.services.async_call(
+            DOMAIN,
+            "backfill_usage",
+            {"config_entry": entry.entry_id, "start": day},
+            blocking=True,
+            return_response=True,
+        )
+        await async_wait_recording_done(hass)
+        assert response is not None
+        return dict(response)
+
+    wide = await run("2026-05-01")
+    assert wide["first_day"] == "2026-05-01"
+    # Only July: strictly later than rows the first run already wrote.
+    await run("2026-07-01")
+
+    written = await get_instance(hass).async_add_executor_job(
+        statistics_during_period,
+        hass,
+        datetime(2026, 5, 1, tzinfo=PACIFIC),
+        None,
+        {"tariffkit:probe_grid_import"},
+        "day",
+        None,
+        {"sum", "change"},
+    )
+    series = written["tariffkit:probe_grid_import"]
+    changes = [row["change"] for row in series if row["change"] is not None]
+    assert min(changes) >= 0, "no day may go backwards where the sum was restarted"
+    assert sum(changes) == pytest.approx(wide["grid_import_kwh"], abs=0.01)
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_a_meter_with_no_history_is_reported_not_read_as_zero(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """One meter must not vouch for the other.
+
+    Import statistics with no export statistics produce a gapless-looking series
+    of `exported=0`. Judged on the merged readings that is indistinguishable
+    from a site that exported nothing, and every credit it earned disappears.
+    """
+    import json
+
+    from custom_components.tariffkit.const import (
+        CONF_CYCLE_START_DAY,
+        CONF_FORECAST_HOURS,
+        CONF_GRID_EXPORT_ENTITY,
+        CONF_GRID_IMPORT_ENTITY,
+        CONF_PROFILE,
+        DOMAIN,
+    )
+    from homeassistant.components.recorder.statistics import async_import_statistics
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+    from pytest_homeassistant_custom_component.components.recorder.common import (
+        async_wait_recording_done,
+    )
+
+    freezer.move_to(NOW)
+    rows, total = [], 0.0
+    start = datetime(2026, 7, 1, tzinfo=PACIFIC) - timedelta(hours=1)
+    while start < NOW:
+        total += 1.0
+        rows.append({"start": start, "state": total, "sum": total})
+        start += timedelta(hours=1)
+    async_import_statistics(hass, _meta(IMPORT_ENTITY), rows)
+    await async_wait_recording_done(hass)
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="probe",
+        version=3,
+        data={CONF_PROFILE: json.loads(_profile().to_json()), CONF_FORECAST_HOURS: 4},
+        options={
+            CONF_GRID_IMPORT_ENTITY: IMPORT_ENTITY,
+            CONF_GRID_EXPORT_ENTITY: EXPORT_ENTITY,
+            CONF_CYCLE_START_DAY: 1,
+        },
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    response = await hass.services.async_call(
+        DOMAIN,
+        "backfill_usage",
+        {"config_entry": entry.entry_id, "start": "2026-07-01"},
+        blocking=True,
+        return_response=True,
+    )
+    assert response is not None
+    assert response["grid_export_kwh"] == 0.0
+    assert any(EXPORT_ENTITY in w for w in response["warnings"]), response["warnings"]
+    assert response["complete"] is False

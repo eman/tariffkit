@@ -268,6 +268,8 @@ class UsageReader:
         self._dropped = 0
         #: Days a backfill read had to discard an implausible hour on.
         self.discarded: tuple[date, ...] = ()
+        #: Configured meters the last backfill read could not fully cover.
+        self.absent: tuple[str, ...] = ()
 
     async def async_usage(self, now: datetime) -> MeteredUsage | None:
         """Readings from the cycle's first midnight through ``now``.
@@ -309,6 +311,11 @@ class UsageReader:
         rows = await self._async_query(opens_at - timedelta(hours=1), closes_at)
         hours: dict[float, list[float]] = {}
         dropped: list[date] = []
+        # Per entity, not merged. Two directions summed into one series hide
+        # each other: continuous import rows against no export rows at all
+        # produce a gapless-looking series of `exported=0`, and every credit the
+        # site earned disappears without a gap ever being detected.
+        covered: dict[str, set[float]] = {}
         for direction, entity in (
             (0, self.settings.import_entity),
             (1, self.settings.export_entity),
@@ -333,7 +340,9 @@ class UsageReader:
                     dropped.append(datetime.fromtimestamp(slot, tz=PACIFIC).date())
                     continue
                 hours.setdefault(slot, [0.0, 0.0])[direction] += change
+                covered.setdefault(entity, set()).add(slot)
         self.discarded = tuple(sorted(set(dropped)))
+        self.absent = self._absent_series(covered, opens_at, closes_at)
         return [
             IntervalReading(
                 datetime.fromtimestamp(slot, tz=PACIFIC),
@@ -342,6 +351,26 @@ class UsageReader:
             )
             for slot, values in sorted(hours.items())
         ]
+
+    def _absent_series(
+        self, covered: Mapping[str, set[float]], opens_at: datetime, closes_at: datetime
+    ) -> tuple[str, ...]:
+        """Say which configured meters the window does not fully account for.
+
+        A meter with no statistics at all is the dangerous case: its direction
+        silently reads zero for every hour, so the totals look complete while an
+        entire side of the bill is missing.
+        """
+        expected = int((closes_at.timestamp() - opens_at.timestamp()) // 3600)
+        found: list[str] = []
+        for entity in self.settings.entities:
+            slots = covered.get(entity, set())
+            if not slots:
+                found.append(f"no recorder statistics at all for {entity} over this window")
+            elif expected and len(slots) < expected:
+                missing = expected - len(slots)
+                found.append(f"{entity} is missing {missing} of {expected} hour(s) in this window")
+        return tuple(found)
 
     async def _async_query(
         self, window: datetime, until: datetime

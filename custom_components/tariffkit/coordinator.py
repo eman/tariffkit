@@ -496,6 +496,11 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         """Days the last history read had to drop an implausible hour on."""
         return () if self._usage is None else self._usage.discarded
 
+    @property
+    def uncovered_meters(self) -> tuple[str, ...]:
+        """Configured meters the last history read could not fully cover."""
+        return () if self._usage is None else self._usage.absent
+
     def _usage_for(self, metered: MeteredUsage | None) -> TariffKitUsage | None:
         """Price the day and the cycle to date over the same readings."""
         if metered is None:

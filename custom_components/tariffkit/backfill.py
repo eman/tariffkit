@@ -23,6 +23,7 @@ is the finest slice this can state exactly, and stating it exactly is the point.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
@@ -86,8 +87,16 @@ def statistic_slug(profile_name: str) -> str:
     the raw name fails at the last step of an otherwise complete run with a bare
     "Invalid statistic_id". ``opower`` folds hyphens the same way.
     """
-    slug = re.sub(r"[^a-z0-9]+", "_", profile_name.strip().lower())
-    return re.sub(r"_+", "_", slug).strip("_")
+    name = profile_name.strip().lower()
+    slug = re.sub(r"_+", "_", re.sub(r"[^a-z0-9]+", "_", name)).strip("_")
+    if slug == name:
+        return slug
+    # Folding is lossy: `my-home`, `my_home` and `my__home` are three profiles
+    # Home Assistant keeps apart, and all three fold to `my_home`. Backfilling
+    # one would then overwrite another's series. A short digest of the original
+    # name keeps them distinct, and only names that actually needed folding pay
+    # for it -- an already-valid name keeps its own spelling.
+    return f"{slug}_{hashlib.sha256(name.encode()).hexdigest()[:6]}"
 
 
 SERIES: tuple[Series, ...] = (
@@ -179,16 +188,27 @@ def price_cycle(
 ) -> tuple[list[DayFigures], str, tuple[str, ...]]:
     """Each day's exact share of one cycle.
 
-    Walks the cycle day by day, differencing consecutive cycle-to-date bills.
-    A day's figures are therefore its *marginal* contribution, which is the only
-    decomposition that both sums to the cycle and never exceeds it: the baseline
-    allowance is cycle-cumulative, so pricing a day in isolation would grant it
-    one day's worth however much the cycle had banked.
+    Walks the cycle day by day, differencing consecutive cycle-to-date bills, so
+    a day's figures are its *marginal* contribution. That is the decomposition
+    that sums to the cycle: the baseline allowance is cycle-cumulative, so
+    pricing a day in isolation would grant it one day's worth however much the
+    cycle had banked. It does not bound a day by the cycle -- a heavy import day
+    inside a month that exports for the rest costs more on its own than the
+    whole cycle does.
+
+    Days the readings say nothing about are not emitted. A day the recorder
+    holds no reading for is not a day of zero usage, and pricing it would put a
+    daily fixed charge on a day this has no evidence about. Skipping it does not
+    disturb the others: each remaining day is still its own marginal
+    contribution, since the skipped day's charges cancel between the two
+    cycle-to-date bills that bracket it.
     """
     within = _within(readings, cycle)
+    seen = {_day_of(reading) for reading in within}
     days: list[DayFigures] = []
     previous: Bill | None = None
     warnings: tuple[str, ...] = ()
+    unmetered: list[date] = []
     day = cycle.start
     while day <= cycle.end:
         period = BillingPeriod(cycle.start, day)
@@ -198,18 +218,28 @@ def price_cycle(
             return [], reason, ()
         warnings = running.warnings
         metered = [r for r in within if _day_of(r) == day]
-        days.append(
-            DayFigures(
-                day=day,
-                grid_import=sum(r.imported for r in metered),
-                grid_export=sum(r.exported for r in metered),
-                energy_cost=_delta(running, previous, "charges"),
-                export_credit=-_delta(running, previous, "credits"),
-                net_cost=_delta(running, previous, "total"),
+        if day in seen:
+            days.append(
+                DayFigures(
+                    day=day,
+                    grid_import=sum(r.imported for r in metered),
+                    grid_export=sum(r.exported for r in metered),
+                    energy_cost=_delta(running, previous, "charges"),
+                    export_credit=-_delta(running, previous, "credits"),
+                    net_cost=_delta(running, previous, "total"),
+                )
             )
-        )
+        else:
+            unmetered.append(day)
         previous = running
         day += timedelta(days=1)
+    if unmetered:
+        warnings = (
+            *warnings,
+            f"{len(unmetered)} day(s) inside {cycle.start}..{cycle.end} have no metered "
+            f"readings ({unmetered[0]}..{unmetered[-1]}) and were left unpriced rather "
+            f"than charged a daily charge there is no evidence for",
+        )
     return days, "", warnings
 
 
@@ -333,15 +363,64 @@ def statistics_for(
     return rows
 
 
+#: How far back to look for the sum a rewritten window must continue from.
+#: Bounded so the lookup cannot walk an unbounded series; ten years is longer
+#: than any account history this prices.
+BASE_LOOKBACK = timedelta(days=3650)
+
+
+async def async_base_sums(hass: HomeAssistant, profile_name: str, opens: date) -> dict[str, float]:
+    """What each series already totalled immediately before ``opens``.
+
+    Zero where a series holds nothing earlier, which is the first-run case.
+    """
+    from homeassistant.components.recorder.statistics import statistics_during_period
+    from homeassistant.helpers.recorder import get_instance
+
+    opens_at = datetime(opens.year, opens.month, opens.day, tzinfo=PACIFIC)
+    ids = {series.statistic_id(profile_name) for series in SERIES}
+    # Hourly, not daily. `statistics_during_period` aligns a day-period
+    # `end_time` forward to the next local midnight, so asking for "before this
+    # day" with period="day" returns that day too -- and the base would then
+    # include the very row about to be rewritten, shifting the whole window by
+    # one day's worth. Hourly periods are not realigned.
+    rows = await get_instance(hass).async_add_executor_job(
+        statistics_during_period,
+        hass,
+        opens_at - BASE_LOOKBACK,
+        opens_at,
+        ids,
+        "hour",
+        None,
+        {"sum"},
+    )
+    bases: dict[str, float] = {}
+    for statistic_id in ids:
+        sums = [row["sum"] for row in rows.get(statistic_id, []) if row.get("sum") is not None]
+        bases[statistic_id] = float(sums[-1] or 0.0) if sums else 0.0
+    return bases
+
+
 async def async_publish(hass: HomeAssistant, profile_name: str, result: BackfillResult) -> None:
-    """Write every series, replacing whatever occupied those days before."""
+    """Write every series, continuing the sums the earlier days established.
+
+    A window may open after rows this already wrote -- backfilling a year, then
+    later only the last cycle. Writing external statistics replaces only the
+    rows it names, so restarting ``sum`` at zero would splice a reset into a
+    live series and make the recorder derive a large negative value for the
+    first rewritten day.
+    """
     from homeassistant.components.recorder.statistics import (
         async_add_external_statistics,
     )
 
+    if not result.days:
+        return
+    bases = await async_base_sums(hass, profile_name, result.days[0].day)
     for series in SERIES:
-        rows = statistics_for(result, series)
+        statistic_id = series.statistic_id(profile_name)
+        rows = statistics_for(result, series, bases.get(statistic_id, 0.0))
         if not rows:
             continue
         async_add_external_statistics(hass, series.metadata(profile_name), rows)
-        _LOGGER.debug("wrote %d rows to %s", len(rows), series.statistic_id(profile_name))
+        _LOGGER.debug("wrote %d rows to %s", len(rows), statistic_id)
