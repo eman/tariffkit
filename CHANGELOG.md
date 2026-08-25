@@ -12,20 +12,51 @@ All notable changes to this project are documented here. This project follows
   since pricing needs no meter and the counters are usually integrated after
   the tariff — and it adds running Energy Cost, Export Credit, and Net Cost
   entities for today and for the billing cycle to date, alongside Grid Import
-  and Grid Export totals. The counters do not have to reset daily: each hour's energy
-  comes from the recorder's own long-term statistics, which already absorb
-  counter restarts and reload gaps, with the hour in progress read live off
-  entity state. Readings are priced by `tariffkit.billing.BillEngine`, the same
-  code that reconciles a printed statement, so the running figures carry
-  time-of-use bucketing, the Energy Commission Tax, the baseline credit, the
-  whole day's Base Services Charge, and the rule that exports before Permission
-  To Operate earn nothing. A **Billing cycle start day** setting names the day
-  of the month the meter is read, but it is only a fallback: where the profile
-  carries imported statements the cycle boundary comes from the statements
-  themselves, which is the only way to match a real bill — PG&E reads on
-  business days, so consecutive cycles open on the 29th, the 30th, the 1st and
-  the 3rd. A `cycle_boundary` attribute reports which was used.
-  Configuring no entities leaves the integration exactly as it was.
+  and Grid Export totals.
+
+  The counters do not have to reset daily: each hour's energy comes from the
+  recorder's own long-term statistics, which already absorb counter restarts
+  and reload gaps, with the hour in progress read live off entity state.
+  Readings are priced by `tariffkit.billing.BillEngine`, the same code that
+  reconciles a printed statement, so the running figures carry time-of-use
+  bucketing, the Energy Commission Tax, the baseline credit, the whole day's
+  Base Services Charge, and the rule that exports before Permission To Operate
+  earn nothing.
+
+  Today's figures are the cycle's movement across today rather than a one-day
+  bill, because parts of a bill are cumulative over a cycle rather than
+  additive over its days -- the baseline allowance is granted per cycle and
+  consumed in day order, so pricing a day alone grants it one day's allowance
+  however much the cycle had banked. Gaps, overlaps and reconstructed intervals
+  in the metered series are reported in `warnings` and clear
+  `quality.complete`, so a recorder outage understates the figure loudly rather
+  than quietly.
+
+  A **Billing cycle start day** setting names the day of the month the meter is
+  read, but it is only a fallback: where the profile carries imported
+  statements the cycle boundary comes from the statements themselves, which is
+  the only way to match a real bill -- PG&E reads on business days, so
+  consecutive cycles open on the 29th, the 30th, the 1st and the 3rd. A
+  `cycle_boundary` attribute reports which was used.
+
+  Naming no entities creates none of these, leaving every existing entity
+  byte-identical. One exception is worth knowing: an account profile imported
+  from the CLI carries its own `meter_sources.ha` mapping, and that mapping is
+  honoured, so such an entry gains the entities without anyone opening the
+  form.
+
+### Fixed
+- `tariffkit account sync` now signs in before asking the portal for the
+  statement list. A resumed session arrives with a live session cookie and no
+  CSRF token, because the token is one-shot and deliberately not cached, so the
+  first authenticated call failed -- either as a bare "the session token is
+  stale" or, when the portal answered with an empty list instead of an error, as
+  a silent "received 0 statement update(s)" against an account with 25
+  statements. `apex`'s own recovery could not rescue it: it falls back to a
+  forced re-login, which fails while already signed in because the login page
+  redirects to the community and the token it carries belongs to the wrong
+  Lightning app. `audit doctor` was unaffected because it calls `login()` first,
+  which is what made the two disagree.
 
 ## [0.3.0] - 2026-08-22
 
