@@ -368,6 +368,20 @@
           "name": "Resolution"
         }
       }
+    },
+    "backfill_usage": {
+      "name": "Backfill metered usage",
+      "description": "Price metered history into long-term statistics, so cost and credit for days before the meters were configured appear in Home Assistant. Rerunning replaces the window rather than adding to it.",
+      "fields": {
+        "config_entry": {
+          "name": "TariffKit config entry",
+          "description": "The loaded TariffKit entry to price with."
+        },
+        "start": {
+          "name": "Start date",
+          "description": "First day to price, as an ISO date. Defaults to the account profile's first epoch."
+        }
+      }
     }
   }
 }

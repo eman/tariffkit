@@ -15,7 +15,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from tariffkit.account import AccountProfile, AccountRateEngine
-from tariffkit.billing import Bill, BillingPeriod
+from tariffkit.billing import Bill, BillingPeriod, IntervalReading
 from tariffkit.components import ComponentGroup
 from tariffkit.config import CcaConfig, Config
 from tariffkit.errors import TariffKitError
@@ -479,6 +479,17 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
             usage=self._usage_for(metered),
             usage_note=self._usage_note,
         )
+
+    async def async_history(self, opens: date, closes: date) -> list[IntervalReading]:
+        """Hourly metered readings across a past window, for backfilling.
+
+        Separate from the coordinator's own cached read, which only ever covers
+        the running cycle: this asks for a span that may be months long and
+        should not disturb what the live entities are working from.
+        """
+        if self._usage is None:
+            return []
+        return await self._usage.async_readings(opens, closes)
 
     def _usage_for(self, metered: MeteredUsage | None) -> TariffKitUsage | None:
         """Price the day and the cycle to date over the same readings."""

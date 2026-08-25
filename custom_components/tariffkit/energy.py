@@ -289,6 +289,68 @@ class UsageReader:
             self._key = key
         return self._assemble(cycle, today, hour, moment)
 
+    async def async_readings(self, opens: date, closes: date) -> list[IntervalReading]:
+        """Hourly readings across a closed past window, for backfilling.
+
+        Deliberately separate from the cached path the entities use: that one
+        tracks the running cycle and is keyed on the current hour, whereas this
+        asks a one-off question about a span that may be months long. Sharing
+        the cache would evict the live window on every backfill.
+
+        Only whole completed hours, and no live partial: every hour in a closed
+        window has been compiled, so there is nothing to read off entity state.
+        """
+        opens_at = datetime(opens.year, opens.month, opens.day, tzinfo=PACIFIC)
+        closes_at = datetime(closes.year, closes.month, closes.day, tzinfo=PACIFIC) + timedelta(
+            days=1
+        )
+        rows = await self._async_query(opens_at - timedelta(hours=1), closes_at)
+        hours: dict[float, list[float]] = {}
+        for direction, entity in (
+            (0, self.settings.import_entity),
+            (1, self.settings.export_entity),
+        ):
+            if not entity:
+                continue
+            for row in rows.get(entity) or []:
+                change = row.get("change")
+                slot = float(row["start"])
+                if change is None or slot < opens_at.timestamp():
+                    continue
+                if change < 0 or change > MAX_INTERVAL_KW:
+                    continue
+                hours.setdefault(slot, [0.0, 0.0])[direction] += change
+        return [
+            IntervalReading(
+                datetime.fromtimestamp(slot, tz=PACIFIC),
+                imported=values[0],
+                exported=values[1],
+            )
+            for slot, values in sorted(hours.items())
+        ]
+
+    async def _async_query(
+        self, window: datetime, until: datetime
+    ) -> Mapping[str, Sequence[Mapping[str, Any]]]:
+        """One recorder call for the configured meters over ``window``..``until``."""
+        from homeassistant.components.recorder.statistics import statistics_during_period
+        from homeassistant.helpers.recorder import get_instance
+
+        try:
+            rows = await get_instance(self.hass).async_add_executor_job(
+                statistics_during_period,
+                self.hass,
+                window,
+                until,
+                set(self.settings.entities),
+                "hour",
+                {"energy": KWH},
+                {"change", "state"},
+            )
+        except Exception as err:
+            raise HomeAssistantError(f"recorder could not read statistics: {err}") from err
+        return rows
+
     async def _async_refresh(self, start: date, hour: datetime) -> None:
         """Pull completed hours for the cycle so far out of long-term statistics."""
         from homeassistant.components.recorder.statistics import statistics_during_period
