@@ -369,6 +369,7 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         self._usage_note = ""
         self._bank_key: tuple[object, ...] | None = None
         self._settled_once = False
+        self._bank_failed = False
         self._bank: BankState | None = None
         self._predbat_key: tuple[date, date] | None = None
         self._predbat: PredbatPayload | None = None
@@ -453,9 +454,13 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         # enough that a genuine permanent gap is not re-read every hour forever.
         settling = (now_pacific().date() - metered.cycle.start).days < 1
         unsettled = self._bank is not None and not self._bank.trustworthy
-        key: tuple[object, ...] = (opens, metered.cycle.start)
-        if settling and unsettled:
-            key = (*key, hour_floor(now_pacific()))
+        # One shape, always. A key built differently on the error path than on
+        # the success path can never match the next tick's, so the guard never
+        # fires and the read it was meant to throttle happens every minute.
+        retry = (
+            hour_floor(now_pacific()) if (self._bank_failed or (settling and unsettled)) else None
+        )
+        key: tuple[object, ...] = (opens, metered.cycle.start, retry)
         if key == self._bank_key:
             return self._bank
         if closes < opens:
@@ -469,11 +474,13 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
             # hourly rather than being asked for months of statistics every
             # sixty seconds for as long as it stays broken.
             _LOGGER.warning("Unable to read history for the credit bank: %s", err)
-            self._bank_key = (opens, metered.cycle.start, hour_floor(now_pacific()), "error")
+            self._bank_failed = True
+            self._bank_key = (opens, metered.cycle.start, hour_floor(now_pacific()))
             return self._bank
         self._bank = await self.hass.async_add_executor_job(
             self._fold_bank, readings, opens, closes
         )
+        self._bank_failed = False
         self._bank_key = key
         return self._bank
 

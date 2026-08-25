@@ -376,13 +376,12 @@ class UsageReader:
             ordered = sorted(slots)
             for previous, current in pairwise(ordered):
                 if current - previous > 3600.0:
-                    # Both ends of the hole. The hour after it carries the
-                    # catch-up, and the hour before it belongs to a day that
-                    # lost the rest of its own energy to that catch-up -- so
-                    # publishing that day would understate it just as surely as
-                    # publishing the other would overstate it.
+                    # Only the hour that *receives* the catch-up. The hour
+                    # before a hole has both its own sum and its predecessor's
+                    # recorded, so its change is exact and its day is priceable;
+                    # refusing it as well cost a second day for every outage and
+                    # moved a correctly-priced day's cost into the residual.
                     found.add(current)
-                    found.add(previous)
         return found
 
     def _absent_series(

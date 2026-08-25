@@ -399,16 +399,24 @@ def statistics_for(
     """
     from homeassistant.components.recorder.models import StatisticData
 
+    # Every day in the span, including the ones that could not be priced.
+    # Writing external statistics only inserts or updates the rows it is handed;
+    # it never deletes. A rerun that publishes fewer days -- which is exactly
+    # what refusing a reconstructed day produces -- would otherwise leave that
+    # day behind at the price a previous run gave it, and the following day
+    # would absorb the whole correction as a zero. A day nothing can be said
+    # about is written as zero rather than left holding a stale figure.
+    priced = {figures.day: figures for figures in result.days}
+    span = sorted({*priced, *result.unpriced})
     running = base
     rows: list[StatisticData] = []
-    for figures in result.days:
-        value = figures.value(series.slug)
+    for day in span:
+        figures = priced.get(day)
+        value = figures.value(series.slug) if figures is not None else 0.0
         running += value
         rows.append(
             StatisticData(
-                start=datetime(
-                    figures.day.year, figures.day.month, figures.day.day, tzinfo=PACIFIC
-                ),
+                start=datetime(day.year, day.month, day.day, tzinfo=PACIFIC),
                 state=round(value, 6),
                 sum=round(running, 6),
             )

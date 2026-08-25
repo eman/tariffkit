@@ -554,16 +554,26 @@ BANK_DESCRIPTION = (
 
 
 def _no_bank_reason(data: TariffKitData) -> str:
-    """Why there is no balance, distinguishing causes a user can act on."""
+    """Why there is no balance, naming only what has actually been established.
+
+    The catch-all deliberately does not claim a cause. A balance can be absent
+    because the first refresh defers the fold, because folding raised and was
+    swallowed, or because the recorder's history does not reach the cycle
+    containing PTO -- and asserting a specific billing fact for all of them
+    tells some users something false about their account.
+    """
     if data.usage is None:
         return "no metered readings have been priced yet"
-    provenance = data.provenance.get("pto_date")
-    if not provenance:
+    if not data.provenance.get("pto_date"):
         return (
             "no Permission To Operate date is set on this account, so no export "
             "is compensated and there is no bank to carry"
         )
-    return "no billing cycle has closed since the one containing the PTO date"
+    return (
+        "no closed billing cycle has been folded yet; this settles within a few "
+        "minutes of a restart, and otherwise the metered history does not reach "
+        "the cycle containing the PTO date"
+    )
 
 
 def _bank_sensor(holder: str) -> TariffKitSensorDescription:
@@ -580,6 +590,13 @@ def _bank_sensor(holder: str) -> TariffKitSensorDescription:
     def state(data: TariffKitData) -> float | None:
         if data.bank is None:
             return None
+        if holder == "generation" and not data.bank.split:
+            # The entity set is decided at setup from today's supplier; the bank
+            # is folded under the supplier of its last closed cycle. Those
+            # disagree for a whole cycle after a supplier change, and reporting
+            # the whole balance here as well would show it twice under names
+            # that read as halves.
+            return None
         return round(data.bank.held_by(holder), 4)
 
     def attrs(data: TariffKitData) -> dict[str, Any]:
@@ -588,6 +605,15 @@ def _bank_sensor(holder: str) -> TariffKitSensorDescription:
                 ATTR_QUALITY: {"complete": False},
                 ATTR_DESCRIPTION: BANK_DESCRIPTION,
                 "warnings": [data.usage_note or _no_bank_reason(data)],
+            }
+        if holder == "generation" and not data.bank.split:
+            return {
+                ATTR_QUALITY: {"complete": False},
+                ATTR_DESCRIPTION: BANK_DESCRIPTION,
+                "warnings": [
+                    "the folded cycles were supplied by the utility, so the whole "
+                    "balance is reported by the utility entity rather than split"
+                ],
             }
         found = dict(data.bank.to_dict())
         found[ATTR_QUALITY] = {"complete": found.pop("complete")}

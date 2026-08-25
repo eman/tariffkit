@@ -20,10 +20,10 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from itertools import pairwise
 
-from tariffkit.account import AccountProfile
+from tariffkit.account import AccountError, AccountProfile
 from tariffkit.billing import (
     Bill,
     CreditBalances,
@@ -157,6 +157,12 @@ def fold(profile: AccountProfile, bills: list[Bill]) -> BankState:
 
     split = _is_cca(profile, ordered[-1].period.end)
     pto = _pto_of(profile, ordered[-1].period.end)
+    if _suppliers_changed(profile, ordered):
+        chain.warnings.append(
+            "generation changed supplier inside this run, and an annual settlement "
+            "settles a whole year: the balance is folded under one arrangement and "
+            "cannot be trusted across the change"
+        )
     balance, labels = _chain(ordered, pto, split=split)
 
     return BankState(
@@ -203,18 +209,31 @@ def _chain(bills: list[Bill], pto: date | None, *, split: bool) -> tuple[CreditB
     opening: CreditBalances | None = None
     remaining = list(bills)
     labels: list[str] = []
+    seen: set[date] = set()
     while remaining:
         entries = run_ledger(remaining, opening=opening).entries
-        events = _settlements(entries, pto, split=split)
+        events = [e for e in _settlements(entries, pto, split=split) if e.period.end not in seen]
         if not events:
             break
         first = events[0]
+        seen.add(first.period.end)
         labels.append(f"{first.kind} settled {first.period.end}")
+        if not _settles(first):
+            # It happened, and it changed nothing: on a CCA account the
+            # utility's true-up reverses no credit and pays no Net Surplus
+            # Compensation, under Special Condition 5.a.
+            #
+            # So it must not consume cycles either. Dropping the bills before it
+            # would restart the *other* supplier's cash-out year from this date
+            # instead of its own -- and a cash-out's reversal is its window's
+            # surplus, so a year cut from twelve months to nine claws back less
+            # than the tariff requires and leaves the difference in the bank.
+            continue
         opening = first.closing
         after = [b for b in remaining if b.period.start > first.period.end]
         if len(after) == len(remaining):
-            # An event that consumes nothing would loop forever. It should not
-            # happen -- a period always covers at least one cycle -- but a
+            # A settling event that consumes nothing would loop forever. It
+            # should not happen -- a period covers at least one cycle -- but a
             # coordinator refresh is the wrong place to discover otherwise.
             _LOGGER.warning("annual event %s consumed no cycles; stopping the fold", first)
             break
@@ -224,24 +243,43 @@ def _chain(bills: list[Bill], pto: date | None, *, split: bool) -> tuple[CreditB
     return run_ledger(remaining, opening=opening).entries[-1].closing, labels
 
 
+def _settles(event: TrueUp) -> bool:
+    """Whether an annual event actually moves anything.
+
+    An event that reverses nothing and pays nothing leaves the bank exactly as
+    it found it, so the run continues through it untouched.
+    """
+    return bool(event.reversal) or bool(event.cash_out)
+
+
 def _pto_of(profile: AccountProfile, on: date) -> date | None:
-    from datetime import datetime
+    """The earliest Permission To Operate any epoch records.
 
-    from tariffkit.timeutil import PACIFIC
-
-    try:
-        return profile.config_at(datetime(on.year, on.month, on.day, 12, tzinfo=PACIFIC)).pto_date
-    except Exception:
-        return None
+    Every epoch, not the one covering ``on``: a later epoch omitting the field
+    would otherwise erase it, and a bank folded with no PTO applies no annual
+    settlement at all -- silently, with no warning and `complete: true`.
+    """
+    del on
+    found = [epoch.config.pto_date for epoch in profile.epochs if epoch.config.pto_date is not None]
+    return min(found) if found else None
 
 
 def _is_cca(profile: AccountProfile, on: date) -> bool:
-    from datetime import datetime
-
     from tariffkit.timeutil import PACIFIC
 
     try:
         config = profile.config_at(datetime(on.year, on.month, on.day, 12, tzinfo=PACIFIC))
-    except Exception:
+    except AccountError:
         return False
     return config.supplier is Supplier.CCA
+
+
+def _suppliers_changed(profile: AccountProfile, bills: list[Bill]) -> bool:
+    """Whether generation changed hands anywhere in the folded run.
+
+    The whole run is settled under one epoch's supplier, because an annual event
+    settles a *year* and the library offers no way to say that year was half one
+    arrangement and half another. Where the assumption does not hold, say so
+    rather than answer.
+    """
+    return len({_is_cca(profile, bill.period.end) for bill in bills}) > 1

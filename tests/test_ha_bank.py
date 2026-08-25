@@ -303,3 +303,83 @@ def test_a_bundled_account_is_not_told_a_cca_settled_it() -> None:
     assert state.true_ups, "the PTO anniversary is still crossed"
     assert not any("mce" in label for label in state.true_ups)
     assert not state.split
+
+
+def test_a_settlement_that_changes_nothing_does_not_consume_cycles() -> None:
+    """On a CCA account the utility's true-up settles nothing under SC 5.a.
+
+    It must therefore not shorten the *other* supplier's cash-out year. A
+    cash-out reverses its window's surplus, so a year cut from twelve months to
+    nine claws back less than the tariff requires and leaves the difference
+    sitting in the bank.
+    """
+    from tariffkit.billing import run_ledger, run_true_ups
+
+    profile = _cca_long()
+    bills = _long_run(profile, date(2026, 6, 15), date(2029, 8, 15))
+    state = bank.fold(profile, bills)
+
+    # The library's own windows, taken over the whole run, are the natural ones.
+    natural = [
+        (event.period.start, event.period.end)
+        for event in run_true_ups(
+            run_ledger(bills).entries, pto_date=date(2026, 6, 17), is_cca=True
+        )
+        if str(event.kind) == "mce_cash_out"
+    ]
+    assert len(natural) >= 2
+    for start, end in natural:
+        # A full cash-out year, not one truncated by an unrelated anniversary.
+        assert (end - start).days > 300, (start, end)
+
+    # Every settlement is still recorded, including the ones that settle nothing.
+    assert any("pge_relevant_period" in label for label in state.true_ups)
+    assert sum("mce_cash_out" in label for label in state.true_ups) == len(natural)
+
+
+def test_a_supplier_change_inside_the_run_is_refused_not_guessed() -> None:
+    """An annual settlement settles a year, not a cycle.
+
+    The library gives no way to say a year was half one arrangement and half
+    another, so a run spanning a change is folded under one of them. Saying so
+    is the only honest option available.
+    """
+    from tariffkit.config import CcaConfig
+    from tariffkit.models import Supplier
+
+    bundled = Config(tariff="E-ELEC", pto_date=PTO, baseline_territory="X")
+    cca = Config(
+        tariff="E-ELEC",
+        pto_date=PTO,
+        supplier=Supplier.CCA,
+        baseline_territory="X",
+        cca=CcaConfig(name="MCE", rate_card="MCE", option="light_green", pcia_vintage=2011),
+    )
+    profile = AccountProfile(
+        (AccountEpoch(date(2026, 1, 1), bundled), AccountEpoch(date(2026, 8, 1), cca)),
+        name="probe",
+    )
+    bills = [
+        _cycle_bill(profile, date(2026, 6, 1), date(2026, 6, 30), exported=2.0),
+        _cycle_bill(profile, date(2026, 9, 1), date(2026, 9, 30), exported=2.0),
+    ]
+    state = bank.fold(profile, bills)
+    assert not state.trustworthy
+    assert any("changed supplier" in w for w in state.warnings)
+
+
+def test_the_bank_finds_a_pto_recorded_only_on_an_earlier_epoch() -> None:
+    """A later epoch omitting it must not erase the annual settlement.
+
+    Folding with no PTO applies no settlement at all, silently, and reports the
+    result as complete.
+    """
+    early = Config(tariff="E-ELEC", pto_date=PTO, baseline_territory="X")
+    later = Config(tariff="E-ELEC", vintage="NBT00", baseline_territory="X")
+    profile = AccountProfile(
+        (AccountEpoch(date(2026, 1, 1), early), AccountEpoch(date(2026, 9, 1), later)),
+        name="probe",
+    )
+    from custom_components.tariffkit.bank import _pto_of
+
+    assert _pto_of(profile, date(2026, 10, 1)) == PTO

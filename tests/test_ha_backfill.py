@@ -656,21 +656,20 @@ def test_a_day_carrying_another_day_s_energy_is_not_priced() -> None:
     assert result.summary("probe")["complete"] is False
 
 
-def test_the_reader_marks_both_sides_of_a_gap() -> None:
+def test_the_reader_marks_only_the_hour_that_receives_a_catch_up() -> None:
     """`estimated` is the library's own word for a reconstructed interval.
 
-    Both ends, because a gap harms two days rather than one: the hour after it
-    carries the whole catch-up, and the hour before it belongs to a day that
-    lost the rest of its own energy into that catch-up. Publishing either would
-    be publishing a number the meter cannot support -- one overstated, one
-    understated.
+    Only the hour *after* a hole. The hour before it has both its own recorded
+    sum and its predecessor's, so its change is exact and its day is priceable;
+    refusing that day as well would cost a correctly-metered day for every
+    outage and move its cost into the residual for no reason.
     """
     from custom_components.tariffkit.energy import MeterSettings, UsageReader
 
     reader = UsageReader(None, MeterSettings(import_entity="sensor.x"))  # type: ignore[arg-type]
     hour = 3600.0
     covered = {"sensor.x": {hour * 1, hour * 2, hour * 5, hour * 6}}
-    assert reader._reconstructed(covered) == {hour * 2, hour * 5}
+    assert reader._reconstructed(covered) == {hour * 5}
     assert reader._reconstructed({"sensor.x": {hour, hour * 2, hour * 3}}) == set()
 
 
@@ -774,3 +773,37 @@ def test_a_clean_cycle_has_no_residual() -> None:
     assert result.unpriced == []
     assert result.residual == pytest.approx(0.0, abs=1e-9)
     assert result.summary("probe")["residual"] == 0.0
+
+
+def test_a_rerun_that_publishes_fewer_days_leaves_no_orphan() -> None:
+    """Writing external statistics inserts or updates; it never deletes.
+
+    So a day a later run refuses to price would otherwise stay published at the
+    price an earlier run gave it, with the following day absorbing the whole
+    correction as a zero. Refusing a day has to mean it stops being published.
+    """
+    profile = _profile()
+    clean = _hours(date(2026, 7, 1), date(2026, 7, 10), imported=1.0)
+    first = backfill.build(profile, clean, date(2026, 7, 1), date(2026, 7, 10), 1)
+
+    refused = list(clean)
+    catch_up = next(
+        i
+        for i, r in enumerate(refused)
+        if r.start.astimezone(PACIFIC).date() == date(2026, 7, 5)
+        and r.start.astimezone(PACIFIC).hour == 0
+    )
+    refused[catch_up] = IntervalReading(refused[catch_up].start, imported=9.0, estimated=True)
+    second = backfill.build(profile, refused, date(2026, 7, 1), date(2026, 7, 10), 1)
+    assert date(2026, 7, 5) in second.unpriced
+
+    series = next(s for s in backfill.SERIES if s.slug == "net_cost")
+    before = backfill.statistics_for(first, series)
+    after = backfill.statistics_for(second, series)
+    # Every day the first run wrote is written again, so none is orphaned.
+    assert len(after) == len(before) == 10
+    refused_row = next(row for row in after if row["start"].date() == date(2026, 7, 5))
+    assert refused_row["state"] == 0.0, "a day nothing can be said about reads zero"
+    # And the sum carries across it rather than jumping.
+    sums = [row["sum"] for row in after]
+    assert sums == sorted(sums), "the running total never goes backwards"

@@ -78,7 +78,10 @@ All notable changes to this project are documented here. This project follows
   export credit -- settling on unrelated calendars, which a single total would
   merge into a figure no statement prints. Every annual settlement in a run is
   applied in order rather than only the most recent, since each is computed
-  independently and a later one cannot see an earlier one's clawback.
+  independently and a later one cannot see an earlier one's clawback. A
+  settlement that reverses and pays nothing -- the utility's, on a CCA account
+  -- is recorded without consuming cycles, so it cannot shorten the other
+  supplier's cash-out year and leave unreversed credit in the bank.
 
 ### Fixed
 - Statement evidence is identified by what a statement says rather than by the

@@ -779,6 +779,11 @@ the split the tariff keeps, and enough context to judge the figure:
 | `true_ups` | Annual events crossed. Empty in a first year |
 | `split_between_suppliers` | True when a CCA supplies generation, which is what makes this two banks |
 | `credit_cap_verified` | Always false today. The library has not reconciled the credit cap against a statement, and a non-zero bank is exactly the case that would |
+
+A run that spans a change of generation supplier is reported as untrustworthy.
+An annual settlement settles a *year*, and there is no way to say that year was
+half one arrangement and half another — so the balance is folded under one of
+them, and saying so is the only honest option.
 | `warnings`, `quality.complete` | Whether the balance can be trusted at all |
 
 ### What it is a balance *of*

@@ -319,7 +319,7 @@
         "name": "Net cost this cycle"
       },
       "export_credit_bank": {
-        "name": "Export credit bank (utility)"
+        "name": "Export credit bank"
       },
       "export_credit_bank_generation": {
         "name": "Export credit bank (generation)"
