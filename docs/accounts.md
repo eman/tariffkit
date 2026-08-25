@@ -157,10 +157,24 @@ reconciled against the profile in turn:
 tariffkit account import-statement home ~/Downloads/PGE_*.pdf --apply --json
 ```
 
-Nothing is written without `--apply`. Re-importing the same PDF is a no-op —
-identical evidence is recognised by its digest and produces no changes — so
-it is safe to point this at a whole folder of statements repeatedly (e.g.
-after downloading new ones) without double-counting anything.
+Nothing is written without `--apply`. Re-importing the same statement is a
+no-op — evidence is recognised by *what it says*, not by the bytes it arrived
+in — so it is safe to point this at a whole folder of statements repeatedly
+(e.g. after downloading new ones) without double-counting anything.
+
+That distinction matters for `account sync`, which fetches from the portal
+rather than reading a saved file. PG&E regenerates a bill PDF on every request,
+so the same statement downloaded twice is byte-different and hashes
+differently; identifying evidence by its digest would make every sync look like
+new evidence and append the whole window again. Identity is a hash of the
+agreements' own facts instead, with the digest and the extraction mode left out
+as provenance. `statement_date` is part of those facts, so a genuinely
+re-issued or corrected statement still counts as its own evidence — only true
+repeats collapse.
+
+A profile that already accumulated duplicates repairs itself: identity is
+computed on load, so the repeats collapse the next time the profile is read and
+the file is rewritten without them.
 
 PG&E statements from before November 2025 contain a text layer whose font maps
 most glyphs to spaces. The parser detects that specific format and falls back

@@ -59,6 +59,20 @@ All notable changes to this project are documented here. This project follows
   one direction cannot vouch for the other.
 
 ### Fixed
+- Statement evidence is identified by what a statement says rather than by the
+  bytes it arrived in, so re-importing evidence a profile already holds is a
+  no-op. The utility regenerates a bill PDF on every request -- the same
+  statement downloaded twice is byte-different and hashes differently -- and
+  `AccountObservation.identity()` preferred that digest, so nothing a profile
+  held ever matched and every `account sync --apply` appended its whole window
+  again. Profiles written before this collapse their repeats the next time they
+  are loaded, so no migration is needed. `source_digest` remains as provenance,
+  and a profile still refuses to hold two observations that name the same source
+  document while disagreeing about what it says -- keyed on the top-level digest
+  falling back to the agreements' own, so an observation carrying only the
+  latter is still guarded. The extraction mode is excluded from identity
+  alongside the digest: the parser falls back to OCR for older statements, and
+  how a document was read is not part of what it says.
 - `tariffkit account sync` now signs in before asking the portal for the
   statement list. A resumed session arrives with a live session cookie and no
   CSRF token, because the token is one-shot and deliberately not cached, so the
