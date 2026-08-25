@@ -344,6 +344,18 @@ class ObservedAgreement:
         )
 
 
+def _agreement_facts(agreement: ObservedAgreement) -> dict[str, object]:
+    """One agreement's content, with the per-download digest left out.
+
+    ``source_digest`` is provenance -- which bytes this was read from -- not
+    part of what the statement says, and it changes every time the same bill is
+    fetched again.
+    """
+    facts = agreement.to_dict()
+    facts.pop("source_digest", None)
+    return facts
+
+
 @dataclass(frozen=True, slots=True)
 class AccountObservation:
     """Evidence kept separately from authoritative account epochs."""
@@ -371,18 +383,21 @@ class AccountObservation:
             )
 
     def identity(self) -> tuple[str, ...]:
-        """Stable identifiers used to make importing the same evidence idempotent."""
-        digests = tuple(
-            agreement.source_digest
-            for agreement in self.agreements
-            if agreement.source_digest is not None
-        )
-        if self.source_digest is not None:
-            return (self.source_digest,)
-        if digests:
-            return tuple(sorted(digests))
+        """Stable identifier making a re-import of the same evidence idempotent.
+
+        Derived from what the statement *says*, never from the bytes it arrived
+        in. The utility regenerates a bill PDF on every request: the same
+        statement downloaded twice is byte-different and hashes differently, so
+        a digest identifies a *download* rather than a *document*. Keying on one
+        meant nothing ever matched what a profile already held, and every
+        ``account sync --apply`` appended its whole window again.
+
+        ``statement_date`` is part of each agreement, so a genuinely re-issued or
+        corrected statement still earns its own identity. Only true repeats
+        collapse.
+        """
         canonical = json.dumps(
-            [agreement.to_dict() for agreement in self.agreements],
+            [_agreement_facts(agreement) for agreement in self.agreements],
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
@@ -450,22 +465,34 @@ class AccountProfile:
         if any(not isinstance(observation, AccountObservation) for observation in observations):
             raise AccountError("profile observations must be AccountObservation values")
         unique: list[AccountObservation] = []
-        seen: dict[tuple[str, ...], AccountObservation] = {}
+        seen: set[tuple[str, ...]] = set()
         for observation in observations:
             identity = observation.identity()
-            if identity:
-                previous = seen.get(identity)
-                if previous is not None:
-                    if (
-                        previous.source_digest != observation.source_digest
-                        or previous.agreements != observation.agreements
-                    ):
-                        raise AccountError(
-                            "profile observations with the same source identity conflict"
-                        )
-                    continue
-                seen[identity] = observation
+            if identity in seen:
+                # The same statement, seen again. Identity is derived from the
+                # statement's content, so a repeated identity *is* repeated
+                # content and there is nothing to reconcile -- keep the first
+                # and drop the rest. This also collapses, on load, the
+                # duplicates that earlier versions accumulated by keying
+                # identity on an unstable per-download digest, so an affected
+                # profile repairs itself the next time it is written.
+                continue
+            seen.add(identity)
             unique.append(observation)
+        # Two observations naming the same source document but disagreeing about
+        # what it says is a contradiction the profile must not hold: one of them
+        # is a misreading, and nothing here can tell which. Keyed on the digest
+        # rather than on identity, because identity is now the facts themselves
+        # and two different fact-sets can never share one.
+        by_source: dict[str, AccountObservation] = {}
+        for observation in unique:
+            digest = observation.source_digest
+            if digest is None:
+                continue
+            previous = by_source.get(digest)
+            if previous is not None and previous.identity() != observation.identity():
+                raise AccountError("profile observations from the same source document disagree")
+            by_source[digest] = observation
         object.__setattr__(self, "observations", tuple(unique))
         if not isinstance(self.meter_sources, MeterSources):
             raise AccountError("profile meter_sources must be MeterSources")

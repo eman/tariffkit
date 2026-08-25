@@ -609,6 +609,38 @@ def reconcile(
 
     revision = _profile_revision(profile)
     fingerprint = _profile_fingerprint(profile)
+    # Kept as its own check now that identity no longer rests on the digest.
+    # Identical bytes that yield different facts mean the parser changed its
+    # mind about a document, which is worth refusing rather than silently
+    # recording twice. It can only fire for a statement read from a stable
+    # source, such as the same saved PDF imported twice.
+    same_source = next(
+        (
+            evidence
+            for evidence in profile.observations
+            if evidence.source_digest is not None
+            and evidence.source_digest == observation.source_digest
+            and evidence.identity() != observation.identity()
+        ),
+        None,
+    )
+    if same_source is not None:
+        return AccountChangeSet(
+            revision,
+            observation,
+            (
+                AccountChange(
+                    ChangeOutcome.CONFLICT,
+                    None,
+                    "observation",
+                    before=same_source.to_dict(),
+                    after=observation.to_dict(),
+                    reason="the same source document produced different extracted facts",
+                ),
+            ),
+            profile.epochs,
+            profile_fingerprint=fingerprint,
+        )
     matching_evidence = next(
         (
             evidence
@@ -618,26 +650,10 @@ def reconcile(
         None,
     )
     if matching_evidence is not None:
-        if (
-            matching_evidence.source_digest != observation.source_digest
-            or matching_evidence.agreements != observation.agreements
-        ):
-            return AccountChangeSet(
-                revision,
-                observation,
-                (
-                    AccountChange(
-                        ChangeOutcome.CONFLICT,
-                        None,
-                        "observation",
-                        before=matching_evidence.to_dict(),
-                        after=observation.to_dict(),
-                        reason="the same source digest has different extracted facts",
-                    ),
-                ),
-                profile.epochs,
-                profile_fingerprint=fingerprint,
-            )
+        # Identity is the statement's own content, so a match means the profile
+        # already holds this evidence and there is nothing to apply. The two may
+        # carry different `source_digest` values -- the portal regenerates a PDF
+        # on every request -- and that difference says nothing about the bill.
         return AccountChangeSet(
             revision,
             observation,
