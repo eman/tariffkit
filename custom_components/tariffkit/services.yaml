@@ -111,7 +111,9 @@ backfill_usage:
     start:
       name: Start date
       description: >-
-        First day to price, as an ISO date. Defaults to the account profile's
-        first epoch, which is the earliest day it can price anything for.
+        First day to price. Defaults to the account profile's first epoch, which
+        is the earliest day it can price anything for. Snapped back to the start
+        of whichever billing cycle contains it, since a cycle can only be
+        decomposed from its own beginning.
       selector:
-        text:
+        date:

@@ -266,6 +266,8 @@ class UsageReader:
         #: Hours discarded as implausible. Counted rather than only logged:
         #: a dropped hour is real energy that is not in the total.
         self._dropped = 0
+        #: Days a backfill read had to discard an implausible hour on.
+        self.discarded: tuple[date, ...] = ()
 
     async def async_usage(self, now: datetime) -> MeteredUsage | None:
         """Readings from the cycle's first midnight through ``now``.
@@ -306,6 +308,7 @@ class UsageReader:
         )
         rows = await self._async_query(opens_at - timedelta(hours=1), closes_at)
         hours: dict[float, list[float]] = {}
+        dropped: list[date] = []
         for direction, entity in (
             (0, self.settings.import_entity),
             (1, self.settings.export_entity),
@@ -318,8 +321,19 @@ class UsageReader:
                 if change is None or slot < opens_at.timestamp():
                     continue
                 if change < 0 or change > MAX_INTERVAL_KW:
+                    # Loudly, unlike a silent skip: this is a statistics series
+                    # catching up after a gap, so real energy is being dropped
+                    # and the totals below it will be short by that much.
+                    _LOGGER.warning(
+                        "Backfill ignoring implausible change of %.1f kWh for %s at %s",
+                        change,
+                        entity,
+                        datetime.fromtimestamp(slot, tz=PACIFIC).isoformat(),
+                    )
+                    dropped.append(datetime.fromtimestamp(slot, tz=PACIFIC).date())
                     continue
                 hours.setdefault(slot, [0.0, 0.0])[direction] += change
+        self.discarded = tuple(sorted(set(dropped)))
         return [
             IntervalReading(
                 datetime.fromtimestamp(slot, tz=PACIFIC),

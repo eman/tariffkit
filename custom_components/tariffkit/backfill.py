@@ -24,14 +24,11 @@ is the finest slice this can state exactly, and stating it exactly is the point.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from typing import TYPE_CHECKING
 
-from homeassistant.components.recorder.models import (
-    StatisticData,
-    StatisticMeanType,
-    StatisticMetaData,
-)
 from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
 
@@ -39,7 +36,10 @@ from tariffkit.account import AccountProfile
 from tariffkit.billing import Bill, BillingPeriod, IntervalReading
 from tariffkit.timeutil import PACIFIC
 
-from .energy import price, resolve_cycle, statement_periods
+from .energy import coverage_warnings, price, resolve_cycle, statement_periods
+
+if TYPE_CHECKING:
+    from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -57,9 +57,14 @@ class Series:
     unit_class: str | None
 
     def statistic_id(self, profile_name: str) -> str:
-        return f"{DOMAIN_SOURCE}:{profile_name}_{self.slug}"
+        return f"{DOMAIN_SOURCE}:{statistic_slug(profile_name)}_{self.slug}"
 
     def metadata(self, profile_name: str) -> StatisticMetaData:
+        from homeassistant.components.recorder.models import (
+            StatisticMeanType,
+            StatisticMetaData,
+        )
+
         return StatisticMetaData(
             mean_type=StatisticMeanType.NONE,
             has_mean=False,
@@ -70,6 +75,19 @@ class Series:
             unit_of_measurement=self.unit,
             unit_class=self.unit_class,
         )
+
+
+def statistic_slug(profile_name: str) -> str:
+    """A profile name as a statistic id can actually carry.
+
+    Home Assistant's ``VALID_STATISTIC_ID`` allows only lowercase letters,
+    digits and single underscores. Profile names allow hyphens, and the config
+    flow *creates* them -- it slugifies "My Home" to ``my-home`` -- so publishing
+    the raw name fails at the last step of an otherwise complete run with a bare
+    "Invalid statistic_id". ``opower`` folds hyphens the same way.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "_", profile_name.strip().lower())
+    return re.sub(r"_+", "_", slug).strip("_")
 
 
 SERIES: tuple[Series, ...] = (
@@ -101,7 +119,7 @@ class BackfillResult:
     """What a run wrote, and what it could not."""
 
     days: list[DayFigures] = field(default_factory=list)
-    #: Cycles the account history could not price, with the reason.
+    #: Cycles that could not be priced, with the reason.
     skipped: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -118,6 +136,7 @@ class BackfillResult:
             "statistic_ids": [s.statistic_id(profile_name) for s in SERIES],
             "skipped": list(self.skipped),
             "warnings": list(self.warnings),
+            "complete": not self.skipped and not self.warnings,
         }
 
 
@@ -136,8 +155,13 @@ def cycles_between(
     cursor = closes
     while cursor >= opens:
         cycle = resolve_cycle(cursor, start_day, periods)
-        first = max(cycle.start, opens)
-        found.append(BillingPeriod(first, cursor))
+        # The cycle's *true* start, never clipped to the window. Truncating a
+        # cycle's tail is harmless -- `bill(start..D)` does not depend on days
+        # after D -- but clipping its head silently discards whatever baseline
+        # allowance the real cycle had banked, and every day of it then prices
+        # too high. A leading cycle the window does not fully cover is refused
+        # by `build` rather than quietly mispriced.
+        found.append(BillingPeriod(cycle.start, cursor))
         if cycle.start <= opens:
             break
         cursor = cycle.start - timedelta(days=1)
@@ -161,7 +185,7 @@ def price_cycle(
     allowance is cycle-cumulative, so pricing a day in isolation would grant it
     one day's worth however much the cycle had banked.
     """
-    within = [r for r in readings if cycle.contains(r.start)]
+    within = _within(readings, cycle)
     days: list[DayFigures] = []
     previous: Bill | None = None
     warnings: tuple[str, ...] = ()
@@ -202,6 +226,21 @@ def _delta(running: Bill, previous: Bill | None, part: str) -> float:
     return read(running) - read(previous)
 
 
+def evidence_span(readings: list[IntervalReading]) -> tuple[date, date] | None:
+    """The first and last day any reading covers, or None for no readings.
+
+    A day the recorder holds nothing for is not a zero day. Pricing one anyway
+    charges a Base Services Charge for a day this has no evidence about, and the
+    written row is then indistinguishable from a real day of no usage -- which
+    matters because the default window starts at the account's first epoch,
+    routinely years before the meter sensor existed.
+    """
+    if not readings:
+        return None
+    days = [_day_of(reading) for reading in readings]
+    return min(days), max(days)
+
+
 def build(
     profile: AccountProfile,
     readings: list[IntervalReading],
@@ -209,28 +248,75 @@ def build(
     closes: date,
     start_day: int,
 ) -> BackfillResult:
-    """Price every day between ``opens`` and ``closes``, cycle by cycle."""
+    """Price every day the evidence covers, cycle by cycle."""
     result = BackfillResult()
+    span = evidence_span(readings)
+    if span is None:
+        result.skipped.append(
+            f"{opens}..{closes}: the recorder holds no readings for these meters "
+            f"over this window, so there is nothing to price"
+        )
+        return result
+    first_seen, last_seen = span
+    if first_seen > opens:
+        result.warnings.append(
+            f"no metered readings before {first_seen}, so {opens}..{first_seen} was "
+            f"not priced rather than being charged a daily charge it has no evidence for"
+        )
+    if last_seen < closes:
+        result.warnings.append(f"no metered readings after {last_seen}")
+    opens, closes = max(opens, first_seen), min(closes, last_seen)
+    if opens > closes:
+        return result
+
     for cycle in cycles_between(profile, opens, closes, start_day):
+        if cycle.start < opens:
+            # A cycle joined partway through cannot be decomposed: its earlier
+            # days are missing, so the later ones have nothing to be marginal to,
+            # and pricing them as though the cycle began here would discard an
+            # allowance the real cycle had been banking since its true start.
+            result.skipped.append(
+                f"{cycle.start}..{cycle.end}: the window starts inside this cycle "
+                f"({opens}), so its days cannot be priced against a full cycle. "
+                f"Backfill from {cycle.start} or earlier to include it"
+            )
+            continue
         days, reason, warnings = price_cycle(profile, readings, cycle)
         if reason:
-            # One unpriceable cycle does not sink the rest: a profile whose
-            # history begins mid-window should still get everything after it.
-            result.skipped.append(f"{cycle.start}..{cycle.end}: {reason}")
+            # `reason` already names a period, so quote only its explanation.
+            detail = reason.split(": ", 1)[-1]
+            result.skipped.append(f"{cycle.start}..{cycle.end}: {detail}")
             continue
         result.days.extend(days)
-        result.warnings.extend(w for w in warnings if w not in result.warnings)
+        for warning in (*warnings, *coverage_warnings(_within(readings, cycle), cycle)):
+            if warning not in result.warnings:
+                result.warnings.append(warning)
     return result
 
 
-def statistics_for(result: BackfillResult, series: Series) -> list[StatisticData]:
+def _within(readings: list[IntervalReading], cycle: BillingPeriod) -> list[IntervalReading]:
+    return [r for r in readings if cycle.contains(r.start)]
+
+
+def statistics_for(
+    result: BackfillResult, series: Series, base: float = 0.0
+) -> list[StatisticData]:
     """One cumulative row per day, as external statistics want it.
 
-    ``sum`` runs from the start of the window rather than from any earlier
-    series, because a rerun rewrites the window whole. ``state`` carries the
-    day's own figure, which is what a statistics card labels each bar with.
+    ``sum`` continues from ``base`` -- whatever the series already held
+    immediately before this window -- because writing external statistics
+    replaces only the rows it names and leaves everything earlier in place. A
+    ``sum`` restarted at zero partway through a live series does not merely lose
+    the earlier days: the recorder derives each period's value by differencing
+    consecutive sums, so the first rewritten day reports a large negative figure
+    and every aggregate over the series is wrong from there on.
+
+    ``state`` carries the day's own figure, which is what a statistics card
+    labels each bar with.
     """
-    running = 0.0
+    from homeassistant.components.recorder.models import StatisticData
+
+    running = base
     rows: list[StatisticData] = []
     for figures in result.days:
         value = figures.value(series.slug)

@@ -83,8 +83,35 @@ def test_a_baseline_schedule_still_decomposes_exactly() -> None:
     whole, _ = price(profile, readings, cycle)
     assert whole is not None
     assert sum(d.net_cost for d in days) == pytest.approx(whole.total, abs=1e-9)
-    # And no single day exceeds the cycle it belongs to.
-    assert max(d.net_cost for d in days) < whole.total
+
+
+def test_a_single_day_may_exceed_its_cycle() -> None:
+    """Summing to the cycle does not bound any individual day.
+
+    A heavy import day inside a cycle that exports for the rest of the month
+    costs more on its own than the cycle it belongs to, because the later days
+    earn credit against it. Documented because the opposite reads as an obvious
+    corollary of the sum property, and is not one.
+    """
+    from custom_components.tariffkit.energy import price
+
+    profile = _profile()
+    cycle = BillingPeriod(date(2026, 7, 1), date(2026, 7, 31))
+    readings = [
+        IntervalReading(datetime(2026, 7, 1, hour, tzinfo=PACIFIC), imported=8.0)
+        for hour in range(24)
+    ]
+    for day in range(2, 32):
+        readings += [
+            IntervalReading(datetime(2026, 7, day, hour, tzinfo=PACIFIC), exported=8.0)
+            for hour in range(24)
+        ]
+    days, _, _ = backfill.price_cycle(profile, readings, cycle)
+    whole, _ = price(profile, readings, cycle)
+    assert whole is not None
+    assert whole.total < 0, "a month of net export owes nothing"
+    assert max(d.net_cost for d in days) > whole.total
+    assert sum(d.net_cost for d in days) == pytest.approx(whole.total, abs=1e-9)
 
 
 def test_statistics_carry_a_running_sum_and_the_days_own_value() -> None:
@@ -127,18 +154,36 @@ def test_a_cycle_the_history_only_partly_covers_is_skipped_whole() -> None:
     assert max(d.day for d in result.days) == date(2026, 8, 20)
 
 
-def test_cycles_follow_statement_evidence_where_it_exists() -> None:
+def test_cycles_keep_their_true_start_and_only_their_tail_is_clipped() -> None:
+    """A cycle's head must never be clipped to the window.
+
+    `bill(cycle_start..D)` does not depend on days after D, so truncating a
+    cycle's tail is harmless. Clipping its head is not: it discards whatever
+    baseline allowance the real cycle had banked, and every day then prices too
+    high. `build` refuses a leading cycle the window cannot cover rather than
+    pricing it from the wrong start.
+    """
     profile = _profile()
     cycles = backfill.cycles_between(profile, date(2026, 5, 15), date(2026, 7, 20), 1)
     assert [(c.start, c.end) for c in cycles] == [
-        (date(2026, 5, 15), date(2026, 5, 31)),
+        (date(2026, 5, 1), date(2026, 5, 31)),
         (date(2026, 6, 1), date(2026, 6, 30)),
         (date(2026, 7, 1), date(2026, 7, 20)),
     ]
-    # The window's own edges clip the first and last cycle rather than
-    # reaching outside what was asked for.
-    assert cycles[0].start == date(2026, 5, 15)
-    assert cycles[-1].end == date(2026, 7, 20)
+    assert cycles[0].start == date(2026, 5, 1), "true start, not the window's edge"
+    assert cycles[-1].end == date(2026, 7, 20), "the trailing cycle is truncated"
+
+
+def test_a_window_opening_mid_cycle_refuses_that_cycle() -> None:
+    """Rather than pricing its days against a cycle that never began there."""
+    profile = _profile("E-TOU-C", baseline_territory="X")
+    readings = _hours(date(2026, 5, 15), date(2026, 6, 30), imported=1.0)
+    result = backfill.build(profile, readings, date(2026, 5, 15), date(2026, 6, 30), 1)
+
+    assert any("starts inside this cycle" in s for s in result.skipped)
+    assert all(d.day >= date(2026, 6, 1) for d in result.days)
+    # June is whole, so it is priced in full.
+    assert len(result.days) == 30
 
 
 IMPORT_ENTITY = "sensor.grid_energy_delivered"
@@ -299,3 +344,92 @@ async def test_the_action_refuses_without_meters(hass: HomeAssistant) -> None:
             blocking=True,
             return_response=True,
         )
+
+
+def test_a_hyphenated_profile_name_becomes_a_usable_statistic_id() -> None:
+    """The config flow slugifies "My Home" to `my-home`, which HA rejects."""
+    from homeassistant.components.recorder.statistics import VALID_STATISTIC_ID
+
+    for name in ("home", "my-home", "My Home", "a__b", "-edge-"):
+        for series in backfill.SERIES:
+            statistic_id = series.statistic_id(name)
+            assert VALID_STATISTIC_ID.match(statistic_id), statistic_id
+    assert backfill.SERIES[0].statistic_id("my-home") == "tariffkit:my_home_grid_import"
+
+
+def test_days_without_evidence_are_not_billed() -> None:
+    """A day the recorder holds nothing for is not a day of zero usage.
+
+    The default window starts at the profile's first epoch, routinely years
+    before the meter sensor existed. Pricing those days charges a daily charge
+    for days there is no evidence about, and the written row is then
+    indistinguishable from a real zero-usage day.
+    """
+    profile = _profile()
+    readings = _hours(date(2026, 7, 1), date(2026, 7, 20), imported=1.0)
+    result = backfill.build(profile, readings, date(2026, 5, 1), date(2026, 7, 20), 1)
+
+    assert min(d.day for d in result.days) == date(2026, 7, 1)
+    assert any("no metered readings before" in w for w in result.warnings)
+    # 61 days of invented Base Services Charge is what this prevents.
+    assert all(d.day >= date(2026, 7, 1) for d in result.days)
+
+
+def test_no_readings_at_all_is_refused_rather_than_priced() -> None:
+    profile = _profile()
+    result = backfill.build(profile, [], date(2026, 7, 1), date(2026, 7, 20), 1)
+    assert result.days == []
+    assert any("holds no readings" in s for s in result.skipped)
+
+
+def test_a_gap_in_the_metered_series_is_reported() -> None:
+    """The live path warns about gaps; history must not be blinder than it."""
+    profile = _profile()
+    readings = [
+        r
+        for r in _hours(date(2026, 7, 1), date(2026, 7, 20), imported=1.0)
+        if r.start.astimezone(PACIFIC).day not in (8, 9, 10)
+    ]
+    result = backfill.build(profile, readings, date(2026, 7, 1), date(2026, 7, 20), 1)
+    assert any("gap(s) in the metered series" in w for w in result.warnings)
+    assert result.summary("probe")["complete"] is False
+
+
+def test_a_clean_window_reports_itself_complete() -> None:
+    profile = _profile()
+    readings = _hours(date(2026, 7, 1), date(2026, 7, 20), imported=1.0)
+    result = backfill.build(profile, readings, date(2026, 7, 1), date(2026, 7, 20), 1)
+    assert result.warnings == []
+    assert result.skipped == []
+    assert result.summary("probe")["complete"] is True
+
+
+def test_the_running_sum_continues_from_what_precedes_the_window() -> None:
+    """A rewritten window must not restart `sum` inside a live series.
+
+    External statistics replace only the rows they name. A `sum` restarted at
+    zero partway through makes the recorder derive a large negative value for
+    the first rewritten day and corrupts every aggregate after it.
+    """
+    profile = _profile()
+    # Aligned to the cycle, because `build` refuses one it joins partway
+    # through; the action snaps a mid-cycle request back for exactly that reason.
+    readings = _hours(date(2026, 7, 1), date(2026, 7, 3), imported=1.0)
+    result = backfill.build(profile, readings, date(2026, 7, 1), date(2026, 7, 3), 1)
+    series = next(s for s in backfill.SERIES if s.slug == "grid_import")
+
+    fresh = backfill.statistics_for(result, series)
+    assert [r["sum"] for r in fresh] == [
+        pytest.approx(24.0),
+        pytest.approx(48.0),
+        pytest.approx(72.0),
+    ]
+
+    continued = backfill.statistics_for(result, series, base=1000.0)
+    assert [r["sum"] for r in continued] == [
+        pytest.approx(1024.0),
+        pytest.approx(1048.0),
+        pytest.approx(1072.0),
+    ]
+    # The per-day figures are untouched by where the series happens to be.
+    assert [r["state"] for r in fresh] == [r["state"] for r in continued]

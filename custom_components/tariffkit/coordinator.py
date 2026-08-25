@@ -491,6 +491,11 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
             return []
         return await self._usage.async_readings(opens, closes)
 
+    @property
+    def discarded_history(self) -> tuple[date, ...]:
+        """Days the last history read had to drop an implausible hour on."""
+        return () if self._usage is None else self._usage.discarded
+
     def _usage_for(self, metered: MeteredUsage | None) -> TariffKitUsage | None:
         """Price the day and the cycle to date over the same readings."""
         if metered is None:

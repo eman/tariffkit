@@ -48,7 +48,7 @@ the percentages, since they drift as tests and flow branches are added.
 
 | Rule | Status | Note |
 |---|---|---|
-| `action-exceptions` | Met | All three actions raise `ServiceValidationError` with a message naming the problem; see [Actions](home-assistant.md#actions). |
+| `action-exceptions` | Met | All three actions raise `ServiceValidationError` with a message naming the problem, including for a profile name no statistic id can carry, which is checked before any work is done. A recorder failure inside the backfill surfaces as `HomeAssistantError` naming the query. See [Actions](home-assistant.md#actions). |
 | `config-entry-unloading` | Met | `async_unload_entry` unloads platforms; reload (options save, or manual reload) recreates entities cleanly. |
 | `docs-configuration-parameters` | Met | [Configure](home-assistant.md#configure), [Account history](home-assistant.md#account-history), and [Metered energy](home-assistant.md#metered-energy) cover every field, including which ones are conditional. |
 | `docs-installation-parameters` | Met | Folded into installation instructions above; the wizard has no separate installation-time parameters beyond the profile fields. |

@@ -653,18 +653,48 @@ the finest slice this can state exactly.
 
 **Each day is its cycle's movement across that day**, computed by differencing
 consecutive cycle-to-date bills — the same decomposition the Today entities
-use, and for the same reason. The days therefore sum to their cycle exactly and
-none can exceed it.
+use, and for the same reason. The days sum to their cycle exactly. They are not
+individually bounded by it: a heavy import day inside a month that exports for
+the rest can cost more on its own than the whole cycle does, because the later
+days earn credit against it.
+
+One attribution caveat. A SmartRate credit is earned against the cycle's whole
+eligible usage but falls due on the event day, so differencing books it entirely
+onto that day. The cycle total stays exact; the day it lands on reads a few
+dollars low and the days before it read correspondingly high.
+
+**The three dollar series do not reconcile with each other.** `energy_cost` is
+import charges plus taxes; `net_cost` also includes the Base Services Charge.
+So `net_cost` exceeds `energy_cost − export_credit` by the daily charge, around
+$24 a month. That is not an error; the fixed charge simply belongs to neither of
+the other two.
 
 **Today is excluded.** The window ends at yesterday; today is what the running
 totals are for.
 
 **Rerunning replaces, it does not append.** So run it again after correcting
 account history — the corrected settings reprice the whole window. This is also
-why nothing is stored about previous runs: there is no state to go stale.
+why nothing is stored about previous runs: there is no state to go stale. A
+rerun over a *narrower* window is safe too: the running total continues from
+whatever the series already held before the window, rather than restarting.
 
-**A cycle the account history only partly covers is skipped whole**, and named
-in the response's `skipped` list. The days after the epoch have nothing to be
+**Only days the recorder has readings for are priced.** The window is clipped to
+the evidence, so a start date earlier than your meter sensor existed does not
+manufacture months of daily charges for days nothing is known about — it says so
+in `warnings` instead. Gaps *inside* the window are reported the same way, and
+`complete` in the response is false whenever anything was skipped or warned
+about.
+
+**Days are labelled in Pacific time.** On an instance more than seven hours west
+of Pacific the day boundaries shift by one; everywhere else they line up.
+
+**Renaming a profile starts a new set of series.** The old
+`tariffkit:<oldname>_*` statistics remain and are not cleaned up; delete them
+under **Developer tools → Statistics** if you do not want them.
+
+**A cycle that cannot be covered in full is skipped whole**, and named in the
+response's `skipped` list — whether the account history begins inside it or the
+requested window does. The days after the epoch have nothing to be
 marginal *to*, and pricing them as though the cycle began at the epoch would
 under-grant a baseline allowance the real cycle had been banking since its true
 start. Backdating the profile's first epoch is the fix; see

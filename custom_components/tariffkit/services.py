@@ -35,6 +35,7 @@ from .const import (
     SUPPORTED_RESOLUTIONS,
 )
 from .coordinator import TariffKitCoordinator, TariffKitQuality
+from .energy import resolve_cycle, statement_periods
 
 MAX_HOURS = 168
 
@@ -335,7 +336,14 @@ async def _backfill_usage(hass: HomeAssistant, call: ServiceCall) -> ServiceResp
     if not profile.name:
         raise ServiceValidationError("backfilling needs a named account profile")
 
+    _check_publishable(profile.name)
     opens = _backfill_start(call.data, profile)
+    # Read from the containing cycle's first day, not from the day asked for. A
+    # cycle can only be decomposed from its own start, so a window opening
+    # partway through one would otherwise lose it entirely -- and an epoch date
+    # is rarely a cycle boundary, so the default start lands mid-cycle routinely.
+    periods = statement_periods(profile)
+    opens = min(opens, resolve_cycle(opens, coordinator.meters.cycle_start_day, periods).start)
     closes = now_pacific().date() - timedelta(days=1)
     if opens > closes:
         raise ServiceValidationError(
@@ -346,8 +354,34 @@ async def _backfill_usage(hass: HomeAssistant, call: ServiceCall) -> ServiceResp
     result = await hass.async_add_executor_job(
         backfill.build, profile, readings, opens, closes, coordinator.meters.cycle_start_day
     )
+    discarded = coordinator.discarded_history
+    if discarded:
+        result.warnings.append(
+            f"{len(discarded)} hour(s) were discarded as implausible, on "
+            f"{discarded[0]}..{discarded[-1]}; that energy is missing from these "
+            f"totals, so they understate what was actually used"
+        )
     await backfill.async_publish(hass, profile.name, result)
     return cast(ServiceResponse, result.summary(profile.name))
+
+
+def _check_publishable(profile_name: str) -> None:
+    """Refuse a name no statistic id can carry, before doing any work.
+
+    Failing this late means failing after the recorder query and the whole
+    pricing pass, with a message from deep inside the recorder that names
+    neither the profile nor the field.
+    """
+    from homeassistant.components.recorder.statistics import VALID_STATISTIC_ID
+
+    for series in backfill.SERIES:
+        statistic_id = series.statistic_id(profile_name)
+        if not VALID_STATISTIC_ID.match(statistic_id):
+            raise ServiceValidationError(
+                f"the profile name {profile_name!r} cannot be published as a statistic "
+                f"({statistic_id!r} is not a valid statistic id). Rename the profile "
+                f"using only letters, digits and underscores"
+            )
 
 
 def _backfill_start(data: Mapping[str, Any], profile: AccountProfile) -> date:
