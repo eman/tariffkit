@@ -463,7 +463,7 @@ def test_interior_days_without_readings_are_not_billed_either() -> None:
     assert date(2026, 7, 9) not in priced
     assert date(2026, 7, 10) not in priced
     assert len(result.days) == 17
-    assert any("no metered readings" in w and "unpriced" in w for w in result.warnings)
+    assert any("could not be priced" in w for w in result.warnings)
     # The surviving days are unaffected -- each is still its own marginal share.
     assert all(d.net_cost > 0 for d in result.days)
     assert result.summary("probe")["complete"] is False
@@ -615,3 +615,48 @@ async def test_a_meter_with_no_history_is_reported_not_read_as_zero(
     assert response["grid_export_kwh"] == 0.0
     assert any(EXPORT_ENTITY in w for w in response["warnings"]), response["warnings"]
     assert response["complete"] is False
+
+
+def test_a_day_carrying_another_day_s_energy_is_not_priced() -> None:
+    """A counter catching up after an outage lands it all in one hour.
+
+    The kWh total survives -- a cumulative counter depends only on its
+    endpoints -- but the shape does not, and the shape is what a time-of-use
+    tariff prices. That hour cannot be separated from the day's own usage, so
+    the day it lands on cannot be priced, only guessed at.
+    """
+    profile = _profile()
+    readings = [
+        r
+        for r in _hours(date(2026, 7, 1), date(2026, 7, 20), imported=1.0)
+        if r.start.astimezone(PACIFIC).day not in (8, 9, 10)
+    ]
+    # The recorder returns on the 11th and reports the outage as one hour.
+    catch_up = next(
+        i
+        for i, r in enumerate(readings)
+        if r.start.astimezone(PACIFIC).date() == date(2026, 7, 11)
+        and r.start.astimezone(PACIFIC).hour == 0
+    )
+    readings[catch_up] = IntervalReading(readings[catch_up].start, imported=73.0, estimated=True)
+
+    result = backfill.build(profile, readings, date(2026, 7, 1), date(2026, 7, 20), 1)
+    priced = {d.day for d in result.days}
+
+    assert date(2026, 7, 11) not in priced, "the catch-up day must not be published"
+    for missing in (date(2026, 7, 8), date(2026, 7, 9), date(2026, 7, 10)):
+        assert missing not in priced
+    assert len(result.days) == 16
+    assert any("catch-up" in w for w in result.warnings)
+    assert result.summary("probe")["complete"] is False
+
+
+def test_the_reader_marks_an_hour_that_follows_a_gap() -> None:
+    """`estimated` is the library's own word for a reconstructed interval."""
+    from custom_components.tariffkit.energy import MeterSettings, UsageReader
+
+    reader = UsageReader(None, MeterSettings(import_entity="sensor.x"))  # type: ignore[arg-type]
+    hour = 3600.0
+    covered = {"sensor.x": {hour * 1, hour * 2, hour * 5, hour * 6}}
+    assert reader._reconstructed(covered) == {hour * 5}, "only the hour after the gap"
+    assert reader._reconstructed({"sensor.x": {hour, hour * 2, hour * 3}}) == set()

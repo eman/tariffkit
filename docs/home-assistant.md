@@ -678,12 +678,17 @@ why nothing is stored about previous runs: there is no state to go stale. A
 rerun over a *narrower* window is safe too: the running total continues from
 whatever the series already held before the window, rather than restarting.
 
-**Only days the recorder has readings for are priced.** That holds at the
-window's edges *and* inside it: a start date earlier than your meter sensor
+**Only days the recorder can actually account for are priced.** That holds at
+the window's edges *and* inside it: a start date earlier than your meter sensor
 existed does not manufacture months of daily charges, and a recorder outage in
 the middle leaves those days unpriced rather than billing them as zero-usage
-days. Each is reported in `warnings`, and `complete` in the response is false
-whenever anything was skipped or warned about.
+days. The day the recorder *returns* on is left out too: a counter that was
+unreachable reports its whole catch-up in the first hour it is seen again, and
+that hour cannot be separated from the day's own usage. The kWh survives — a
+cumulative counter depends only on its endpoints — but the time-of-use shape
+does not, and the shape is what the tariff prices. Each omission is reported in
+`warnings`, and `complete` in the response is false whenever anything was
+skipped or warned about.
 
 Coverage is judged **per meter**, not on the two directions combined. Import
 statistics with no export statistics would otherwise look like a site that
