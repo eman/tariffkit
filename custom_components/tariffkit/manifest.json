@@ -1,6 +1,9 @@
 {
   "domain": "tariffkit",
   "name": "TariffKit",
+  "after_dependencies": [
+    "recorder"
+  ],
   "codeowners": [
     "@eman"
   ],

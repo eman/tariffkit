@@ -156,6 +156,9 @@ async def test_initial_flow_branches_to_manual_import_and_conditional_delivery(
     )
     assert result["type"] == "create_entry"
     assert result["data"][CONF_PROFILE]["name"] == "import-only"
+    # Metered energy is not asked during setup; it lives under Configure only,
+    # so a fresh entry carries no meter options at all.
+    assert result.get("options", {}) == {}
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")

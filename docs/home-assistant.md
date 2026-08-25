@@ -103,12 +103,17 @@ Every field is validated against the library before the entry is created, so
 an invalid combination is rejected in the form with the same error the CLI
 would raise, not discovered later at runtime.
 
-Forecast horizon and Predbat compatibility mode are **not** asked during
-setup — they default to sensible values (48 hours, Predbat off) and live
-under **Configure → Forecast and Predbat** afterward, as their own menu item
-rather than mixed into pricing settings. Keeping them out of initial setup
-means the two or three questions most people need to answer are the only
-ones on screen.
+Forecast horizon, Predbat compatibility mode, and metered energy are **not**
+asked during setup — they default to sensible values (48 hours, Predbat off,
+no meters) and live under **Configure → Forecast and Predbat** and
+**Configure → Metered energy** afterward, as their own menu items rather than
+mixed into pricing settings. Keeping them out of initial setup means the two
+or three questions most people need to answer are the only ones on screen.
+
+Metered energy in particular is deliberately not a setup question: pricing an
+account does not require a meter, and the counters are usually integrated
+after the tariff rather than before, so asking during setup would put a
+question in front of every new user that most of them cannot answer yet.
 
 Multiple TariffKit entries can coexist — one per account or service
 agreement, or more than one meter in the same household — since each gets
@@ -121,12 +126,13 @@ place, without a restart.
 
 ## Account history
 
-**Configure** opens a menu with three choices:
+**Configure** opens a menu with four choices:
 
 | Menu item | Does |
 |---|---|
 | Account pricing settings | The same staged wizard as setup (account/tariff → delivery/export → CCA product), editing the epoch in force today. An import-only epoch reopens with export still off, rather than defaulting back on and re-asking for delivery fields you never entered. |
 | Forecast and Predbat | Forecast horizon and the Predbat compatibility toggle. Stored as options; changing either never touches account history. |
+| Metered energy | The grid import and export counters and the billing cycle start day. See [Metered energy](#metered-energy). Stored as options; clearing both entities removes the running-total entities on reload. |
 | **Account history** | Opens the sub-menu below. |
 
 Its entry holds a whole [named account profile](accounts.md) — an ordered,
@@ -185,6 +191,10 @@ logged reason rather than guessing.
 | Import Generation / Distribution / Transmission / Surcharges / Credits / Other | USD/kWh | the import price, split into stackable bands; see [Component breakdown](#component-breakdown) |
 | Export Generation / Delivery / Credits / Other | USD/kWh | the export credit, split the same way |
 | Daily Fixed Charge | USD/day | AB 205 Base Services Charge; **not** a per-kWh price and not part of the stack |
+| Grid import / export today | kWh | metered import and export since **Pacific** midnight — the tariff's billing day, not the instance's local one; only with [Metered energy](#metered-energy) configured |
+| Energy cost / Export credit / Net cost today | USD | today's running charge, credit, and net, reported in USD regardless of the instance's configured currency; only with [Metered energy](#metered-energy) configured |
+| Grid import / export this cycle | kWh | the same two counters over the billing cycle to date |
+| Energy cost / Export credit / Net cost this cycle | USD | the same three figures over the billing cycle to date |
 
 Daily Fixed Charge is reported in `USD/day`, not `USD/kWh`, because that is
 what it is: a fixed daily amount, not a marginal price. The unit keeps it out
@@ -461,6 +471,141 @@ Native History cards cannot stack, and cannot draw the forecast half at all
 (see [History and forecast timeline](#history-and-forecast-timeline)). With
 nothing but Home Assistant Core, add the group sensors to a History card and
 read them as separate lines.
+
+## Metered energy
+
+Optional. Point TariffKit at the two cumulative kWh counters your meter or
+meter reader publishes and it prices what actually moved, not just what a kWh
+would have cost:
+
+**Configure → Metered energy** — it is not part of initial setup, so an entry
+created before you integrated a meter picks it up later without being
+recreated:
+
+| Field | What it is |
+|---|---|
+| Grid import (energy delivered) | Cumulative kWh taken from the grid. A statement calls this *energy delivered* |
+| Grid export (energy received) | Cumulative kWh sent to the grid. A statement calls this *energy received* |
+| Billing cycle start day | Fallback only — the day of the month your meter is read. `0` uses the calendar month. Ignored whenever the profile carries statement evidence |
+
+Both entities are optional and independent. Name neither and none of the
+running-total entities are created at all. Naming fewer than before removes the
+entities that can no longer be answered, rather than leaving them behind as
+permanently unavailable.
+
+An account profile imported from the CLI already carries its own
+`meter_sources.ha` mapping, so the entities may exist before you ever open this
+step — the form shows what it inherited, and clearing a field overrides it. Name only the import counter — a
+site with no solar — and the export-credit entities are left out rather than
+sitting at a permanent zero: a credit the meters cannot answer for is not a
+series with nothing in it.
+
+### The counters do not have to reset
+
+They usually do not. The Rainforest Eagle-100's
+`sensor.eagle_100_energy_delivered` and `sensor.eagle_100_energy_received` are
+monotonic counters that only ever climb, and today's energy is a *difference*
+between two points on one.
+
+TariffKit does that arithmetic out of the recorder's own long-term statistics,
+which is where it belongs: a statistic's hourly `change` already absorbs
+counter restarts, integration reloads, and the Eagle's meter-session drops.
+Statistics compile at the top of the hour, so the hour in progress is read
+live off the entity state instead — the last completed hour's recorded value
+is a baseline the counter has advanced from. Anything implausible (a negative
+change, or more than 100 kW for an hour, which is a restarted statistics
+series reporting its whole accumulated total) is dropped with a log line
+rather than billed.
+
+Two consequences worth knowing:
+
+- **The recorder is required for this feature.** It is a default integration;
+  if you have disabled it, the rate entities carry on untouched and the running
+  totals read `unknown` with the reason in their `warnings` attribute.
+- **A restart loses nothing.** The totals are re-derived from statistics on
+  every refresh, so they survive restarts, reloads, and configuring the
+  integration halfway through a day.
+- **A gap is reported, not absorbed.** If the recorder was down for part of the
+  cycle the energy is genuinely missing, so the figure is understated — the
+  entity says so in `warnings` and sets `quality.complete` to false rather than
+  presenting a smaller number as if it were finished.
+
+### What the totals mean
+
+Readings are priced by `tariffkit.billing.BillEngine` — the same code that
+reconciles against a printed PG&E statement, so a dashboard tile and a
+month-end bill cannot drift apart in their arithmetic. That buys time-of-use
+bucketing, the Energy Commission Tax, the baseline credit where a schedule has
+one, and the rule that exports before Permission To Operate are metered but
+earn nothing.
+
+Today's figures are the **cycle's movement across today**, not a one-day bill.
+That distinction is not pedantry: parts of a bill are cumulative over a cycle
+rather than additive over its days — the baseline allowance most of all, which
+is granted per cycle and consumed in day order. Pricing today alone would grant
+it a single day's allowance however much the cycle had banked, overstating a
+heavy day and letting it cost more than the cycle containing it. Taking the
+difference between two cycle-to-date bills has neither problem: the days sum to
+the cycle exactly, and no day can exceed it.
+
+- **Energy Cost** is the day's (or cycle's) import charges including statutory
+  per-kWh taxes, and excluding the fixed charge.
+- **Export Credit** is what the exports earned, as a positive number.
+- **Net Cost** is charges minus credits **plus the whole of the Base Services
+  Charge for each day so far**. It is incurred for the day of service, not
+  earned by the hour, which is how a statement bills it. Positive means owed,
+  negative means in credit.
+
+Every money entity carries its own bill as attributes — `energy_charges`,
+`taxes`, `export_credits`, `fixed_charges`, `imported_kwh`, `exported_kwh`,
+the time-of-use `buckets`, `quality`, and any pricing `warnings` — so a
+surprising figure is auditable from the entity:
+
+```yaml
+{{ state_attr('sensor.tariffkit_home_net_cost_today', 'buckets') }}
+{{ state_attr('sensor.tariffkit_home_net_cost_cycle', 'warnings') }}
+```
+
+### Where the cycle boundary comes from
+
+A meter-read day is a guess, and usually a wrong one: PG&E reads on business
+days, so one real account's cycles opened on the 29th, the 30th, the 1st and
+the 3rd in consecutive months. No fixed day of the month matches more than a
+fraction of them.
+
+So TariffKit prefers evidence. If the profile carries imported statements — via
+[Account history](#account-history), or `tariffkit account sync` / `account
+import-statement` on the CLI — the cycle boundary comes from the statements
+themselves. Billing periods are contiguous, each beginning the day after the
+last one ended, so the *open* cycle's start follows from the most recent
+statement without waiting for the one that will close it.
+
+The `cycle_boundary` attribute on the three cycle **money** entities says which was used:
+
+| Value | Means |
+|---|---|
+| `statement` | A real billing period, exact |
+| `day_of_month` | The configured meter-read day; approximate |
+| `calendar_month` | No read day configured either; the 1st of the month |
+
+Evidence more than 35 days stale is ignored — a statement has been issued that
+the profile never imported, so the next boundary is no longer derivable, and
+trusting the old one would report a 90-day "cycle" and bill Base Services
+Charge for every day of it. It falls back and says so.
+
+The cycle figures are **cycle to date**, not a balance due. Under Net Billing
+an export credit carries into the next cycle and settles at the annual
+true-up; that is a stateful ledger
+(`tariffkit.billing.ledger`, see [Billing](billing.md)), not something a
+running total can show. If your billing cycle start day is left at `0` the
+"cycle" is simply the calendar month, which will not line up with a statement.
+
+Grid Import and Grid Export report what the meter saw, named for the
+direction rather than for the meter's own vocabulary — a statement calls them
+*energy delivered* and *energy received*, which is unambiguous on paper and
+undecidable in an entity list. Grid Export's `compensated_kwh` attribute
+reports what the tariff will pay for, which is less whenever a site exported
+before its PTO date.
 
 ## Energy dashboard
 
@@ -779,12 +924,17 @@ the entry is loaded, forecast hours and Predbat mode, the active price
 point's start/tariff/supplier, aggregate quality flags, the Predbat time zone
 warning (if any), a trimmed provenance block (utility, tariff, supplier,
 tariff effective date, export vintage), the cached forecast's span, Home
-Assistant's configured time zone, and today's Pacific calendar date.
+Assistant's configured time zone, and today's Pacific calendar date. With
+[Metered energy](#metered-energy) configured it also carries whether each
+direction is set, the billing cycle start day, and the day's and cycle's
+computed bills — including how many hours the recorder supplied.
 
 It deliberately omits the account's full profile, its observations, and any
 meter-source mapping — nothing that could identify the account or reveal how
 its bill has been reconciled, only what a report needs to say "here is which
-rate rules were active and how trustworthy they are."
+rate rules were active and how trustworthy they are." The metered-energy block
+follows the same rule: it reports *that* an import or export entity is
+configured, never which entity, and its bills carry no entity names.
 
 ## Automation examples
 

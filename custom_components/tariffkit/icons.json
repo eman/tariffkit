@@ -1,4 +1,38 @@
 {
+  "entity": {
+    "sensor": {
+      "grid_import_today": {
+        "default": "mdi:transmission-tower-import"
+      },
+      "grid_export_today": {
+        "default": "mdi:transmission-tower-export"
+      },
+      "energy_cost_today": {
+        "default": "mdi:cash-minus"
+      },
+      "export_credit_today": {
+        "default": "mdi:cash-plus"
+      },
+      "net_cost_today": {
+        "default": "mdi:cash-sync"
+      },
+      "grid_import_cycle": {
+        "default": "mdi:transmission-tower-import"
+      },
+      "grid_export_cycle": {
+        "default": "mdi:transmission-tower-export"
+      },
+      "energy_cost_cycle": {
+        "default": "mdi:cash-minus"
+      },
+      "export_credit_cycle": {
+        "default": "mdi:cash-plus"
+      },
+      "net_cost_cycle": {
+        "default": "mdi:cash-sync"
+      }
+    }
+  },
   "services": {
     "get_rates": {
       "service": "mdi:chart-timeline-variant"

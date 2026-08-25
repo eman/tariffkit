@@ -66,6 +66,7 @@
         "menu_options": {
           "settings": "Account pricing settings",
           "forecast": "Forecast and Predbat",
+          "meters": "Metered energy",
           "history": "Account history"
         }
       },
@@ -164,11 +165,26 @@
       "export": {
         "title": "Export profile",
         "description": "{profile_json}"
+      },
+      "meters": {
+        "title": "Metered energy",
+        "description": "Optional. Name the cumulative kWh counters for grid import and grid export and TariffKit adds running cost, credit, and net entities for today and for the billing cycle. Leave them blank to price rates only.\n\nThese counters do not have to reset daily; the recorder's own statistics supply each hour's change.\n\n{detail}",
+        "data": {
+          "grid_import_entity": "Grid import (energy delivered)",
+          "grid_export_entity": "Grid export (energy received)",
+          "billing_cycle_start_day": "Billing cycle start day"
+        },
+        "data_description": {
+          "grid_import_entity": "Cumulative kWh the grid has delivered to the site. Leave blank to skip cost tracking.",
+          "grid_export_entity": "Cumulative kWh the site has sent to the grid. Leave blank if the site does not export.",
+          "billing_cycle_start_day": "Day of the month your meter is read, from a recent statement. 0 uses the calendar month."
+        }
       }
     },
     "error": {
       "invalid_config": "Invalid configuration: {detail}",
-      "invalid_profile": "Invalid account profile: {detail}"
+      "invalid_profile": "Invalid account profile: {detail}",
+      "invalid_meters": "That meter configuration cannot work: {detail}"
     },
     "abort": {
       "invalid_profile": "This account profile has no pricing configuration in force yet."
@@ -271,6 +287,36 @@
       },
       "lock_end": {
         "name": "Export Rate Lock Ends"
+      },
+      "grid_import_today": {
+        "name": "Grid import today"
+      },
+      "grid_export_today": {
+        "name": "Grid export today"
+      },
+      "energy_cost_today": {
+        "name": "Energy cost today"
+      },
+      "export_credit_today": {
+        "name": "Export credit today"
+      },
+      "net_cost_today": {
+        "name": "Net cost today"
+      },
+      "grid_import_cycle": {
+        "name": "Grid import this cycle"
+      },
+      "grid_export_cycle": {
+        "name": "Grid export this cycle"
+      },
+      "energy_cost_cycle": {
+        "name": "Energy cost this cycle"
+      },
+      "export_credit_cycle": {
+        "name": "Export credit this cycle"
+      },
+      "net_cost_cycle": {
+        "name": "Net cost this cycle"
       }
     }
   },

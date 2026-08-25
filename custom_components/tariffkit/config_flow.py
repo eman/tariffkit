@@ -9,7 +9,7 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import selector
 
 from tariffkit.account import AccountEpoch, AccountError, AccountProfile
@@ -34,10 +34,13 @@ from .const import (
     CONF_CCA_PCIA_RATE,
     CONF_CCA_PCIA_VINTAGE,
     CONF_CCA_RATE_CARD,
+    CONF_CYCLE_START_DAY,
     CONF_DISCOUNT,
     CONF_EFFECTIVE,
     CONF_EXPORT_ENABLED,
     CONF_FORECAST_HOURS,
+    CONF_GRID_EXPORT_ENTITY,
+    CONF_GRID_IMPORT_ENTITY,
     CONF_INTERCONNECTION_YEAR,
     CONF_MEDICAL_BASELINE,
     CONF_MEDICAL_KWH_PER_DAY,
@@ -49,11 +52,13 @@ from .const import (
     CONF_SUPPLIER,
     CONF_TARIFF,
     CONF_VINTAGE,
+    DEFAULT_CYCLE_START_DAY,
     DEFAULT_FORECAST_HOURS,
     DEFAULT_PREDBAT_ENABLED,
     DOMAIN,
 )
 from .coordinator import config_from_entry
+from .energy import MeterSettings
 from .profile import (
     LEGACY_EFFECTIVE,
     config_defaults,
@@ -370,6 +375,115 @@ def _options_schema(defaults: dict[str, Any]) -> vol.Schema:
     )
 
 
+def _meters_schema(defaults: dict[str, Any]) -> vol.Schema:
+    """Point the running-cost entities at the site's two grid counters.
+
+    Both are optional and independent. A site with no solar has nothing to name
+    for export; a site whose export counter is the only one integrated can still
+    say so. Naming neither leaves the running-total entities out entirely.
+
+    The selector filters to energy sensors rather than all of them, because the
+    only useful answer here is a cumulative kWh counter -- the thing the
+    recorder keeps long-term statistics for.
+    """
+    # The `filter` form, not the flat `domain=`/`device_class=` keywords: those
+    # are `_LegacyEntityFilterSelectorConfig`, kept for backwards compatibility
+    # and explicitly feature frozen upstream.
+    #
+    # No selector can filter on state_class, and a `device_class: energy` sensor
+    # may well be a `measurement` reading rather than a cumulative counter, so
+    # `_meter_problem` rejects those after the fact.
+    energy = selector.EntitySelector(
+        selector.EntitySelectorConfig(
+            filter=selector.EntityWithDeviceFilterSelectorConfig(
+                domain="sensor", device_class="energy"
+            )
+        )
+    )
+    return vol.Schema(
+        {
+            vol.Optional(
+                CONF_GRID_IMPORT_ENTITY,
+                description={"suggested_value": defaults.get(CONF_GRID_IMPORT_ENTITY) or None},
+            ): energy,
+            vol.Optional(
+                CONF_GRID_EXPORT_ENTITY,
+                description={"suggested_value": defaults.get(CONF_GRID_EXPORT_ENTITY) or None},
+            ): energy,
+            vol.Required(
+                CONF_CYCLE_START_DAY,
+                default=int(defaults.get(CONF_CYCLE_START_DAY, DEFAULT_CYCLE_START_DAY) or 0),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=31, step=1, mode=selector.NumberSelectorMode.BOX
+                )
+            ),
+        }
+    )
+
+
+def _meter_values(user_input: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the meters step into options the coordinator can read.
+
+    A cleared entity selector comes back as an absent key, not an empty string,
+    so the keys are written explicitly -- otherwise clearing one would fall back
+    to an imported profile's mapping instead of clearing it.
+    """
+    day = int(user_input.get(CONF_CYCLE_START_DAY, DEFAULT_CYCLE_START_DAY) or 0)
+    return {
+        CONF_GRID_IMPORT_ENTITY: user_input.get(CONF_GRID_IMPORT_ENTITY) or "",
+        CONF_GRID_EXPORT_ENTITY: user_input.get(CONF_GRID_EXPORT_ENTITY) or "",
+        CONF_CYCLE_START_DAY: day if 1 <= day <= 31 else DEFAULT_CYCLE_START_DAY,
+    }
+
+
+def _meter_defaults(
+    values: dict[str, Any], profile: AccountProfile | None = None
+) -> dict[str, Any]:
+    settings = MeterSettings.from_entry(values, profile)
+    return {
+        CONF_GRID_IMPORT_ENTITY: settings.import_entity or "",
+        CONF_GRID_EXPORT_ENTITY: settings.export_entity or "",
+        CONF_CYCLE_START_DAY: settings.cycle_start_day,
+    }
+
+
+#: The only sensors whose recorder statistics carry a usable hourly `change`.
+COUNTER_STATE_CLASSES = frozenset({"total", "total_increasing"})
+
+
+def _meter_problem(hass: HomeAssistant, values: dict[str, Any]) -> str:
+    """Why these meter entities cannot drive a running total, or an empty string.
+
+    Both checks catch a configuration that would otherwise produce confident
+    nonsense rather than an error: one entity named twice bills every hour as
+    an import *and* credits it as an export, and a `measurement` sensor has no
+    meaningful cumulative `change` for the recorder to difference.
+    """
+    grid_import = values.get(CONF_GRID_IMPORT_ENTITY) or ""
+    grid_export = values.get(CONF_GRID_EXPORT_ENTITY) or ""
+    if grid_import and grid_import == grid_export:
+        return (
+            f"{grid_import} is named for both directions. One counter cannot be "
+            "both what the grid delivered and what it received; every hour would "
+            "be billed as an import and credited as an export at once."
+        )
+    for entity_id in (grid_import, grid_export):
+        if not entity_id:
+            continue
+        state = hass.states.get(entity_id)
+        if state is None:
+            continue
+        state_class = str(state.attributes.get("state_class") or "")
+        if state_class and state_class not in COUNTER_STATE_CLASSES:
+            return (
+                f"{entity_id} has state_class '{state_class}'. Running totals need a "
+                "cumulative counter ('total' or 'total_increasing'); a measurement "
+                "sensor has no hourly change for the recorder to difference."
+            )
+    return ""
+
+
 def _normalize(user_input: dict[str, Any]) -> dict[str, Any]:
     data = dict(user_input)
     year = data.get(CONF_INTERCONNECTION_YEAR)
@@ -669,11 +783,13 @@ class TariffKitOptionsFlow(OptionsFlow):
                 return await self.async_step_settings()
             if action == "forecast":
                 return await self.async_step_forecast()
+            if action == "meters":
+                return await self.async_step_meters()
             if action == "history":
                 return await self.async_step_history()
         return self.async_show_menu(
             step_id="init",
-            menu_options=["settings", "forecast", "history"],
+            menu_options=["settings", "forecast", "meters", "history"],
         )
 
     def _values(self) -> dict[str, Any]:
@@ -798,6 +914,25 @@ class TariffKitOptionsFlow(OptionsFlow):
         return self.async_show_form(
             step_id="forecast",
             data_schema=_options_schema(self._values()),
+        )
+
+    async def async_step_meters(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Change which entities feed the running totals, or stop feeding them."""
+        if user_input is not None:
+            problem = _meter_problem(self.hass, user_input)
+            if not problem:
+                return self._save_profile(self._profile(), **_meter_values(user_input))
+            return self.async_show_form(
+                step_id="meters",
+                data_schema=_meters_schema(_meter_defaults(user_input, None)),
+                errors={"base": "invalid_meters"},
+                description_placeholders={"detail": problem},
+            )
+        values = self._values()
+        return self.async_show_form(
+            step_id="meters",
+            data_schema=_meters_schema(_meter_defaults(values, self._profile())),
+            description_placeholders={"detail": ""},
         )
 
     async def async_step_history(

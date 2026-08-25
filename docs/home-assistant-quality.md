@@ -24,11 +24,11 @@ the percentages, since they drift as tests and flow branches are added.
 | Rule | Status | Note |
 |---|---|---|
 | `action-setup` | Met | Actions register in `async_setup`, once per instance, before any entry loads. |
-| `appropriate-polling` | Met | `DataUpdateCoordinator(update_interval=timedelta(minutes=1))`; there is nothing to poll, only a cheap local recompute, so a short interval costs nothing. |
+| `appropriate-polling` | Met | `DataUpdateCoordinator(update_interval=timedelta(minutes=1))`; there is nothing to poll, only a cheap local recompute, so a short interval costs nothing. With [Metered energy](home-assistant.md#metered-energy) configured, each tick also reads entity state, but the recorder is queried once an hour rather than once a minute -- completed hours cannot change, so re-reading them sixty times would learn nothing. |
 | `brands` | Partial | Assets ship in the repository; not yet submitted to `home-assistant/brands`, so a generic icon shows until then. |
 | `common-modules` | Met | Config/options schemas, the coordinator, and profile helpers are each in their own module rather than duplicated per flow step. |
-| `config-flow-test-coverage` | Partial | Exercised for the manual/import branch, conditional delivery fields, multi-entry setup, and the options menu grouping, but `config_flow.py` measures 50% statement coverage today (see [Measuring test coverage](#measuring-test-coverage)) -- the CCA and history sub-flows are the largest gaps. |
-| `config-flow` | Met | UI-only, no YAML. `ConfigEntry.data` holds the profile; `ConfigEntry.options` holds forecast/Predbat settings. `data_description` is not used in any step. |
+| `config-flow-test-coverage` | Partial | Exercised for the manual/import branch, conditional delivery fields, multi-entry setup, and the options menu grouping, but `config_flow.py` measures 60% statement coverage today (see [Measuring test coverage](#measuring-test-coverage)) -- the CCA and history sub-flows are the largest gaps. |
+| `config-flow` | Met | UI-only, no YAML. `ConfigEntry.data` holds the profile; `ConfigEntry.options` holds forecast/Predbat and metered-energy settings. `data_description` is used in the metered-energy options step and not yet in the others. |
 | `dependency-transparency` | Met | An exact-pinned `tariffkit==0.3.0` requirement; see [The dependency](home-assistant.md#the-dependency). |
 | `docs-actions` | Met | [Actions](home-assistant.md#actions). |
 | `docs-triggers` | Not applicable | The integration provides no triggers. |
@@ -50,14 +50,14 @@ the percentages, since they drift as tests and flow branches are added.
 |---|---|---|
 | `action-exceptions` | Met | Both actions raise `ServiceValidationError` with a message naming the problem; see [Actions](home-assistant.md#actions). |
 | `config-entry-unloading` | Met | `async_unload_entry` unloads platforms; reload (options save, or manual reload) recreates entities cleanly. |
-| `docs-configuration-parameters` | Met | [Configure](home-assistant.md#configure) and [Account history](home-assistant.md#account-history) cover every field, including which ones are conditional. |
+| `docs-configuration-parameters` | Met | [Configure](home-assistant.md#configure), [Account history](home-assistant.md#account-history), and [Metered energy](home-assistant.md#metered-energy) cover every field, including which ones are conditional. |
 | `docs-installation-parameters` | Met | Folded into installation instructions above; the wizard has no separate installation-time parameters beyond the profile fields. |
-| `entity-unavailable` | Not applicable | Nothing marks an entity unavailable while its entry is loaded -- there is no partial-failure mode between "computes fine" and "entry fails to load entirely" for a purely local calculation. |
+| `entity-unavailable` | Met | Nothing is left unavailable while its entry is loaded. The metered-energy entities report `unknown` rather than unavailable when the recorder cannot answer, and carry the reason in `warnings`; entities the configuration no longer supports are removed from the registry on reload rather than lingering. The rate entities are unaffected by any recorder failure. |
 | `integration-owner` | Met | `manifest.json` lists `"codeowners": ["@eman"]`. |
 | `log-when-unavailable` | Not applicable | No network/device dependency to go offline or reconnect. |
 | `parallel-updates` | Met | `sensor.py` declares `PARALLEL_UPDATES = 0`; entities have no independent I/O to serialize. |
 | `reauthentication-flow` | Not applicable | The integration never authenticates to anything. |
-| `test-coverage` | **Not met** | 71% across `custom_components/tariffkit` today, well under the 95% bar; see [Measuring test coverage](#measuring-test-coverage) for the per-module breakdown and how to reproduce it. |
+| `test-coverage` | **Not met** | 82% across `custom_components/tariffkit` today, still under the 95% bar; see [Measuring test coverage](#measuring-test-coverage) for the per-module breakdown and how to reproduce it. |
 
 ## Gold
 
@@ -80,7 +80,7 @@ the percentages, since they drift as tests and flow branches are added.
 | `entity-disabled-by-default` | Partial | The seventeen entities are all enabled. The eleven component-group and fixed-charge entities are narrower than the price entities, which argues for disabling them, but each is a slice of a primary entity that changes at most hourly, so the recorder and statistics cost is a few hundred rows a day -- and the stacked-chart feature they exist for is inert until they are enabled. Enabled by default is the deliberate trade; disable the ones you do not chart. |
 | `entity-translations` | Met | `translation_key` plus `strings.json`/`translations/en.json` names for every entity. |
 | `exception-translations` | **Not met** | Action validation errors (`ServiceValidationError`) use raw f-string messages rather than `translation_domain`/`translation_key`/`translation_placeholders`. |
-| `icon-translations` | Partial | `icons.json` carries the action icons. Entity icons are set as `icon=` on the entity descriptions instead, which predates the component-group entities and is the legacy path; moving them into `icons.json` under each `translation_key` would satisfy the rule fully. |
+| `icon-translations` | Partial | `icons.json` carries the action icons and all ten metered-energy entity icons. The nineteen rate entities still set `icon=` on their descriptions, which is the legacy path; moving those into `icons.json` under each `translation_key` would satisfy the rule fully. |
 | `reconfiguration-flow` | Partial | There is no formal `async_step_reconfigure`; the same outcome -- changing account, delivery, or CCA settings without removing the entry -- is reached through the options flow's **Account pricing settings** step instead. |
 | `repair-issues` | Not applicable | Nothing the integration does needs a repair flow: a bad config fails setup with a translated form error instead of loading and then requiring intervention. |
 | `stale-devices` | Not applicable | One static device per entry; there is nothing to go stale. |
@@ -96,15 +96,17 @@ the percentages, since they drift as tests and flow branches are added.
 ## Measuring test coverage
 
 The numbers above (`config-flow-test-coverage`, `test-coverage`) come from
-running the Home Assistant test file with coverage restricted to the
-component:
+running **both** Home Assistant test files with coverage restricted to the
+component. Running only `test_ha_component.py` understates the result badly,
+because the metered-energy tests live in their own file:
 
 ```bash
-uv run pytest tests/test_ha_component.py \
+uv run pytest tests/test_ha_component.py tests/test_ha_energy.py \
   --cov=custom_components.tariffkit --cov-report=term-missing
 ```
 
-At last measurement: 71% overall, with `config_flow.py` the largest gap at
-50% (`profile.py` legacy-import helpers and several `config_flow.py` history
+At last measurement: 82% overall, with `config_flow.py` the largest gap at
+60% (`profile.py` legacy-import helpers and several `config_flow.py` history
 sub-steps are exercised only for their common path, not every branch).
-`sensor.py`, `const.py`, and `coordinator.py` are all at 90%+.
+`sensor.py` is at 98%, `const.py` and `diagnostics.py` at 100%, `energy.py`
+at 93%, and `coordinator.py` at 91%.

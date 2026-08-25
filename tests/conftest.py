@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -24,3 +26,36 @@ def isolated_user_config(
     monkeypatch.setenv("TARIFFKIT_DISABLE_KEYRING", "1")
     # Guard against Config falling back to a real home directory.
     monkeypatch.setattr(Path, "home", lambda: Path(os.environ["XDG_CONFIG_HOME"]))
+
+
+@pytest.fixture(autouse=True, scope="session")
+def recorder_migration_annotations() -> Iterator[None]:
+    """Make the recorder's deferred type names resolvable at runtime.
+
+    ``pytest-homeassistant-custom-component`` patches
+    ``migration._find_schema_errors`` with ``autospec=True``, which asks
+    :func:`inspect.signature` to evaluate its annotations. That module imports
+    ``Recorder`` only under ``TYPE_CHECKING``, and on Python 3.14 the evaluation
+    is no longer lazy enough to tolerate it -- so the recorder fixture raises
+    ``NameError`` before any test of ours runs. Binding the real class is a
+    fixture for the harness, not for the integration.
+    """
+    from homeassistant.components.recorder import migration
+    from homeassistant.components.recorder.core import Recorder
+    from homeassistant.helpers import recorder as recorder_helper
+    from sqlalchemy.orm.session import Session
+
+    patched = (
+        (migration, "Recorder", Recorder),
+        (migration, "Session", Session),
+        (recorder_helper, "Session", Session),
+    )
+    for module, name, value in patched:
+        setattr(module, name, value)
+    yield
+    # Undo it: these are third-party modules shared with every other test in the
+    # run, and a fixture that mutates them permanently is one more thing that
+    # can explain a confusing failure somewhere else.
+    for module, name, _ in patched:
+        with suppress(AttributeError):
+            delattr(module, name)

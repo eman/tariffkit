@@ -22,6 +22,9 @@ CONF_PROFILE_NAME = "profile_name"
 CONF_EXPORT_ENABLED = "export_enabled"
 CONF_NSC_RATE = "nsc_rate"
 CONF_PROFILE = "profile"
+CONF_GRID_IMPORT_ENTITY = "grid_import_entity"
+CONF_GRID_EXPORT_ENTITY = "grid_export_entity"
+CONF_CYCLE_START_DAY = "billing_cycle_start_day"
 CONF_EFFECTIVE = "effective"
 CONF_ACTION = "action"
 
@@ -36,6 +39,10 @@ CONF_CCA_GENERATION_RATES = "cca_generation_rates"
 
 DEFAULT_FORECAST_HOURS = 48
 DEFAULT_PREDBAT_ENABLED = False
+#: 0 means "no meter-read day configured", so a cycle runs from the first of
+#: the calendar month. A real PG&E cycle is 27 to 33 days and closes on a
+#: roughly fixed day of the month, which is what a non-zero value names.
+DEFAULT_CYCLE_START_DAY = 0
 
 SERVICE_GET_RATES = "get_rates"
 SERVICE_GET_EMHASS_FORECAST = "get_emhass_forecast"
@@ -47,6 +54,11 @@ CONF_HORIZON = "horizon"
 CONF_RESOLUTION = "resolution"
 SUPPORTED_RESOLUTIONS = (15, 30, 60)
 
+#: The running totals' time-of-use breakdown. Named here because it is
+#: excluded from the recorder alongside the other large attributes.
+ATTR_BUCKETS = "buckets"
+#: Fixed explanatory prose on an entity; excluded from the recorder.
+ATTR_DESCRIPTION = "description"
 ATTR_RATES = "rates"
 ATTR_QUALITY = "quality"
 ATTR_GENERATED_AT = "generated_at"
