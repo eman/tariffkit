@@ -344,6 +344,25 @@ class ObservedAgreement:
         )
 
 
+#: Fields describing how an agreement was *read* rather than what it says.
+#: ``source_digest`` changes every time the same bill is fetched again, and
+#: ``extraction_mode`` changes when the parser takes the OCR path instead of the
+#: text layer -- which it does automatically for PG&E statements before November
+#: 2025. Neither is printed on the statement, so neither can be part of its
+#: identity: including them would make one document read two ways look like two
+#: different documents, and would make the guard below call a re-read of the
+#: same file a contradiction.
+_PROVENANCE_FIELDS = ("source_digest", "extraction_mode")
+
+
+def _agreement_facts(agreement: ObservedAgreement) -> dict[str, object]:
+    """One agreement's content, with how it was read left out."""
+    facts = agreement.to_dict()
+    for name in _PROVENANCE_FIELDS:
+        facts.pop(name, None)
+    return facts
+
+
 @dataclass(frozen=True, slots=True)
 class AccountObservation:
     """Evidence kept separately from authoritative account epochs."""
@@ -371,22 +390,43 @@ class AccountObservation:
             )
 
     def identity(self) -> tuple[str, ...]:
-        """Stable identifiers used to make importing the same evidence idempotent."""
-        digests = tuple(
-            agreement.source_digest
-            for agreement in self.agreements
-            if agreement.source_digest is not None
-        )
-        if self.source_digest is not None:
-            return (self.source_digest,)
-        if digests:
-            return tuple(sorted(digests))
+        """Stable identifier making a re-import of the same evidence idempotent.
+
+        Derived from what the statement *says*, never from the bytes it arrived
+        in. The utility regenerates a bill PDF on every request: the same
+        statement downloaded twice is byte-different and hashes differently, so
+        a digest identifies a *download* rather than a *document*. Keying on one
+        meant nothing ever matched what a profile already held, and every
+        ``account sync --apply`` appended its whole window again.
+
+        ``statement_date`` is part of each agreement, so a genuinely re-issued or
+        corrected statement still earns its own identity. Only true repeats
+        collapse.
+        """
         canonical = json.dumps(
-            [agreement.to_dict() for agreement in self.agreements],
+            [_agreement_facts(agreement) for agreement in self.agreements],
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
         return (f"facts:{hashlib.sha256(canonical).hexdigest()}",)
+
+    def source_key(self) -> tuple[str, ...]:
+        """Which document this was read from, or empty when nothing says.
+
+        Provenance, not identity -- see :meth:`identity` for why bytes cannot
+        identify a statement. It keeps the shape the old identity had, top-level
+        digest falling back to the agreements' own, so an observation carrying
+        only agreement digests is still guarded against contradicting itself.
+        """
+        if self.source_digest is not None:
+            return (self.source_digest,)
+        return tuple(
+            sorted(
+                agreement.source_digest
+                for agreement in self.agreements
+                if agreement.source_digest is not None
+            )
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -450,22 +490,34 @@ class AccountProfile:
         if any(not isinstance(observation, AccountObservation) for observation in observations):
             raise AccountError("profile observations must be AccountObservation values")
         unique: list[AccountObservation] = []
-        seen: dict[tuple[str, ...], AccountObservation] = {}
+        seen: set[tuple[str, ...]] = set()
         for observation in observations:
             identity = observation.identity()
-            if identity:
-                previous = seen.get(identity)
-                if previous is not None:
-                    if (
-                        previous.source_digest != observation.source_digest
-                        or previous.agreements != observation.agreements
-                    ):
-                        raise AccountError(
-                            "profile observations with the same source identity conflict"
-                        )
-                    continue
-                seen[identity] = observation
+            if identity in seen:
+                # The same statement, seen again. Identity is derived from the
+                # statement's content, so a repeated identity *is* repeated
+                # content and there is nothing to reconcile -- keep the first
+                # and drop the rest. This also collapses, on load, the
+                # duplicates that earlier versions accumulated by keying
+                # identity on an unstable per-download digest, so an affected
+                # profile repairs itself the next time it is written.
+                continue
+            seen.add(identity)
             unique.append(observation)
+        # Two observations naming the same source document but disagreeing about
+        # what it says is a contradiction the profile must not hold: one of them
+        # is a misreading, and nothing here can tell which. Keyed on the source
+        # document rather than on identity, because identity is now the facts
+        # themselves and two different fact-sets can never share one.
+        by_source: dict[tuple[str, ...], AccountObservation] = {}
+        for observation in unique:
+            key = observation.source_key()
+            if not key:
+                continue
+            previous = by_source.get(key)
+            if previous is not None and previous.identity() != observation.identity():
+                raise AccountError("profile observations from the same source document disagree")
+            by_source[key] = observation
         object.__setattr__(self, "observations", tuple(unique))
         if not isinstance(self.meter_sources, MeterSources):
             raise AccountError("profile meter_sources must be MeterSources")
