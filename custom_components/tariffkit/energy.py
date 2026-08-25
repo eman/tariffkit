@@ -339,6 +339,9 @@ class UsageReader:
                         datetime.fromtimestamp(slot, tz=PACIFIC).isoformat(),
                     )
                     dropped.append(datetime.fromtimestamp(slot, tz=PACIFIC).date())
+                    # Deliberately not added to `covered`: the hour is a hole
+                    # now, and the hours either side of it carry or lost the
+                    # energy it held, which is what `_reconstructed` looks for.
                     continue
                 hours.setdefault(slot, [0.0, 0.0])[direction] += change
                 covered.setdefault(entity, set()).add(slot)
@@ -373,7 +376,13 @@ class UsageReader:
             ordered = sorted(slots)
             for previous, current in pairwise(ordered):
                 if current - previous > 3600.0:
+                    # Both ends of the hole. The hour after it carries the
+                    # catch-up, and the hour before it belongs to a day that
+                    # lost the rest of its own energy to that catch-up -- so
+                    # publishing that day would understate it just as surely as
+                    # publishing the other would overstate it.
                     found.add(current)
+                    found.add(previous)
         return found
 
     def _absent_series(

@@ -50,7 +50,7 @@ def test_days_sum_to_the_cycle_that_contains_them() -> None:
     cycle = BillingPeriod(date(2026, 7, 1), date(2026, 7, 20))
     readings = _hours(cycle.start, cycle.end, imported=0.5, exported=0.2)
 
-    days, cycle_bill, reason, _ = backfill.price_cycle(profile, readings, cycle)
+    days, cycle_bill, reason, _, _ = backfill.price_cycle(profile, readings, cycle)
     assert reason == ""
     assert len(days) == 20
 
@@ -81,7 +81,7 @@ def test_a_baseline_schedule_still_decomposes_exactly() -> None:
     readings = _hours(cycle.start, cycle.end, imported=1.5)
     readings.append(IntervalReading(datetime(2026, 7, 9, 2, tzinfo=PACIFIC), imported=60.0))
 
-    days, cycle_bill, reason, _ = backfill.price_cycle(profile, readings, cycle)
+    days, cycle_bill, reason, _, _ = backfill.price_cycle(profile, readings, cycle)
     assert reason == ""
     whole, _ = price(profile, readings, cycle)
     assert whole is not None
@@ -111,7 +111,7 @@ def test_a_single_day_may_exceed_its_cycle() -> None:
             IntervalReading(datetime(2026, 7, day, hour, tzinfo=PACIFIC), exported=8.0)
             for hour in range(24)
         ]
-    days, _, _, _ = backfill.price_cycle(profile, readings, cycle)
+    days, _, _, _, _ = backfill.price_cycle(profile, readings, cycle)
     whole, _ = price(profile, readings, cycle)
     assert whole is not None
     assert whole.total < 0, "a month of net export owes nothing"
@@ -656,14 +656,21 @@ def test_a_day_carrying_another_day_s_energy_is_not_priced() -> None:
     assert result.summary("probe")["complete"] is False
 
 
-def test_the_reader_marks_an_hour_that_follows_a_gap() -> None:
-    """`estimated` is the library's own word for a reconstructed interval."""
+def test_the_reader_marks_both_sides_of_a_gap() -> None:
+    """`estimated` is the library's own word for a reconstructed interval.
+
+    Both ends, because a gap harms two days rather than one: the hour after it
+    carries the whole catch-up, and the hour before it belongs to a day that
+    lost the rest of its own energy into that catch-up. Publishing either would
+    be publishing a number the meter cannot support -- one overstated, one
+    understated.
+    """
     from custom_components.tariffkit.energy import MeterSettings, UsageReader
 
     reader = UsageReader(None, MeterSettings(import_entity="sensor.x"))  # type: ignore[arg-type]
     hour = 3600.0
     covered = {"sensor.x": {hour * 1, hour * 2, hour * 5, hour * 6}}
-    assert reader._reconstructed(covered) == {hour * 5}, "only the hour after the gap"
+    assert reader._reconstructed(covered) == {hour * 2, hour * 5}
     assert reader._reconstructed({"sensor.x": {hour, hour * 2, hour * 3}}) == set()
 
 
@@ -720,3 +727,50 @@ def test_a_bank_folded_from_the_pto_cycle_opens_at_zero() -> None:
     assert ledger.entries[0].opening.total == 0.0
     # The pre-PTO days of that first cycle earn nothing, and the engine says so.
     assert any("before the Permission To Operate date" in w for w in result.warnings)
+
+
+def test_a_refused_day_is_reported_as_a_residual_not_left_to_be_discovered() -> None:
+    """The daily rows and the cycle bill genuinely disagree, so say by how much.
+
+    A day with no readings contributes nothing to its cycle either, so omitting
+    it keeps the sum. A day holding a reconstructed hour does not: that energy
+    is real and stays in the cycle's own bill, which depends only on the
+    counter's endpoints. Two figures in one answer must not describe the same
+    period and quietly differ.
+    """
+    profile = _profile()
+    readings = _hours(date(2026, 7, 1), date(2026, 7, 31), imported=0.5, exported=0.2)
+    catch_up = next(
+        i
+        for i, r in enumerate(readings)
+        if r.start.astimezone(PACIFIC).date() == date(2026, 7, 15)
+        and r.start.astimezone(PACIFIC).hour == 5
+    )
+    readings[catch_up] = IntervalReading(
+        readings[catch_up].start, imported=20.0, exported=0.2, estimated=True
+    )
+    result = backfill.build(profile, readings, date(2026, 7, 1), date(2026, 7, 31), 1)
+
+    assert result.unpriced, "the reconstructed day is not published"
+    assert len(result.bills) == 1
+    published = sum(day.net_cost for day in result.days)
+    priced = result.bills[0].total
+    assert priced > published, "the cycle keeps energy the days do not"
+    assert result.residual == pytest.approx(priced - published)
+
+    summary = result.summary("probe")
+    assert summary["days_unpriced"] == len(result.unpriced)
+    assert summary["residual"] == pytest.approx(round(priced - published, 2))
+    # The two figures in the payload differ by exactly the residual, stated.
+    assert summary["cycles"][0]["total"] - summary["net_cost"] == pytest.approx(
+        summary["residual"], abs=0.01
+    )
+
+
+def test_a_clean_cycle_has_no_residual() -> None:
+    profile = _profile()
+    readings = _hours(date(2026, 7, 1), date(2026, 7, 31), imported=0.5, exported=0.2)
+    result = backfill.build(profile, readings, date(2026, 7, 1), date(2026, 7, 31), 1)
+    assert result.unpriced == []
+    assert result.residual == pytest.approx(0.0, abs=1e-9)
+    assert result.summary("probe")["residual"] == 0.0

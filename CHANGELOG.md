@@ -76,7 +76,9 @@ All notable changes to this project are documented here. This project follows
   wrong. There are two entities because a Community Choice Aggregator account
   has two banks -- the utility's delivery and bonus credits against the CCA's
   export credit -- settling on unrelated calendars, which a single total would
-  merge into a figure no statement prints.
+  merge into a figure no statement prints. Every annual settlement in a run is
+  applied in order rather than only the most recent, since each is computed
+  independently and a later one cannot see an earlier one's clawback.
 
 ### Fixed
 - Statement evidence is identified by what a statement says rather than by the

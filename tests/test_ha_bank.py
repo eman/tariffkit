@@ -46,7 +46,7 @@ def test_the_bank_carries_between_cycles() -> None:
         _cycle_bill(profile, date(2026, 6, 1), date(2026, 6, 30), exported=2.0),
         _cycle_bill(profile, date(2026, 7, 1), date(2026, 7, 31), exported=2.0),
     ]
-    state = bank.fold(profile, bills, date(2026, 7, 31))
+    state = bank.fold(profile, bills)
 
     assert state.cycles == 2
     assert state.period == (date(2026, 6, 1), date(2026, 7, 31))
@@ -70,7 +70,7 @@ def test_a_gap_between_cycles_is_refused_not_folded_over() -> None:
         # July is missing.
         _cycle_bill(profile, date(2026, 8, 1), date(2026, 8, 31), exported=2.0),
     ]
-    state = bank.fold(profile, bills, date(2026, 8, 31))
+    state = bank.fold(profile, bills)
 
     assert not state.trustworthy
     assert any("cannot be carried across a gap" in w for w in state.warnings)
@@ -79,7 +79,7 @@ def test_a_gap_between_cycles_is_refused_not_folded_over() -> None:
 
 def test_no_cycles_means_no_bank_rather_than_zero() -> None:
     """Zero is a balance. Nothing priced is not a balance."""
-    state = bank.fold(_profile(), [], date(2026, 7, 31))
+    state = bank.fold(_profile(), [])
     assert state.cycles == 0
     assert not state.trustworthy
     assert "no priced cycles" in state.warnings
@@ -93,7 +93,7 @@ def test_a_bank_folded_from_the_pto_cycle_needs_no_opening_balance() -> None:
     """
     profile = _profile()
     first = _cycle_bill(profile, date(2026, 6, 1), date(2026, 6, 30), exported=2.0)
-    state = bank.fold(profile, [first], date(2026, 6, 30))
+    state = bank.fold(profile, [first])
     assert run_ledger([first]).entries[0].opening.total == 0.0
     assert state.balance.total == pytest.approx(run_ledger([first]).entries[-1].closing.total)
 
@@ -115,7 +115,7 @@ def test_the_backfill_bills_fold_straight_into_a_bank() -> None:
         day += timedelta(days=1)
 
     result = backfill.build(profile, readings, date(2026, 6, 1), date(2026, 7, 31), 1)
-    state = bank.fold(profile, result.bills, date(2026, 7, 31))
+    state = bank.fold(profile, result.bills)
     assert state.cycles == len(result.bills) == 2
     assert state.trustworthy
     assert state.balance.total > 0
@@ -148,7 +148,7 @@ def test_a_cca_account_holds_two_banks_that_never_settle_together() -> None:
         _cycle_bill(profile, date(2026, 6, 1), date(2026, 6, 30), exported=2.0),
         _cycle_bill(profile, date(2026, 7, 1), date(2026, 7, 31), exported=2.0),
     ]
-    state = bank.fold(profile, bills, date(2026, 7, 31))
+    state = bank.fold(profile, bills)
 
     assert state.split, "a CCA account is two banks"
     utility = state.held_by("utility")
@@ -164,7 +164,7 @@ def test_a_bundled_account_holds_one_bank() -> None:
     """PG&E supplies generation too, so all three buckets are its own."""
     profile = _profile()
     bills = [_cycle_bill(profile, date(2026, 6, 1), date(2026, 6, 30), exported=2.0)]
-    state = bank.fold(profile, bills, date(2026, 6, 30))
+    state = bank.fold(profile, bills)
 
     assert not state.split
     assert state.held_by("utility") == pytest.approx(state.balance.total)
@@ -197,3 +197,109 @@ def test_a_trailing_hole_is_invisible_to_the_coverage_check() -> None:
     short, _ = price(profile, full[:-1], period)
     assert whole is not None and short is not None
     assert short.imported_kwh < whole.imported_kwh
+
+
+def _long_run(profile: AccountProfile, opens: date, closes: date) -> list:
+    """Monthly cycles on the 15th, heavily exporting, long enough to cross a year."""
+    bills, start = [], opens
+    while start < closes:
+        end = (start.replace(day=15) + timedelta(days=31)).replace(day=14)
+        readings, day = [], start
+        while day <= end:
+            readings += [
+                IntervalReading(
+                    datetime(day.year, day.month, day.day, hour, tzinfo=PACIFIC),
+                    imported=0.1,
+                    exported=3.0,
+                )
+                for hour in range(24)
+            ]
+            day += timedelta(days=1)
+        bill, _ = price(profile, readings, BillingPeriod(start, end))
+        if bill is not None:
+            bills.append(bill)
+        start = end + timedelta(days=1)
+    return bills
+
+
+def _cca_long() -> AccountProfile:
+    from tariffkit.config import CcaConfig
+    from tariffkit.models import Supplier
+
+    config = Config(
+        tariff="E-ELEC",
+        pto_date=date(2026, 6, 17),
+        supplier=Supplier.CCA,
+        baseline_territory="X",
+        cca=CcaConfig(name="MCE", rate_card="MCE", option="light_green", pcia_vintage=2011),
+    )
+    return AccountProfile((AccountEpoch(date(2026, 1, 1), config),), name="probe")
+
+
+def test_every_annual_settlement_is_applied_not_only_the_last() -> None:
+    """`run_true_ups` computes each event from whatever ledger it is handed.
+
+    So a run crossing two of them yields a second event derived from a ledger
+    that never saw the first one's clawback. Taking the last event's closing
+    balance therefore discards every earlier reversal -- and on a CCA account
+    whose PTO anniversary falls after April, which is most of the year, the last
+    event is the utility's, whose CCA branch reverses nothing at all. The whole
+    cash-out then survives in the bank as credit already paid out in cash.
+    """
+    from tariffkit.billing import run_ledger, run_true_ups
+
+    profile = _cca_long()
+    bills = _long_run(profile, date(2026, 6, 15), date(2027, 8, 15))
+    state = bank.fold(profile, bills)
+
+    events = run_true_ups(run_ledger(bills).entries, pto_date=date(2026, 6, 17), is_cca=True)
+    assert len(events) >= 2, "the run must cross both an MCE and a PG&E settlement"
+    reversal = max(event.reversal for event in events)
+    assert reversal > 0, "one of them must claw credit back"
+
+    # Chained by hand, recomputing each event from a ledger carrying the last.
+    opening, remaining = None, list(bills)
+    while remaining:
+        entries = run_ledger(remaining, opening=opening).entries
+        found = run_true_ups(entries, pto_date=date(2026, 6, 17), is_cca=True)
+        if not found:
+            break
+        opening = found[0].closing
+        remaining = [b for b in remaining if b.period.start > found[0].period.end]
+    correct = run_ledger(remaining, opening=opening).entries[-1].closing if remaining else opening
+    assert correct is not None
+    assert state.balance.total == pytest.approx(correct.total, abs=0.01)
+    # And the defect this guards against is not a rounding error.
+    naive = (
+        run_ledger(
+            [b for b in bills if b.period.start > events[-1].period.end],
+            opening=events[-1].closing,
+        )
+        .entries[-1]
+        .closing
+    )
+    assert naive.total - correct.total == pytest.approx(reversal, abs=0.01)
+    assert len(state.true_ups) == len(events)
+
+
+def test_a_bundled_account_is_not_told_a_cca_settled_it() -> None:
+    """`run_true_ups` emits a cash-out for every March-April year regardless.
+
+    It is written for the common case of a CCA account. A bundled customer has
+    no aggregator to settle with, so both the event and its clawback are
+    inventions.
+    """
+    from tariffkit.models import Supplier
+
+    config = Config(
+        tariff="E-ELEC",
+        pto_date=date(2026, 6, 17),
+        supplier=Supplier.BUNDLED,
+        baseline_territory="X",
+    )
+    profile = AccountProfile((AccountEpoch(date(2026, 1, 1), config),), name="probe")
+    state = bank.fold(profile, _long_run(profile, date(2026, 6, 15), date(2027, 8, 15)))
+
+    assert state.true_ups, "the PTO anniversary is still crossed"
+    assert not any("mce" in label for label in state.true_ups)
+    assert not state.split

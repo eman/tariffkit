@@ -131,13 +131,29 @@ class BackfillResult:
     #: One bill per priced cycle, oldest first. What a statement states, and
     #: what a credit ledger folds.
     bills: list[Bill] = field(default_factory=list)
+    #: Days inside a priced cycle that could not be published. Their energy is
+    #: still in that cycle's bill -- a cumulative counter's endpoints survive an
+    #: outage -- so the daily rows and the cycle disagree by exactly their share,
+    #: and pretending otherwise would let two figures in one answer contradict
+    #: each other silently.
+    unpriced: list[date] = field(default_factory=list)
     #: Cycles that could not be priced, with the reason.
     skipped: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
+    @property
+    def residual(self) -> float:
+        """What the cycles hold that the daily rows do not publish."""
+        return sum(bill.total for bill in self.bills) - sum(day.net_cost for day in self.days)
+
     def summary(self, profile_name: str) -> dict[str, object]:
         return {
             "days": len(self.days),
+            "days_unpriced": len(self.unpriced),
+            # Non-zero whenever a day inside a priced cycle could not be
+            # published. The `cycles` list is the authority on what a period
+            # cost; the daily rows are that period minus these days.
+            "residual": round(self.residual, 2),
             "first_day": self.days[0].day.isoformat() if self.days else None,
             "last_day": self.days[-1].day.isoformat() if self.days else None,
             "grid_import_kwh": round(sum(d.grid_import for d in self.days), 3),
@@ -204,7 +220,7 @@ def price_cycle(
     profile: AccountProfile,
     readings: list[IntervalReading],
     cycle: BillingPeriod,
-) -> tuple[list[DayFigures], Bill | None, str, tuple[str, ...]]:
+) -> tuple[list[DayFigures], Bill | None, str, tuple[str, ...], list[date]]:
     """Each day's exact share of one cycle.
 
     Walks the cycle day by day, differencing consecutive cycle-to-date bills, so
@@ -215,12 +231,19 @@ def price_cycle(
     inside a month that exports for the rest costs more on its own than the
     whole cycle does.
 
-    Days the readings say nothing about are not emitted. A day the recorder
-    holds no reading for is not a day of zero usage, and pricing it would put a
-    daily fixed charge on a day this has no evidence about. Skipping it does not
-    disturb the others: each remaining day is still its own marginal
-    contribution, since the skipped day's charges cancel between the two
-    cycle-to-date bills that bracket it.
+    Days the readings cannot account for are not emitted -- one with no readings
+    at all, or one holding an hour that carries another day's energy. Skipping
+    does not disturb the days around it: each remaining day is still its own
+    marginal contribution, because a skipped day's charges cancel between the
+    two cycle-to-date bills that bracket it.
+
+    It does change what the emitted days *sum to*. A day with no readings
+    contributes nothing to the cycle either, so the sum still holds. A day
+    holding a reconstructed hour does not: its energy is real and stays in the
+    cycle's own bill, which only depends on the counter's endpoints. The daily
+    rows are then that cycle minus those days, and the difference is returned
+    rather than left for someone to discover by subtracting two figures that
+    were supposed to agree.
     """
     within = _within(readings, cycle)
     # A day is priceable only if it has readings *and* none of them carry
@@ -238,7 +261,7 @@ def price_cycle(
         so_far = [r for r in within if _day_of(r) <= day]
         running, reason = price(profile, so_far, period)
         if running is None:
-            return [], None, reason, ()
+            return [], None, reason, (), []
         warnings = running.warnings
         metered = [r for r in within if _day_of(r) == day]
         if day in seen and not any(reading.estimated for reading in metered):
@@ -268,7 +291,7 @@ def price_cycle(
     # own bill. Returned rather than discarded because it is what a statement
     # states, and what `tariffkit.billing.run_ledger` folds to carry an export
     # credit bank between cycles -- neither of which a day decomposition can do.
-    return days, previous, "", warnings
+    return days, previous, "", warnings, unmetered
 
 
 def _delta(running: Bill, previous: Bill | None, part: str) -> float:
@@ -339,7 +362,7 @@ def build(
                 f"Backfill from {cycle.start} or earlier to include it"
             )
             continue
-        days, bill, reason, warnings = price_cycle(profile, readings, cycle)
+        days, bill, reason, warnings, unpriced = price_cycle(profile, readings, cycle)
         if reason or bill is None:
             # `reason` already names a period, so quote only its explanation.
             detail = reason.split(": ", 1)[-1]
@@ -347,6 +370,7 @@ def build(
             continue
         result.days.extend(days)
         result.bills.append(bill)
+        result.unpriced.extend(unpriced)
         for warning in (*warnings, *coverage_warnings(_within(readings, cycle), cycle)):
             if warning not in result.warnings:
                 result.warnings.append(warning)

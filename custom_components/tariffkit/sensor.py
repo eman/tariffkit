@@ -553,6 +553,19 @@ BANK_DESCRIPTION = (
 )
 
 
+def _no_bank_reason(data: TariffKitData) -> str:
+    """Why there is no balance, distinguishing causes a user can act on."""
+    if data.usage is None:
+        return "no metered readings have been priced yet"
+    provenance = data.provenance.get("pto_date")
+    if not provenance:
+        return (
+            "no Permission To Operate date is set on this account, so no export "
+            "is compensated and there is no bank to carry"
+        )
+    return "no billing cycle has closed since the one containing the PTO date"
+
+
 def _bank_sensor(holder: str) -> TariffKitSensorDescription:
     """The running credit bank.
 
@@ -574,10 +587,15 @@ def _bank_sensor(holder: str) -> TariffKitSensorDescription:
             return {
                 ATTR_QUALITY: {"complete": False},
                 ATTR_DESCRIPTION: BANK_DESCRIPTION,
-                "warnings": ["no closed billing cycle has been priced yet"],
+                "warnings": [data.usage_note or _no_bank_reason(data)],
             }
         found = dict(data.bank.to_dict())
         found[ATTR_QUALITY] = {"complete": found.pop("complete")}
+        # The library has not reconciled the credit cap against a statement --
+        # doing so needs a cycle whose credits exceed the charges they may
+        # offset, which is precisely the case that produces a bank at all. Say
+        # so rather than letting `complete` imply more than it means.
+        found["credit_cap_verified"] = False
         found[ATTR_DESCRIPTION] = BANK_DESCRIPTION
         return found
 
@@ -593,7 +611,9 @@ def _bank_sensor(holder: str) -> TariffKitSensorDescription:
     )
 
 
-def usage_sensors(meters: MeterSettings) -> tuple[TariffKitSensorDescription, ...]:
+def usage_sensors(
+    meters: MeterSettings, *, split: bool = False
+) -> tuple[TariffKitSensorDescription, ...]:
     """The running-total entities the configured meters can actually support.
 
     An account with no export entity gets no export-credit entity rather than a
@@ -629,12 +649,14 @@ def usage_sensors(meters: MeterSettings) -> tuple[TariffKitSensorDescription, ..
             )
         found.append(_money_sensor(span, "net_cost", NET_DESCRIPTION, lambda b: b.total))
     if meters.export_entity:
-        # No export meter, no export credit, so no bank to carry. Two entities
-        # because a Community Choice Aggregator account has two banks settling on
-        # unrelated calendars; on a bundled account the generation one reports
-        # the same single bank, and its name says whose it is.
+        # No export meter, no export credit, so no bank to carry.
         found.append(_bank_sensor("utility"))
-        found.append(_bank_sensor("generation"))
+        if split:
+            # Only where a Community Choice Aggregator supplies generation is
+            # there a second bank. On a bundled account both entities would
+            # report the same figure under names that read as complementary
+            # halves, which is an invitation to add them and double the balance.
+            found.append(_bank_sensor("generation"))
     return tuple(found)
 
 
@@ -644,7 +666,7 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     coordinator: TariffKitCoordinator = entry.runtime_data
-    descriptions = (*SENSORS, *usage_sensors(coordinator.meters))
+    descriptions = (*SENSORS, *usage_sensors(coordinator.meters, split=coordinator.split_supply))
     _prune_removed(hass, entry, descriptions)
     async_add_entities(
         TariffKitSensor(coordinator, entry, description) for description in descriptions

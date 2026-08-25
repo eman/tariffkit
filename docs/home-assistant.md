@@ -631,7 +631,9 @@ response_variable: backfilled
 
 The response carries a `cycles` list alongside the daily totals — one entry per
 billing cycle priced, with its own charges, taxes, credits, fixed charges and
-total. That is what a statement states, and what an export credit ledger folds
+total. Where a day inside a cycle could not be published, `days_unpriced` counts
+it and `residual` states exactly how much the cycles hold that the daily rows do
+not, so the two figures never differ without saying so. That is what a statement states, and what an export credit ledger folds
 to carry a bank between cycles; the daily rows are for charting. Starting at the
 PTO cycle means such a ledger opens at zero, with nothing earlier to carry.
 
@@ -763,8 +765,9 @@ So there are two entities:
 | **Export credit bank (generation)** | The generation bucket — your CCA's |
 
 On a bundled account PG&E supplies generation too, so all three buckets are its
-own: both entities then report the same single bank, and the names simply say
-whose it is.
+own. Only the first entity exists there — two entities reporting one balance
+under names that read as complementary halves is an invitation to add them and
+double it.
 
 Both appear whenever a grid-export meter is configured. Their attributes carry
 the split the tariff keeps, and enough context to judge the figure:
@@ -775,6 +778,7 @@ the split the tariff keeps, and enough context to judge the figure:
 | `cycles`, `from`, `through` | How many billing cycles were folded, and over what span |
 | `true_ups` | Annual events crossed. Empty in a first year |
 | `split_between_suppliers` | True when a CCA supplies generation, which is what makes this two banks |
+| `credit_cap_verified` | Always false today. The library has not reconciled the credit cap against a statement, and a non-zero bank is exactly the case that would |
 | `warnings`, `quality.complete` | Whether the balance can be trusted at all |
 
 ### What it is a balance *of*
@@ -813,12 +817,16 @@ bank on the next cycle rather than leaving a stored balance quietly wrong. That
 costs a months-long recorder read and a second or two of pricing, which is why
 it happens once per cycle and not on the minute tick.
 
-**A gap costs a bank more than it costs a day.** A cycle's energy survives a
-recorder outage exactly — a cumulative counter depends only on its endpoints —
-but its dollar value moves with time-of-use shape, because a counter catching up
-reports the whole outage in the hour it returns. A wrong day is visible on a
-chart; a bank compounding that across a program year is not. That is why days
-the recorder cannot account for are left unpriced rather than guessed at.
+**A gap costs a bank more than it costs a day, and it is not fully avoided.** A
+cycle's energy survives a recorder outage exactly — a cumulative counter depends
+only on its endpoints — but its dollar value moves with time-of-use shape,
+because a counter catching up reports the whole outage in the hour it returns.
+Days that cannot be accounted for are left unpriced, so they never reach the
+daily statistics; the cycle bill the bank folds still contains their energy,
+priced at whatever hour the catch-up landed in. The balance is flagged when that
+happens — `quality.complete` goes false and a warning names it — but it is
+reported with a caveat rather than withheld, because the alternative is
+discarding a whole cycle over one hour.
 
 ### On a CCA account
 

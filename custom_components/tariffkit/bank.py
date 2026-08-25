@@ -18,12 +18,21 @@ refuses where the inputs cannot support an answer.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from itertools import pairwise
 
 from tariffkit.account import AccountProfile
-from tariffkit.billing import Bill, CreditBalances, CreditBucket, run_ledger, run_true_ups
+from tariffkit.billing import (
+    Bill,
+    CreditBalances,
+    CreditBucket,
+    LedgerEntry,
+    TrueUp,
+    run_ledger,
+    run_true_ups,
+)
 from tariffkit.models import Supplier
 
 _LOGGER = logging.getLogger(__name__)
@@ -111,10 +120,17 @@ def _contiguous(bills: list[Bill]) -> _Chain:
     chain = _Chain()
     ordered = sorted(bills, key=lambda bill: bill.period.start)
     for previous, current in pairwise(ordered):
-        if current.period.start != previous.period.end + timedelta(days=1):
+        expected = previous.period.end + timedelta(days=1)
+        if current.period.start > expected:
             chain.warnings.append(
                 f"no priced cycle between {previous.period.end} and "
                 f"{current.period.start}; a bank cannot be carried across a gap"
+            )
+        elif current.period.start < expected:
+            chain.warnings.append(
+                f"cycles {previous.period.start}..{previous.period.end} and "
+                f"{current.period.start}..{current.period.end} overlap, so their "
+                f"credits would be counted twice"
             )
     incomplete = [bill for bill in ordered if not bill.complete]
     if incomplete:
@@ -126,7 +142,7 @@ def _contiguous(bills: list[Bill]) -> _Chain:
     return chain
 
 
-def fold(profile: AccountProfile, bills: list[Bill], on: date) -> BankState:
+def fold(profile: AccountProfile, bills: list[Bill]) -> BankState:
     """The bank after ``bills``, or a refusal explaining why there is none.
 
     Cycles after the most recent annual event are folded onto the balance that
@@ -134,46 +150,78 @@ def fold(profile: AccountProfile, bills: list[Bill], on: date) -> BankState:
     true-up claws back credit already paid for as Net Surplus Compensation, and
     ignoring that would count the same energy twice.
     """
-    del on  # the run's own last cycle dates the account lookups below
     if not bills:
         return BankState(CreditBalances(), None, 0, warnings=("no priced cycles",))
     chain = _contiguous(bills)
     ordered = chain.bills
 
-    entries = run_ledger(ordered).entries
     split = _is_cca(profile, ordered[-1].period.end)
     pto = _pto_of(profile, ordered[-1].period.end)
-    events = []
-    if pto is not None:
-        events = run_true_ups(entries, pto_date=pto, is_cca=split)
-
-    opening: CreditBalances | None = None
-    folded = ordered
-    labels: list[str] = []
-    if events:
-        latest = events[-1]
-        opening = latest.closing
-        folded = [b for b in ordered if b.period.start > latest.period.end]
-        labels = [f"{e.kind} settled {e.period.end}" for e in events]
-        if not folded:
-            return BankState(
-                opening,
-                (ordered[0].period.start, latest.period.end),
-                len(ordered),
-                true_ups=tuple(labels),
-                warnings=tuple(chain.warnings),
-                split=split,
-            )
-        entries = run_ledger(folded, opening=opening).entries
+    balance, labels = _chain(ordered, pto, split=split)
 
     return BankState(
-        entries[-1].closing,
+        balance,
         (ordered[0].period.start, ordered[-1].period.end),
         len(ordered),
         true_ups=tuple(labels),
         warnings=tuple(chain.warnings),
         split=split,
     )
+
+
+def _settlements(entries: Sequence[LedgerEntry], pto: date | None, *, split: bool) -> list[TrueUp]:
+    """Annual events this account actually has.
+
+    ``run_true_ups`` emits a cash-out for every completed March-April year
+    without asking who supplies generation, because it is written for the
+    common case of a Community Choice Aggregator account. A bundled customer has
+    no CCA to settle with, so telling them one did -- and applying its clawback
+    to their bank -- is inventing a counterparty.
+    """
+    if pto is None:
+        return []
+    events = run_true_ups(entries, pto_date=pto, is_cca=split)
+    if split:
+        return list(events)
+    return [event for event in events if str(event.kind) != "mce_cash_out"]
+
+
+def _chain(bills: list[Bill], pto: date | None, *, split: bool) -> tuple[CreditBalances, list[str]]:
+    """Fold ``bills``, applying every annual event in the order they fall.
+
+    One event at a time, deliberately. ``run_true_ups`` computes each event
+    independently from whichever ledger it is handed, so a run crossing two of
+    them yields a second event derived from a ledger that never saw the first
+    one's clawback. Taking the last event's closing balance therefore discards
+    every earlier reversal -- on a CCA account whose PTO anniversary falls after
+    April, which is most of the year, the last event is the utility's, whose CCA
+    branch reverses nothing at all, so the whole cash-out silently survives in
+    the bank as credit that was already paid out in cash.
+
+    Recomputing after each event is what makes the next one see the last.
+    """
+    opening: CreditBalances | None = None
+    remaining = list(bills)
+    labels: list[str] = []
+    while remaining:
+        entries = run_ledger(remaining, opening=opening).entries
+        events = _settlements(entries, pto, split=split)
+        if not events:
+            break
+        first = events[0]
+        labels.append(f"{first.kind} settled {first.period.end}")
+        opening = first.closing
+        after = [b for b in remaining if b.period.start > first.period.end]
+        if len(after) == len(remaining):
+            # An event that consumes nothing would loop forever. It should not
+            # happen -- a period always covers at least one cycle -- but a
+            # coordinator refresh is the wrong place to discover otherwise.
+            _LOGGER.warning("annual event %s consumed no cycles; stopping the fold", first)
+            break
+        remaining = after
+    if not remaining:
+        return (opening or CreditBalances()), labels
+    return run_ledger(remaining, opening=opening).entries[-1].closing, labels
 
 
 def _pto_of(profile: AccountProfile, on: date) -> date | None:

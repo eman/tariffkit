@@ -14,7 +14,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from tariffkit.account import AccountProfile, AccountRateEngine
+from tariffkit.account import AccountError, AccountProfile, AccountRateEngine
 from tariffkit.billing import Bill, BillingPeriod, IntervalReading
 from tariffkit.components import ComponentGroup
 from tariffkit.config import CcaConfig, Config
@@ -368,6 +368,7 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         )
         self._usage_note = ""
         self._bank_key: tuple[object, ...] | None = None
+        self._settled_once = False
         self._bank: BankState | None = None
         self._predbat_key: tuple[date, date] | None = None
         self._predbat: PredbatPayload | None = None
@@ -387,7 +388,16 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
 
     async def _async_update_data(self) -> TariffKitData:
         metered = await self._async_metered()
-        bank = await self._async_bank(metered)
+        # Inside the guard, and catching more than the rate path needs to. The
+        # bank reaches into the ledger and the true-up tables, which can raise
+        # for reasons that have nothing to do with whether prices can be
+        # computed -- and an optional feature must not cost the rate entities
+        # their value, which is the same rule `_async_metered` follows.
+        try:
+            bank = await self._async_bank(metered)
+        except (TariffKitError, HomeAssistantError, ValueError, ArithmeticError) as err:
+            _LOGGER.warning("Unable to compute the export credit bank: %s", err)
+            bank = None
         try:
             data = await self.hass.async_add_executor_job(self._compute, metered, bank)
         except TariffKitError as err:
@@ -406,14 +416,30 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         """
         if metered is None or self._usage is None:
             return None
-        pto = self.profile.config_at(now_pacific()).pto_date
+        if not self._settled_once:
+            # Not on the first refresh. That one is awaited inside
+            # `async_setup_entry`, and folding a long history there costs
+            # seconds -- measured at eleven for five years -- which shows up as
+            # Home Assistant's slow-setup warning and delays every other entity.
+            # A minute later costs nothing and nobody is watching.
+            self._settled_once = True
+            return None
+        try:
+            pto = self.profile.config_at(now_pacific()).pto_date
+        except AccountError:
+            return None
         if pto is None:
             # Without Permission To Operate nothing is compensated, so there is
             # no bank to carry -- not an empty one, none.
             return None
-        opens = min(
-            resolve_cycle(pto, self.meters.cycle_start_day, statement_periods(self.profile)).start,
-            metered.cycle.start,
+        opens = max(
+            min(
+                resolve_cycle(
+                    pto, self.meters.cycle_start_day, statement_periods(self.profile)
+                ).start,
+                metered.cycle.start,
+            ),
+            min(self.profile.effective_dates),
         )
         closes = metered.cycle.start - timedelta(days=1)
         # A cycle only closes once, so its start is the natural cache key -- but
@@ -439,7 +465,11 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         try:
             readings = await self._usage.async_readings(opens, closes)
         except (HomeAssistantError, ValueError) as err:
+            # Keyed on the hour, so a recorder that stays broken is retried
+            # hourly rather than being asked for months of statistics every
+            # sixty seconds for as long as it stays broken.
             _LOGGER.warning("Unable to read history for the credit bank: %s", err)
+            self._bank_key = (opens, metered.cycle.start, hour_floor(now_pacific()), "error")
             return self._bank
         self._bank = await self.hass.async_add_executor_job(
             self._fold_bank, readings, opens, closes
@@ -464,7 +494,7 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         result = build(self.profile, readings, opens, closes, self.meters.cycle_start_day)
         if not result.bills:
             return None
-        state = fold(self.profile, result.bills, closes)
+        state = fold(self.profile, result.bills)
         # `uncovered` is the only thing that notices an hour missing from the
         # *end* of the window: a trailing hole is not a gap between readings, so
         # the coverage check cannot see it, and the day it belongs to still has
@@ -473,6 +503,16 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         # response, which left this path silent about exactly the case that
         # recurs every time a cycle rolls over.
         uncovered = () if self._usage is None else self._usage.absent
+        if result.unpriced:
+            # The cycle bills carry these days' energy even though the daily
+            # rows refused to publish it, and their time-of-use split is a
+            # guess -- which is exactly what the bank is folding.
+            uncovered = (
+                *uncovered,
+                f"{len(result.unpriced)} day(s) inside the folded cycles hold an hour "
+                f"reconstructed across an outage, so those cycles' time-of-use split is "
+                f"a guess even though their energy is not",
+            )
         extra = tuple(
             w for w in (*result.skipped, *result.warnings, *uncovered) if w not in state.warnings
         )
@@ -574,6 +614,19 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
             usage_note=self._usage_note,
             bank=bank,
         )
+
+    @property
+    def split_supply(self) -> bool:
+        """True when a Community Choice Aggregator supplies generation.
+
+        Which is what makes the export credit two banks rather than one, so it
+        decides how many bank entities exist. Read once at setup: a supplier
+        change is an account-history edit, and that reloads the entry.
+        """
+        try:
+            return self.profile.config_at(now_pacific()).supplier is Supplier.CCA
+        except AccountError:
+            return False
 
     async def async_history(self, opens: date, closes: date) -> list[IntervalReading]:
         """Hourly metered readings across a past window, for backfilling.
