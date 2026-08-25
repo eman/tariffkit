@@ -62,7 +62,7 @@ All notable changes to this project are documented here. This project follows
   actually holds readings for are priced, and coverage is judged per meter, so
   one direction cannot vouch for the other.
 
-- An **Export credit bank** entity carries the Net Billing credit balance
+- **Export credit bank** entities carry the Net Billing credit balance
   between cycles, which no entity computing forward from the day meters were
   configured can know. It folds every closed cycle since the one containing the
   PTO date -- so it opens at zero by construction, with no balance anyone has to
@@ -73,7 +73,10 @@ All notable changes to this project are documented here. This project follows
   bank folded across a missing cycle reports a balance that never existed. The
   balance is recomputed when a cycle closes rather than accumulated, so
   correcting account history fixes it instead of leaving a stored figure quietly
-  wrong.
+  wrong. There are two entities because a Community Choice Aggregator account
+  has two banks -- the utility's delivery and bonus credits against the CCA's
+  export credit -- settling on unrelated calendars, which a single total would
+  merge into a figure no statement prints.
 
 ### Fixed
 - Statement evidence is identified by what a statement says rather than by the

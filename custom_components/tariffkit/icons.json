@@ -33,6 +33,9 @@
       },
       "export_credit_bank": {
         "default": "mdi:bank"
+      },
+      "export_credit_bank_generation": {
+        "default": "mdi:bank-transfer-in"
       }
     }
   },

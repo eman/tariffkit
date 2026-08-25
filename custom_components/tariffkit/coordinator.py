@@ -22,7 +22,7 @@ from tariffkit.errors import TariffKitError
 from tariffkit.interop import predbat_payload
 from tariffkit.interop.predbat import PredbatPayload
 from tariffkit.models import PricePoint, Supplier
-from tariffkit.timeutil import now_pacific
+from tariffkit.timeutil import hour_floor, now_pacific
 
 from .backfill import build
 from .bank import BankState, fold
@@ -367,7 +367,7 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
             )
         )
         self._usage_note = ""
-        self._bank_key: tuple[date, date] | None = None
+        self._bank_key: tuple[object, ...] | None = None
         self._bank: BankState | None = None
         self._predbat_key: tuple[date, date] | None = None
         self._predbat: PredbatPayload | None = None
@@ -416,7 +416,20 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
             metered.cycle.start,
         )
         closes = metered.cycle.start - timedelta(days=1)
-        key = (opens, metered.cycle.start)
+        # A cycle only closes once, so its start is the natural cache key -- but
+        # the fold would then happen on the first tick after midnight, when the
+        # cycle's final hour has not been compiled yet. The recorder writes the
+        # hourly row for 23:00 at about 00:00:10, and this ticks every minute on
+        # a fixed second. A fold that lands in that window prices the last cycle
+        # short of an hour and, cached on the cycle alone, would stay wrong for a
+        # month. So an untrustworthy fold is retried, keyed on the hour, for the
+        # first day of a new cycle -- long enough to outlast the compile, short
+        # enough that a genuine permanent gap is not re-read every hour forever.
+        settling = (now_pacific().date() - metered.cycle.start).days < 1
+        unsettled = self._bank is not None and not self._bank.trustworthy
+        key: tuple[object, ...] = (opens, metered.cycle.start)
+        if settling and unsettled:
+            key = (*key, hour_floor(now_pacific()))
         if key == self._bank_key:
             return self._bank
         if closes < opens:
@@ -452,7 +465,17 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         if not result.bills:
             return None
         state = fold(self.profile, result.bills, closes)
-        extra = tuple(w for w in (*result.skipped, *result.warnings) if w not in state.warnings)
+        # `uncovered` is the only thing that notices an hour missing from the
+        # *end* of the window: a trailing hole is not a gap between readings, so
+        # the coverage check cannot see it, and the day it belongs to still has
+        # its other twenty-three hours and prices without complaint. It lives on
+        # the reader and was previously surfaced only in the backfill action's
+        # response, which left this path silent about exactly the case that
+        # recurs every time a cycle rolls over.
+        uncovered = () if self._usage is None else self._usage.absent
+        extra = tuple(
+            w for w in (*result.skipped, *result.warnings, *uncovered) if w not in state.warnings
+        )
         return replace(state, warnings=(*state.warnings, *extra)) if extra else state
 
     async def _async_metered(self) -> MeteredUsage | None:

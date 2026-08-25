@@ -23,10 +23,25 @@ from datetime import date, timedelta
 from itertools import pairwise
 
 from tariffkit.account import AccountProfile
-from tariffkit.billing import Bill, CreditBalances, run_ledger, run_true_ups
+from tariffkit.billing import Bill, CreditBalances, CreditBucket, run_ledger, run_true_ups
 from tariffkit.models import Supplier
 
 _LOGGER = logging.getLogger(__name__)
+
+
+#: Which buckets each supplier's bank holds, and on whose calendar it settles.
+#:
+#: On a Community Choice Aggregator account these are two banks, not one. A
+#: statement prints them on separate pages -- PG&E's "Energy Delivered Credits"
+#: and "Bonus Credits" against the CCA's "Energy Export Credit" -- and they
+#: settle on unrelated calendars: PG&E at the Permission To Operate anniversary,
+#: the CCA on its own cash-out year. Adding them gives a figure no statement
+#: shows and that never settles as a whole.
+#:
+#: On a bundled account PG&E supplies generation too, so all three buckets are
+#: its own and there is a single bank.
+UTILITY_BUCKETS = (CreditBucket.DELIVERY, CreditBucket.BONUS)
+GENERATION_BUCKETS = (CreditBucket.GENERATION,)
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,10 +56,25 @@ class BankState:
     true_ups: tuple[str, ...] = ()
     #: Why the balance is not trustworthy, or empty when it is.
     warnings: tuple[str, ...] = ()
+    #: True when a Community Choice Aggregator supplies generation, which is
+    #: what makes this two banks rather than one.
+    split: bool = False
 
     @property
     def trustworthy(self) -> bool:
         return not self.warnings and self.cycles > 0
+
+    def held_by(self, supplier: str) -> float:
+        """The balance one supplier holds.
+
+        ``utility`` is the delivering utility, ``generation`` whoever supplies
+        generation. On a bundled account they are the same party, so asking for
+        either returns the whole bank rather than a fraction of it.
+        """
+        if not self.split:
+            return float(self.balance.total)
+        buckets = UTILITY_BUCKETS if supplier == "utility" else GENERATION_BUCKETS
+        return float(sum(self.balance[bucket] for bucket in buckets))
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -55,6 +85,7 @@ class BankState:
             "from": self.period[0].isoformat() if self.period else None,
             "through": self.period[1].isoformat() if self.period else None,
             "true_ups": list(self.true_ups),
+            "split_between_suppliers": self.split,
             "warnings": list(self.warnings),
             "complete": self.trustworthy,
         }
@@ -110,12 +141,11 @@ def fold(profile: AccountProfile, bills: list[Bill], on: date) -> BankState:
     ordered = chain.bills
 
     entries = run_ledger(ordered).entries
+    split = _is_cca(profile, ordered[-1].period.end)
     pto = _pto_of(profile, ordered[-1].period.end)
     events = []
     if pto is not None:
-        events = run_true_ups(
-            entries, pto_date=pto, is_cca=_is_cca(profile, ordered[-1].period.end)
-        )
+        events = run_true_ups(entries, pto_date=pto, is_cca=split)
 
     opening: CreditBalances | None = None
     folded = ordered
@@ -132,6 +162,7 @@ def fold(profile: AccountProfile, bills: list[Bill], on: date) -> BankState:
                 len(ordered),
                 true_ups=tuple(labels),
                 warnings=tuple(chain.warnings),
+                split=split,
             )
         entries = run_ledger(folded, opening=opening).entries
 
@@ -141,6 +172,7 @@ def fold(profile: AccountProfile, bills: list[Bill], on: date) -> BankState:
         len(ordered),
         true_ups=tuple(labels),
         warnings=tuple(chain.warnings),
+        split=split,
     )
 
 

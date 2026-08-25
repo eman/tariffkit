@@ -195,7 +195,7 @@ logged reason rather than guessing.
 | Energy cost / Export credit / Net cost today | USD | today's running charge, credit, and net, reported in USD regardless of the instance's configured currency; only with [Metered energy](#metered-energy) configured |
 | Grid import / export this cycle | kWh | the same two counters over the billing cycle to date |
 | Energy cost / Export credit / Net cost this cycle | USD | the same three figures over the billing cycle to date |
-| Export credit bank | USD | Net Billing credit carried between cycles; see [The export credit bank](#the-export-credit-bank). Only with a grid-export meter configured |
+| Export credit bank (utility) / (generation) | USD | Net Billing credit carried between cycles, one per settling party; see [The export credit bank](#the-export-credit-bank). Only with a grid-export meter configured |
 
 Daily Fixed Charge is reported in `USD/day`, not `USD/kWh`, because that is
 what it is: a fixed daily amount, not a marginal price. The unit keeps it out
@@ -745,15 +745,36 @@ Net Surplus Compensation already paid for. The bank is therefore the number that
 answers "what has the solar actually done", and it is not a figure any single
 statement prints.
 
-**Export credit bank** appears whenever a grid-export meter is configured. Its
-attributes carry the split the tariff actually keeps, and enough context to
-judge the figure:
+### There are two banks, not one
+
+Where a Community Choice Aggregator supplies your generation, the credits are
+kept by two different parties on two unrelated calendars. A statement prints
+them on separate pages — PG&E's *Energy Delivered Credits* and *Bonus Credits*
+against the CCA's *Energy Export Credit* — and they settle independently: PG&E
+at your Permission To Operate anniversary, the CCA on its own cash-out year.
+Adding them together gives a figure no statement shows and that never settles as
+a whole.
+
+So there are two entities:
+
+| Entity | Holds |
+|---|---|
+| **Export credit bank (utility)** | The delivery and bonus buckets — PG&E's |
+| **Export credit bank (generation)** | The generation bucket — your CCA's |
+
+On a bundled account PG&E supplies generation too, so all three buckets are its
+own: both entities then report the same single bank, and the names simply say
+whose it is.
+
+Both appear whenever a grid-export meter is configured. Their attributes carry
+the split the tariff keeps, and enough context to judge the figure:
 
 | Attribute | Means |
 |---|---|
 | `generation`, `delivery`, `bonus` | The bank by bucket. Credits are spent against matching charges, so the split is not cosmetic |
 | `cycles`, `from`, `through` | How many billing cycles were folded, and over what span |
 | `true_ups` | Annual events crossed. Empty in a first year |
+| `split_between_suppliers` | True when a CCA supplies generation, which is what makes this two banks |
 | `warnings`, `quality.complete` | Whether the balance can be trusted at all |
 
 ### What it is a balance *of*
@@ -777,6 +798,14 @@ containing your PTO date. Nothing before Permission To Operate earns anything,
 so there is no earlier balance to carry and no opening figure anyone would have
 to supply — see [Backfilling history](#backfilling-history), which starts in the
 same place for the same reason.
+
+**A rollover is the moment it is most likely to be wrong.** A cycle's final
+hour is compiled by the recorder shortly *after* midnight has already opened the
+next cycle, so a fold done at that instant can be short of an hour — and a
+missing hour at the *end* of a window is not a gap between readings, so nothing
+in the series reveals it. The per-meter coverage check does, and an untrustworthy
+balance is refolded hourly through the first day of a new cycle rather than
+being cached wrong for a month.
 
 **It is recomputed, never accumulated.** The whole run is priced again whenever
 a cycle closes, so correcting account history or importing statements fixes the

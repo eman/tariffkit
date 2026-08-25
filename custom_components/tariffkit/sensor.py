@@ -546,12 +546,14 @@ BANK_DESCRIPTION = (
     "Under Net Billing a credit does not settle at the end of the cycle that "
     "earned it -- it banks, offsets later charges, and survives the annual "
     "true-up, which claws back only what Net Surplus Compensation already paid "
-    "for. This is a balance at the last cycle close, not a figure any single "
-    "statement prints."
+    "for. A balance at the last cycle close, not a figure any single statement "
+    "prints. Where a Community Choice Aggregator supplies generation these are "
+    "two banks on unrelated settlement calendars, and adding them together "
+    "would give a number that never settles as one."
 )
 
 
-def _bank_sensor() -> TariffKitSensorDescription:
+def _bank_sensor(holder: str) -> TariffKitSensorDescription:
     """The running credit bank.
 
     `state_class` is measurement rather than total, and there is deliberately no
@@ -565,7 +567,7 @@ def _bank_sensor() -> TariffKitSensorDescription:
     def state(data: TariffKitData) -> float | None:
         if data.bank is None:
             return None
-        return round(data.bank.balance.total, 4)
+        return round(data.bank.held_by(holder), 4)
 
     def attrs(data: TariffKitData) -> dict[str, Any]:
         if data.bank is None:
@@ -579,9 +581,10 @@ def _bank_sensor() -> TariffKitSensorDescription:
         found[ATTR_DESCRIPTION] = BANK_DESCRIPTION
         return found
 
+    key = "export_credit_bank" if holder == "utility" else "export_credit_bank_generation"
     return TariffKitSensorDescription(
-        key="export_credit_bank",
-        translation_key="export_credit_bank",
+        key=key,
+        translation_key=key,
         native_unit_of_measurement=MONEY_UNIT,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=2,
@@ -626,8 +629,12 @@ def usage_sensors(meters: MeterSettings) -> tuple[TariffKitSensorDescription, ..
             )
         found.append(_money_sensor(span, "net_cost", NET_DESCRIPTION, lambda b: b.total))
     if meters.export_entity:
-        # No export meter, no export credit, so no bank to carry.
-        found.append(_bank_sensor())
+        # No export meter, no export credit, so no bank to carry. Two entities
+        # because a Community Choice Aggregator account has two banks settling on
+        # unrelated calendars; on a bundled account the generation one reports
+        # the same single bank, and its name says whose it is.
+        found.append(_bank_sensor("utility"))
+        found.append(_bank_sensor("generation"))
     return tuple(found)
 
 
