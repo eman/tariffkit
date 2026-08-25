@@ -195,6 +195,7 @@ logged reason rather than guessing.
 | Energy cost / Export credit / Net cost today | USD | today's running charge, credit, and net, reported in USD regardless of the instance's configured currency; only with [Metered energy](#metered-energy) configured |
 | Grid import / export this cycle | kWh | the same two counters over the billing cycle to date |
 | Energy cost / Export credit / Net cost this cycle | USD | the same three figures over the billing cycle to date |
+| Export credit bank | USD | Net Billing credit carried between cycles; see [The export credit bank](#the-export-credit-bank). Only with a grid-export meter configured |
 
 Daily Fixed Charge is reported in `USD/day`, not `USD/kWh`, because that is
 what it is: a fixed daily amount, not a marginal price. The unit keeps it out
@@ -734,6 +735,71 @@ net_cost: -576.02
 skipped: []
 warnings: []
 ```
+
+## The export credit bank
+
+Under Net Billing an export credit does not settle at the end of the cycle that
+earned it. It banks, offsets later cycles' charges, and carries across the
+annual true-up — which does not zero it either; a true-up claws back only what
+Net Surplus Compensation already paid for. The bank is therefore the number that
+answers "what has the solar actually done", and it is not a figure any single
+statement prints.
+
+**Export credit bank** appears whenever a grid-export meter is configured. Its
+attributes carry the split the tariff actually keeps, and enough context to
+judge the figure:
+
+| Attribute | Means |
+|---|---|
+| `generation`, `delivery`, `bonus` | The bank by bucket. Credits are spent against matching charges, so the split is not cosmetic |
+| `cycles`, `from`, `through` | How many billing cycles were folded, and over what span |
+| `true_ups` | Annual events crossed. Empty in a first year |
+| `warnings`, `quality.complete` | Whether the balance can be trusted at all |
+
+### What it is a balance *of*
+
+**Closed cycles only.** Credits apply when a cycle closes, so between closes the
+bank sits still at the last closing balance. What the open cycle has earned so
+far is a different number, and the **Export credit this cycle** entity already
+carries it. A projected balance combining the two would read better and would be
+a figure no statement will ever show.
+
+**It needs an unbroken run of cycles**, and says so when it does not have one.
+`run_ledger` in the library deliberately does not check — "a ledger over a
+discontinuous run is the caller's business" — so this checks. Folding across a
+missing cycle does not merely lose that cycle: the credits it earned and spent
+are absent from the arithmetic entirely, so the balance reported never existed.
+A gap, or a cycle priced from incomplete rates, clears `quality.complete` and
+names itself in `warnings`.
+
+**It opens at zero, by construction.** The fold starts at the billing cycle
+containing your PTO date. Nothing before Permission To Operate earns anything,
+so there is no earlier balance to carry and no opening figure anyone would have
+to supply — see [Backfilling history](#backfilling-history), which starts in the
+same place for the same reason.
+
+**It is recomputed, never accumulated.** The whole run is priced again whenever
+a cycle closes, so correcting account history or importing statements fixes the
+bank on the next cycle rather than leaving a stored balance quietly wrong. That
+costs a months-long recorder read and a second or two of pricing, which is why
+it happens once per cycle and not on the minute tick.
+
+**A gap costs a bank more than it costs a day.** A cycle's energy survives a
+recorder outage exactly — a cumulative counter depends only on its endpoints —
+but its dollar value moves with time-of-use shape, because a counter catching up
+reports the whole outage in the hour it returns. A wrong day is visible on a
+chart; a bank compounding that across a program year is not. That is why days
+the recorder cannot account for are left unpriced rather than guessed at.
+
+### On a CCA account
+
+If a Community Choice Aggregator supplies your generation, PG&E's annual true-up
+settles nothing in cash — the bank carries forward and PG&E pays no Net Surplus
+Compensation, under Special Condition 5.a. Your CCA's own cash-out is a separate
+event on its own calendar. A bundled account faces the surplus test instead. The
+`true_ups` attribute names whichever events the folded run has actually crossed,
+and stays empty for a year that has not closed rather than implying it settled
+at zero.
 
 ## Energy dashboard
 

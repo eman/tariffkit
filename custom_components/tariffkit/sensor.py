@@ -541,6 +541,55 @@ def _energy_sensor(span: str, direction: str) -> TariffKitSensorDescription:
     )
 
 
+BANK_DESCRIPTION = (
+    "Export credits earned but not yet spent, carried between billing cycles. "
+    "Under Net Billing a credit does not settle at the end of the cycle that "
+    "earned it -- it banks, offsets later charges, and survives the annual "
+    "true-up, which claws back only what Net Surplus Compensation already paid "
+    "for. This is a balance at the last cycle close, not a figure any single "
+    "statement prints."
+)
+
+
+def _bank_sensor() -> TariffKitSensorDescription:
+    """The running credit bank.
+
+    `state_class` is measurement rather than total, and there is deliberately no
+    `monetary` device class. A bank is a *stock*, not an accumulator: it rises
+    and falls, and Home Assistant would otherwise record each fall as a negative
+    contribution to a lifetime sum that means nothing. Home Assistant permits
+    only `total` alongside `monetary`, so the device class is the thing that has
+    to go; the unit still says what the number is.
+    """
+
+    def state(data: TariffKitData) -> float | None:
+        if data.bank is None:
+            return None
+        return round(data.bank.balance.total, 4)
+
+    def attrs(data: TariffKitData) -> dict[str, Any]:
+        if data.bank is None:
+            return {
+                ATTR_QUALITY: {"complete": False},
+                ATTR_DESCRIPTION: BANK_DESCRIPTION,
+                "warnings": ["no closed billing cycle has been priced yet"],
+            }
+        found = dict(data.bank.to_dict())
+        found[ATTR_QUALITY] = {"complete": found.pop("complete")}
+        found[ATTR_DESCRIPTION] = BANK_DESCRIPTION
+        return found
+
+    return TariffKitSensorDescription(
+        key="export_credit_bank",
+        translation_key="export_credit_bank",
+        native_unit_of_measurement=MONEY_UNIT,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        value_fn=state,
+        attrs_fn=attrs,
+    )
+
+
 def usage_sensors(meters: MeterSettings) -> tuple[TariffKitSensorDescription, ...]:
     """The running-total entities the configured meters can actually support.
 
@@ -576,6 +625,9 @@ def usage_sensors(meters: MeterSettings) -> tuple[TariffKitSensorDescription, ..
                 )
             )
         found.append(_money_sensor(span, "net_cost", NET_DESCRIPTION, lambda b: b.total))
+    if meters.export_entity:
+        # No export meter, no export credit, so no bank to carry.
+        found.append(_bank_sensor())
     return tuple(found)
 
 

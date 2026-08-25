@@ -700,3 +700,38 @@ async def test_without_a_recorder_the_entities_say_so(
     assert any("recorder" in w for w in state.attributes["warnings"])
     # And the rate entities are entirely unaffected.
     assert _state(hass, entry, "import_price").state not in ("unknown", "unavailable")
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_the_bank_entity_appears_only_with_an_export_meter(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """No export meter means no export credit, so there is no bank to carry."""
+    freezer.move_to(NOW)
+    entry = _entry(_meter_options(**{CONF_GRID_EXPORT_ENTITY: ""}))
+    await _setup(hass, entry)
+    assert _entity_id(hass, entry, "export_credit_bank") is None
+
+    both = _entry(_meter_options())
+    await _setup(hass, both)
+    assert _entity_id(hass, both, "export_credit_bank") is not None
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_the_bank_says_why_it_has_no_figure_yet(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """An unexplained `unknown` is the failure this integration keeps fixing."""
+    freezer.move_to(NOW)
+    entry = _entry(_meter_options())
+    await _setup(hass, entry)
+
+    state = _state(hass, entry, "export_credit_bank")
+    assert state.state == "unknown"
+    assert state.attributes["quality"]["complete"] is False
+    assert state.attributes["warnings"], "an empty bank must explain itself"
+    assert state.attributes["unit_of_measurement"] == "USD"
+    # A balance is a stock, not an accumulator: recording each fall as a
+    # negative contribution to a lifetime sum would mean nothing.
+    assert state.attributes["state_class"] == "measurement"
+    assert "device_class" not in state.attributes

@@ -62,6 +62,19 @@ All notable changes to this project are documented here. This project follows
   actually holds readings for are priced, and coverage is judged per meter, so
   one direction cannot vouch for the other.
 
+- An **Export credit bank** entity carries the Net Billing credit balance
+  between cycles, which no entity computing forward from the day meters were
+  configured can know. It folds every closed cycle since the one containing the
+  PTO date -- so it opens at zero by construction, with no balance anyone has to
+  supply -- applying each cycle's credits against its charges through
+  `tariffkit.billing.run_ledger`, and continuing from a true-up's own closing
+  balance where the run crosses one. It refuses rather than reports where the
+  run has a gap: the library's ledger deliberately does not check for one, and a
+  bank folded across a missing cycle reports a balance that never existed. The
+  balance is recomputed when a cycle closes rather than accumulated, so
+  correcting account history fixes it instead of leaving a stored figure quietly
+  wrong.
+
 ### Fixed
 - Statement evidence is identified by what a statement says rather than by the
   bytes it arrived in, so re-importing evidence a profile already holds is a

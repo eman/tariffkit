@@ -24,6 +24,8 @@ from tariffkit.interop.predbat import PredbatPayload
 from tariffkit.models import PricePoint, Supplier
 from tariffkit.timeutil import now_pacific
 
+from .backfill import build
+from .bank import BankState, fold
 from .const import (
     CONF_ACC_PLUS_SEGMENT,
     CONF_BASELINE_CODE,
@@ -59,6 +61,7 @@ from .energy import (
     UsageReader,
     coverage_warnings,
     price,
+    resolve_cycle,
     statement_periods,
     subtract,
 )
@@ -233,6 +236,9 @@ class TariffKitData:
     #: Why ``usage`` is absent despite meters being configured. Empty when
     #: there is nothing to explain.
     usage_note: str = ""
+    #: The export credit bank, recomputed when a cycle closes rather than on
+    #: every tick. None when there is no PTO, no meters, or nothing priced.
+    bank: BankState | None = None
 
     def chart_attributes(self) -> dict[str, object]:
         return {
@@ -361,6 +367,8 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
             )
         )
         self._usage_note = ""
+        self._bank_key: tuple[date, date] | None = None
+        self._bank: BankState | None = None
         self._predbat_key: tuple[date, date] | None = None
         self._predbat: PredbatPayload | None = None
         self._predbat_warning: str | None = None
@@ -379,12 +387,73 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
 
     async def _async_update_data(self) -> TariffKitData:
         metered = await self._async_metered()
+        bank = await self._async_bank(metered)
         try:
-            data = await self.hass.async_add_executor_job(self._compute, metered)
+            data = await self.hass.async_add_executor_job(self._compute, metered, bank)
         except TariffKitError as err:
             raise UpdateFailed(str(err)) from err
         self._sync_device_identity(data.provenance)
         return data
+
+    async def _async_bank(self, metered: MeteredUsage | None) -> BankState | None:
+        """The credit bank, refreshed only when the billing cycle turns over.
+
+        Folding it means pricing every cycle since Permission To Operate, which
+        is seconds of work and a months-long recorder read -- far too much for a
+        one-minute tick, and pointless at that rate. A bank only moves when a
+        cycle closes and its credits are applied, so the cycle's own start is
+        the cache key.
+        """
+        if metered is None or self._usage is None:
+            return None
+        pto = self.profile.config_at(now_pacific()).pto_date
+        if pto is None:
+            # Without Permission To Operate nothing is compensated, so there is
+            # no bank to carry -- not an empty one, none.
+            return None
+        opens = min(
+            resolve_cycle(pto, self.meters.cycle_start_day, statement_periods(self.profile)).start,
+            metered.cycle.start,
+        )
+        closes = metered.cycle.start - timedelta(days=1)
+        key = (opens, metered.cycle.start)
+        if key == self._bank_key:
+            return self._bank
+        if closes < opens:
+            # The first cycle has not closed yet, so nothing has banked.
+            self._bank_key, self._bank = key, None
+            return None
+        try:
+            readings = await self._usage.async_readings(opens, closes)
+        except (HomeAssistantError, ValueError) as err:
+            _LOGGER.warning("Unable to read history for the credit bank: %s", err)
+            return self._bank
+        self._bank = await self.hass.async_add_executor_job(
+            self._fold_bank, readings, opens, closes
+        )
+        self._bank_key = key
+        return self._bank
+
+    def _fold_bank(
+        self, readings: list[IntervalReading], opens: date, closes: date
+    ) -> BankState | None:
+        """Price every closed cycle in the span and fold them.
+
+        Through `backfill.build` rather than by pricing cycles here, so the bank
+        inherits every guard the backfill grew: a window clipped to the evidence,
+        days the recorder cannot account for left unpriced, a cycle joined
+        partway through refused outright. Pricing cycles directly would fold a
+        bank out of months the meters say nothing about -- an empty cycle still
+        has a Base Services Charge, so it prices to something rather than to
+        nothing, and a balance of zero built from fabricated cycles looks exactly
+        like a balance of zero.
+        """
+        result = build(self.profile, readings, opens, closes, self.meters.cycle_start_day)
+        if not result.bills:
+            return None
+        state = fold(self.profile, result.bills, closes)
+        extra = tuple(w for w in (*result.skipped, *result.warnings) if w not in state.warnings)
+        return replace(state, warnings=(*state.warnings, *extra)) if extra else state
 
     async def _async_metered(self) -> MeteredUsage | None:
         """Read the meters, or nothing if they are unconfigured or unreadable.
@@ -439,7 +508,9 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
             self._predbat_key = key
         return self._predbat
 
-    def _compute(self, metered: MeteredUsage | None = None) -> TariffKitData:
+    def _compute(
+        self, metered: MeteredUsage | None = None, bank: BankState | None = None
+    ) -> TariffKitData:
         point = self.engine.price_now()
         curve = self.engine.forecast(self.forecast_hours, start=point.start)
         curve_points = tuple(curve.points)
@@ -478,6 +549,7 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
             predbat_warning=self._predbat_warning,
             usage=self._usage_for(metered),
             usage_note=self._usage_note,
+            bank=bank,
         )
 
     async def async_history(self, opens: date, closes: date) -> list[IntervalReading]:

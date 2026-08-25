@@ -30,6 +30,9 @@
       },
       "net_cost_cycle": {
         "default": "mdi:cash-sync"
+      },
+      "export_credit_bank": {
+        "default": "mdi:bank"
       }
     }
   },
