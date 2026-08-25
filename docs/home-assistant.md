@@ -620,9 +620,19 @@ case for anyone who was on the tariff before finding the setting.
 action: tariffkit.backfill_usage
 data:
   config_entry: <your entry>
-  start: "2026-06-03"     # optional; defaults to the profile's first epoch
+  # Optional. Defaults to the billing cycle containing your PTO date, which is
+  # where bills begin meaning anything: Net Billing compensation runs from
+  # Permission To Operate, so an earlier cycle earns nothing however much it
+  # exported. An account with no PTO falls back to the profile's first epoch.
+  start: "2026-06-03"
 response_variable: backfilled
 ```
+
+The response carries a `cycles` list alongside the daily totals — one entry per
+billing cycle priced, with its own charges, taxes, credits, fixed charges and
+total. That is what a statement states, and what an export credit ledger folds
+to carry a bank between cycles; the daily rows are for charting. Starting at the
+PTO cycle means such a ledger opens at zero, with nothing earlier to carry.
 
 It prices every finished day in the window and writes five **external
 statistics** under a `tariffkit:` namespace:

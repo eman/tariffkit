@@ -52,6 +52,10 @@ All notable changes to this project are documented here. This project follows
   utility history -- which leaves the running entities' own series and the
   recorder's compilation of them untouched. One row per finished day, each being
   its cycle's movement across that day, so the days sum to their cycle exactly.
+  It defaults to the billing cycle containing the PTO date -- where bills begin
+  meaning anything, since Net Billing compensation runs from Permission To
+  Operate -- and reports a per-cycle bill alongside the daily rows, which is
+  what an export credit ledger folds.
   Rerunning replaces the window rather than appending to it, which is how a
   corrected account history is picked up; a rerun over a later window continues
   the running total it finds rather than restarting it. Only days the recorder

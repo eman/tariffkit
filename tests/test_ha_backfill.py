@@ -50,12 +50,15 @@ def test_days_sum_to_the_cycle_that_contains_them() -> None:
     cycle = BillingPeriod(date(2026, 7, 1), date(2026, 7, 20))
     readings = _hours(cycle.start, cycle.end, imported=0.5, exported=0.2)
 
-    days, reason, _ = backfill.price_cycle(profile, readings, cycle)
+    days, cycle_bill, reason, _ = backfill.price_cycle(profile, readings, cycle)
     assert reason == ""
     assert len(days) == 20
 
     whole, _ = price(profile, readings, cycle)
     assert whole is not None
+    # The cycle bill the caller gets back is the same bill, not a re-derivation.
+    assert cycle_bill is not None
+    assert cycle_bill.total == pytest.approx(whole.total, abs=1e-9)
     assert sum(d.net_cost for d in days) == pytest.approx(whole.total, abs=1e-9)
     assert sum(d.energy_cost for d in days) == pytest.approx(
         whole.energy_charges + whole.taxes, abs=1e-9
@@ -78,10 +81,12 @@ def test_a_baseline_schedule_still_decomposes_exactly() -> None:
     readings = _hours(cycle.start, cycle.end, imported=1.5)
     readings.append(IntervalReading(datetime(2026, 7, 9, 2, tzinfo=PACIFIC), imported=60.0))
 
-    days, reason, _ = backfill.price_cycle(profile, readings, cycle)
+    days, cycle_bill, reason, _ = backfill.price_cycle(profile, readings, cycle)
     assert reason == ""
     whole, _ = price(profile, readings, cycle)
     assert whole is not None
+    assert cycle_bill is not None
+    assert cycle_bill.total == pytest.approx(whole.total, abs=1e-9)
     assert sum(d.net_cost for d in days) == pytest.approx(whole.total, abs=1e-9)
 
 
@@ -106,7 +111,7 @@ def test_a_single_day_may_exceed_its_cycle() -> None:
             IntervalReading(datetime(2026, 7, day, hour, tzinfo=PACIFIC), exported=8.0)
             for hour in range(24)
         ]
-    days, _, _ = backfill.price_cycle(profile, readings, cycle)
+    days, _, _, _ = backfill.price_cycle(profile, readings, cycle)
     whole, _ = price(profile, readings, cycle)
     assert whole is not None
     assert whole.total < 0, "a month of net export owes nothing"
@@ -660,3 +665,58 @@ def test_the_reader_marks_an_hour_that_follows_a_gap() -> None:
     covered = {"sensor.x": {hour * 1, hour * 2, hour * 5, hour * 6}}
     assert reader._reconstructed(covered) == {hour * 5}, "only the hour after the gap"
     assert reader._reconstructed({"sensor.x": {hour, hour * 2, hour * 3}}) == set()
+
+
+def test_the_cycle_bills_fold_into_a_credit_ledger() -> None:
+    """What the bills are actually for.
+
+    A day decomposition cannot carry an export credit bank; `run_ledger` folds
+    *cycle* bills, applying each cycle's credits against its charges and banking
+    the rest. Returning the bills rather than discarding them is what makes that
+    possible from a backfill.
+    """
+    from tariffkit.billing import run_ledger
+
+    profile = _profile()
+    readings = _hours(date(2026, 6, 1), date(2026, 7, 31), imported=0.2, exported=2.0)
+    result = backfill.build(profile, readings, date(2026, 6, 1), date(2026, 7, 31), 1)
+
+    assert len(result.bills) == 2, "June and July"
+    ledger = run_ledger(result.bills)
+    assert len(ledger.entries) == 2
+    # Heavy export against light import: credit is earned, partly applied, and
+    # the remainder banks into the next cycle rather than settling.
+    first, second = ledger.entries
+    assert first.earned.total > 0
+    assert first.closing.total > 0
+    assert second.opening.total == pytest.approx(first.closing.total)
+    assert second.closing.total > first.closing.total
+
+    # And each bill matches the days published for it.
+    for bill in result.bills:
+        days = [d for d in result.days if bill.period.start <= d.day <= bill.period.end]
+        assert sum(d.net_cost for d in days) == pytest.approx(bill.total, abs=1e-9)
+
+
+def test_a_bank_folded_from_the_pto_cycle_opens_at_zero() -> None:
+    """Which is why that cycle is the default place to start.
+
+    Net Billing compensation runs from Permission To Operate, so the cycle
+    containing it is the first that can earn anything. A ledger folded from
+    there needs no opening balance, because there is nothing earlier to carry.
+    """
+    from tariffkit.billing import run_ledger
+
+    pto = date(2026, 6, 15)
+    profile = AccountProfile(
+        (AccountEpoch(date(2026, 1, 1), Config(tariff="E-ELEC", pto_date=pto)),),
+        name="probe",
+    )
+    # A cycle straddling PTO, then a whole one after it.
+    readings = _hours(date(2026, 6, 1), date(2026, 7, 31), imported=0.2, exported=2.0)
+    result = backfill.build(profile, readings, date(2026, 6, 1), date(2026, 7, 31), 1)
+
+    ledger = run_ledger(result.bills)
+    assert ledger.entries[0].opening.total == 0.0
+    # The pre-PTO days of that first cycle earn nothing, and the engine says so.
+    assert any("before the Permission To Operate date" in w for w in result.warnings)
