@@ -69,6 +69,65 @@ disk to clean up afterward. If you installed manually, also delete
 `custom_components/tariffkit` (or remove the HACS custom repository) so a
 restart does not offer to set it up again.
 
+## Upgrading
+
+Nothing to do, in almost every case: entities keep their identity across
+releases, the config entry is migrated in place, and the integration stores no
+cache or file that could go stale. Three situations are worth knowing about
+anyway, because two of them are about *ordering* rather than about repair.
+
+### From a release, without metered energy configured
+
+There is nothing to migrate. [Metered energy](#metered-energy) is opt-in and
+creates no entities until you name a meter, so an instance that never used it
+has none of the entities the notes below discuss. Update, restart, carry on.
+
+### Turning on metered energy for the first time
+
+Upgrade **first**, then configure the meters. The order matters: the running
+totals write long-term statistics from the moment they exist, and an entity that
+records history under one release and then changes meaning under the next leaves
+a seam in that history which nothing detects on its own. Naming your meters on
+the newest release you intend to run avoids the question entirely.
+
+Then run [Backfilling history](#backfilling-history) once, leaving `start`
+unset. That prices from the billing cycle containing your Permission To Operate
+date, which is the only start where the export credit bank genuinely opens at
+zero — see [And it should start at the cycle containing your PTO
+date](#and-it-should-start-at-the-cycle-containing-your-pto-date).
+
+### From a development checkout that had `net_cost` entities
+
+Only relevant if you ran the integration from `main` between the release that
+added metered energy and the one that renamed it. No published release ever
+carried `net_cost` entities.
+
+`sensor.*_net_cost_today` and `sensor.*_net_cost_this_cycle` are now
+`amount_due_today` and `amount_due_this_cycle`, and the backfill's
+`tariffkit:<profile>_net_cost` statistic is `tariffkit:<profile>_amount_due`.
+The rename is deliberate rather than cosmetic. The figure changed meaning and
+sign — it was charges less every credit earned, which goes negative; it is now
+what a statement charges, which does not. Home Assistant accumulates a `total`
+sensor's lifetime sum as `sum += new - old` whenever `last_reset` is unchanged,
+and the cycle entity's `last_reset` is the cycle start, so keeping the old
+entity id would have added the whole banked balance to that sum in a single
+compile and never washed it out. A new id abandons the old series intact
+instead of corrupting it.
+
+So, after upgrading:
+
+1. **Update anything that names the old entities** — dashboard cards, template
+   sensors, automations. The old entities are removed from the registry on
+   reload, so a reference to one resolves to nothing rather than to a wrong
+   number.
+2. **Re-run the backfill** over the same window. History published by the older
+   code was priced as `Bill.total` and without the annual settlements, so it
+   disagrees with what the entities now show.
+3. **Delete the orphaned statistics** if you do not want them, under **Developer
+   tools → Statistics**: the old `sensor.*_net_cost_*` series and
+   `tariffkit:<profile>_net_cost`. They are inert, not wrong — nothing reads
+   them — so this is housekeeping rather than repair.
+
 ## Configure
 
 **Settings → Devices & Services → Add Integration → "TariffKit"** opens a
@@ -706,7 +765,9 @@ history disagree with the live entities by hundreds of dollars.
 ### Running it the first time, just after setting up
 
 Do this as soon as the meters are configured — you do not have to wait for the
-running totals to accumulate anything. The action reads the recorder's
+running totals to accumulate anything. If you are about to configure meters on
+an instance you also intend to update, see [Upgrading](#upgrading) first: doing
+it in that order saves a seam in the recorded history. The action reads the recorder's
 statistics for the meter entities, and those usually predate the integration by
 months, because the meter sensor existed before TariffKit did.
 
