@@ -115,6 +115,12 @@ account does not require a meter, and the counters are usually integrated
 after the tariff rather than before, so asking during setup would put a
 question in front of every new user that most of them cannot answer yet.
 
+Once you *have* named the meters, run
+[Backfilling history](#backfilling-history) straight away rather than waiting
+for the running totals to accumulate. The recorder's statistics for those meter
+entities usually reach back months before the integration existed, and that
+history is priceable from the moment the meters are configured.
+
 Multiple TariffKit entries can coexist — one per account or service
 agreement, or more than one meter in the same household — since each gets
 its own identity from the config entry itself, not from the tariff and dates
@@ -501,6 +507,10 @@ site with no solar — and the export-credit entities are left out rather than
 sitting at a permanent zero: a credit the meters cannot answer for is not a
 series with nothing in it.
 
+Having named them, see [Backfilling history](#backfilling-history) to price
+whatever the recorder already holds for those entities — the running totals
+below only ever compute forward from now.
+
 ### The counters do not have to reset
 
 They usually do not. The Rainforest Eagle-100's
@@ -692,6 +702,96 @@ carried from cycle to cycle: a true-up claws back credit already paid out as Net
 Surplus Compensation, so each cycle after an anniversary opens with less bank
 than a straight fold would give it. Getting this wrong made the published
 history disagree with the live entities by hundreds of dollars.
+
+### Running it the first time, just after setting up
+
+Do this as soon as the meters are configured — you do not have to wait for the
+running totals to accumulate anything. The action reads the recorder's
+statistics for the meter entities, and those usually predate the integration by
+months, because the meter sensor existed before TariffKit did.
+
+1. **Set up the account profile and configure the meters** — [Configure](#configure)
+   and [Metered energy](#metered-energy). Nothing below works until the meters
+   are named.
+2. **Find out how far back your meter statistics actually go.** Developer tools →
+   Statistics, search for your grid-import entity, and note its earliest date.
+   That, not the profile's first epoch, is the real limit on how much history
+   can be priced.
+3. **Pick a start on or before a billing-cycle boundary that your statistics
+   cover** — see the caveat below, which is the one thing likely to catch you
+   out.
+4. **Run the action** and read the response.
+
+```yaml
+action: tariffkit.backfill_usage
+data:
+  config_entry: <your entry>
+  start: "2026-04-30"
+response_variable: backfilled
+```
+
+5. **Check `skipped`, `warnings` and `complete` before trusting the numbers.**
+   `complete: true` with both lists empty means every day in the window was
+   priced against a full cycle. Anything else names what was left out and why.
+
+#### Your history has to start at a cycle boundary
+
+A billing cycle can only be decomposed from its own first day, so a cycle the
+window joins partway through is refused rather than mispriced. The action
+already snaps a start date you give it back to its cycle's beginning — but it
+then clips the window forward to your first actual reading, and if *that* lands
+mid-cycle the leading cycle still goes.
+
+That is not a failure to work around; it is the action telling you the earliest
+date it can honestly price from, and the message says which:
+
+```
+skipped:
+  2026-07-29..2026-08-23: the window starts inside this cycle (2026-07-31),
+  so its days cannot be priced against a full cycle. Backfill from 2026-07-29
+  or earlier to include it
+```
+
+If your statistics do not reach that boundary, the cycle genuinely cannot be
+priced and the next one is where your history begins. Nothing is lost by trying:
+a refused cycle costs you a line in `skipped`, not a wrong number.
+
+#### And it should start at the cycle containing your PTO date
+
+Different problem, same window. A backfill opens the export credit bank at zero,
+which is only true where compensation began — so a run starting later is missing
+every credit earned in between, and overstates every amount due by whatever that
+credit would have offset. Nothing is skipped and no day is unpriced; the run
+looks clean apart from one line in `warnings`:
+
+```
+warnings:
+  this run starts at 2026-10-01, after the cycle containing Permission To
+  Operate (2026-06-03), so it opens the export credit bank at zero. Any credit
+  earned between those dates is missing, and every amount due here is
+  overstated by whatever it would have offset. Backfill from 2026-06-03 for a
+  bank that carries
+```
+
+Leaving `start` unset picks that cycle for you, which is why it is the default.
+
+### Running it again later
+
+Rerunning is the normal way to keep backfilled history honest, and it is safe:
+each run replaces the days it covers rather than adding to them, and a run over
+a narrower window continues the running total it finds rather than restarting
+it. Re-run after any of these:
+
+| After | Because |
+|---|---|
+| Correcting account history — tariff, supplier, CCA, an epoch date | The corrected settings reprice the whole window. Statistics already written were priced under the old ones and nothing detects that on its own |
+| Importing statements (`account sync` / `account import-statement`, then re-importing the profile) | Cycle boundaries become exact instead of falling back to the meter-read day, so the days regroup into the cycles a bill actually used |
+| Your meter history growing further back | A wider window prices cycles that were previously out of reach |
+| Upgrading TariffKit, when a release changes pricing | The changelog says when this applies |
+
+Nothing is stored about previous runs, deliberately — there is no state that
+could go stale, and no bookkeeping to get wrong. The written statistics are the
+only record, and rewriting them is the whole update mechanism.
 
 It prices every finished day in the window and writes five **external
 statistics** under a `tariffkit:` namespace:
