@@ -47,10 +47,20 @@ All notable changes to this project are documented here. This project follows
   `tariffkit.billing.trueup` about who owns the generation bucket.
 
 - `check_coverage` accepts `netted=True` for readings that come from a meter's
-  own import and export registers, and `require_full_span=False` for a period
-  still running. Callers who knew these facts were filtering the function's
-  messages by their text, which stops filtering the moment a new warning is
-  added -- as one was.
+  own import and export registers, and `through=<moment>` for a period still
+  running. Callers who knew these facts were filtering the function's messages
+  by their text, which stops filtering the moment a new warning is added -- as
+  one was.
+
+  `through` also closes a hole that predates the flag. A missing hour at the
+  *end* of a series is not a gap between readings -- a gap needs a reading on
+  each side, and the whole point of a series that has stopped is that there is
+  nothing on the far side -- so only a clock can tell an hour that arrived
+  empty from one that has not arrived. Without one, a meter that stopped
+  reporting went on producing a smaller figure that still called itself
+  complete, indefinitely. `check_coverage` now measures the shortfall against
+  elapsed time and names a series that has stopped, and the Home Assistant
+  entities pass their clock so the running totals get both.
 
 ### Fixed
 - `run_true_ups` no longer emits a Community Choice Aggregator cash-out for a

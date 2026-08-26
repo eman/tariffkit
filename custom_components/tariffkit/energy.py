@@ -40,7 +40,7 @@ from tariffkit.account import AccountProfile
 from tariffkit.billing import Bill, BillingPeriod, IntervalReading, check_coverage
 from tariffkit.billing.engine import compute_segments
 from tariffkit.errors import TariffKitError
-from tariffkit.timeutil import PACIFIC, hour_floor, to_pacific
+from tariffkit.timeutil import PACIFIC, hour_floor, now_pacific, to_pacific
 
 from .const import (
     CONF_CYCLE_START_DAY,
@@ -583,25 +583,35 @@ class UsageReader:
 
 
 def coverage_warnings(
-    readings: Sequence[IntervalReading], period: BillingPeriod
+    readings: Sequence[IntervalReading],
+    period: BillingPeriod,
+    through: datetime | None = None,
 ) -> tuple[str, ...]:
     """The library's own coverage check, told what it is looking at.
 
     Two facts this caller knows and :func:`tariffkit.billing.check_coverage`
-    cannot see. The period may still be running, so the elapsed shortfall says
-    only that the rest of the day has not happened yet. And the readings come
-    from a meter's own import and export registers, which net at the meter's
-    interval and legitimately leave both non-zero once
-    :meth:`UsageReader._assemble` aggregates them to an hour -- on a solar site
-    every passing cloud produces one, so reporting it would mark every account
-    incomplete forever and train its readers to ignore the warnings that matter.
+    cannot see. The readings come from a meter's own import and export
+    registers, which net at the meter's interval and legitimately leave both
+    non-zero once :meth:`UsageReader._assemble` aggregates them to an hour -- on
+    a solar site every passing cloud produces one, so reporting it would mark
+    every account incomplete forever and train its readers to ignore the
+    warnings that matter. And the period may still be running, so it is judged
+    as of ``through`` -- the hours that have actually elapsed -- rather than
+    against a whole cycle whose remainder has not happened yet.
 
-    Declaring both is the whole of this function. An earlier version filtered
-    the library's messages by their text, which is the same mistake wearing a
-    disguise: it silently stopped filtering the moment the library grew a
-    warning the filter had not been written for, which is exactly what happened.
+    Passing the clock rather than suppressing the shortfall is what makes a
+    stopped meter visible. Hours that have not arrived and hours that arrived
+    empty are indistinguishable in a list of readings; only a clock separates
+    them, and without one a meter that died last week goes on quietly reporting
+    a smaller number that still calls itself complete.
+
+    An earlier version filtered the library's messages by their text, which is
+    the same mistake wearing a disguise: it stopped filtering the moment the
+    library grew a warning the filter had not been written for.
     """
-    return tuple(check_coverage(list(readings), period, netted=True, require_full_span=False))
+    return tuple(
+        check_coverage(list(readings), period, netted=True, through=through or now_pacific())
+    )
 
 
 def price(

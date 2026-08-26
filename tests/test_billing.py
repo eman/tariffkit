@@ -651,14 +651,27 @@ class TestCheckCoverageIsToldWhatItIsLookingAt:
         found = list(check_coverage(self._netted_hours(), self.PERIOD, netted=True))
         assert found == []
 
-    def test_a_running_period_is_not_told_the_rest_has_not_happened(self) -> None:
+    def test_a_running_period_is_judged_against_elapsed_time(self) -> None:
+        """The rest of the period has not happened; that is not a shortfall."""
         partial = [r for r in self._netted_hours() if r.start.astimezone(PACIFIC).day == 1]
         assert any("readings cover" in warning for warning in check_coverage(partial, self.PERIOD))
-        assert (
-            list(check_coverage(partial, self.PERIOD, netted=True, require_full_span=False)) == []
-        )
+        midnight = datetime(2026, 7, 2, tzinfo=PACIFIC)
+        assert list(check_coverage(partial, self.PERIOD, netted=True, through=midnight)) == []
+
+    def test_a_series_that_has_stopped_is_named(self) -> None:
+        """Which nothing in the readings can reveal: there is no far side.
+
+        A gap needs a reading on each side of it, so `find_gaps` cannot see an
+        absence after the last one. Only a clock separates an hour that arrived
+        empty from an hour that has not arrived yet.
+        """
+        partial = [r for r in self._netted_hours() if r.start.astimezone(PACIFIC).day == 1]
+        late = datetime(2026, 7, 2, 20, tzinfo=PACIFIC)
+        found = list(check_coverage(partial, self.PERIOD, netted=True, through=late))
+        assert any("the series stops at" in warning for warning in found)
 
     def test_a_real_gap_is_still_reported_either_way(self) -> None:
         holed = [r for r in self._netted_hours() if r.start.astimezone(PACIFIC).hour != 5]
-        found = list(check_coverage(holed, self.PERIOD, netted=True, require_full_span=False))
+        through = datetime(2026, 7, 3, tzinfo=PACIFIC)
+        found = list(check_coverage(holed, self.PERIOD, netted=True, through=through))
         assert any("gap(s) in the series" in warning for warning in found)

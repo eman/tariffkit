@@ -21,13 +21,21 @@ from .models import BillingPeriod, IntervalReading
 #: Fraction of a period that may be unaccounted for before it is reported.
 COVERAGE_TOLERANCE = 0.01
 
+#: How far behind ``through`` a series may fall before it is called stopped.
+#:
+#: Long enough to outlast the ordinary lag: a recorder compiles an hour's
+#: statistics shortly after that hour closes, so a live series is routinely one
+#: hour behind and occasionally two. Short enough that a meter which died
+#: yesterday is named today rather than never.
+STALE_AFTER = timedelta(hours=3)
+
 
 def check_coverage(
     readings: Sequence[IntervalReading],
     period: BillingPeriod,
     *,
     netted: bool = False,
-    require_full_span: bool = True,
+    through: datetime | None = None,
 ) -> Iterator[str]:
     """Report ways the readings fail to cleanly cover ``period``.
 
@@ -43,10 +51,20 @@ def check_coverage(
     matter. Declaring the fact is what this flag is for; matching on the text of
     the message is not.
 
-    ``require_full_span`` is for a period still in progress. A running total for
-    today has not covered the rest of the day and never claimed to, so the
-    elapsed shortfall says only that time has not passed yet. Every other check
-    stays on: a gap mid-morning is a gap whether or not the day has finished.
+    ``through`` is the moment the period is being judged as of, for a period
+    still in progress. A running total for today has not covered the rest of the
+    day and never claimed to, so measuring it against the whole period reports a
+    shortfall that says only that time has not passed yet. Given ``through``,
+    the shortfall is measured against *elapsed* time instead, and a series that
+    has stopped is named.
+
+    That distinction is the point. Hours which have not arrived and hours which
+    arrived empty look identical in a list of readings, and only a clock can
+    separate them -- so a caller that suppressed the shortfall to quieten the
+    first was left unable to see the second. A meter that dies then goes on
+    reporting a smaller number that still calls itself complete, which is the
+    failure this module exists to refuse. Omit ``through`` only where there is
+    no clock to offer; the period is then judged in full.
     """
     if not readings:
         yield f"no readings in {period.start}..{period.end}"
@@ -59,13 +77,31 @@ def check_coverage(
     # hour longer or shorter, and on the autumn one that difference hides an
     # hour of genuinely missing data.
     expected = period.elapsed
+    running = ""
+    if through is not None:
+        elapsed = min(to_pacific(through), period.closes) - period.opens
+        expected = max(elapsed, timedelta())
+        running = " so far" if through < period.closes else ""
     shortfall = expected - covered
-    if require_full_span and shortfall > expected * COVERAGE_TOLERANCE:
+    if expected > timedelta() and shortfall > expected * COVERAGE_TOLERANCE:
         yield (
             f"readings cover {covered.total_seconds() / 3600:.1f}h of the "
-            f"{expected.total_seconds() / 3600:.0f}h period "
+            f"{expected.total_seconds() / 3600:.0f}h period{running} "
             f"({shortfall.total_seconds() / 3600:.1f}h missing)"
         )
+
+    if through is not None:
+        # A hole after the last reading, which `find_gaps` cannot see: a gap
+        # needs a reading on each side of it, and the whole point of a series
+        # that has stopped is that there is nothing on the far side.
+        last = max(to_pacific(r.start) + r.duration for r in ordered)
+        behind = min(to_pacific(through), period.closes) - last
+        if behind > STALE_AFTER:
+            yield (
+                f"the series stops at {last.isoformat()}, "
+                f"{behind.total_seconds() / 3600:.1f}h before the period is being read; "
+                f"every figure over this period is missing whatever happened since"
+            )
 
     gaps = list(find_gaps(ordered))
     if gaps:
