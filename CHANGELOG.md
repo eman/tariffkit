@@ -5,27 +5,7 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
-### Changed
-
-- **Breaking, for anyone running the metered-energy entities from `main`.** The
-  Net Cost entities are renamed **Amount Due** (`net_cost_today` /
-  `net_cost_cycle` become `amount_due_today` / `amount_due_cycle`), and the
-  backfill's `tariffkit:<profile>_net_cost` statistic becomes
-  `tariffkit:<profile>_amount_due`.
-
-  The rename is the point, not a side effect. The figure changed meaning and
-  sign -- it was charges less every credit earned, which goes negative; it is
-  now what a statement charges, which does not. Home Assistant's statistics
-  compiler accumulates a `total` sensor as `sum += new - old` whenever
-  `last_reset` is unchanged, and the cycle entity's `last_reset` is the cycle
-  start, so keeping the old id would have added the whole banked balance to the
-  lifetime sum in a single compile and never washed it out. A new unique id
-  abandons the old series intact rather than corrupting it.
-
-  Update any dashboard card, template, or automation that names the old
-  entities. The old `net_cost_*` entities are removed from the registry on
-  reload; their recorded statistics remain, and can be deleted under
-  **Developer tools -> Statistics** if you do not want them.
+## [0.4.0] - 2026-08-26
 
 ### Added
 - `tariffkit.billing.run_lifetime` folds a run of bills from end to end,
@@ -62,18 +42,6 @@ All notable changes to this project are documented here. This project follows
   elapsed time and names a series that has stopped, and the Home Assistant
   entities pass their clock so the running totals get both.
 
-### Fixed
-- `run_true_ups` no longer emits a Community Choice Aggregator cash-out for a
-  bundled account. There is no aggregator to settle with, and on such an
-  account PG&E supplies generation, so the cash-out and the Relevant Period
-  each clawed back the same generation credit for the same exported energy.
-
-- `apply_credits` no longer reports a negative `cash_due`. `non_offsettable`
-  can go negative on its own -- `baseline_credit` is a negative import
-  component listed there -- and at a high export-to-import ratio it outweighs
-  the charges beside it. Credit that cannot be spent stays in the bank instead.
-
-### Added
 - The Home Assistant integration can optionally track what the meter actually
   moved. Name the cumulative grid-import and grid-export kWh entities under
   **Configure → Metered energy** — deliberately not part of initial setup,
@@ -169,7 +137,42 @@ All notable changes to this project are documented here. This project follows
   -- is recorded without consuming cycles, so it cannot shorten the other
   supplier's cash-out year and leave unreversed credit in the bank.
 
+### Changed
+- **Only affects development checkouts.** The metered-energy entities below are
+  new in this release, so no published version ever carried their earlier
+  names; this note is for anyone who ran them from `main` before the rename.
+  See [Upgrading](docs/home-assistant.md#upgrading). The
+  Net Cost entities are renamed **Amount Due** (`net_cost_today` /
+  `net_cost_cycle` become `amount_due_today` / `amount_due_cycle`), and the
+  backfill's `tariffkit:<profile>_net_cost` statistic becomes
+  `tariffkit:<profile>_amount_due`.
+
+  The rename is the point, not a side effect. The figure changed meaning and
+  sign -- it was charges less every credit earned, which goes negative; it is
+  now what a statement charges, which does not. Home Assistant's statistics
+  compiler accumulates a `total` sensor as `sum += new - old` whenever
+  `last_reset` is unchanged, and the cycle entity's `last_reset` is the cycle
+  start, so keeping the old id would have added the whole banked balance to the
+  lifetime sum in a single compile and never washed it out. A new unique id
+  abandons the old series intact rather than corrupting it.
+
+  Update any dashboard card, template, or automation that names the old
+  entities, and re-run the backfill: history published by the older code was
+  priced as `Bill.total` and without the annual settlements. The old
+  `net_cost_*` entities are removed from the registry on reload; their recorded
+  statistics remain and can be deleted under **Developer tools -> Statistics**.
+
 ### Fixed
+- `run_true_ups` no longer emits a Community Choice Aggregator cash-out for a
+  bundled account. There is no aggregator to settle with, and on such an
+  account PG&E supplies generation, so the cash-out and the Relevant Period
+  each clawed back the same generation credit for the same exported energy.
+
+- `apply_credits` no longer reports a negative `cash_due`. `non_offsettable`
+  can go negative on its own -- `baseline_credit` is a negative import
+  component listed there -- and at a high export-to-import ratio it outweighs
+  the charges beside it. Credit that cannot be spent stays in the bank instead.
+
 - Statement evidence is identified by what a statement says rather than by the
   bytes it arrived in, so re-importing evidence a profile already holds is a
   no-op. The utility regenerates a bill PDF on every request -- the same
@@ -474,7 +477,8 @@ Initial release.
 - Holiday calendars are extracted per vintage from the source data rather than
   recomputed, because the vintage files disagree in far-future years.
 
-[Unreleased]: https://github.com/eman/tariffkit/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/eman/tariffkit/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/eman/tariffkit/releases/tag/v0.4.0
 [0.3.0]: https://github.com/eman/tariffkit/releases/tag/v0.3.0
 [0.2.3]: https://github.com/eman/tariffkit/releases/tag/v0.2.3
 [0.2.2]: https://github.com/eman/tariffkit/releases/tag/v0.2.2
