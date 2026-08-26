@@ -268,3 +268,66 @@ class TestBalances:
         # The charge scoping is not fully reconciled yet; say so rather than imply
         # a bill computed from it is exact.
         assert payload["complete"] is False
+
+
+class TestABankIsHeldByWhoeverSettlesIt:
+    """Which buckets belong to which party, answered in one place.
+
+    The Home Assistant integration used to hold its own copy of this map, and
+    the copy disagreed with :mod:`tariffkit.billing.trueup` about who owns the
+    generation bucket.
+    """
+
+    BANK = CreditBalances(generation=100.0, delivery=30.0, bonus=12.0)
+
+    def test_a_cca_account_has_two_banks(self) -> None:
+        assert self.BANK.held_by("utility", split=True) == pytest.approx(42.0)
+        assert self.BANK.held_by("generation", split=True) == pytest.approx(100.0)
+
+    def test_the_two_halves_are_the_whole(self) -> None:
+        halves = self.BANK.held_by("utility", split=True) + self.BANK.held_by(
+            "generation", split=True
+        )
+        assert halves == pytest.approx(self.BANK.total)
+
+    def test_a_bundled_account_has_one(self) -> None:
+        """Both names return the whole bank, so neither reads as a fraction."""
+        assert self.BANK.held_by("utility", split=False) == pytest.approx(142.0)
+        assert self.BANK.held_by("generation", split=False) == pytest.approx(142.0)
+
+    def test_an_unknown_party_raises_rather_than_guessing(self) -> None:
+        with pytest.raises(ValueError, match="unknown party"):
+            self.BANK.held_by("someone_else", split=True)
+
+
+class TestAStatementNeverPaysYou:
+    """``cash_due`` is floored at zero, and the shortfall stays in the bank.
+
+    ``non_offsettable`` can go negative on its own -- ``baseline_credit`` is a
+    negative import component listed there -- and at a high enough export ratio
+    it outweighs the charges beside it. Reporting a negative amount owed would
+    contradict the one thing ``apply_credits`` exists to get right.
+    """
+
+    def _bill(self) -> Bill:
+        return Bill(
+            period=PERIOD,
+            import_components={"distribution": 2.0, "baseline_credit": -12.0},
+            export_components={"delivery": -40.0},
+        )
+
+    def test_the_amount_due_is_not_negative(self) -> None:
+        entry = apply_credits(self._bill())
+        assert self._bill().total < 0
+        assert entry.cash_due == pytest.approx(0.0)
+
+    def test_the_credit_that_could_not_be_spent_is_still_banked(self) -> None:
+        entry = apply_credits(self._bill())
+        assert entry.closing.total == pytest.approx(entry.earned.total - entry.applied.total)
+        assert entry.applied.total <= entry.earned.total
+
+    def test_nothing_is_lost_between_earned_applied_and_closing(self) -> None:
+        entry = apply_credits(self._bill(), CreditBalances(delivery=5.0))
+        assert entry.opening.total + entry.earned.total == pytest.approx(
+            entry.applied.total + entry.closing.total
+        )

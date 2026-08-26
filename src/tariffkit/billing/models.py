@@ -224,9 +224,77 @@ class Bill:
         )
 
     @property
+    def import_charges(self) -> float:
+        """Energy charges and the statutory taxes beside them.
+
+        The two lines a statement groups as what the imported energy cost,
+        excluding the fixed daily charge, which is owed for the day of service
+        rather than for any kilowatt-hour. Named because callers kept spelling
+        ``energy_charges + taxes`` themselves, and two spellings of one figure
+        in two files is how they come to disagree.
+
+        Not ``LedgerEntry.gross_charges``: that nets in export components which
+        reduce a charge rather than earning credit, and it includes the fixed
+        charge.
+        """
+        return self.energy_charges + self.taxes
+
+    @property
     def export_credits(self) -> float:
         """Negative: credits reduce the bill."""
         return sum(self.export_components.values())
+
+    def marginal_buckets(self, earlier: Bill) -> tuple[UsageBucket, ...]:
+        """This bill's buckets less ``earlier``'s, for the span between them.
+
+        Both bills must cover the same period start, ``earlier`` ending sooner:
+        the caller wants what the extra days added. A bucket's energy and its
+        ``import_charge``/``export_credit`` are accumulated hour by hour, so
+        differencing them is exact -- unlike ``total``, which carries
+        cycle-cumulative parts (the baseline allowance most of all) that are not
+        additive over days and are deliberately not touched here.
+
+        Buckets present in only one bill are carried through, so a span whose
+        days reach a time-of-use period the earlier bill never saw still shows
+        it.
+        """
+        if earlier.period.start != self.period.start:
+            raise ValueError(
+                f"marginal buckets need a common start: {self.period.start} != "
+                f"{earlier.period.start}"
+            )
+        taken = {(b.season, b.period): b for b in earlier.buckets}
+        found: list[UsageBucket] = []
+        for bucket in self.buckets:
+            before = taken.pop((bucket.season, bucket.period), None)
+            if before is None:
+                found.append(bucket)
+                continue
+            found.append(
+                UsageBucket(
+                    season=bucket.season,
+                    period=bucket.period,
+                    imported=bucket.imported - before.imported,
+                    exported=bucket.exported - before.exported,
+                    import_charge=bucket.import_charge - before.import_charge,
+                    export_credit=bucket.export_credit - before.export_credit,
+                )
+            )
+        # A bucket only the earlier bill has means it lost energy over the span,
+        # which a cumulative series cannot do. Surfacing it as a negative bucket
+        # is more use than dropping it silently.
+        found.extend(
+            UsageBucket(
+                season=b.season,
+                period=b.period,
+                imported=-b.imported,
+                exported=-b.exported,
+                import_charge=-b.import_charge,
+                export_credit=-b.export_credit,
+            )
+            for b in taken.values()
+        )
+        return tuple(found)
 
     @property
     def fixed_charges(self) -> float:

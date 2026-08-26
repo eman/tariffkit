@@ -129,6 +129,15 @@ NON_OFFSETTABLE = frozenset(
 SCOPING_VERIFIED = False
 
 
+#: Which buckets each party's bank holds when a CCA supplies generation.
+#:
+#: PG&E's "Energy Delivered Credits" and "Bonus Credits" against the CCA's
+#: "Energy Export Credit". They settle on unrelated calendars -- PG&E at the
+#: Permission To Operate anniversary, the CCA on its own cash-out year.
+UTILITY_BUCKETS = (CreditBucket.DELIVERY, CreditBucket.BONUS)
+GENERATION_BUCKETS = (CreditBucket.GENERATION,)
+
+
 @dataclass(frozen=True, slots=True)
 class CreditBalances:
     """A credit bank, by bucket. Never negative."""
@@ -151,6 +160,28 @@ class CreditBalances:
     @property
     def total(self) -> float:
         return self.generation + self.delivery + self.bonus
+
+    def held_by(self, party: str, *, split: bool) -> float:
+        """The balance one party holds.
+
+        ``party`` is ``"utility"`` or ``"generation"``. Under ``split`` -- a
+        Community Choice Aggregator supplying generation -- these are two banks,
+        not one: a statement prints them on separate pages and they settle on
+        unrelated calendars, so adding them gives a figure no statement shows
+        and that never settles as a whole. Without it the delivering utility
+        supplies generation too, all three buckets are its own, and either name
+        returns the whole bank rather than a fraction of it.
+
+        Lives here beside ``CREDIT_BUCKETS`` because it is the same question --
+        which credits belong together -- and answering it in two places is how
+        the two answers come to disagree about who owns ``GENERATION``.
+        """
+        if party not in ("utility", "generation"):
+            raise ValueError(f"unknown party {party!r}: expected 'utility' or 'generation'")
+        if not split:
+            return self.total
+        buckets = UTILITY_BUCKETS if party == "utility" else GENERATION_BUCKETS
+        return sum(self[bucket] for bucket in buckets)
 
     def to_dict(self) -> dict[str, float]:
         return {
@@ -311,18 +342,49 @@ def apply_credits(bill: Bill, opening: CreditBalances | None = None) -> LedgerEn
         bonus=available.bonus - applied.bonus,
     )
     gross = sum(offsettable.values()) + non_offsettable
+    # A statement charges nothing rather than paying out. `non_offsettable` can
+    # go negative on its own -- `baseline_credit` is a negative import component
+    # listed there -- and at a high enough export-to-import ratio it outweighs
+    # the charges beside it. Reporting a negative amount owed would contradict
+    # the one thing this function exists to get right, so the shortfall stays in
+    # the bank as credit that was never spent.
+    unspendable = max(0.0, applied.total - gross)
+    if unspendable:
+        applied = _reduce(applied, unspendable)
+        closing = CreditBalances(
+            generation=available.generation - applied.generation,
+            delivery=available.delivery - applied.delivery,
+            bonus=available.bonus - applied.bonus,
+        )
     return LedgerEntry(
         period=bill.period,
         opening=opening,
         earned=earned,
         applied=applied,
         closing=closing,
-        cash_due=gross - applied.total,
+        cash_due=max(0.0, gross - applied.total),
         gross_charges=gross,
         non_offsettable=non_offsettable,
         imported_kwh=sum(b.imported for b in bill.buckets),
         exported_kwh=sum(b.exported for b in bill.buckets),
     )
+
+
+def _reduce(applied: CreditBalances, by: float) -> CreditBalances:
+    """Un-spend ``by`` dollars of credit, bonus first.
+
+    Reverse of the order it was spent in: the bonus is the most widely usable
+    bucket, so it is the one to hand back when the charges turn out not to have
+    needed it.
+    """
+    left = by
+    for bucket in (CreditBucket.BONUS, CreditBucket.DELIVERY, CreditBucket.GENERATION):
+        give = min(applied[bucket], left)
+        applied = applied.with_bucket(bucket, applied[bucket] - give)
+        left -= give
+        if left <= 1e-12:
+            break
+    return applied
 
 
 @dataclass(frozen=True, slots=True)
