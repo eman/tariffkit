@@ -58,13 +58,6 @@ All notable changes to this project are documented here. This project follows
   account PG&E supplies generation, so the cash-out and the Relevant Period
   each clawed back the same generation credit for the same exported energy.
 
-- `hacs.json` declares Home Assistant 2026.8.0 rather than 2026.3.0. The
-  integration uses PEP 758 unparenthesized `except` groups, which need Python
-  3.14, and pins `tariffkit`, whose `requires-python` is `>=3.14.2` -- so an
-  older Home Assistant could not have installed the dependency and would have
-  raised `SyntaxError` on import if it had. The floor now says what was already
-  true.
-
 - `apply_credits` no longer reports a negative `cash_due`. `non_offsettable`
   can go negative on its own -- `baseline_credit` is a negative import
   component listed there -- and at a high export-to-import ratio it outweighs
