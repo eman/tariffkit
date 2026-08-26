@@ -14,6 +14,16 @@ All notable changes to this project are documented here. This project follows
   entities for today and for the billing cycle to date, alongside Grid Import
   and Grid Export totals.
 
+  Net Cost is what a statement would charge, not what a bill sums to. Under Net
+  Billing a cycle earning more credit than it owes does not produce a refund:
+  the excess banks, and a credit may only offset charges the tariff lets it
+  reach, so Non-Bypassable Charges stay due however large the bank. The figure
+  comes from `tariffkit.billing.apply_credits`, and a `banked` attribute
+  reports the difference. Against three real PG&E/MCE statements the entity
+  path lands within $1.15 of the printed amount; reading `Bill.total` instead
+  was out by up to $50 on an exporting cycle and went negative on a heavily
+  exporting one, which no statement does.
+
   The counters do not have to reset daily: each hour's energy comes from the
   recorder's own long-term statistics, which already absorb counter restarts
   and reload gaps, with the hour in progress read live off entity state.
@@ -51,7 +61,9 @@ All notable changes to this project are documented here. This project follows
   statistics under a `tariffkit:` namespace -- the shape `opower` uses for
   utility history -- which leaves the running entities' own series and the
   recorder's compilation of them untouched. One row per finished day, each being
-  its cycle's movement across that day, so the days sum to their cycle exactly.
+  its cycle's movement across that day, so the days sum to what their cycle
+  actually charged -- the bank carried cycle to cycle, exactly as the live
+  entities compute it.
   It defaults to the billing cycle containing the PTO date -- where bills begin
   meaning anything, since Net Billing compensation runs from Permission To
   Operate -- and reports a per-cycle bill alongside the daily rows, which is

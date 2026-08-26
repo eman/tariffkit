@@ -735,3 +735,55 @@ async def test_the_bank_says_why_it_has_no_figure_yet(
     # negative contribution to a lifetime sum would mean nothing.
     assert state.attributes["state_class"] == "measurement"
     assert "device_class" not in state.attributes
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_net_cost_is_what_a_statement_would_charge_not_the_bill_total(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """A cycle that earns more credit than it owes still owes something.
+
+    ``Bill.total`` subtracts every credit the cycle earned and goes negative,
+    which no statement has ever printed. The tariff offsets credit only against
+    the charges it may offset and banks the remainder, so the entity reports
+    what :func:`tariffkit.billing.apply_credits` leaves due and says separately
+    how much banked. Getting this wrong is not a rounding difference: it is the
+    difference between a bill and a refund.
+    """
+    freezer.move_to(NOW)
+    seed = datetime(2026, 8, 1, tzinfo=PACIFIC)
+    await _record(hass, IMPORT_ENTITY, [(seed, 1000.0), (NOW.replace(hour=13, minute=0), 1000.5)])
+    await _record(
+        hass,
+        EXPORT_ENTITY,
+        [(seed, 500.0)]
+        + [
+            (datetime(2026, 8, day, hour, tzinfo=PACIFIC), 500.0 + (day - 1) * 240.0 + hour * 10.0)
+            for day in range(1, 25)
+            for hour in range(24)
+            if (day, hour) <= (NOW.day, 13)
+        ],
+    )
+    hass.states.async_set(
+        IMPORT_ENTITY, "1000.5", {"unit_of_measurement": "kWh", "device_class": "energy"}
+    )
+    hass.states.async_set(
+        EXPORT_ENTITY, "6050.0", {"unit_of_measurement": "kWh", "device_class": "energy"}
+    )
+    await hass.async_block_till_done()
+
+    entry = _entry(_meter_options())
+    await _setup(hass, entry)
+
+    cycle = _state(hass, entry, "net_cost_cycle")
+    credit = float(_state(hass, entry, "export_credit_cycle").state)
+    cost = float(_state(hass, entry, "energy_cost_cycle").state)
+    fixed = cycle.attributes["fixed_charges"]
+
+    assert credit > cost + fixed, "the premise: more credit earned than charges to spend it on"
+    # So the bill's own arithmetic would hand back money...
+    assert cost + fixed - credit < 0
+    # ...and the entity does not. It reports the charges no credit could reach.
+    assert float(cycle.state) >= 0
+    assert cycle.attributes["banked"] > 0
+    assert cycle.attributes["export_credits"] == pytest.approx(credit, abs=1e-4)

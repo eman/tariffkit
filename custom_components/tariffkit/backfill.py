@@ -34,7 +34,15 @@ from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
 
 from tariffkit.account import AccountProfile
-from tariffkit.billing import Bill, BillingPeriod, IntervalReading
+from tariffkit.billing import (
+    Bill,
+    BillingPeriod,
+    CreditBalances,
+    IntervalReading,
+    LedgerEntry,
+    apply_credits,
+    run_ledger,
+)
 from tariffkit.timeutil import PACIFIC
 
 from .energy import coverage_warnings, price, resolve_cycle, statement_periods
@@ -128,8 +136,8 @@ class BackfillResult:
     """What a run wrote, and what it could not."""
 
     days: list[DayFigures] = field(default_factory=list)
-    #: One bill per priced cycle, oldest first. What a statement states, and
-    #: what a credit ledger folds.
+    #: One bill per priced cycle, oldest first. What a cycle earned and owed
+    #: before any bank is applied; :meth:`entries` is what a statement states.
     bills: list[Bill] = field(default_factory=list)
     #: Days inside a priced cycle that could not be published. Their energy is
     #: still in that cycle's bill -- a cumulative counter's endpoints survive an
@@ -144,9 +152,21 @@ class BackfillResult:
     @property
     def residual(self) -> float:
         """What the cycles hold that the daily rows do not publish."""
-        return sum(bill.total for bill in self.bills) - sum(day.net_cost for day in self.days)
+        return sum(entry.cash_due for entry in self.entries().values()) - sum(
+            day.net_cost for day in self.days
+        )
+
+    def entries(self) -> dict[BillingPeriod, LedgerEntry]:
+        """Each cycle after credits are applied, keyed by the period it covers.
+
+        This is where a cycle stops being a bill and becomes a statement: the
+        ledger is what decides how much of the credit earned may be spent now
+        and how much banks for later.
+        """
+        return {entry.period: entry for entry in run_ledger(self.bills).entries}
 
     def summary(self, profile_name: str) -> dict[str, object]:
+        entries = self.entries()
         return {
             "days": len(self.days),
             "days_unpriced": len(self.unpriced),
@@ -174,9 +194,17 @@ class BackfillResult:
                     "export_credits": round(-bill.export_credits, 2),
                     "fixed_charges": round(bill.fixed_charges, 2),
                     "total": round(bill.total, 2),
+                    # What a statement would print. Differs from `total`
+                    # wherever the cycle earned more credit than its charges
+                    # could absorb, which is the bank being fed.
+                    "cash_due": round(entry.cash_due, 2),
+                    "banked": round(entry.closing.total, 2),
                     "complete": bill.complete,
                 }
-                for bill in self.bills
+                # Matched by period rather than by position: `run_ledger`
+                # sorts what it is given, and a summary that silently pairs one
+                # cycle's charges with another's balance is worse than none.
+                for bill, entry in ((b, entries[b.period]) for b in self.bills)
             ],
             "skipped": list(self.skipped),
             "warnings": list(self.warnings),
@@ -220,6 +248,7 @@ def price_cycle(
     profile: AccountProfile,
     readings: list[IntervalReading],
     cycle: BillingPeriod,
+    opening: CreditBalances | None = None,
 ) -> tuple[list[DayFigures], Bill | None, str, tuple[str, ...], list[date]]:
     """Each day's exact share of one cycle.
 
@@ -236,6 +265,13 @@ def price_cycle(
     does not disturb the days around it: each remaining day is still its own
     marginal contribution, because a skipped day's charges cancel between the
     two cycle-to-date bills that bracket it.
+
+    ``opening`` is the credit bank as this cycle begins, and it is what makes
+    the published ``net_cost`` the figure a statement prints. Without it the
+    only answer available is ``Bill.total``, which subtracts every credit the
+    cycle earned; a statement offsets credit only against the charges it may
+    offset and banks the rest. Passing the bank in lets the library say which,
+    so the backfilled history and the live entities agree by construction.
 
     It does change what the emitted days *sum to*. A day with no readings
     contributes nothing to the cycle either, so the sum still holds. A day
@@ -272,7 +308,7 @@ def price_cycle(
                     grid_export=sum(r.exported for r in metered),
                     energy_cost=_delta(running, previous, "charges"),
                     export_credit=-_delta(running, previous, "credits"),
-                    net_cost=_delta(running, previous, "total"),
+                    net_cost=_cash_due(running, opening) - _cash_due(previous, opening),
                 )
             )
         else:
@@ -300,11 +336,14 @@ def _delta(running: Bill, previous: Bill | None, part: str) -> float:
             return 0.0
         if part == "charges":
             return bill.energy_charges + bill.taxes
-        if part == "credits":
-            return bill.export_credits
-        return bill.total
+        return bill.export_credits
 
     return read(running) - read(previous)
+
+
+def _cash_due(bill: Bill | None, opening: CreditBalances | None) -> float:
+    """What ``bill`` leaves owed, or nothing at all for the day before day one."""
+    return 0.0 if bill is None else apply_credits(bill, opening).cash_due
 
 
 def evidence_span(readings: list[IntervalReading]) -> tuple[date, date] | None:
@@ -350,6 +389,11 @@ def build(
     if opens > closes:
         return result
 
+    # The bank as each cycle opens, carried from the one before. A backfill
+    # starts at the cycle holding Permission To Operate, where there is no
+    # earlier credit to carry, so beginning at nothing is the true opening
+    # rather than an assumption.
+    opening: CreditBalances | None = None
     for cycle in cycles_between(profile, opens, closes, start_day):
         if cycle.start < opens:
             # A cycle joined partway through cannot be decomposed: its earlier
@@ -362,12 +406,13 @@ def build(
                 f"Backfill from {cycle.start} or earlier to include it"
             )
             continue
-        days, bill, reason, warnings, unpriced = price_cycle(profile, readings, cycle)
+        days, bill, reason, warnings, unpriced = price_cycle(profile, readings, cycle, opening)
         if reason or bill is None:
             # `reason` already names a period, so quote only its explanation.
             detail = reason.split(": ", 1)[-1]
             result.skipped.append(f"{cycle.start}..{cycle.end}: {detail}")
             continue
+        opening = apply_credits(bill, opening).closing
         result.days.extend(days)
         result.bills.append(bill)
         result.unpriced.extend(unpriced)

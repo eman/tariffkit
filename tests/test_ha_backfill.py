@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant
 
 from tariffkit import Config
 from tariffkit.account import AccountEpoch, AccountProfile
-from tariffkit.billing import BillingPeriod, IntervalReading
+from tariffkit.billing import BillingPeriod, IntervalReading, apply_credits
 from tariffkit.timeutil import PACIFIC
 
 
@@ -114,9 +114,14 @@ def test_a_single_day_may_exceed_its_cycle() -> None:
     days, _, _, _, _ = backfill.price_cycle(profile, readings, cycle)
     whole, _ = price(profile, readings, cycle)
     assert whole is not None
-    assert whole.total < 0, "a month of net export owes nothing"
-    assert max(d.net_cost for d in days) > whole.total
-    assert sum(d.net_cost for d in days) == pytest.approx(whole.total, abs=1e-9)
+    assert whole.total < 0, "a month of net export earns more than it owes"
+    # But a statement never prints a negative: the surplus banks instead. The
+    # published days decompose what is owed, so they sum to that rather than to
+    # `Bill.total`, and they still bracket a heavy day above the cycle.
+    owed = apply_credits(whole).cash_due
+    assert owed >= 0
+    assert max(d.net_cost for d in days) > owed
+    assert sum(d.net_cost for d in days) == pytest.approx(owed, abs=1e-9)
 
 
 def test_statistics_carry_a_running_sum_and_the_days_own_value() -> None:
@@ -402,7 +407,7 @@ def test_a_gap_in_the_metered_series_is_reported() -> None:
         if r.start.astimezone(PACIFIC).day not in (8, 9, 10)
     ]
     result = backfill.build(profile, readings, date(2026, 7, 1), date(2026, 7, 20), 1)
-    assert any("gap(s) in the metered series" in w for w in result.warnings)
+    assert any("gap(s) in the series" in w for w in result.warnings)
     assert result.summary("probe")["complete"] is False
 
 
@@ -698,10 +703,12 @@ def test_the_cycle_bills_fold_into_a_credit_ledger() -> None:
     assert second.opening.total == pytest.approx(first.closing.total)
     assert second.closing.total > first.closing.total
 
-    # And each bill matches the days published for it.
-    for bill in result.bills:
-        days = [d for d in result.days if bill.period.start <= d.day <= bill.period.end]
-        assert sum(d.net_cost for d in days) == pytest.approx(bill.total, abs=1e-9)
+    # And each cycle's published days sum to what that cycle actually owed --
+    # the ledger's figure, with the bank carried in, not the bill's own total.
+    for entry in ledger.entries:
+        days = [d for d in result.days if entry.period.start <= d.day <= entry.period.end]
+        assert sum(d.net_cost for d in days) == pytest.approx(entry.cash_due, abs=1e-9)
+    assert result.residual == pytest.approx(0.0, abs=1e-9)
 
 
 def test_a_bank_folded_from_the_pto_cycle_opens_at_zero() -> None:

@@ -192,7 +192,7 @@ logged reason rather than guessing.
 | Export Generation / Delivery / Credits / Other | USD/kWh | the export credit, split the same way |
 | Daily Fixed Charge | USD/day | AB 205 Base Services Charge; **not** a per-kWh price and not part of the stack |
 | Grid import / export today | kWh | metered import and export since **Pacific** midnight — the tariff's billing day, not the instance's local one; only with [Metered energy](#metered-energy) configured |
-| Energy cost / Export credit / Net cost today | USD | today's running charge, credit, and net, reported in USD regardless of the instance's configured currency; only with [Metered energy](#metered-energy) configured |
+| Energy cost / Export credit / Net cost today | USD | today's running charge, credit, and what a statement would charge for it, reported in USD regardless of the instance's configured currency; only with [Metered energy](#metered-energy) configured |
 | Grid import / export this cycle | kWh | the same two counters over the billing cycle to date |
 | Energy cost / Export credit / Net cost this cycle | USD | the same three figures over the billing cycle to date |
 | Export credit bank (utility) / (generation) | USD | Net Billing credit carried between cycles, one per settling party; see [The export credit bank](#the-export-credit-bank). Only with a grid-export meter configured |
@@ -552,15 +552,25 @@ the cycle exactly, and no day can exceed it.
 - **Energy Cost** is the day's (or cycle's) import charges including statutory
   per-kWh taxes, and excluding the fixed charge.
 - **Export Credit** is what the exports earned, as a positive number.
-- **Net Cost** is charges minus credits **plus the whole of the Base Services
-  Charge for each day so far**. It is incurred for the day of service, not
-  earned by the hour, which is how a statement bills it. Positive means owed,
-  negative means in credit.
+- **Net Cost** is **what a statement would charge**: the charges, **plus the
+  whole of the Base Services Charge for each day so far**, less the credit the
+  tariff allows against them. The fixed charge is incurred for the day of
+  service rather than earned by the hour, which is how a statement bills it.
+
+Net Cost is deliberately not `energy_cost − export_credit + fixed_charges`.
+Under Net Billing a cycle that earns more credit than it owes does not produce a
+refund — the excess **banks** and is spent on a later cycle — and a credit may
+only offset charges the tariff lets it reach, so Non-Bypassable Charges stay due
+however large the bank. The `banked` attribute is the difference: what this
+cycle earned that its own charges could not absorb.
+
+Every figure comes from the library that reconciles printed statements
+(`tariffkit.billing.apply_credits`), not from arithmetic in the integration.
 
 Every money entity carries its own bill as attributes — `energy_charges`,
-`taxes`, `export_credits`, `fixed_charges`, `imported_kwh`, `exported_kwh`,
-the time-of-use `buckets`, `quality`, and any pricing `warnings` — so a
-surprising figure is auditable from the entity:
+`taxes`, `export_credits`, `fixed_charges`, `banked`, `imported_kwh`,
+`exported_kwh`, the time-of-use `buckets`, `quality`, and any pricing
+`warnings` — so a surprising figure is auditable from the entity:
 
 ```yaml
 {{ state_attr('sensor.tariffkit_home_net_cost_today', 'buckets') }}
@@ -677,10 +687,13 @@ onto that day. The cycle total stays exact; the day it lands on reads a few
 dollars low and the days before it read correspondingly high.
 
 **The three dollar series do not reconcile with each other.** `energy_cost` is
-import charges plus taxes; `net_cost` also includes the Base Services Charge.
-So `net_cost` exceeds `energy_cost − export_credit` by the daily charge, around
-$24 a month. That is not an error; the fixed charge simply belongs to neither of
-the other two.
+import charges plus taxes; `net_cost` adds the Base Services Charge and then
+applies only as much credit as the tariff permits, banking the rest. So
+`net_cost` is not `energy_cost − export_credit` plus the daily charge — on an
+exporting account it is higher, by whatever banked. That is not an error: it is
+the same distinction a statement draws between the credit you earned and the
+credit you got to spend, and it is why the cycle summary in the action's
+response reports `total`, `cash_due`, and `banked` separately.
 
 **Today is excluded.** The window ends at yesterday; today is what the running
 totals are for.
@@ -733,7 +746,17 @@ grid_import_kwh: 412.881
 grid_export_kwh: 1974.2
 energy_cost: 88.41
 export_credit: 731.05
-net_cost: -576.02
+# What the published days sum to: what those cycles actually charged, with the
+# credit they could not spend carried into the bank rather than refunded.
+net_cost: 154.98
+residual: 0.0
+cycles:
+  - start: "2026-06-03"
+    end: "2026-06-29"
+    total: -119.60   # charges less every credit earned
+    cash_due: 25.27  # what the statement charged
+    banked: 144.87   # what carried into the next cycle
+    complete: true
 skipped: []
 warnings: []
 ```

@@ -21,7 +21,7 @@ from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from tariffkit.billing import Bill, BillingPeriod
+from tariffkit.billing import Bill, BillingPeriod, LedgerEntry, apply_credits
 from tariffkit.components import (
     EXPORT_GROUPS,
     IMPORT_GROUPS,
@@ -349,7 +349,10 @@ CREDIT_DESCRIPTION = (
     "Permission To Operate earn nothing and are not counted."
 )
 NET_DESCRIPTION = (
-    "Charges minus credits, plus the whole of each day's Base Services Charge: "
+    "What is actually owed, as a statement states it: charges, less the credit "
+    "the tariff allows against them, plus the whole of each day's Base Services "
+    "Charge. Credit beyond what this cycle's charges can absorb is not "
+    "subtracted here -- it banks. "
     "it is incurred for the day of service, not earned by the hour. Positive "
     "means owed, negative means in credit. Priced by the same engine that "
     "reconciles a printed statement, so it is a running bill rather than a "
@@ -387,10 +390,110 @@ def _absent(data: TariffKitData, description: str) -> dict[str, Any]:
 
 
 def _bill(data: TariffKitData, span: str) -> Bill | None:
+    """The bill a span's decomposition is shown from.
+
+    ``cycle`` is the cycle to date. A day has no bill of its own -- its figures
+    are the difference between two cycle-to-date bills -- so what stands in for
+    one here is the day priced as its own period, which is the only
+    library-computed time-of-use split a single day has.
+    """
     usage = data.usage
     if usage is None:
         return None
-    return usage.today if span == "today" else usage.cycle
+    return usage.day if span == "today" else usage.cycle
+
+
+#: Readers for a span's figures. Each takes the library's own bill and the
+#: ledger entry built from it, and returns one number neither this module nor
+#: any entity computes for itself.
+type Reading = Callable[[Bill, LedgerEntry], float]
+
+
+def _cash_due(bill: Bill, entry: LedgerEntry) -> float:
+    del bill
+    return entry.cash_due
+
+
+def _import_cost(bill: Bill, entry: LedgerEntry) -> float:
+    """Import charges and the statutory per-kWh taxes beside them.
+
+    Not ``LedgerEntry.gross_charges``, which nets in an export component that is
+    a charge reduction rather than a credit, and which includes the fixed daily
+    charge this entity exists to exclude.
+    """
+    del entry
+    return bill.energy_charges + bill.taxes
+
+
+def _earned(bill: Bill, entry: LedgerEntry) -> float:
+    """What the exports earned, as a positive number.
+
+    ``Bill.export_credits`` rather than ``LedgerEntry.earned``: the ledger sorts
+    credits into the buckets a bank settles by and drops any export component
+    that is not one of them, which is right for banking and wrong for a figure
+    that should match the credit lines a statement prints.
+    """
+    del entry
+    return -bill.export_credits
+
+
+def _banked(bill: Bill, entry: LedgerEntry) -> float:
+    """Credit this cycle earned that its charges could not absorb."""
+    del bill
+    return entry.closing.total - entry.opening.total
+
+
+def _compensated(bill: Bill, entry: LedgerEntry) -> float:
+    del bill
+    return entry.exported_kwh
+
+
+def _energy_charges(bill: Bill, entry: LedgerEntry) -> float:
+    del entry
+    return bill.energy_charges
+
+
+def _taxes(bill: Bill, entry: LedgerEntry) -> float:
+    del entry
+    return bill.taxes
+
+
+def _fixed(bill: Bill, entry: LedgerEntry) -> float:
+    del entry
+    return bill.fixed_charges
+
+
+def _figure(data: TariffKitData, span: str, read: Reading) -> float | None:
+    """One figure for a span, from the ledger entry the library builds.
+
+    Every number here comes from the library, including what is actually owed:
+    ``Bill.total`` subtracts every credit earned, while a statement only offsets
+    credit against charges it may offset and banks the rest. On an exporting
+    account those differ by whatever banked, which is the whole point of the
+    tariff -- and the bank is what makes ``cash_due`` need a ledger rather than
+    a bill, so the opening balance goes in with it.
+
+    A day is the cycle through today minus the cycle through yesterday. That
+    subtraction is the only arithmetic here, and both operands are the library's.
+    Where the cycle could not be priced, today falls back to its standalone
+    bill; the coordinator has already put the caveat in the warnings.
+    """
+    usage = data.usage
+    if usage is None:
+        return None
+    opening = data.bank.balance if data.bank is not None else None
+
+    def figure(bill: Bill) -> float:
+        return read(bill, apply_credits(bill, opening))
+
+    if usage.cycle is None:
+        if span == "cycle" or usage.day is None:
+            return None
+        return figure(usage.day)
+    whole = figure(usage.cycle)
+    if span == "cycle" or usage.through_yesterday is None:
+        return whole
+    return whole - figure(usage.through_yesterday)
 
 
 def _period(data: TariffKitData, span: str) -> BillingPeriod | None:
@@ -432,23 +535,36 @@ def _money_attrs(span: str, description: str) -> Callable[[TariffKitData], dict[
                 **({"cycle_boundary": usage.metered.cycle_source} if span == "cycle" else {}),
                 ATTR_DESCRIPTION: description,
             }
+        period = _period(data, span) or bill.period
+
+        def figure(read: Reading) -> float:
+            # Never the bill's own field: for a day the bill above is the
+            # standalone one, which is a time-of-use split rather than the
+            # figure the entity reports. The state and its decomposition have
+            # to add up, so both come through the same door.
+            return round(_figure(data, span, read) or 0.0, 4)
+
         found: dict[str, Any] = {
-            "period_start": bill.period.start.isoformat(),
-            "period_end": bill.period.end.isoformat(),
-            "days": bill.period.days,
+            "period_start": period.start.isoformat(),
+            "period_end": period.end.isoformat(),
+            "days": period.days,
             "imported_kwh": round(usage.metered.imported_kwh, 4)
             if span == "cycle"
             else round(usage.metered.imported_today, 4),
             "exported_kwh": round(usage.metered.exported_kwh, 4)
             if span == "cycle"
             else round(usage.metered.exported_today, 4),
-            "energy_charges": round(bill.energy_charges, 4),
-            "taxes": round(bill.taxes, 4),
-            "export_credits": round(-bill.export_credits, 4),
-            "fixed_charges": round(bill.fixed_charges, 4),
+            "energy_charges": figure(_energy_charges),
+            "taxes": figure(_taxes),
+            "export_credits": figure(_earned),
+            "fixed_charges": figure(_fixed),
+            # What the charges above could not absorb, and so carries into the
+            # next cycle instead of reducing this one. The gap between the
+            # figures a bill sums and the figure a statement prints.
+            "banked": figure(_banked),
             ATTR_BUCKETS: [bucket.to_dict() for bucket in bill.buckets],
             ATTR_QUALITY: {"complete": usage.complete},
-            "compensated_kwh": round(bill.exported_kwh, 4),
+            "compensated_kwh": figure(_compensated),
             "warnings": list(usage.warnings(span)),
             **({"cycle_boundary": usage.metered.cycle_source} if span == "cycle" else {}),
             ATTR_DESCRIPTION: (
@@ -480,7 +596,7 @@ def _energy_attrs(span: str, direction: str) -> Callable[[TariffKitData], dict[s
         if direction == "export" and bill is not None:
             # What the tariff will actually pay for, which is less than the
             # meter saw whenever a site exported before Permission To Operate.
-            found["compensated_kwh"] = round(bill.exported_kwh, 4)
+            found["compensated_kwh"] = round(_figure(data, span, _compensated) or 0.0, 4)
         return found
 
     return attrs
@@ -497,11 +613,11 @@ def _money_sensor(
     span: str,
     key: str,
     description: str,
-    value: Callable[[Bill], float],
+    value: Reading,
 ) -> TariffKitSensorDescription:
     def state(data: TariffKitData) -> float | None:
-        bill = _bill(data, span)
-        return None if bill is None else round(value(bill), 4)
+        figure = _figure(data, span, value)
+        return None if figure is None else round(figure, 4)
 
     return TariffKitSensorDescription(
         key=f"{key}_{span}",
@@ -661,7 +777,7 @@ def usage_sensors(
                     span,
                     "energy_cost",
                     COST_DESCRIPTION,
-                    lambda b: b.energy_charges + b.taxes,
+                    _import_cost,
                 )
             )
         if meters.export_entity:
@@ -670,10 +786,10 @@ def usage_sensors(
                     span,
                     "export_credit",
                     CREDIT_DESCRIPTION,
-                    lambda b: -b.export_credits,
+                    _earned,
                 )
             )
-        found.append(_money_sensor(span, "net_cost", NET_DESCRIPTION, lambda b: b.total))
+        found.append(_money_sensor(span, "net_cost", NET_DESCRIPTION, _cash_due))
     if meters.export_entity:
         # No export meter, no export credit, so no bank to carry.
         found.append(_bank_sensor("utility"))

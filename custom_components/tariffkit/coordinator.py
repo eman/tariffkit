@@ -63,7 +63,6 @@ from .energy import (
     price,
     resolve_cycle,
     statement_periods,
-    subtract,
 )
 from .profile import profile_from_entry
 
@@ -172,8 +171,17 @@ class TariffKitUsage:
     """
 
     metered: MeteredUsage
-    today: Bill | None
+    #: The cycle priced through yesterday, or None when today opened the cycle
+    #: and there is nothing before it. Today's own figures are this subtracted
+    #: from ``cycle``, done by whoever reads a figure.
+    through_yesterday: Bill | None
     cycle: Bill | None
+    #: Today priced as a period of its own. Not where today's figures come from
+    #: -- the difference above is, because a baseline allowance accrues over the
+    #: cycle rather than the day -- but it is the only library-computed
+    #: time-of-use split a single day has, and the only figure left when the
+    #: cycle cannot be priced at all.
+    day: Bill | None = None
     #: Why a span has no bill, empty when it has one. An entity that reads
     #: `unknown` has to be able to say what stopped it.
     today_reason: str = ""
@@ -186,10 +194,10 @@ class TariffKitUsage:
     @property
     def complete(self) -> bool:
         """False when a bill is missing, unpriced, or the meters are silent."""
-        if self.today is None or self.cycle is None:
+        if self.cycle is None:
             return False
         return (
-            self.today.complete
+            (self.through_yesterday is None or self.through_yesterday.complete)
             and self.cycle.complete
             and not self.metered.missing
             and not self.metered.dropped
@@ -207,7 +215,10 @@ class TariffKitUsage:
                 f"their energy is missing from these totals"
             )
         found.extend(self.coverage)
-        bill = self.today if span == "today" else self.cycle
+        # Today's figures are read off the cycle, so the cycle's own pricing
+        # warnings are today's too. Only where the cycle is unpriceable does
+        # today stand alone, and then the standalone bill carries them.
+        bill = (self.cycle or self.day) if span == "today" else self.cycle
         reason = self.today_reason if span == "today" else self.cycle_reason
         if reason:
             found.append(reason)
@@ -661,56 +672,69 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         if metered is None:
             return None
         cycle, cycle_reason = price(self.profile, metered.readings, metered.cycle)
-        today, today_reason = self._day_share(metered, cycle, cycle_reason)
+        earlier, earlier_reason = self._through_yesterday(metered)
+        day, day_reason = price(self.profile, metered.for_today(), metered.today)
         return TariffKitUsage(
             metered=metered,
-            today=today,
+            through_yesterday=earlier,
             cycle=cycle,
-            today_reason=today_reason,
+            day=day,
+            today_reason=self._today_reason(cycle, day, cycle_reason, earlier_reason, day_reason),
             cycle_reason=cycle_reason,
             coverage=coverage_warnings(metered.readings, metered.cycle),
         )
 
-    def _day_share(
-        self, metered: MeteredUsage, cycle: Bill | None, cycle_reason: str
-    ) -> tuple[Bill | None, str]:
-        """Today as the cycle's movement, not as a one-day bill.
+    def _through_yesterday(self, metered: MeteredUsage) -> tuple[Bill | None, str]:
+        """The cycle priced through *yesterday*, for the entities to difference.
 
         Parts of a bill are cumulative over a cycle rather than additive over
-        its days -- the baseline allowance most of all, which is granted per
-        cycle and consumed in day order. Pricing today on its own grants it a
-        single day's allowance however much the cycle had banked, which
-        overstates a heavy day and can make it cost more than the cycle
-        containing it. Differencing two cycle-to-date bills cannot do either.
+        its days -- the baseline allowance most of all -- so pricing today alone
+        overstates a heavy day. Two cycle-to-date bills have neither problem.
+
+        Only the two bills are produced here. Subtracting one figure from
+        another happens where the figure is read, on values the library
+        computed: rebuilding a whole ``Bill`` bucket by bucket was an arithmetic
+        of this integration's own invention standing in front of an engine that
+        reconciles against printed statements, which is where drift begins.
+
+        None is the answer on the cycle's first day, and it is not a failure:
+        nothing precedes today, so today *is* the cycle to date and there is
+        nothing to subtract.
         """
-        if cycle is None:
-            # No cycle to take a share of. Pricing the day alone is the old
-            # behaviour and is exact on any schedule without a baseline
-            # allowance, which is most of them -- so give the number and name
-            # the caveat rather than withholding a figure that is usually right.
-            alone, reason = price(self.profile, metered.for_today(), metered.today)
-            if alone is None:
-                return None, reason or cycle_reason
-            return replace(
-                alone,
-                warnings=(
-                    *alone.warnings,
-                    "the billing cycle could not be priced, so today is priced on its "
-                    "own; on a schedule with a baseline allowance that grants one day's "
-                    "allowance rather than the cycle's, which can overstate a heavy day",
-                ),
-            ), ""
         opened = metered.cycle.start
         today = metered.today.start
         if today <= opened:
-            # The cycle's first day is the whole cycle so far.
-            return cycle, ""
-        earlier_period = BillingPeriod(opened, today - timedelta(days=1))
-        earlier_readings = [r for r in metered.readings if earlier_period.contains(r.start)]
-        earlier, reason = price(self.profile, earlier_readings, earlier_period)
-        if earlier is None:
-            return None, reason
-        return subtract(cycle, earlier, metered.today), ""
+            return None, ""
+        period = BillingPeriod(opened, today - timedelta(days=1))
+        readings = [r for r in metered.readings if period.contains(r.start)]
+        return price(self.profile, readings, period)
+
+    @staticmethod
+    def _today_reason(
+        cycle: Bill | None,
+        day: Bill | None,
+        cycle_reason: str,
+        earlier_reason: str,
+        day_reason: str,
+    ) -> str:
+        """Why today has no figure, or the caveat on the one it has.
+
+        Today is normally the difference of two cycle-to-date bills, so either
+        of them failing takes today with it. Where the cycle cannot be priced at
+        all -- an account history that begins mid-cycle -- the standalone day
+        bill is still exact on any schedule without a baseline allowance, which
+        is most of them, so give the number and name the caveat rather than
+        withholding a figure that is usually right.
+        """
+        if cycle is not None:
+            return earlier_reason
+        if day is None:
+            return day_reason or cycle_reason
+        return (
+            f"{cycle_reason}; today is priced on its own instead. On a schedule with a "
+            f"baseline allowance that grants one day's allowance rather than the "
+            f"cycle's, which can overstate a heavy day"
+        )
 
     @property
     def current_hour(self) -> datetime:
