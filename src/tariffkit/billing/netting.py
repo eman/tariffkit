@@ -22,11 +22,31 @@ from .models import BillingPeriod, IntervalReading
 COVERAGE_TOLERANCE = 0.01
 
 
-def check_coverage(readings: Sequence[IntervalReading], period: BillingPeriod) -> Iterator[str]:
+def check_coverage(
+    readings: Sequence[IntervalReading],
+    period: BillingPeriod,
+    *,
+    netted: bool = False,
+    require_full_span: bool = True,
+) -> Iterator[str]:
     """Report ways the readings fail to cleanly cover ``period``.
 
     Yields human-readable problems. An empty result means the series is
     contiguous, non-overlapping, and spans the whole cycle.
+
+    ``netted`` says the caller already knows these readings come from a meter's
+    own import and export registers, which net at the meter's interval and
+    legitimately leave both non-zero once aggregated to a coarser one. Without
+    it that shape is reported, because for gross inverter or CT data it is a
+    real error -- but for a caller who knows better the report is noise, and
+    noise that never clears trains its readers to ignore the warnings that
+    matter. Declaring the fact is what this flag is for; matching on the text of
+    the message is not.
+
+    ``require_full_span`` is for a period still in progress. A running total for
+    today has not covered the rest of the day and never claimed to, so the
+    elapsed shortfall says only that time has not passed yet. Every other check
+    stays on: a gap mid-morning is a gap whether or not the day has finished.
     """
     if not readings:
         yield f"no readings in {period.start}..{period.end}"
@@ -40,7 +60,7 @@ def check_coverage(readings: Sequence[IntervalReading], period: BillingPeriod) -
     # hour of genuinely missing data.
     expected = period.elapsed
     shortfall = expected - covered
-    if shortfall > expected * COVERAGE_TOLERANCE:
+    if require_full_span and shortfall > expected * COVERAGE_TOLERANCE:
         yield (
             f"readings cover {covered.total_seconds() / 3600:.1f}h of the "
             f"{expected.total_seconds() / 3600:.0f}h period "
@@ -70,7 +90,7 @@ def check_coverage(readings: Sequence[IntervalReading], period: BillingPeriod) -
             f"peak hours their share of the clock rather than their share of the load"
         )
 
-    both = [r for r in ordered if r.imported and r.exported]
+    both = [] if netted else [r for r in ordered if r.imported and r.exported]
     if both:
         # Deliberately does not tell the reader to net. It used to, and the
         # advice is wrong for the commonest source: a meter's own import and

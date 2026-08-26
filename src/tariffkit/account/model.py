@@ -574,6 +574,22 @@ class AccountProfile:
             )
         return self.epochs[index : bisect_right(self.effective_dates, period.end)]
 
+    @property
+    def pto_date(self) -> date | None:
+        """The earliest Permission To Operate any epoch records.
+
+        Every epoch, not the one in force today: a later epoch that omits the
+        field would otherwise erase it, and compensation runs from the date the
+        interconnection was actually granted, which does not move because a
+        tariff did. Callers that fold a bank or find an annual settlement all
+        want this same earliest date, so it lives here rather than being
+        rediscovered by each of them.
+        """
+        found = [
+            epoch.config.pto_date for epoch in self.epochs if epoch.config.pto_date is not None
+        ]
+        return min(found) if found else None
+
     def segments_for(self, period: BillingPeriod) -> list[Segment]:
         """Tile a billing period into segments priced by complete snapshots."""
         applicable = self.epochs_in(period)

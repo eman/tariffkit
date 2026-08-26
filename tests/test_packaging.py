@@ -36,6 +36,9 @@ def test_project_identity_and_version_are_consistent() -> None:
     assert hacs["filename"] == "tariffkit.zip"
     assert hacs["hide_default_branch"] is True
     assert hacs["country"] == "US"
+    # Not a coincidence: 2026.3.0 is the first Home Assistant release on the
+    # 3.14.2 patch line the floor above declares, so the two move together and
+    # raising either one raises the other. See docs/packaging_strategy.md.
     assert hacs["homeassistant"] == "2026.3.0"
 
 

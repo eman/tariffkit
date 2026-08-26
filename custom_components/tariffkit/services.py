@@ -406,7 +406,7 @@ def _backfill_start(data: Mapping[str, Any], profile: AccountProfile, start_day:
     """
     raw = data.get(CONF_START)
     if raw in (None, ""):
-        pto = profile.config_at(now_pacific()).pto_date
+        pto = profile.pto_date
         if pto is None:
             return min(profile.effective_dates)
         periods = statement_periods(profile)

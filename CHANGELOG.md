@@ -5,14 +5,85 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking, for anyone running the metered-energy entities from `main`.** The
+  Net Cost entities are renamed **Amount Due** (`net_cost_today` /
+  `net_cost_cycle` become `amount_due_today` / `amount_due_cycle`), and the
+  backfill's `tariffkit:<profile>_net_cost` statistic becomes
+  `tariffkit:<profile>_amount_due`.
+
+  The rename is the point, not a side effect. The figure changed meaning and
+  sign -- it was charges less every credit earned, which goes negative; it is
+  now what a statement charges, which does not. Home Assistant's statistics
+  compiler accumulates a `total` sensor as `sum += new - old` whenever
+  `last_reset` is unchanged, and the cycle entity's `last_reset` is the cycle
+  start, so keeping the old id would have added the whole banked balance to the
+  lifetime sum in a single compile and never washed it out. A new unique id
+  abandons the old series intact rather than corrupting it.
+
+  Update any dashboard card, template, or automation that names the old
+  entities. The old `net_cost_*` entities are removed from the registry on
+  reload; their recorded statistics remain, and can be deleted under
+  **Developer tools -> Statistics** if you do not want them.
+
+### Added
+- `tariffkit.billing.run_lifetime` folds a run of bills from end to end,
+  applying each annual settlement in the order it falls and returning a
+  `LifetimeLedger` that reports what every cycle opened with. `run_ledger`
+  carries a bank between cycles but knows nothing about the year closing on it,
+  and `run_true_ups` computes each event independently of the others -- so
+  composing them naively lets a second settlement be derived from a ledger that
+  never saw the first one's clawback. This sequencing had grown inside the Home
+  Assistant integration, where it was neither tested against tariff text nor
+  visible to anyone reading the library.
+
+- `Bill.import_charges` (energy charges plus the statutory taxes beside them),
+  `Bill.marginal_buckets` (a span's time-of-use split, from two cycle-to-date
+  bills), `CreditBalances.held_by` (which buckets each settling party holds),
+  `AccountProfile.pto_date` (the earliest Permission To Operate any epoch
+  records), and `TrueUp.settles`. Each replaces a copy that had accumulated in
+  the Home Assistant integration; `held_by`'s copy had come to disagree with
+  `tariffkit.billing.trueup` about who owns the generation bucket.
+
+- `check_coverage` accepts `netted=True` for readings that come from a meter's
+  own import and export registers, and `require_full_span=False` for a period
+  still running. Callers who knew these facts were filtering the function's
+  messages by their text, which stops filtering the moment a new warning is
+  added -- as one was.
+
+### Fixed
+- `run_true_ups` no longer emits a Community Choice Aggregator cash-out for a
+  bundled account. There is no aggregator to settle with, and on such an
+  account PG&E supplies generation, so the cash-out and the Relevant Period
+  each clawed back the same generation credit for the same exported energy.
+
+- `apply_credits` no longer reports a negative `cash_due`. `non_offsettable`
+  can go negative on its own -- `baseline_credit` is a negative import
+  component listed there -- and at a high export-to-import ratio it outweighs
+  the charges beside it. Credit that cannot be spent stays in the bank instead.
+
 ### Added
 - The Home Assistant integration can optionally track what the meter actually
   moved. Name the cumulative grid-import and grid-export kWh entities under
   **Configure → Metered energy** — deliberately not part of initial setup,
   since pricing needs no meter and the counters are usually integrated after
-  the tariff — and it adds running Energy Cost, Export Credit, and Net Cost
+  the tariff — and it adds running Energy Cost, Export Credit, and Amount Due
   entities for today and for the billing cycle to date, alongside Grid Import
   and Grid Export totals.
+
+  Amount Due is what a statement would charge, not what a bill sums to. Under
+  Net Billing a cycle earning more credit than it owes does not produce a
+  refund: the excess banks, and a credit may only offset charges the tariff
+  lets it reach, so Non-Bypassable Charges stay due however large the bank. The
+  figure comes from `tariffkit.billing.apply_credits`; `credit_applied` and
+  `bank_change` attributes say where the difference went. Reading `Bill.total`
+  instead went negative on a heavily exporting cycle, which no statement does.
+
+  Where the bank cannot be trusted -- not folded yet, unreadable, or folded
+  across a gap -- the figures are stated before any bank offsets them, the
+  reason appears in `warnings`, and `quality.complete` is false. Silently using
+  a doubtful balance halved a cycle's charge while reporting itself complete.
 
   The counters do not have to reset daily: each hour's energy comes from the
   recorder's own long-term statistics, which already absorb counter restarts
@@ -51,7 +122,12 @@ All notable changes to this project are documented here. This project follows
   statistics under a `tariffkit:` namespace -- the shape `opower` uses for
   utility history -- which leaves the running entities' own series and the
   recorder's compilation of them untouched. One row per finished day, each being
-  its cycle's movement across that day, so the days sum to their cycle exactly.
+  its cycle's movement across that day, so the days sum to what their cycle
+  actually charged. The run is folded through every annual settlement it
+  crosses, not merely carried forward, because a true-up claws back credit
+  already paid out as Net Surplus Compensation -- so a cycle after an
+  anniversary opens with less bank than a straight fold would give it, which is
+  what the live entities have always done.
   It defaults to the billing cycle containing the PTO date -- where bills begin
   meaning anything, since Net Billing compensation runs from Permission To
   Operate -- and reports a per-cycle bill alongside the daily rows, which is
@@ -61,6 +137,27 @@ All notable changes to this project are documented here. This project follows
   the running total it finds rather than restarting it. Only days the recorder
   actually holds readings for are priced, and coverage is judged per meter, so
   one direction cannot vouch for the other.
+
+- **Export credit bank** entities carry the Net Billing credit balance
+  between cycles, which no entity computing forward from the day meters were
+  configured can know. It folds every closed cycle since the one containing the
+  PTO date -- so it opens at zero by construction, with no balance anyone has to
+  supply -- applying each cycle's credits against its charges through
+  `tariffkit.billing.run_ledger`, and continuing from a true-up's own closing
+  balance where the run crosses one. It refuses rather than reports where the
+  run has a gap: the library's ledger deliberately does not check for one, and a
+  bank folded across a missing cycle reports a balance that never existed. The
+  balance is recomputed when a cycle closes rather than accumulated, so
+  correcting account history fixes it instead of leaving a stored figure quietly
+  wrong. There are two entities because a Community Choice Aggregator account
+  has two banks -- the utility's delivery and bonus credits against the CCA's
+  export credit -- settling on unrelated calendars, which a single total would
+  merge into a figure no statement prints. Every annual settlement in a run is
+  applied in order rather than only the most recent, since each is computed
+  independently and a later one cannot see an earlier one's clawback. A
+  settlement that reverses and pays nothing -- the utility's, on a CCA account
+  -- is recorded without consuming cycles, so it cannot shorten the other
+  supplier's cash-out year and leave unreversed credit in the bank.
 
 ### Fixed
 - Statement evidence is identified by what a statement says rather than by the

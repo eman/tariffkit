@@ -21,6 +21,7 @@ from tariffkit.billing import (
     BillEngine,
     BillingPeriod,
     IntervalReading,
+    UsageBucket,
     check_coverage,
     find_gaps,
     find_overlaps,
@@ -29,6 +30,7 @@ from tariffkit.billing import (
 from tariffkit.billing.engine import Segment, compute_segments
 from tariffkit.config import CcaConfig
 from tariffkit.errors import DataError
+from tariffkit.models import Season, TouPeriod
 from tariffkit.sources import read_green_button
 from tariffkit.timeutil import PACIFIC
 
@@ -555,3 +557,108 @@ def test_segmented_billing_rejects_uncovered_days() -> None:
 
     with pytest.raises(DataError, match="segments have a gap"):
         compute_segments(segments, [], check=False)
+
+
+class TestMarginalBuckets:
+    """A span's time-of-use split, from two cycle-to-date bills.
+
+    Bucket energy and charge accumulate hour by hour, so differencing them is
+    exact -- unlike a bill's total, which carries cycle-cumulative parts. This
+    is the additive half of a subtraction that was once done to whole bills and
+    should not have been.
+    """
+
+    def _bucket(self, imported: float, charge: float, period: TouPeriod) -> UsageBucket:
+        return UsageBucket(
+            season=Season.SUMMER, period=period, imported=imported, import_charge=charge
+        )
+
+    def test_it_is_the_difference(self) -> None:
+        earlier = Bill(
+            period=BillingPeriod(date(2026, 7, 1), date(2026, 7, 10)),
+            buckets=(self._bucket(100.0, 30.0, TouPeriod.OFF_PEAK),),
+        )
+        later = Bill(
+            period=BillingPeriod(date(2026, 7, 1), date(2026, 7, 11)),
+            buckets=(self._bucket(112.0, 33.6, TouPeriod.OFF_PEAK),),
+        )
+        (only,) = later.marginal_buckets(earlier)
+        assert only.imported == pytest.approx(12.0)
+        assert only.import_charge == pytest.approx(3.6)
+        assert only.period is TouPeriod.OFF_PEAK
+
+    def test_a_period_the_earlier_bill_never_saw_survives(self) -> None:
+        earlier = Bill(
+            period=BillingPeriod(date(2026, 7, 1), date(2026, 7, 10)),
+            buckets=(self._bucket(100.0, 30.0, TouPeriod.OFF_PEAK),),
+        )
+        later = Bill(
+            period=BillingPeriod(date(2026, 7, 1), date(2026, 7, 11)),
+            buckets=(
+                self._bucket(100.0, 30.0, TouPeriod.OFF_PEAK),
+                self._bucket(4.0, 2.4, TouPeriod.PEAK),
+            ),
+        )
+        found = {bucket.period: bucket for bucket in later.marginal_buckets(earlier)}
+        assert found[TouPeriod.PEAK].imported == pytest.approx(4.0)
+        assert found[TouPeriod.OFF_PEAK].imported == pytest.approx(0.0)
+
+    def test_a_mismatched_start_is_refused_rather_than_differenced(self) -> None:
+        """Two bills that do not share a start have no span between them."""
+        earlier = Bill(period=BillingPeriod(date(2026, 6, 1), date(2026, 6, 30)))
+        later = Bill(period=BillingPeriod(date(2026, 7, 1), date(2026, 7, 31)))
+        with pytest.raises(ValueError, match="common start"):
+            later.marginal_buckets(earlier)
+
+
+class TestImportCharges:
+    def test_it_is_energy_plus_taxes_and_excludes_the_fixed_charge(self) -> None:
+        bill = Bill(
+            period=BillingPeriod(date(2026, 7, 1), date(2026, 7, 31)),
+            import_components={"distribution": 8.0, "energy_commission_tax": 0.03},
+            fixed_components={"base_services_charge": 24.0},
+        )
+        assert bill.import_charges == pytest.approx(8.03)
+        assert bill.import_charges == pytest.approx(bill.energy_charges + bill.taxes)
+        assert bill.import_charges != pytest.approx(bill.total)
+
+
+class TestCheckCoverageIsToldWhatItIsLookingAt:
+    """Two facts a caller may know that the readings cannot show.
+
+    Before these flags existed, a caller who knew them filtered the library's
+    messages by their text -- which silently stopped filtering the moment the
+    library grew a warning the filter had not been written for.
+    """
+
+    PERIOD = BillingPeriod(date(2026, 7, 1), date(2026, 7, 2))
+
+    def _netted_hours(self) -> list[IntervalReading]:
+        """A meter's own registers: a cloudy hour advances both."""
+        return [
+            IntervalReading(
+                datetime(2026, 7, day, hour, tzinfo=PACIFIC), imported=0.4, exported=0.6
+            )
+            for day in (1, 2)
+            for hour in range(24)
+        ]
+
+    def test_by_default_both_directions_in_one_hour_are_reported(self) -> None:
+        found = list(check_coverage(self._netted_hours(), self.PERIOD))
+        assert any("report both import and export" in warning for warning in found)
+
+    def test_a_netted_source_declares_it_and_is_not(self) -> None:
+        found = list(check_coverage(self._netted_hours(), self.PERIOD, netted=True))
+        assert found == []
+
+    def test_a_running_period_is_not_told_the_rest_has_not_happened(self) -> None:
+        partial = [r for r in self._netted_hours() if r.start.astimezone(PACIFIC).day == 1]
+        assert any("readings cover" in warning for warning in check_coverage(partial, self.PERIOD))
+        assert (
+            list(check_coverage(partial, self.PERIOD, netted=True, require_full_span=False)) == []
+        )
+
+    def test_a_real_gap_is_still_reported_either_way(self) -> None:
+        holed = [r for r in self._netted_hours() if r.start.astimezone(PACIFIC).hour != 5]
+        found = list(check_coverage(holed, self.PERIOD, netted=True, require_full_span=False))
+        assert any("gap(s) in the series" in warning for warning in found)
