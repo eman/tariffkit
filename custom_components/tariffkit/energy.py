@@ -585,23 +585,23 @@ class UsageReader:
 def coverage_warnings(
     readings: Sequence[IntervalReading], period: BillingPeriod
 ) -> tuple[str, ...]:
-    """The library's own coverage check, minus the one line an open period earns.
+    """The library's own coverage check, told what it is looking at.
 
-    :func:`tariffkit.billing.check_coverage` reports five things. Four of them --
-    gaps, overlaps, reconstructed intervals, no readings at all -- are real
-    whether or not the period has finished. The fifth is the elapsed shortfall,
-    which for a running total is always true and says only that the rest of the
-    day has not happened yet.
+    Two facts this caller knows and :func:`tariffkit.billing.check_coverage`
+    cannot see. The period may still be running, so the elapsed shortfall says
+    only that the rest of the day has not happened yet. And the readings come
+    from a meter's own import and export registers, which net at the meter's
+    interval and legitimately leave both non-zero once
+    :meth:`UsageReader._assemble` aggregates them to an hour -- on a solar site
+    every passing cloud produces one, so reporting it would mark every account
+    incomplete forever and train its readers to ignore the warnings that matter.
 
-    Filtering that one line is the whole of this function. Re-deriving the other
-    four here is how they drift from the library that is tested against real
-    statements.
+    Declaring both is the whole of this function. An earlier version filtered
+    the library's messages by their text, which is the same mistake wearing a
+    disguise: it silently stopped filtering the moment the library grew a
+    warning the filter had not been written for, which is exactly what happened.
     """
-    return tuple(
-        warning
-        for warning in check_coverage(list(readings), period)
-        if not warning.startswith("readings cover ")
-    )
+    return tuple(check_coverage(list(readings), period, netted=True, require_full_span=False))
 
 
 def price(

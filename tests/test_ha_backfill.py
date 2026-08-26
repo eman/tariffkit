@@ -15,8 +15,10 @@ from tariffkit.billing import BillingPeriod, IntervalReading, apply_credits
 from tariffkit.timeutil import PACIFIC
 
 
-def _profile(tariff: str = "E-ELEC", **kwargs: object) -> AccountProfile:
-    config = Config(tariff=tariff, pto_date=date(2026, 1, 1), **kwargs)  # type: ignore[arg-type]
+def _profile(
+    tariff: str = "E-ELEC", pto_date: date = date(2026, 1, 1), **kwargs: object
+) -> AccountProfile:
+    config = Config(tariff=tariff, pto_date=pto_date, **kwargs)  # type: ignore[arg-type]
     return AccountProfile((AccountEpoch(date(2026, 1, 1), config),), name="probe")
 
 
@@ -50,7 +52,9 @@ def test_days_sum_to_the_cycle_that_contains_them() -> None:
     cycle = BillingPeriod(date(2026, 7, 1), date(2026, 7, 20))
     readings = _hours(cycle.start, cycle.end, imported=0.5, exported=0.2)
 
-    days, cycle_bill, reason, _, _ = backfill.price_cycle(profile, readings, cycle)
+    walk = backfill.walk_cycle(profile, readings, cycle)
+    days = backfill.decompose(walk, None)
+    cycle_bill, reason = walk.bill, walk.reason
     assert reason == ""
     assert len(days) == 20
 
@@ -59,7 +63,7 @@ def test_days_sum_to_the_cycle_that_contains_them() -> None:
     # The cycle bill the caller gets back is the same bill, not a re-derivation.
     assert cycle_bill is not None
     assert cycle_bill.total == pytest.approx(whole.total, abs=1e-9)
-    assert sum(d.net_cost for d in days) == pytest.approx(whole.total, abs=1e-9)
+    assert sum(d.amount_due for d in days) == pytest.approx(apply_credits(whole).cash_due, abs=1e-9)
     assert sum(d.energy_cost for d in days) == pytest.approx(
         whole.energy_charges + whole.taxes, abs=1e-9
     )
@@ -81,13 +85,15 @@ def test_a_baseline_schedule_still_decomposes_exactly() -> None:
     readings = _hours(cycle.start, cycle.end, imported=1.5)
     readings.append(IntervalReading(datetime(2026, 7, 9, 2, tzinfo=PACIFIC), imported=60.0))
 
-    days, cycle_bill, reason, _, _ = backfill.price_cycle(profile, readings, cycle)
+    walk = backfill.walk_cycle(profile, readings, cycle)
+    days = backfill.decompose(walk, None)
+    cycle_bill, reason = walk.bill, walk.reason
     assert reason == ""
     whole, _ = price(profile, readings, cycle)
     assert whole is not None
     assert cycle_bill is not None
     assert cycle_bill.total == pytest.approx(whole.total, abs=1e-9)
-    assert sum(d.net_cost for d in days) == pytest.approx(whole.total, abs=1e-9)
+    assert sum(d.amount_due for d in days) == pytest.approx(apply_credits(whole).cash_due, abs=1e-9)
 
 
 def test_a_single_day_may_exceed_its_cycle() -> None:
@@ -111,7 +117,7 @@ def test_a_single_day_may_exceed_its_cycle() -> None:
             IntervalReading(datetime(2026, 7, day, hour, tzinfo=PACIFIC), exported=8.0)
             for hour in range(24)
         ]
-    days, _, _, _, _ = backfill.price_cycle(profile, readings, cycle)
+    days = backfill.decompose(backfill.walk_cycle(profile, readings, cycle), None)
     whole, _ = price(profile, readings, cycle)
     assert whole is not None
     assert whole.total < 0, "a month of net export earns more than it owes"
@@ -119,9 +125,13 @@ def test_a_single_day_may_exceed_its_cycle() -> None:
     # published days decompose what is owed, so they sum to that rather than to
     # `Bill.total`, and they still bracket a heavy day above the cycle.
     owed = apply_credits(whole).cash_due
-    assert owed >= 0
-    assert max(d.net_cost for d in days) > owed
-    assert sum(d.net_cost for d in days) == pytest.approx(owed, abs=1e-9)
+    # Not `>= 0`, which `apply_credits` guarantees by construction and so
+    # asserts nothing. The point is that the credit was capped at the charges it
+    # could reach rather than handed back: the cycle's own total is deeply
+    # negative and what it charges is not.
+    assert whole.total < 0 < owed
+    assert max(d.amount_due for d in days) > owed
+    assert sum(d.amount_due for d in days) == pytest.approx(owed, abs=1e-9)
 
 
 def test_statistics_carry_a_running_sum_and_the_days_own_value() -> None:
@@ -285,11 +295,11 @@ async def test_the_action_writes_external_statistics(
     assert response["days"] == 20
     assert response["grid_import_kwh"] == pytest.approx(24.0 * 20)
     assert response["grid_export_kwh"] == pytest.approx(6.0 * 20)
-    assert response["net_cost"] > 0
+    assert response["amount_due"] > 0
     assert response["skipped"] == []
 
     await async_wait_recording_done(hass)
-    stat_id = "tariffkit:probe_net_cost"
+    stat_id = "tariffkit:probe_amount_due"
     assert stat_id in response["statistic_ids"]
     written = await get_instance(hass).async_add_executor_job(
         statistics_during_period,
@@ -412,12 +422,30 @@ def test_a_gap_in_the_metered_series_is_reported() -> None:
 
 
 def test_a_clean_window_reports_itself_complete() -> None:
-    profile = _profile()
+    """Clean means the bank too: the window opens where compensation did."""
+    profile = _profile(pto_date=date(2026, 7, 1))
     readings = _hours(date(2026, 7, 1), date(2026, 7, 20), imported=1.0)
     result = backfill.build(profile, readings, date(2026, 7, 1), date(2026, 7, 20), 1)
     assert result.warnings == []
     assert result.skipped == []
     assert result.summary("probe")["complete"] is True
+
+
+def test_a_window_starting_after_pto_says_its_bank_opens_at_zero() -> None:
+    """Otherwise every amount due in it is overstated, silently.
+
+    A backfill opens the bank at zero, which is true only when it starts at the
+    cycle holding Permission To Operate. Started later, the credit earned in
+    between is missing and would have offset these very charges -- and nothing
+    else in the result says so: no cycle is skipped and no day is unpriced.
+    """
+    profile = _profile(pto_date=date(2026, 1, 1))
+    readings = _hours(date(2026, 7, 1), date(2026, 7, 20), imported=1.0)
+    result = backfill.build(profile, readings, date(2026, 7, 1), date(2026, 7, 20), 1)
+    assert result.skipped == []
+    assert any("opens the export credit bank at zero" in w for w in result.warnings)
+    assert any("Backfill from 2026-01-01" in w for w in result.warnings)
+    assert result.summary("probe")["complete"] is False
 
 
 def test_the_running_sum_continues_from_what_precedes_the_window() -> None:
@@ -475,7 +503,7 @@ def test_interior_days_without_readings_are_not_billed_either() -> None:
     assert len(result.days) == 17
     assert any("could not be priced" in w for w in result.warnings)
     # The surviving days are unaffected -- each is still its own marginal share.
-    assert all(d.net_cost > 0 for d in result.days)
+    assert all(d.amount_due > 0 for d in result.days)
     assert result.summary("probe")["complete"] is False
 
 
@@ -707,7 +735,7 @@ def test_the_cycle_bills_fold_into_a_credit_ledger() -> None:
     # the ledger's figure, with the bank carried in, not the bill's own total.
     for entry in ledger.entries:
         days = [d for d in result.days if entry.period.start <= d.day <= entry.period.end]
-        assert sum(d.net_cost for d in days) == pytest.approx(entry.cash_due, abs=1e-9)
+        assert sum(d.amount_due for d in days) == pytest.approx(entry.cash_due, abs=1e-9)
     assert result.residual == pytest.approx(0.0, abs=1e-9)
 
 
@@ -759,8 +787,8 @@ def test_a_refused_day_is_reported_as_a_residual_not_left_to_be_discovered() -> 
 
     assert result.unpriced, "the reconstructed day is not published"
     assert len(result.bills) == 1
-    published = sum(day.net_cost for day in result.days)
-    priced = result.bills[0].total
+    published = sum(day.amount_due for day in result.days)
+    priced = result.lifetime.cash_due
     assert priced > published, "the cycle keeps energy the days do not"
     assert result.residual == pytest.approx(priced - published)
 
@@ -768,7 +796,7 @@ def test_a_refused_day_is_reported_as_a_residual_not_left_to_be_discovered() -> 
     assert summary["days_unpriced"] == len(result.unpriced)
     assert summary["residual"] == pytest.approx(round(priced - published, 2))
     # The two figures in the payload differ by exactly the residual, stated.
-    assert summary["cycles"][0]["total"] - summary["net_cost"] == pytest.approx(
+    assert summary["cycles"][0]["total"] - summary["amount_due"] == pytest.approx(
         summary["residual"], abs=0.01
     )
 
@@ -804,7 +832,7 @@ def test_a_rerun_that_publishes_fewer_days_leaves_no_orphan() -> None:
     second = backfill.build(profile, refused, date(2026, 7, 1), date(2026, 7, 10), 1)
     assert date(2026, 7, 5) in second.unpriced
 
-    series = next(s for s in backfill.SERIES if s.slug == "net_cost")
+    series = next(s for s in backfill.SERIES if s.slug == "amount_due")
     before = backfill.statistics_for(first, series)
     after = backfill.statistics_for(second, series)
     # Every day the first run wrote is written again, so none is orphaned.
@@ -814,3 +842,49 @@ def test_a_rerun_that_publishes_fewer_days_leaves_no_orphan() -> None:
     # And the sum carries across it rather than jumping.
     sums = [row["sum"] for row in after]
     assert sums == sorted(sums), "the running total never goes backwards"
+
+
+def test_the_published_history_settles_the_year_the_live_bank_does() -> None:
+    """Otherwise the graph and the sensor state the same cycle differently.
+
+    ``build`` used to chain ``apply_credits`` from cycle to cycle, which carries
+    a bank but never settles a year. The live entities fold through
+    ``bank.fold``, which applies every annual clawback. Past an anniversary the
+    two diverged by hundreds of dollars, and the published one was the wrong
+    one -- it spends credit a cash-out already paid out in cash.
+    """
+    from custom_components.tariffkit.bank import fold
+
+    from tariffkit.billing import run_ledger
+
+    profile = _profile(pto_date=date(2026, 1, 1))
+    readings = _hours(date(2026, 1, 1), date(2027, 8, 31), imported=0.2, exported=3.0)
+    result = backfill.build(profile, readings, date(2026, 1, 1), date(2027, 8, 31), 1)
+
+    assert result.skipped == []
+    assert result.lifetime.events, "twenty months crosses at least one annual settlement"
+    # The straight fold the old code did, for contrast.
+    naive = run_ledger(result.bills)
+    assert result.lifetime.closing.total < naive.closing.total
+
+    # And what the live entities would show for the same run.
+    assert fold(profile, list(result.bills)).balance.total == pytest.approx(
+        result.lifetime.closing.total
+    )
+    assert result.residual == pytest.approx(0.0, abs=1e-9)
+
+
+def test_a_settlement_lowers_what_the_cycles_after_it_can_offset() -> None:
+    """Which is the whole reason the published amounts changed.
+
+    A cycle opening after a cash-out has less bank to spend, so it owes more.
+    """
+    profile = _profile(pto_date=date(2026, 1, 1))
+    readings = _hours(date(2026, 1, 1), date(2027, 8, 31), imported=0.2, exported=3.0)
+    result = backfill.build(profile, readings, date(2026, 1, 1), date(2027, 8, 31), 1)
+
+    settled = result.lifetime.events[0].period.end
+    before = [e for e in result.lifetime.entries if e.period.end <= settled]
+    after = [e for e in result.lifetime.entries if e.period.start > settled]
+    assert before and after
+    assert after[0].opening.total < before[-1].closing.total, "the clawback reached the next cycle"

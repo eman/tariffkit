@@ -192,9 +192,9 @@ logged reason rather than guessing.
 | Export Generation / Delivery / Credits / Other | USD/kWh | the export credit, split the same way |
 | Daily Fixed Charge | USD/day | AB 205 Base Services Charge; **not** a per-kWh price and not part of the stack |
 | Grid import / export today | kWh | metered import and export since **Pacific** midnight — the tariff's billing day, not the instance's local one; only with [Metered energy](#metered-energy) configured |
-| Energy cost / Export credit / Net cost today | USD | today's running charge, credit, and what a statement would charge for it, reported in USD regardless of the instance's configured currency; only with [Metered energy](#metered-energy) configured |
+| Energy cost / Export credit / Amount due today | USD | today's running charge, credit, and what a statement would charge for it, reported in USD regardless of the instance's configured currency; only with [Metered energy](#metered-energy) configured |
 | Grid import / export this cycle | kWh | the same two counters over the billing cycle to date |
-| Energy cost / Export credit / Net cost this cycle | USD | the same three figures over the billing cycle to date |
+| Energy cost / Export credit / Amount due this cycle | USD | the same three figures over the billing cycle to date |
 | Export credit bank (utility) / (generation) | USD | Net Billing credit carried between cycles, one per settling party; see [The export credit bank](#the-export-credit-bank). Only with a grid-export meter configured |
 
 Daily Fixed Charge is reported in `USD/day`, not `USD/kWh`, because that is
@@ -547,35 +547,68 @@ is granted per cycle and consumed in day order. Pricing today alone would grant
 it a single day's allowance however much the cycle had banked, overstating a
 heavy day and letting it cost more than the cycle containing it. Taking the
 difference between two cycle-to-date bills has neither problem: the days sum to
-the cycle exactly, and no day can exceed it.
+the cycle exactly. A single day *can* still exceed its cycle — a heavy import
+day inside a month that exports for the rest costs more on its own than the
+whole cycle does, because the later days earn credit against it.
 
 - **Energy Cost** is the day's (or cycle's) import charges including statutory
   per-kWh taxes, and excluding the fixed charge.
 - **Export Credit** is what the exports earned, as a positive number.
-- **Net Cost** is **what a statement would charge**: the charges, **plus the
-  whole of the Base Services Charge for each day so far**, less the credit the
-  tariff allows against them. The fixed charge is incurred for the day of
-  service rather than earned by the hour, which is how a statement bills it.
+- **Amount Due** is **what a statement would charge**: the charges, **plus the
+  whole of the Base Services Charge for each day so far**, less as much carried
+  and earned credit as the tariff lets reach them. The fixed charge is incurred
+  for the day of service rather than earned by the hour, which is how a
+  statement bills it.
 
-Net Cost is deliberately not `energy_cost − export_credit + fixed_charges`.
+Amount Due is deliberately not `energy_cost − export_credit + fixed_charges`.
 Under Net Billing a cycle that earns more credit than it owes does not produce a
 refund — the excess **banks** and is spent on a later cycle — and a credit may
 only offset charges the tariff lets it reach, so Non-Bypassable Charges stay due
-however large the bank. The `banked` attribute is the difference: what this
-cycle earned that its own charges could not absorb.
+however large the bank. Two attributes say where the difference went:
 
-Every figure comes from the library that reconciles printed statements
-(`tariffkit.billing.apply_credits`), not from arithmetic in the integration.
+| Attribute | Means |
+|---|---|
+| `credit_applied` | Credit actually spent against this period's charges |
+| `bank_change` | How much the bank moved: earned less applied. **Negative** for any period that spends more than it earns, which is the normal winter case |
 
-Every money entity carries its own bill as attributes — `energy_charges`,
-`taxes`, `export_credits`, `fixed_charges`, `banked`, `imported_kwh`,
-`exported_kwh`, the time-of-use `buckets`, `quality`, and any pricing
-`warnings` — so a surprising figure is auditable from the entity:
+It is never negative for a cycle, because a statement charges nothing rather
+than paying out. A negative figure for **today** means today's exports offset
+charges the cycle had already run up, which is a real marginal contribution
+rather than a refund.
+
+Every figure comes from `tariffkit.billing.apply_credits`. The only arithmetic
+the integration does is subtracting one library-computed figure from another to
+get a day out of two cycle-to-date bills.
+
+One caveat on a CCA account. `apply_credits` is given the merged bill, and the
+library documents that as an approximation: the two banks spend in an order a
+merged view cannot reproduce, and an exact answer needs each provider's charges
+and credits fed separately. It matters only where a scoped credit cap binds,
+which no reconciled statement has yet shown — but the entity is closer to "what
+a statement would charge" than to "what the statement charged", and on a
+bundled account only the second reading is exact.
+
+Every money entity carries its own decomposition as attributes —
+`energy_charges`, `taxes`, `export_credits`, `fixed_charges`, `credit_applied`,
+`bank_change`, `imported_kwh`, `exported_kwh`, the time-of-use `buckets`,
+`quality`, and any pricing `warnings` — so a surprising figure is auditable from
+the entity:
 
 ```yaml
-{{ state_attr('sensor.tariffkit_home_net_cost_today', 'buckets') }}
-{{ state_attr('sensor.tariffkit_home_net_cost_cycle', 'warnings') }}
+{{ state_attr('sensor.tariffkit_home_amount_due_today', 'buckets') }}
+{{ state_attr('sensor.tariffkit_home_amount_due_cycle', 'warnings') }}
 ```
+
+The `buckets` on a **today** entity are the cycle's buckets less yesterday's, so
+they decompose the figure they are shown beside. Bucket energy and charge
+accumulate hour by hour, which makes differencing them exact — unlike the
+cycle-cumulative parts the state is careful not to difference.
+
+**When the bank is not applied.** What a cycle owes depends on the credit
+carried into it, so the integration refuses to guess: if the export credit bank
+has not been folded yet (the first tick after a restart), could not be read, or
+is not trustworthy, the figures are stated **before any bank offsets them**, the
+reason appears in `warnings`, and `quality.complete` is `false`.
 
 ### Where the cycle boundary comes from
 
@@ -640,12 +673,25 @@ response_variable: backfilled
 ```
 
 The response carries a `cycles` list alongside the daily totals — one entry per
-billing cycle priced, with its own charges, taxes, credits, fixed charges and
-total. Where a day inside a cycle could not be published, `days_unpriced` counts
-it and `residual` states exactly how much the cycles hold that the daily rows do
-not, so the two figures never differ without saying so. That is what a statement states, and what an export credit ledger folds
-to carry a bank between cycles; the daily rows are for charting. Starting at the
-PTO cycle means such a ledger opens at zero, with nothing earlier to carry.
+billing cycle priced, with its own charges, taxes, credits and fixed charges,
+and three figures that are easy to confuse:
+
+| Field | Means |
+|---|---|
+| `total` | The bill's own sum, every credit earned subtracted. Goes negative on an exporting cycle; no statement prints this |
+| `cash_due` | What the statement charged, after the annual settlements and the bank |
+| `bank_closing` | The balance standing *after* that cycle — a running total, not the cycle's own contribution |
+
+Where a day inside a cycle could not be published, `days_unpriced` counts it and
+`residual` states exactly how much the cycles hold that the daily rows do not,
+so the two figures never differ without saying so. A skipped day still owes its
+Base Services Charge, so the residual is more than that day's energy.
+
+The run is folded through **every annual settlement it crosses**, not merely
+carried from cycle to cycle: a true-up claws back credit already paid out as Net
+Surplus Compensation, so each cycle after an anniversary opens with less bank
+than a straight fold would give it. Getting this wrong made the published
+history disagree with the live entities by hundreds of dollars.
 
 It prices every finished day in the window and writes five **external
 statistics** under a `tariffkit:` namespace:
@@ -655,7 +701,7 @@ tariffkit:<profile>_grid_import     kWh
 tariffkit:<profile>_grid_export     kWh
 tariffkit:<profile>_energy_cost     USD
 tariffkit:<profile>_export_credit   USD
-tariffkit:<profile>_net_cost        USD
+tariffkit:<profile>_amount_due      USD
 ```
 
 Add them to a **Statistics graph** card, or to the Energy dashboard, the same
@@ -687,13 +733,20 @@ onto that day. The cycle total stays exact; the day it lands on reads a few
 dollars low and the days before it read correspondingly high.
 
 **The three dollar series do not reconcile with each other.** `energy_cost` is
-import charges plus taxes; `net_cost` adds the Base Services Charge and then
+import charges plus taxes; `amount_due` adds the Base Services Charge and then
 applies only as much credit as the tariff permits, banking the rest. So
-`net_cost` is not `energy_cost − export_credit` plus the daily charge — on an
+`amount_due` is not `energy_cost − export_credit` plus the daily charge — on an
 exporting account it is higher, by whatever banked. That is not an error: it is
 the same distinction a statement draws between the credit you earned and the
-credit you got to spend, and it is why the cycle summary in the action's
-response reports `total`, `cash_due`, and `banked` separately.
+credit you got to spend, and it is why the cycle summary reports `total`,
+`cash_due` and `bank_closing` separately.
+
+**Start at the PTO cycle unless you know better.** A backfill opens the export
+credit bank at zero, which is only true where compensation began. Started later
+— re-running a short window after fixing a meter, say — every credit earned in
+between is missing and every amount due in the window is overstated by whatever
+it would have offset. The response warns when a run does this; the fix is to
+backfill from the date it names.
 
 **Today is excluded.** The window ends at yesterday; today is what the running
 totals are for.
@@ -748,14 +801,15 @@ energy_cost: 88.41
 export_credit: 731.05
 # What the published days sum to: what those cycles actually charged, with the
 # credit they could not spend carried into the bank rather than refunded.
-net_cost: 154.98
+amount_due: 154.98
 residual: 0.0
 cycles:
   - start: "2026-06-03"
     end: "2026-06-29"
-    total: -119.60   # charges less every credit earned
-    cash_due: 25.27  # what the statement charged
-    banked: 144.87   # what carried into the next cycle
+    total: -119.60        # the bill's own sum, every credit subtracted
+    cash_due: 25.27       # what the statement charged
+    credit_applied: 9.04  # what the charges could absorb
+    bank_closing: 144.87  # the balance standing after this cycle
     complete: true
 skipped: []
 warnings: []

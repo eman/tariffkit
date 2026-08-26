@@ -36,7 +36,10 @@ def test_project_identity_and_version_are_consistent() -> None:
     assert hacs["filename"] == "tariffkit.zip"
     assert hacs["hide_default_branch"] is True
     assert hacs["country"] == "US"
-    assert hacs["homeassistant"] == "2026.3.0"
+    # The floor has to be a Home Assistant whose Python is at least the
+    # `requires-python` above: the integration uses PEP 758 `except` groups,
+    # which do not parse on 3.13, and pins a package 3.13 cannot install.
+    assert hacs["homeassistant"] == "2026.8.0"
 
 
 def test_maintainer_dependencies_are_not_public_extras() -> None:

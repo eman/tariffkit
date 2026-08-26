@@ -15,7 +15,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from tariffkit.account import AccountError, AccountProfile, AccountRateEngine
-from tariffkit.billing import Bill, BillingPeriod, IntervalReading
+from tariffkit.billing import Bill, BillingPeriod, CreditBalances, IntervalReading
 from tariffkit.components import ComponentGroup
 from tariffkit.config import CcaConfig, Config
 from tariffkit.errors import TariffKitError
@@ -176,6 +176,10 @@ class TariffKitUsage:
     #: from ``cycle``, done by whoever reads a figure.
     through_yesterday: Bill | None
     cycle: Bill | None
+    #: True when today is the cycle's first day, so there is legitimately
+    #: nothing before it. Distinct from ``through_yesterday`` being None because
+    #: the earlier days could not be priced, which is a refusal, not a zero.
+    opens_today: bool = False
     #: Today priced as a period of its own. Not where today's figures come from
     #: -- the difference above is, because a baseline allowance accrues over the
     #: cycle rather than the day -- but it is the only library-computed
@@ -195,6 +199,9 @@ class TariffKitUsage:
     def complete(self) -> bool:
         """False when a bill is missing, unpriced, or the meters are silent."""
         if self.cycle is None:
+            return False
+        if self.through_yesterday is None and not self.opens_today:
+            # The earlier days were refused, so today has no figure at all.
             return False
         return (
             (self.through_yesterday is None or self.through_yesterday.complete)
@@ -250,6 +257,50 @@ class TariffKitData:
     #: The export credit bank, recomputed when a cycle closes rather than on
     #: every tick. None when there is no PTO, no meters, or nothing priced.
     bank: BankState | None = None
+    #: Set when a bank ought to exist but does not yet, with the reason. None
+    #: when no bank is expected at all, which needs no explanation.
+    bank_pending: str | None = None
+
+    @property
+    def opening(self) -> CreditBalances | None:
+        """The bank a cycle's charges may be offset against, or None.
+
+        What is actually owed depends on the credit carried in, so this decides
+        a headline dollar figure. It is therefore refused rather than guessed in
+        three cases, each of which used to pass silently:
+
+        A bank that is not trustworthy. ``BankState`` already refuses to vouch
+        for a balance folded across a gap or a supplier change, and the bank
+        entity prints the reason -- but the money entities took the number
+        anyway, halving a $348 cycle to $156 while reporting themselves
+        complete.
+
+        A bank not folded yet. The first refresh deliberately skips the fold, so
+        for one tick after every restart there is no balance. Using none is
+        right; doing it silently is not, because the figure then changes by the
+        whole bank a minute later with no usage behind it.
+
+        No bank at all -- no Permission To Operate, or the first cycle. Nothing
+        has been earned, so nothing carries, and there is no caveat to make.
+        """
+        if self.bank is None or not self.bank.trustworthy:
+            return None
+        return self.bank.balance
+
+    @property
+    def opening_note(self) -> str:
+        """Why the figures were computed without a bank, or empty."""
+        if self.usage is None or self.bank_pending is None:
+            return ""
+        if self.bank is None:
+            return self.bank_pending
+        if not self.bank.trustworthy:
+            return (
+                f"the export credit bank is not trustworthy ({'; '.join(self.bank.warnings)}), "
+                f"so no carried credit was applied and these charges are stated before any "
+                f"bank offsets them"
+            )
+        return ""
 
     def chart_attributes(self) -> dict[str, object]:
         return {
@@ -382,6 +433,7 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         self._settled_once = False
         self._bank_failed = False
         self._bank: BankState | None = None
+        self._bank_note: str | None = None
         self._predbat_key: tuple[date, date] | None = None
         self._predbat: PredbatPayload | None = None
         self._predbat_warning: str | None = None
@@ -406,18 +458,26 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         # computed -- and an optional feature must not cost the rate entities
         # their value, which is the same rule `_async_metered` follows.
         try:
-            bank = await self._async_bank(metered)
+            bank, bank_pending = await self._async_bank(metered)
         except (TariffKitError, HomeAssistantError, ValueError, ArithmeticError) as err:
             _LOGGER.warning("Unable to compute the export credit bank: %s", err)
             bank = None
+            bank_pending = (
+                f"the export credit bank could not be folded ({err}), so these charges are "
+                f"stated before any bank offsets them"
+            )
         try:
-            data = await self.hass.async_add_executor_job(self._compute, metered, bank)
+            data = await self.hass.async_add_executor_job(
+                self._compute, metered, bank, bank_pending
+            )
         except TariffKitError as err:
             raise UpdateFailed(str(err)) from err
         self._sync_device_identity(data.provenance)
         return data
 
-    async def _async_bank(self, metered: MeteredUsage | None) -> BankState | None:
+    async def _async_bank(
+        self, metered: MeteredUsage | None
+    ) -> tuple[BankState | None, str | None]:
         """The credit bank, refreshed only when the billing cycle turns over.
 
         Folding it means pricing every cycle since Permission To Operate, which
@@ -425,9 +485,14 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         one-minute tick, and pointless at that rate. A bank only moves when a
         cycle closes and its credits are applied, so the cycle's own start is
         the cache key.
+
+        Returns the bank and, where one is expected but absent, why. The reason
+        travels because the bank decides what a cycle actually owes: an entity
+        computing without one has to say so, or it publishes a figure that moves
+        by the whole balance on the next tick with no usage behind it.
         """
         if metered is None or self._usage is None:
-            return None
+            return None, None
         if not self._settled_once:
             # Not on the first refresh. That one is awaited inside
             # `async_setup_entry`, and folding a long history there costs
@@ -435,15 +500,18 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
             # Home Assistant's slow-setup warning and delays every other entity.
             # A minute later costs nothing and nobody is watching.
             self._settled_once = True
-            return None
+            return None, (
+                "the export credit bank is folded on the first tick after startup and has "
+                "not been yet, so these charges are stated before any bank offsets them"
+            )
         try:
             pto = self.profile.config_at(now_pacific()).pto_date
         except AccountError:
-            return None
+            return None, None
         if pto is None:
             # Without Permission To Operate nothing is compensated, so there is
             # no bank to carry -- not an empty one, none.
-            return None
+            return None, None
         opens = max(
             min(
                 resolve_cycle(
@@ -473,11 +541,12 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         )
         key: tuple[object, ...] = (opens, metered.cycle.start, retry)
         if key == self._bank_key:
-            return self._bank
+            return self._bank, self._bank_note
         if closes < opens:
             # The first cycle has not closed yet, so nothing has banked.
             self._bank_key, self._bank = key, None
-            return None
+            self._bank_note = None
+            return None, None
         try:
             readings = await self._usage.async_readings(opens, closes)
         except (HomeAssistantError, ValueError) as err:
@@ -487,13 +556,22 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
             _LOGGER.warning("Unable to read history for the credit bank: %s", err)
             self._bank_failed = True
             self._bank_key = (opens, metered.cycle.start, hour_floor(now_pacific()))
-            return self._bank
+            self._bank_note = (
+                f"the export credit bank could not be read from the recorder ({err}), so "
+                f"these charges are stated before any bank offsets them"
+            )
+            return self._bank, self._bank_note
         self._bank = await self.hass.async_add_executor_job(
             self._fold_bank, readings, opens, closes
         )
         self._bank_failed = False
         self._bank_key = key
-        return self._bank
+        self._bank_note = (
+            None
+            if self._bank is not None
+            else "no priced cycle closed before this one, so nothing has banked yet"
+        )
+        return self._bank, self._bank_note
 
     def _fold_bank(
         self, readings: list[IntervalReading], opens: date, closes: date
@@ -590,7 +668,10 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         return self._predbat
 
     def _compute(
-        self, metered: MeteredUsage | None = None, bank: BankState | None = None
+        self,
+        metered: MeteredUsage | None = None,
+        bank: BankState | None = None,
+        bank_pending: str | None = None,
     ) -> TariffKitData:
         point = self.engine.price_now()
         curve = self.engine.forecast(self.forecast_hours, start=point.start)
@@ -631,6 +712,7 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
             usage=self._usage_for(metered),
             usage_note=self._usage_note,
             bank=bank,
+            bank_pending=bank_pending,
         )
 
     @property
@@ -672,12 +754,14 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         if metered is None:
             return None
         cycle, cycle_reason = price(self.profile, metered.readings, metered.cycle)
+        opens_today = metered.today.start <= metered.cycle.start
         earlier, earlier_reason = self._through_yesterday(metered)
         day, day_reason = price(self.profile, metered.for_today(), metered.today)
         return TariffKitUsage(
             metered=metered,
             through_yesterday=earlier,
             cycle=cycle,
+            opens_today=opens_today,
             day=day,
             today_reason=self._today_reason(cycle, day, cycle_reason, earlier_reason, day_reason),
             cycle_reason=cycle_reason,

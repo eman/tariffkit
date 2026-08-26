@@ -300,8 +300,8 @@
       "export_credit_today": {
         "name": "Export credit today"
       },
-      "net_cost_today": {
-        "name": "Net cost today"
+      "amount_due_today": {
+        "name": "Amount due today"
       },
       "grid_import_cycle": {
         "name": "Grid import this cycle"
@@ -315,8 +315,8 @@
       "export_credit_cycle": {
         "name": "Export credit this cycle"
       },
-      "net_cost_cycle": {
-        "name": "Net cost this cycle"
+      "amount_due_cycle": {
+        "name": "Amount due this cycle"
       },
       "export_credit_bank": {
         "name": "Export credit bank"
@@ -385,7 +385,7 @@
         },
         "start": {
           "name": "Start date",
-          "description": "First day to price, as an ISO date. Defaults to the account profile's first epoch."
+          "description": "First day to price, as an ISO date. Defaults to the billing cycle containing the Permission To Operate date, where the export credit bank opens at zero. Starting later opens it at zero anyway, which overstates every amount due in the window."
         }
       }
     }

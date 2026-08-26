@@ -368,17 +368,6 @@ async def _backfill_usage(hass: HomeAssistant, call: ServiceCall) -> ServiceResp
     return cast(ServiceResponse, result.summary(profile.name))
 
 
-def _first_pto(profile: AccountProfile) -> date | None:
-    """The earliest Permission To Operate any epoch records.
-
-    Reading only the current epoch loses it whenever a later one omits the
-    field, which silently reverts the default to the profile's first epoch --
-    potentially years before compensation began.
-    """
-    found = [epoch.config.pto_date for epoch in profile.epochs if epoch.config.pto_date is not None]
-    return min(found) if found else None
-
-
 def _check_publishable(profile_name: str) -> None:
     """Refuse a name no statistic id can carry, before doing any work.
 
@@ -417,7 +406,7 @@ def _backfill_start(data: Mapping[str, Any], profile: AccountProfile, start_day:
     """
     raw = data.get(CONF_START)
     if raw in (None, ""):
-        pto = _first_pto(profile)
+        pto = profile.pto_date
         if pto is None:
             return min(profile.effective_dates)
         periods = statement_periods(profile)

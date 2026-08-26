@@ -380,6 +380,4 @@ def test_the_bank_finds_a_pto_recorded_only_on_an_earlier_epoch() -> None:
         (AccountEpoch(date(2026, 1, 1), early), AccountEpoch(date(2026, 9, 1), later)),
         name="probe",
     )
-    from custom_components.tariffkit.bank import _pto_of
-
-    assert _pto_of(profile, date(2026, 10, 1)) == PTO
+    assert profile.pto_date == PTO

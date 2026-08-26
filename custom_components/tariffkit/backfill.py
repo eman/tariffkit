@@ -40,9 +40,11 @@ from tariffkit.billing import (
     CreditBalances,
     IntervalReading,
     LedgerEntry,
+    LifetimeLedger,
     apply_credits,
-    run_ledger,
+    run_lifetime,
 )
+from tariffkit.errors import TariffKitError
 from tariffkit.timeutil import PACIFIC
 
 from .energy import coverage_warnings, price, resolve_cycle, statement_periods
@@ -112,7 +114,7 @@ SERIES: tuple[Series, ...] = (
     Series("grid_export", "grid export", UnitOfEnergy.KILO_WATT_HOUR, "energy"),
     Series("energy_cost", "energy cost", MONEY_UNIT, None),
     Series("export_credit", "export credit", MONEY_UNIT, None),
-    Series("net_cost", "net cost", MONEY_UNIT, None),
+    Series("amount_due", "amount due", MONEY_UNIT, None),
 )
 
 
@@ -125,7 +127,9 @@ class DayFigures:
     grid_export: float = 0.0
     energy_cost: float = 0.0
     export_credit: float = 0.0
-    net_cost: float = 0.0
+    #: What a statement would charge for this day: its marginal share of the
+    #: cycle's cash due, the bank the cycle opened with already applied.
+    amount_due: float = 0.0
 
     def value(self, slug: str) -> float:
         return float(getattr(self, slug))
@@ -137,8 +141,11 @@ class BackfillResult:
 
     days: list[DayFigures] = field(default_factory=list)
     #: One bill per priced cycle, oldest first. What a cycle earned and owed
-    #: before any bank is applied; :meth:`entries` is what a statement states.
+    #: before any bank is applied; :attr:`lifetime` is what a statement states.
     bills: list[Bill] = field(default_factory=list)
+    #: Those bills folded end to end, every annual settlement applied. The
+    #: authority on what each cycle opened with and what it actually charged.
+    lifetime: LifetimeLedger = field(default_factory=LifetimeLedger)
     #: Days inside a priced cycle that could not be published. Their energy is
     #: still in that cycle's bill -- a cumulative counter's endpoints survive an
     #: outage -- so the daily rows and the cycle disagree by exactly their share,
@@ -151,19 +158,24 @@ class BackfillResult:
 
     @property
     def residual(self) -> float:
-        """What the cycles hold that the daily rows do not publish."""
-        return sum(entry.cash_due for entry in self.entries().values()) - sum(
-            day.net_cost for day in self.days
-        )
+        """What the cycles hold that the daily rows do not publish.
+
+        Non-zero whenever a day inside a priced cycle could not be published:
+        its energy is still in the cycle's bill, and so is its Base Services
+        Charge, which is owed for the day of service whether or not the meter
+        reported anything that day.
+        """
+        return self.lifetime.cash_due - sum(day.amount_due for day in self.days)
 
     def entries(self) -> dict[BillingPeriod, LedgerEntry]:
         """Each cycle after credits are applied, keyed by the period it covers.
 
         This is where a cycle stops being a bill and becomes a statement: the
-        ledger is what decides how much of the credit earned may be spent now
-        and how much banks for later.
+        ledger decides how much of the credit earned may be spent now, how much
+        banks, and -- through the annual settlements :attr:`lifetime` applies --
+        how much is clawed back for having already been paid out in cash.
         """
-        return {entry.period: entry for entry in run_ledger(self.bills).entries}
+        return {entry.period: entry for entry in self.lifetime.entries}
 
     def summary(self, profile_name: str) -> dict[str, object]:
         entries = self.entries()
@@ -180,7 +192,7 @@ class BackfillResult:
             "grid_export_kwh": round(sum(d.grid_export for d in self.days), 3),
             "energy_cost": round(sum(d.energy_cost for d in self.days), 2),
             "export_credit": round(sum(d.export_credit for d in self.days), 2),
-            "net_cost": round(sum(d.net_cost for d in self.days), 2),
+            "amount_due": round(sum(d.amount_due for d in self.days), 2),
             "statistic_ids": [s.statistic_id(profile_name) for s in SERIES],
             "cycles": [
                 {
@@ -196,9 +208,13 @@ class BackfillResult:
                     "total": round(bill.total, 2),
                     # What a statement would print. Differs from `total`
                     # wherever the cycle earned more credit than its charges
-                    # could absorb, which is the bank being fed.
+                    # could absorb, which is the bank being fed. `bank_closing`
+                    # is the balance standing after it, not this cycle's own
+                    # contribution to it -- the entity attribute named
+                    # `bank_change` is that, and they are different numbers.
                     "cash_due": round(entry.cash_due, 2),
-                    "banked": round(entry.closing.total, 2),
+                    "credit_applied": round(entry.applied.total, 2),
+                    "bank_closing": round(entry.closing.total, 2),
                     "complete": bill.complete,
                 }
                 # Matched by period rather than by position: `run_ledger`
@@ -244,90 +260,125 @@ def _day_of(reading: IntervalReading) -> date:
     return reading.start.astimezone(PACIFIC).date()
 
 
-def price_cycle(
+@dataclass(slots=True)
+class CycleWalk:
+    """One cycle priced, and every cycle-to-date bill along the way.
+
+    The running bills are kept because a day's figures are differences between
+    consecutive ones, and what is actually owed on a day cannot be worked out
+    until the bank this cycle opens with is known -- which needs every other
+    cycle priced first. Pricing once and decomposing twice beats pricing twice.
+    """
+
+    cycle: BillingPeriod
+    bill: Bill | None = None
+    reason: str = ""
+    #: One per day of the cycle: the day, its cycle-to-date bill, the energy its
+    #: own hours moved, and whether it may be published. Every day is here, not
+    #: only the publishable ones, because a decomposition differences
+    #: consecutive cycle-to-date bills and a refused day still has to advance
+    #: that sequence -- dropping it hands its charges to whichever day follows,
+    #: which is exactly the silent disagreement the residual exists to report.
+    running: list[tuple[date, Bill, float, float, bool]] = field(default_factory=list)
+    warnings: tuple[str, ...] = ()
+    unmetered: list[date] = field(default_factory=list)
+
+
+def walk_cycle(
     profile: AccountProfile,
     readings: list[IntervalReading],
     cycle: BillingPeriod,
-    opening: CreditBalances | None = None,
-) -> tuple[list[DayFigures], Bill | None, str, tuple[str, ...], list[date]]:
-    """Each day's exact share of one cycle.
+) -> CycleWalk:
+    """Price one cycle day by day, keeping every cycle-to-date bill.
 
-    Walks the cycle day by day, differencing consecutive cycle-to-date bills, so
-    a day's figures are its *marginal* contribution. That is the decomposition
-    that sums to the cycle: the baseline allowance is cycle-cumulative, so
-    pricing a day in isolation would grant it one day's worth however much the
-    cycle had banked. It does not bound a day by the cycle -- a heavy import day
-    inside a month that exports for the rest costs more on its own than the
-    whole cycle does.
+    Days the readings cannot account for are not emitted -- one with no
+    readings at all, or one holding an hour that carries another day's energy.
+    An hour reconstructed across an outage cannot be separated from the hour's
+    own usage, because the counter reports one number, so the day it lands on
+    cannot be priced, only guessed at.
 
-    Days the readings cannot account for are not emitted -- one with no readings
-    at all, or one holding an hour that carries another day's energy. Skipping
-    does not disturb the days around it: each remaining day is still its own
-    marginal contribution, because a skipped day's charges cancel between the
-    two cycle-to-date bills that bracket it.
-
-    ``opening`` is the credit bank as this cycle begins, and it is what makes
-    the published ``net_cost`` the figure a statement prints. Without it the
-    only answer available is ``Bill.total``, which subtracts every credit the
-    cycle earned; a statement offsets credit only against the charges it may
-    offset and banks the rest. Passing the bank in lets the library say which,
-    so the backfilled history and the live entities agree by construction.
-
-    It does change what the emitted days *sum to*. A day with no readings
-    contributes nothing to the cycle either, so the sum still holds. A day
-    holding a reconstructed hour does not: its energy is real and stays in the
-    cycle's own bill, which only depends on the counter's endpoints. The daily
-    rows are then that cycle minus those days, and the difference is returned
-    rather than left for someone to discover by subtracting two figures that
-    were supposed to agree.
+    Skipping does not disturb the days around it: each remaining day is still
+    its own marginal contribution, because a skipped day's charges cancel
+    between the two cycle-to-date bills that bracket it. It does change what the
+    emitted days *sum to*, and by more than the skipped days' energy -- a day
+    with no readings still owes its Base Services Charge, which stays in the
+    cycle's own bill. :attr:`BackfillResult.residual` is that difference,
+    reported rather than left for someone to discover by subtracting two figures
+    that were supposed to agree.
     """
+    walk = CycleWalk(cycle=cycle)
     within = _within(readings, cycle)
-    # A day is priceable only if it has readings *and* none of them carry
-    # another day's energy. An hour reconstructed across an outage cannot be
-    # separated from the hour's own usage -- the counter reports one number --
-    # so the day it lands on cannot be priced, only guessed at.
     seen = {_day_of(reading) for reading in within}
-    days: list[DayFigures] = []
-    previous: Bill | None = None
-    warnings: tuple[str, ...] = ()
-    unmetered: list[date] = []
     day = cycle.start
     while day <= cycle.end:
         period = BillingPeriod(cycle.start, day)
         so_far = [r for r in within if _day_of(r) <= day]
         running, reason = price(profile, so_far, period)
         if running is None:
-            return [], None, reason, (), []
-        warnings = running.warnings
+            return CycleWalk(cycle=cycle, reason=reason)
+        walk.warnings = running.warnings
         metered = [r for r in within if _day_of(r) == day]
-        if day in seen and not any(reading.estimated for reading in metered):
+        publish = day in seen and not any(reading.estimated for reading in metered)
+        walk.running.append(
+            (
+                day,
+                running,
+                sum(r.imported for r in metered),
+                sum(r.exported for r in metered),
+                publish,
+            )
+        )
+        if not publish:
+            walk.unmetered.append(day)
+        walk.bill = running
+        day += timedelta(days=1)
+    if walk.unmetered:
+        walk.warnings = (
+            *walk.warnings,
+            f"{len(walk.unmetered)} day(s) inside {cycle.start}..{cycle.end} could not be "
+            f"priced ({walk.unmetered[0]}..{walk.unmetered[-1]}): either no metered readings "
+            f"at all, or an hour carrying a counter's catch-up across an outage, whose "
+            f"energy belongs to days the tariff would price differently",
+        )
+    # The last cycle-to-date bill is the cycle's own. Kept because it is what a
+    # statement states, and what a credit ledger folds to carry a bank between
+    # cycles -- neither of which a day decomposition can do.
+    return walk
+
+
+def decompose(walk: CycleWalk, opening: CreditBalances | None) -> list[DayFigures]:
+    """Each day's marginal share of its cycle, given the bank it opened with.
+
+    Differences consecutive cycle-to-date bills, so a day's figures are its
+    *marginal* contribution. That is the decomposition that sums to the cycle:
+    the baseline allowance is cycle-cumulative, so pricing a day in isolation
+    would grant it one day's worth however much the cycle had banked. It does
+    not bound a day by the cycle -- a heavy import day inside a month that
+    exports for the rest costs more on its own than the whole cycle does.
+
+    ``opening`` makes the published amount the figure a statement prints rather
+    than ``Bill.total``, which subtracts every credit the cycle earned. The same
+    balance is used for every day, which is what cancels it out of the
+    differences instead of leaving a month's bank inside one day.
+    """
+    days: list[DayFigures] = []
+    previous: Bill | None = None
+    for day, running, imported, exported, publish in walk.running:
+        if publish:
             days.append(
                 DayFigures(
                     day=day,
-                    grid_import=sum(r.imported for r in metered),
-                    grid_export=sum(r.exported for r in metered),
+                    grid_import=imported,
+                    grid_export=exported,
                     energy_cost=_delta(running, previous, "charges"),
                     export_credit=-_delta(running, previous, "credits"),
-                    net_cost=_cash_due(running, opening) - _cash_due(previous, opening),
+                    amount_due=_cash_due(running, opening) - _cash_due(previous, opening),
                 )
             )
-        else:
-            unmetered.append(day)
+        # Advanced whether or not the day was published, so a refused day's
+        # charges stay unpublished rather than landing on the next one.
         previous = running
-        day += timedelta(days=1)
-    if unmetered:
-        warnings = (
-            *warnings,
-            f"{len(unmetered)} day(s) inside {cycle.start}..{cycle.end} could not be "
-            f"priced ({unmetered[0]}..{unmetered[-1]}): either no metered readings at "
-            f"all, or an hour carrying a counter's catch-up across an outage, whose "
-            f"energy belongs to days the tariff would price differently",
-        )
-    # `previous` is the cycle-to-date bill at its final day, which is the cycle's
-    # own bill. Returned rather than discarded because it is what a statement
-    # states, and what `tariffkit.billing.run_ledger` folds to carry an export
-    # credit bank between cycles -- neither of which a day decomposition can do.
-    return days, previous, "", warnings, unmetered
+    return days
 
 
 def _delta(running: Bill, previous: Bill | None, part: str) -> float:
@@ -335,7 +386,7 @@ def _delta(running: Bill, previous: Bill | None, part: str) -> float:
         if bill is None:
             return 0.0
         if part == "charges":
-            return bill.energy_charges + bill.taxes
+            return bill.import_charges
         return bill.export_credits
 
     return read(running) - read(previous)
@@ -389,11 +440,7 @@ def build(
     if opens > closes:
         return result
 
-    # The bank as each cycle opens, carried from the one before. A backfill
-    # starts at the cycle holding Permission To Operate, where there is no
-    # earlier credit to carry, so beginning at nothing is the true opening
-    # rather than an assumption.
-    opening: CreditBalances | None = None
+    walks: list[CycleWalk] = []
     for cycle in cycles_between(profile, opens, closes, start_day):
         if cycle.start < opens:
             # A cycle joined partway through cannot be decomposed: its earlier
@@ -406,20 +453,80 @@ def build(
                 f"Backfill from {cycle.start} or earlier to include it"
             )
             continue
-        days, bill, reason, warnings, unpriced = price_cycle(profile, readings, cycle, opening)
-        if reason or bill is None:
+        walk = walk_cycle(profile, readings, cycle)
+        if walk.reason or walk.bill is None:
             # `reason` already names a period, so quote only its explanation.
-            detail = reason.split(": ", 1)[-1]
+            detail = walk.reason.split(": ", 1)[-1]
             result.skipped.append(f"{cycle.start}..{cycle.end}: {detail}")
             continue
-        opening = apply_credits(bill, opening).closing
-        result.days.extend(days)
-        result.bills.append(bill)
-        result.unpriced.extend(unpriced)
-        for warning in (*warnings, *coverage_warnings(_within(readings, cycle), cycle)):
+        walks.append(walk)
+        result.bills.append(walk.bill)
+        result.unpriced.extend(walk.unmetered)
+        for warning in (*walk.warnings, *coverage_warnings(_within(readings, cycle), cycle)):
             if warning not in result.warnings:
                 result.warnings.append(warning)
+
+    if not walks:
+        return result
+
+    # Only now can a day be told what it owes. What is owed depends on the bank
+    # a cycle opens with, and a bank does not simply accumulate: an annual
+    # true-up claws back credit already paid out as Net Surplus Compensation, so
+    # every cycle after an anniversary opens lower than a straight fold would
+    # say. Chaining `apply_credits` cycle to cycle -- which is what this did --
+    # skips that entirely, and published a history the live entities disagreed
+    # with by $572 on a run crossing one anniversary.
+    result.lifetime = run_lifetime(
+        result.bills,
+        pto_date=profile.pto_date,
+        is_cca=_is_cca(profile, result.bills[-1].period.end),
+    )
+    result.warnings.extend(_bank_warnings(profile, result, opens, start_day))
+    for walk in walks:
+        result.days.extend(decompose(walk, result.lifetime.opening_for(walk.cycle)))
+    result.days.sort(key=lambda figures: figures.day)
     return result
+
+
+def _is_cca(profile: AccountProfile, on: date) -> bool:
+    """Whether a Community Choice Aggregator supplies generation.
+
+    Which decides whether an annual cash-out is one of the settlements to
+    apply. A bundled account has no CCA to settle with.
+    """
+    from tariffkit.models import Supplier
+
+    try:
+        config = profile.config_at(datetime(on.year, on.month, on.day, 12, tzinfo=PACIFIC))
+    except TariffKitError, ValueError:
+        return False
+    return config.supplier is Supplier.CCA
+
+
+def _bank_warnings(
+    profile: AccountProfile, result: BackfillResult, opens: date, start_day: int
+) -> list[str]:
+    """Why the bank this run folds from may not be the account's real one.
+
+    A backfill opens the bank at zero, which is true only when it starts at the
+    cycle holding Permission To Operate -- before that nothing is compensated,
+    so there is nothing to carry. Started anywhere later, every credit earned in
+    between is missing, and every cycle in the window is overstated by whatever
+    that bank would have offset. Measured at $677 over three cycles on a window
+    beginning nine months after PTO, reported as complete with nothing skipped.
+    """
+    pto = profile.pto_date
+    if pto is None:
+        return []
+    begins = resolve_cycle(pto, start_day, statement_periods(profile)).start
+    if opens <= begins:
+        return []
+    return [
+        f"this run starts at {opens}, after the cycle containing Permission To Operate "
+        f"({begins}), so it opens the export credit bank at zero. Any credit earned "
+        f"between those dates is missing, and every amount due here is overstated by "
+        f"whatever it would have offset. Backfill from {begins} for a bank that carries"
+    ]
 
 
 def _within(readings: list[IntervalReading], cycle: BillingPeriod) -> list[IntervalReading]:
