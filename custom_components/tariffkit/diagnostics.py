@@ -62,7 +62,9 @@ async def async_get_config_entry_diagnostics(
             "hours": len(usage.metered.readings),
             "missing_statistics": len(usage.metered.missing),
             "cycle": usage.cycle.to_dict() if usage.cycle is not None else None,
-            "today": usage.today.to_dict() if usage.today is not None else None,
+            "through_yesterday": (
+                usage.through_yesterday.to_dict() if usage.through_yesterday is not None else None
+            ),
         },
         "options": {
             CONF_FORECAST_HOURS: coordinator.forecast_hours,

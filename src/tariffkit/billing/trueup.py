@@ -47,15 +47,15 @@ from __future__ import annotations
 
 import tomllib
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from enum import StrEnum
 from typing import Any
 
 from ..data import read_data_text
 from ..errors import ConfigError, DataError
-from .ledger import CreditBalances, CreditBucket, LedgerEntry
-from .models import BillingPeriod
+from .ledger import CreditBalances, CreditBucket, LedgerEntry, run_ledger
+from .models import Bill, BillingPeriod
 
 #: PG&E's published Net Surplus Compensation series, used only as a stand-in.
 NSC_RATE_FILE = "nsc/pge.toml"
@@ -181,6 +181,18 @@ class TrueUp:
     #: Always False: no true-up statement has been reconciled yet.
     verified: bool = False
     notes: tuple[str, ...] = ()
+
+    @property
+    def settles(self) -> bool:
+        """Whether this event actually moves anything.
+
+        An event that reverses no credit and pays no cash leaves the bank
+        exactly as it found it -- PG&E's Relevant Period on a CCA account is
+        this by design, under Special Condition 5.a. It still *happened*, and is
+        still worth reporting, but a fold that treats it as a settlement would
+        cut the other provider's year short at this date.
+        """
+        return bool(self.reversal) or bool(self.cash_out)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -462,23 +474,33 @@ def run_true_ups(
 ) -> list[TrueUp]:
     """Every annual event a run of cycles crosses, in date order.
 
-    Emits one MCE cash-out per completed March-April year and one PG&E true-up
-    per completed PTO anniversary. An incomplete trailing period is not emitted:
-    a year that has not closed has not been trued up, and reporting it as though
-    it had would invite reading a partial surplus as a settled one.
+    Emits one Community Choice Aggregator cash-out per completed March-April
+    year and one PG&E true-up per completed PTO anniversary. An incomplete
+    trailing period is not emitted: a year that has not closed has not been
+    trued up, and reporting it as though it had would invite reading a partial
+    surplus as a settled one.
+
+    ``is_cca`` gates both, not just the PG&E branch. A bundled customer has no
+    Community Choice Aggregator to settle with, so emitting a cash-out for one
+    invents a counterparty and hands the caller a clawback against a bank no CCA
+    holds. It also stopped the two events double-counting: on a bundled account
+    both this cash-out and ``pge_true_up`` reverse the same GENERATION credit
+    for the same exported energy, because on such an account PG&E *is* the
+    generation supplier and there is only one settlement to make.
     """
     ordered = sorted(entries, key=lambda e: e.period.start)
     if not ordered:
         return []
 
     out: list[TrueUp] = []
-    for group in cash_out_periods(ordered):
-        last = group[-1]
-        if (
-            last.period.start.month == CASH_OUT_START_MONTH
-            and last.period.end.month == CASH_OUT_END_MONTH
-        ):
-            out.append(mce_cash_out(group, nsc_rate))
+    if is_cca:
+        for group in cash_out_periods(ordered):
+            last = group[-1]
+            if (
+                last.period.start.month == CASH_OUT_START_MONTH
+                and last.period.end.month == CASH_OUT_END_MONTH
+            ):
+                out.append(mce_cash_out(group, nsc_rate))
 
     if pto_date is not None:
         # Close the period *including* the cycle that reaches the anniversary,
@@ -496,3 +518,107 @@ def run_true_ups(
                 boundary = relevant_period_end(pto_date, entry.period.end)
 
     return sorted(out, key=lambda t: (t.period.end, str(t.kind)))
+
+
+@dataclass(frozen=True, slots=True)
+class LifetimeLedger:
+    """A run of cycles folded through every annual settlement it crosses."""
+
+    entries: tuple[LedgerEntry, ...] = ()
+    events: tuple[TrueUp, ...] = ()
+    closing: CreditBalances = field(default_factory=CreditBalances)
+
+    @property
+    def cash_due(self) -> float:
+        return sum(entry.cash_due for entry in self.entries)
+
+    def opening_for(self, period: BillingPeriod) -> CreditBalances:
+        """The bank as one cycle opened, settlements already applied."""
+        for entry in self.entries:
+            if entry.period == period:
+                return entry.opening
+        raise KeyError(f"no cycle covering {period.start}..{period.end}")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "entries": [entry.to_dict() for entry in self.entries],
+            "events": [event.to_dict() for event in self.events],
+            "closing": self.closing.to_dict(),
+            "cash_due": round(self.cash_due, 2),
+        }
+
+
+def run_lifetime(
+    bills: Iterable[Bill],
+    *,
+    pto_date: date | None = None,
+    is_cca: bool = True,
+    nsc_rate: float | None = None,
+    opening: CreditBalances | None = None,
+) -> LifetimeLedger:
+    """Fold ``bills`` from end to end, applying each annual settlement in turn.
+
+    :func:`run_ledger` carries the bank between cycles but knows nothing about
+    the year closing on it; :func:`run_true_ups` finds the annual events but
+    computes each one independently from whichever ledger it is handed. Neither
+    alone can fold a run longer than a year, and composing them naively is
+    wrong in a way that is easy to miss.
+
+    One event at a time, deliberately. A run crossing two settlements yields a
+    second event derived from a ledger that never saw the first one's clawback,
+    so taking the last event's closing balance discards every earlier reversal.
+    On a CCA account whose PTO anniversary falls after April -- most of the year
+    -- the last event is the utility's, whose CCA branch reverses nothing at
+    all, so an entire cash-out survives in the bank as credit that was already
+    paid out in cash. Recomputing after each event is what makes the next one
+    see the last.
+
+    An event that settles nothing must not consume cycles either. Dropping the
+    bills before it would restart the *other* provider's year from this date
+    rather than its own, and a cash-out's reversal is its window's surplus, so a
+    year cut from twelve months to nine claws back less than the tariff requires
+    and leaves the difference in the bank.
+    """
+    ordered = sorted(bills, key=lambda bill: bill.period.start)
+    if not ordered:
+        return LifetimeLedger(closing=_balance(opening))
+
+    balance = opening
+    remaining = list(ordered)
+    settled: list[LedgerEntry] = []
+    events: list[TrueUp] = []
+    seen: set[date] = set()
+
+    while remaining:
+        entries = run_ledger(remaining, opening=balance).entries
+        found = [
+            event
+            for event in run_true_ups(entries, pto_date=pto_date, is_cca=is_cca, nsc_rate=nsc_rate)
+            if event.period.end not in seen
+        ]
+        if not found:
+            settled.extend(entries)
+            closing = entries[-1].closing if entries else _balance(balance)
+            return LifetimeLedger(tuple(settled), tuple(events), closing)
+        first = found[0]
+        seen.add(first.period.end)
+        events.append(first)
+        if not first.settles:
+            continue
+        after = [bill for bill in remaining if bill.period.start > first.period.end]
+        if len(after) == len(remaining):
+            # A settling event that consumes nothing would loop forever. It
+            # should not happen -- a period covers at least one cycle -- but a
+            # caller refreshing on a timer is the wrong place to discover
+            # otherwise.
+            settled.extend(entries)
+            return LifetimeLedger(tuple(settled), tuple(events), first.closing)
+        settled.extend(entry for entry in entries if entry.period.end <= first.period.end)
+        balance = first.closing
+        remaining = after
+
+    return LifetimeLedger(tuple(settled), tuple(events), _balance(balance))
+
+
+def _balance(opening: CreditBalances | None) -> CreditBalances:
+    return opening if opening is not None else CreditBalances()

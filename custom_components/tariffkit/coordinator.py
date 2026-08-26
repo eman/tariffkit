@@ -14,16 +14,18 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from tariffkit.account import AccountProfile, AccountRateEngine
-from tariffkit.billing import Bill, BillingPeriod, IntervalReading
+from tariffkit.account import AccountError, AccountProfile, AccountRateEngine
+from tariffkit.billing import Bill, BillingPeriod, CreditBalances, IntervalReading
 from tariffkit.components import ComponentGroup
 from tariffkit.config import CcaConfig, Config
 from tariffkit.errors import TariffKitError
 from tariffkit.interop import predbat_payload
 from tariffkit.interop.predbat import PredbatPayload
 from tariffkit.models import PricePoint, Supplier
-from tariffkit.timeutil import now_pacific
+from tariffkit.timeutil import hour_floor, now_pacific
 
+from .backfill import build
+from .bank import BankState, fold
 from .const import (
     CONF_ACC_PLUS_SEGMENT,
     CONF_BASELINE_CODE,
@@ -59,8 +61,8 @@ from .energy import (
     UsageReader,
     coverage_warnings,
     price,
+    resolve_cycle,
     statement_periods,
-    subtract,
 )
 from .profile import profile_from_entry
 
@@ -169,8 +171,21 @@ class TariffKitUsage:
     """
 
     metered: MeteredUsage
-    today: Bill | None
+    #: The cycle priced through yesterday, or None when today opened the cycle
+    #: and there is nothing before it. Today's own figures are this subtracted
+    #: from ``cycle``, done by whoever reads a figure.
+    through_yesterday: Bill | None
     cycle: Bill | None
+    #: True when today is the cycle's first day, so there is legitimately
+    #: nothing before it. Distinct from ``through_yesterday`` being None because
+    #: the earlier days could not be priced, which is a refusal, not a zero.
+    opens_today: bool = False
+    #: Today priced as a period of its own. Not where today's figures come from
+    #: -- the difference above is, because a baseline allowance accrues over the
+    #: cycle rather than the day -- but it is the only library-computed
+    #: time-of-use split a single day has, and the only figure left when the
+    #: cycle cannot be priced at all.
+    day: Bill | None = None
     #: Why a span has no bill, empty when it has one. An entity that reads
     #: `unknown` has to be able to say what stopped it.
     today_reason: str = ""
@@ -183,10 +198,13 @@ class TariffKitUsage:
     @property
     def complete(self) -> bool:
         """False when a bill is missing, unpriced, or the meters are silent."""
-        if self.today is None or self.cycle is None:
+        if self.cycle is None:
+            return False
+        if self.through_yesterday is None and not self.opens_today:
+            # The earlier days were refused, so today has no figure at all.
             return False
         return (
-            self.today.complete
+            (self.through_yesterday is None or self.through_yesterday.complete)
             and self.cycle.complete
             and not self.metered.missing
             and not self.metered.dropped
@@ -204,7 +222,10 @@ class TariffKitUsage:
                 f"their energy is missing from these totals"
             )
         found.extend(self.coverage)
-        bill = self.today if span == "today" else self.cycle
+        # Today's figures are read off the cycle, so the cycle's own pricing
+        # warnings are today's too. Only where the cycle is unpriceable does
+        # today stand alone, and then the standalone bill carries them.
+        bill = (self.cycle or self.day) if span == "today" else self.cycle
         reason = self.today_reason if span == "today" else self.cycle_reason
         if reason:
             found.append(reason)
@@ -233,6 +254,53 @@ class TariffKitData:
     #: Why ``usage`` is absent despite meters being configured. Empty when
     #: there is nothing to explain.
     usage_note: str = ""
+    #: The export credit bank, recomputed when a cycle closes rather than on
+    #: every tick. None when there is no PTO, no meters, or nothing priced.
+    bank: BankState | None = None
+    #: Set when a bank ought to exist but does not yet, with the reason. None
+    #: when no bank is expected at all, which needs no explanation.
+    bank_pending: str | None = None
+
+    @property
+    def opening(self) -> CreditBalances | None:
+        """The bank a cycle's charges may be offset against, or None.
+
+        What is actually owed depends on the credit carried in, so this decides
+        a headline dollar figure. It is therefore refused rather than guessed in
+        three cases, each of which used to pass silently:
+
+        A bank that is not trustworthy. ``BankState`` already refuses to vouch
+        for a balance folded across a gap or a supplier change, and the bank
+        entity prints the reason -- but the money entities took the number
+        anyway, halving a $348 cycle to $156 while reporting themselves
+        complete.
+
+        A bank not folded yet. The first refresh deliberately skips the fold, so
+        for one tick after every restart there is no balance. Using none is
+        right; doing it silently is not, because the figure then changes by the
+        whole bank a minute later with no usage behind it.
+
+        No bank at all -- no Permission To Operate, or the first cycle. Nothing
+        has been earned, so nothing carries, and there is no caveat to make.
+        """
+        if self.bank is None or not self.bank.trustworthy:
+            return None
+        return self.bank.balance
+
+    @property
+    def opening_note(self) -> str:
+        """Why the figures were computed without a bank, or empty."""
+        if self.usage is None or self.bank_pending is None:
+            return ""
+        if self.bank is None:
+            return self.bank_pending
+        if not self.bank.trustworthy:
+            return (
+                f"the export credit bank is not trustworthy ({'; '.join(self.bank.warnings)}), "
+                f"so no carried credit was applied and these charges are stated before any "
+                f"bank offsets them"
+            )
+        return ""
 
     def chart_attributes(self) -> dict[str, object]:
         return {
@@ -361,6 +429,11 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
             )
         )
         self._usage_note = ""
+        self._bank_key: tuple[object, ...] | None = None
+        self._settled_once = False
+        self._bank_failed = False
+        self._bank: BankState | None = None
+        self._bank_note: str | None = None
         self._predbat_key: tuple[date, date] | None = None
         self._predbat: PredbatPayload | None = None
         self._predbat_warning: str | None = None
@@ -379,12 +452,167 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
 
     async def _async_update_data(self) -> TariffKitData:
         metered = await self._async_metered()
+        # Inside the guard, and catching more than the rate path needs to. The
+        # bank reaches into the ledger and the true-up tables, which can raise
+        # for reasons that have nothing to do with whether prices can be
+        # computed -- and an optional feature must not cost the rate entities
+        # their value, which is the same rule `_async_metered` follows.
         try:
-            data = await self.hass.async_add_executor_job(self._compute, metered)
+            bank, bank_pending = await self._async_bank(metered)
+        except (TariffKitError, HomeAssistantError, ValueError, ArithmeticError) as err:
+            _LOGGER.warning("Unable to compute the export credit bank: %s", err)
+            bank = None
+            bank_pending = (
+                f"the export credit bank could not be folded ({err}), so these charges are "
+                f"stated before any bank offsets them"
+            )
+        try:
+            data = await self.hass.async_add_executor_job(
+                self._compute, metered, bank, bank_pending
+            )
         except TariffKitError as err:
             raise UpdateFailed(str(err)) from err
         self._sync_device_identity(data.provenance)
         return data
+
+    async def _async_bank(
+        self, metered: MeteredUsage | None
+    ) -> tuple[BankState | None, str | None]:
+        """The credit bank, refreshed only when the billing cycle turns over.
+
+        Folding it means pricing every cycle since Permission To Operate, which
+        is seconds of work and a months-long recorder read -- far too much for a
+        one-minute tick, and pointless at that rate. A bank only moves when a
+        cycle closes and its credits are applied, so the cycle's own start is
+        the cache key.
+
+        Returns the bank and, where one is expected but absent, why. The reason
+        travels because the bank decides what a cycle actually owes: an entity
+        computing without one has to say so, or it publishes a figure that moves
+        by the whole balance on the next tick with no usage behind it.
+        """
+        if metered is None or self._usage is None:
+            return None, None
+        if not self._settled_once:
+            # Not on the first refresh. That one is awaited inside
+            # `async_setup_entry`, and folding a long history there costs
+            # seconds -- measured at eleven for five years -- which shows up as
+            # Home Assistant's slow-setup warning and delays every other entity.
+            # A minute later costs nothing and nobody is watching.
+            self._settled_once = True
+            return None, (
+                "the export credit bank is folded on the first tick after startup and has "
+                "not been yet, so these charges are stated before any bank offsets them"
+            )
+        try:
+            pto = self.profile.config_at(now_pacific()).pto_date
+        except AccountError:
+            return None, None
+        if pto is None:
+            # Without Permission To Operate nothing is compensated, so there is
+            # no bank to carry -- not an empty one, none.
+            return None, None
+        opens = max(
+            min(
+                resolve_cycle(
+                    pto, self.meters.cycle_start_day, statement_periods(self.profile)
+                ).start,
+                metered.cycle.start,
+            ),
+            min(self.profile.effective_dates),
+        )
+        closes = metered.cycle.start - timedelta(days=1)
+        # A cycle only closes once, so its start is the natural cache key -- but
+        # the fold would then happen on the first tick after midnight, when the
+        # cycle's final hour has not been compiled yet. The recorder writes the
+        # hourly row for 23:00 at about 00:00:10, and this ticks every minute on
+        # a fixed second. A fold that lands in that window prices the last cycle
+        # short of an hour and, cached on the cycle alone, would stay wrong for a
+        # month. So an untrustworthy fold is retried, keyed on the hour, for the
+        # first day of a new cycle -- long enough to outlast the compile, short
+        # enough that a genuine permanent gap is not re-read every hour forever.
+        settling = (now_pacific().date() - metered.cycle.start).days < 1
+        unsettled = self._bank is not None and not self._bank.trustworthy
+        # One shape, always. A key built differently on the error path than on
+        # the success path can never match the next tick's, so the guard never
+        # fires and the read it was meant to throttle happens every minute.
+        retry = (
+            hour_floor(now_pacific()) if (self._bank_failed or (settling and unsettled)) else None
+        )
+        key: tuple[object, ...] = (opens, metered.cycle.start, retry)
+        if key == self._bank_key:
+            return self._bank, self._bank_note
+        if closes < opens:
+            # The first cycle has not closed yet, so nothing has banked.
+            self._bank_key, self._bank = key, None
+            self._bank_note = None
+            return None, None
+        try:
+            readings = await self._usage.async_readings(opens, closes)
+        except (HomeAssistantError, ValueError) as err:
+            # Keyed on the hour, so a recorder that stays broken is retried
+            # hourly rather than being asked for months of statistics every
+            # sixty seconds for as long as it stays broken.
+            _LOGGER.warning("Unable to read history for the credit bank: %s", err)
+            self._bank_failed = True
+            self._bank_key = (opens, metered.cycle.start, hour_floor(now_pacific()))
+            self._bank_note = (
+                f"the export credit bank could not be read from the recorder ({err}), so "
+                f"these charges are stated before any bank offsets them"
+            )
+            return self._bank, self._bank_note
+        self._bank = await self.hass.async_add_executor_job(
+            self._fold_bank, readings, opens, closes
+        )
+        self._bank_failed = False
+        self._bank_key = key
+        self._bank_note = (
+            None
+            if self._bank is not None
+            else "no priced cycle closed before this one, so nothing has banked yet"
+        )
+        return self._bank, self._bank_note
+
+    def _fold_bank(
+        self, readings: list[IntervalReading], opens: date, closes: date
+    ) -> BankState | None:
+        """Price every closed cycle in the span and fold them.
+
+        Through `backfill.build` rather than by pricing cycles here, so the bank
+        inherits every guard the backfill grew: a window clipped to the evidence,
+        days the recorder cannot account for left unpriced, a cycle joined
+        partway through refused outright. Pricing cycles directly would fold a
+        bank out of months the meters say nothing about -- an empty cycle still
+        has a Base Services Charge, so it prices to something rather than to
+        nothing, and a balance of zero built from fabricated cycles looks exactly
+        like a balance of zero.
+        """
+        result = build(self.profile, readings, opens, closes, self.meters.cycle_start_day)
+        if not result.bills:
+            return None
+        state = fold(self.profile, result.bills)
+        # `uncovered` is the only thing that notices an hour missing from the
+        # *end* of the window: a trailing hole is not a gap between readings, so
+        # the coverage check cannot see it, and the day it belongs to still has
+        # its other twenty-three hours and prices without complaint. It lives on
+        # the reader and was previously surfaced only in the backfill action's
+        # response, which left this path silent about exactly the case that
+        # recurs every time a cycle rolls over.
+        uncovered = () if self._usage is None else self._usage.absent
+        if result.unpriced:
+            # The cycle bills carry these days' energy even though the daily
+            # rows refused to publish it, and their time-of-use split is a
+            # guess -- which is exactly what the bank is folding.
+            uncovered = (
+                *uncovered,
+                f"{len(result.unpriced)} day(s) inside the folded cycles hold an hour "
+                f"reconstructed across an outage, so those cycles' time-of-use split is "
+                f"a guess even though their energy is not",
+            )
+        extra = tuple(
+            w for w in (*result.skipped, *result.warnings, *uncovered) if w not in state.warnings
+        )
+        return replace(state, warnings=(*state.warnings, *extra)) if extra else state
 
     async def _async_metered(self) -> MeteredUsage | None:
         """Read the meters, or nothing if they are unconfigured or unreadable.
@@ -439,7 +667,12 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
             self._predbat_key = key
         return self._predbat
 
-    def _compute(self, metered: MeteredUsage | None = None) -> TariffKitData:
+    def _compute(
+        self,
+        metered: MeteredUsage | None = None,
+        bank: BankState | None = None,
+        bank_pending: str | None = None,
+    ) -> TariffKitData:
         point = self.engine.price_now()
         curve = self.engine.forecast(self.forecast_hours, start=point.start)
         curve_points = tuple(curve.points)
@@ -478,7 +711,22 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
             predbat_warning=self._predbat_warning,
             usage=self._usage_for(metered),
             usage_note=self._usage_note,
+            bank=bank,
+            bank_pending=bank_pending,
         )
+
+    @property
+    def split_supply(self) -> bool:
+        """True when a Community Choice Aggregator supplies generation.
+
+        Which is what makes the export credit two banks rather than one, so it
+        decides how many bank entities exist. Read once at setup: a supplier
+        change is an account-history edit, and that reloads the entry.
+        """
+        try:
+            return self.profile.config_at(now_pacific()).supplier is Supplier.CCA
+        except AccountError:
+            return False
 
     async def async_history(self, opens: date, closes: date) -> list[IntervalReading]:
         """Hourly metered readings across a past window, for backfilling.
@@ -506,56 +754,71 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         if metered is None:
             return None
         cycle, cycle_reason = price(self.profile, metered.readings, metered.cycle)
-        today, today_reason = self._day_share(metered, cycle, cycle_reason)
+        opens_today = metered.today.start <= metered.cycle.start
+        earlier, earlier_reason = self._through_yesterday(metered)
+        day, day_reason = price(self.profile, metered.for_today(), metered.today)
         return TariffKitUsage(
             metered=metered,
-            today=today,
+            through_yesterday=earlier,
             cycle=cycle,
-            today_reason=today_reason,
+            opens_today=opens_today,
+            day=day,
+            today_reason=self._today_reason(cycle, day, cycle_reason, earlier_reason, day_reason),
             cycle_reason=cycle_reason,
             coverage=coverage_warnings(metered.readings, metered.cycle),
         )
 
-    def _day_share(
-        self, metered: MeteredUsage, cycle: Bill | None, cycle_reason: str
-    ) -> tuple[Bill | None, str]:
-        """Today as the cycle's movement, not as a one-day bill.
+    def _through_yesterday(self, metered: MeteredUsage) -> tuple[Bill | None, str]:
+        """The cycle priced through *yesterday*, for the entities to difference.
 
         Parts of a bill are cumulative over a cycle rather than additive over
-        its days -- the baseline allowance most of all, which is granted per
-        cycle and consumed in day order. Pricing today on its own grants it a
-        single day's allowance however much the cycle had banked, which
-        overstates a heavy day and can make it cost more than the cycle
-        containing it. Differencing two cycle-to-date bills cannot do either.
+        its days -- the baseline allowance most of all -- so pricing today alone
+        overstates a heavy day. Two cycle-to-date bills have neither problem.
+
+        Only the two bills are produced here. Subtracting one figure from
+        another happens where the figure is read, on values the library
+        computed: rebuilding a whole ``Bill`` bucket by bucket was an arithmetic
+        of this integration's own invention standing in front of an engine that
+        reconciles against printed statements, which is where drift begins.
+
+        None is the answer on the cycle's first day, and it is not a failure:
+        nothing precedes today, so today *is* the cycle to date and there is
+        nothing to subtract.
         """
-        if cycle is None:
-            # No cycle to take a share of. Pricing the day alone is the old
-            # behaviour and is exact on any schedule without a baseline
-            # allowance, which is most of them -- so give the number and name
-            # the caveat rather than withholding a figure that is usually right.
-            alone, reason = price(self.profile, metered.for_today(), metered.today)
-            if alone is None:
-                return None, reason or cycle_reason
-            return replace(
-                alone,
-                warnings=(
-                    *alone.warnings,
-                    "the billing cycle could not be priced, so today is priced on its "
-                    "own; on a schedule with a baseline allowance that grants one day's "
-                    "allowance rather than the cycle's, which can overstate a heavy day",
-                ),
-            ), ""
         opened = metered.cycle.start
         today = metered.today.start
         if today <= opened:
-            # The cycle's first day is the whole cycle so far.
-            return cycle, ""
-        earlier_period = BillingPeriod(opened, today - timedelta(days=1))
-        earlier_readings = [r for r in metered.readings if earlier_period.contains(r.start)]
-        earlier, reason = price(self.profile, earlier_readings, earlier_period)
-        if earlier is None:
-            return None, reason
-        return subtract(cycle, earlier, metered.today), ""
+            return None, ""
+        period = BillingPeriod(opened, today - timedelta(days=1))
+        readings = [r for r in metered.readings if period.contains(r.start)]
+        return price(self.profile, readings, period)
+
+    @staticmethod
+    def _today_reason(
+        cycle: Bill | None,
+        day: Bill | None,
+        cycle_reason: str,
+        earlier_reason: str,
+        day_reason: str,
+    ) -> str:
+        """Why today has no figure, or the caveat on the one it has.
+
+        Today is normally the difference of two cycle-to-date bills, so either
+        of them failing takes today with it. Where the cycle cannot be priced at
+        all -- an account history that begins mid-cycle -- the standalone day
+        bill is still exact on any schedule without a baseline allowance, which
+        is most of them, so give the number and name the caveat rather than
+        withholding a figure that is usually right.
+        """
+        if cycle is not None:
+            return earlier_reason
+        if day is None:
+            return day_reason or cycle_reason
+        return (
+            f"{cycle_reason}; today is priced on its own instead. On a schedule with a "
+            f"baseline allowance that grants one day's allowance rather than the "
+            f"cycle's, which can overstate a heavy day"
+        )
 
     @property
     def current_hour(self) -> datetime:

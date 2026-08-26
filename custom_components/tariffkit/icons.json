@@ -13,7 +13,7 @@
       "export_credit_today": {
         "default": "mdi:cash-plus"
       },
-      "net_cost_today": {
+      "amount_due_today": {
         "default": "mdi:cash-sync"
       },
       "grid_import_cycle": {
@@ -28,8 +28,14 @@
       "export_credit_cycle": {
         "default": "mdi:cash-plus"
       },
-      "net_cost_cycle": {
+      "amount_due_cycle": {
         "default": "mdi:cash-sync"
+      },
+      "export_credit_bank": {
+        "default": "mdi:bank"
+      },
+      "export_credit_bank_generation": {
+        "default": "mdi:bank-transfer-in"
       }
     }
   },

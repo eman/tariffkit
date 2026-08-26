@@ -13,7 +13,7 @@ from datetime import date
 
 import pytest
 
-from tariffkit.billing import BillingPeriod
+from tariffkit.billing import Bill, BillingPeriod, UsageBucket, run_ledger, run_lifetime
 from tariffkit.billing.ledger import CreditBalances, CreditBucket, LedgerEntry
 from tariffkit.billing.trueup import (
     CHECK_THRESHOLD,
@@ -27,6 +27,7 @@ from tariffkit.billing.trueup import (
     run_true_ups,
 )
 from tariffkit.errors import ConfigError, DataError
+from tariffkit.models import Season, TouPeriod
 
 
 def entry(
@@ -291,3 +292,143 @@ def test_to_dict_is_json_shaped() -> None:
     got = mce_cash_out(year_of_cycles(imported=10.0, exported=30.0), nsc_rate=0.05).to_dict()
     assert json.loads(json.dumps(got))["kind"] == "mce_cash_out"
     assert got["verified"] is False
+
+
+class TestABundledAccountHasNoAggregatorToSettleWith:
+    """``is_cca`` gates the cash-out, not only PG&E's own branch.
+
+    A bundled customer has no Community Choice Aggregator, so emitting one's
+    annual cash-out invents a counterparty -- and hands the caller a clawback
+    against a bank no CCA holds. Worse, on such an account PG&E *is* the
+    generation supplier, so both events reverse the same GENERATION credit for
+    the same exported energy.
+    """
+
+    def _year(self) -> list[LedgerEntry]:
+        """Cycles opening on the 15th, so one of them spans March into April."""
+        return [
+            entry(
+                date(2026, month, 15),
+                date(2026, month + 1, 14),
+                imported=10.0,
+                exported=200.0,
+                earned_generation=30.0,
+                closing_generation=30.0 * month,
+            )
+            for month in range(1, 12)
+        ]
+
+    def test_a_cca_account_gets_its_cash_out(self) -> None:
+        events = run_true_ups(self._year(), pto_date=date(2025, 7, 4), is_cca=True)
+        assert any(event.kind is TrueUpKind.MCE_CASH_OUT for event in events)
+
+    def test_a_bundled_account_does_not(self) -> None:
+        events = run_true_ups(self._year(), pto_date=date(2025, 7, 4), is_cca=False)
+        assert [event.kind for event in events] == [TrueUpKind.PGE_RELEVANT_PERIOD]
+
+    def test_the_same_energy_is_not_clawed_back_twice(self) -> None:
+        """Which is what emitting both did: two reversals, one lot of exports."""
+        events = run_true_ups(self._year(), pto_date=date(2025, 7, 4), is_cca=False)
+        reversing = [event for event in events if event.reversal]
+        assert len(reversing) <= 1
+
+
+class TestAnEventThatMovesNothingSaysSo:
+    def test_a_cca_relevant_period_settles_nothing(self) -> None:
+        """PG&E pays a CCA account no NSC and reverses nothing, under SC 5.a."""
+        entries = [
+            entry(date(2026, m, 15), date(2026, m + 1, 14), exported=100.0) for m in range(1, 12)
+        ]
+        event = pge_true_up(entries, date(2025, 7, 4), is_cca=True)
+        assert not event.settles
+
+    def test_a_paying_cash_out_does(self) -> None:
+        entries = [
+            entry(
+                date(2026, m, 15),
+                date(2026, m + 1, 14),
+                imported=1.0,
+                exported=300.0,
+                earned_generation=40.0,
+                closing_generation=40.0 * m,
+            )
+            for m in range(1, 12)
+        ]
+        assert mce_cash_out(entries, 0.05).settles
+
+
+class TestRunLifetimeAppliesEverySettlement:
+    """Folding a run longer than a year is not folding it twice.
+
+    ``run_true_ups`` computes each event independently from whichever ledger it
+    is handed, so a run crossing two settlements yields a second derived from a
+    ledger that never saw the first one's clawback. Taking the last event's
+    closing balance therefore discards every earlier reversal.
+    """
+
+    def _bills(self, years: int = 3) -> list[Bill]:
+        found: list[Bill] = []
+        for year in range(2026, 2026 + years):
+            for month in range(1, 12):
+                found.append(
+                    Bill(
+                        period=BillingPeriod(date(year, month, 15), date(year, month + 1, 14)),
+                        buckets=(
+                            UsageBucket(
+                                season=Season.SUMMER,
+                                period=TouPeriod.OFF_PEAK,
+                                imported=20.0,
+                                exported=600.0,
+                                import_charge=6.0,
+                                export_credit=-45.0,
+                            ),
+                        ),
+                        import_components={"distribution": 6.0},
+                        export_components={"generation": -45.0},
+                        fixed_components={"base_services_charge": 20.0},
+                    )
+                )
+        return found
+
+    def test_it_matches_run_ledger_when_no_year_closes(self) -> None:
+        # May through July: no cycle spans March into April, so no cash-out
+        # falls due and nothing should differ from a plain fold.
+        short = self._bills(1)[4:7]
+        assert run_lifetime(short, pto_date=None).closing.total == pytest.approx(
+            run_ledger(short).closing.total
+        )
+
+    def test_a_multi_year_run_settles_less_than_a_straight_fold(self) -> None:
+        bills = self._bills(3)
+        folded = run_lifetime(bills, pto_date=date(2025, 7, 4), is_cca=True)
+        assert len(folded.events) >= 2, "three years of exports cross several settlements"
+        assert folded.closing.total < run_ledger(bills).closing.total, (
+            "a straight fold keeps credit the cash-outs already paid out in cash"
+        )
+
+    def test_every_cycle_reports_the_bank_it_opened_with(self) -> None:
+        bills = self._bills(2)
+        folded = run_lifetime(bills, pto_date=date(2025, 7, 4), is_cca=True)
+        assert len(folded.entries) == len(bills)
+        for previous, current in zip(folded.entries, folded.entries[1:], strict=False):
+            assert folded.opening_for(current.period) == current.opening
+            # Equal across an ordinary cycle, lower across a settlement.
+            assert current.opening.total <= previous.closing.total + 1e-9
+
+    def test_a_settlement_that_moves_nothing_does_not_consume_cycles(self) -> None:
+        """PG&E's Relevant Period on a CCA account reverses nothing.
+
+        Letting it end the window would restart the aggregator's cash-out year
+        from that date rather than its own, and a year cut short claws back less
+        than the tariff requires.
+        """
+        bills = self._bills(2)
+        with_pge = run_lifetime(bills, pto_date=date(2025, 11, 20), is_cca=True)
+        kinds = [event.kind for event in with_pge.events]
+        assert TrueUpKind.PGE_RELEVANT_PERIOD in kinds
+        assert TrueUpKind.MCE_CASH_OUT in kinds
+        assert len(with_pge.entries) == len(bills)
+
+    def test_an_empty_run_is_the_opening_balance(self) -> None:
+        opening = CreditBalances(generation=12.0)
+        assert run_lifetime([], opening=opening).closing == opening

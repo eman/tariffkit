@@ -111,9 +111,12 @@ backfill_usage:
     start:
       name: Start date
       description: >-
-        First day to price. Defaults to the account profile's first epoch, which
-        is the earliest day it can price anything for. Snapped back to the start
-        of whichever billing cycle contains it, since a cycle can only be
-        decomposed from its own beginning.
+        First day to price. Defaults to the billing cycle containing the
+        Permission To Operate date, which is where the export credit bank opens
+        at zero and so the only start that needs no earlier history. Snapped
+        back to the start of whichever billing cycle contains it, since a cycle
+        can only be decomposed from its own beginning. A later start opens the
+        bank at zero regardless, which overstates every amount due in the
+        window; the response says so when that happens.
       selector:
         date:

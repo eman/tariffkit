@@ -337,7 +337,7 @@ async def _backfill_usage(hass: HomeAssistant, call: ServiceCall) -> ServiceResp
         raise ServiceValidationError("backfilling needs a named account profile")
 
     _check_publishable(profile.name)
-    opens = _backfill_start(call.data, profile)
+    opens = _backfill_start(call.data, profile, coordinator.meters.cycle_start_day)
     # Read from the containing cycle's first day, not from the day asked for. A
     # cycle can only be decomposed from its own start, so a window opening
     # partway through one would otherwise lose it entirely -- and an epoch date
@@ -387,16 +387,30 @@ def _check_publishable(profile_name: str) -> None:
             )
 
 
-def _backfill_start(data: Mapping[str, Any], profile: AccountProfile) -> date:
-    """Where to begin, defaulting to the account's own first epoch.
+def _backfill_start(data: Mapping[str, Any], profile: AccountProfile, start_day: int) -> date:
+    """Where to begin, defaulting to the billing cycle that contains PTO.
 
-    Earlier than that has no configuration to price under, so it would be
-    refused cycle by cycle anyway; starting there means the default asks for
-    exactly as much history as the profile can answer for.
+    That is where bills start meaning anything. Net Billing compensation runs
+    from Permission To Operate, so an earlier cycle earns nothing however much
+    it exported, and a credit bank folded from this point opens at zero by
+    definition rather than at some balance nobody can reconstruct.
+
+    The cycle *containing* PTO, not PTO itself: a cycle can only be decomposed
+    from its own first day, and PTO falls mid-cycle far more often than not. Its
+    pre-PTO days are priced correctly for what they are -- imported energy
+    charged, exported energy earning nothing, which the engine says out loud.
+
+    An account with no PTO has no such landmark, so it falls back to the
+    profile's first epoch, which is the earliest date anything can be priced
+    under at all.
     """
     raw = data.get(CONF_START)
     if raw in (None, ""):
-        return min(profile.effective_dates)
+        pto = profile.pto_date
+        if pto is None:
+            return min(profile.effective_dates)
+        periods = statement_periods(profile)
+        return max(resolve_cycle(pto, start_day, periods).start, min(profile.effective_dates))
     try:
         return date.fromisoformat(str(raw)[:10])
     except ValueError as err:

@@ -21,7 +21,14 @@ from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from tariffkit.billing import Bill, BillingPeriod
+from tariffkit.billing import (
+    Bill,
+    BillingPeriod,
+    CreditBalances,
+    LedgerEntry,
+    UsageBucket,
+    apply_credits,
+)
 from tariffkit.components import (
     EXPORT_GROUPS,
     IMPORT_GROUPS,
@@ -349,11 +356,13 @@ CREDIT_DESCRIPTION = (
     "Permission To Operate earn nothing and are not counted."
 )
 NET_DESCRIPTION = (
-    "Charges minus credits, plus the whole of each day's Base Services Charge: "
-    "it is incurred for the day of service, not earned by the hour. Positive "
-    "means owed, negative means in credit. Priced by the same engine that "
-    "reconciles a printed statement, so it is a running bill rather than a "
-    "running multiplication."
+    "What a statement would charge: the import charges and taxes, plus the "
+    "whole of each day's Base Services Charge, less as much carried and earned "
+    "credit as the tariff lets reach them. Credit beyond that is not subtracted "
+    "here -- it banks, and the bank_change attribute says by how much. Never "
+    "negative for a cycle, because a statement charges nothing rather than "
+    "paying out; a negative figure for today means today's exports offset "
+    "charges earlier in the cycle had already run up."
 )
 CYCLE_DESCRIPTION = (
     "Cycle to date. Under Net Billing an export credit carries into the next "
@@ -387,10 +396,135 @@ def _absent(data: TariffKitData, description: str) -> dict[str, Any]:
 
 
 def _bill(data: TariffKitData, span: str) -> Bill | None:
+    """The bill a span's decomposition is shown from.
+
+    ``cycle`` is the cycle to date. A day has no bill of its own -- its figures
+    are the difference between two cycle-to-date bills -- so what stands in for
+    one here is the day priced as its own period, which is the only
+    library-computed time-of-use split a single day has.
+    """
     usage = data.usage
     if usage is None:
         return None
-    return usage.today if span == "today" else usage.cycle
+    return usage.day if span == "today" else usage.cycle
+
+
+#: Readers for a span's figures. Each takes the library's own bill and the
+#: ledger entry built from it, and returns one number neither this module nor
+#: any entity computes for itself.
+type Reading = Callable[[Bill, LedgerEntry], float]
+
+
+def _cash_due(bill: Bill, entry: LedgerEntry) -> float:
+    del bill
+    return entry.cash_due
+
+
+def _import_cost(bill: Bill, entry: LedgerEntry) -> float:
+    """Import charges and the statutory per-kWh taxes beside them.
+
+    Not ``LedgerEntry.gross_charges``, which nets in an export component that is
+    a charge reduction rather than a credit, and which includes the fixed daily
+    charge this entity exists to exclude.
+    """
+    del entry
+    return bill.import_charges
+
+
+def _earned(bill: Bill, entry: LedgerEntry) -> float:
+    """What the exports earned, as a positive number.
+
+    ``Bill.export_credits`` rather than ``LedgerEntry.earned``: the ledger sorts
+    credits into the buckets a bank settles by and drops any export component
+    that is not one of them, which is right for banking and wrong for a figure
+    that should match the credit lines a statement prints.
+    """
+    del entry
+    return -bill.export_credits
+
+
+def _bank_change(bill: Bill, entry: LedgerEntry) -> float:
+    """How much the bank moved: credit earned less credit spent.
+
+    Deliberately not called "banked". It is negative for any cycle that spends
+    more than it earns, which is the normal winter case, and it bottoms out at
+    minus the opening balance -- so a cycle that drained the bank and a cycle
+    that never had one both end at zero. Naming that "what banked" made two
+    different situations print the same number under a word that fitted
+    neither. ``credit_earned`` and ``credit_applied`` beside it are the two
+    figures this is the difference of.
+    """
+    del bill
+    return entry.closing.total - entry.opening.total
+
+
+def _applied(bill: Bill, entry: LedgerEntry) -> float:
+    """Credit actually spent against this period's charges."""
+    del bill
+    return entry.applied.total
+
+
+def _compensated(bill: Bill, entry: LedgerEntry) -> float:
+    del bill
+    return entry.exported_kwh
+
+
+def _energy_charges(bill: Bill, entry: LedgerEntry) -> float:
+    del entry
+    return bill.energy_charges
+
+
+def _taxes(bill: Bill, entry: LedgerEntry) -> float:
+    del entry
+    return bill.taxes
+
+
+def _fixed(bill: Bill, entry: LedgerEntry) -> float:
+    del entry
+    return bill.fixed_charges
+
+
+def _figure(data: TariffKitData, span: str, read: Reading) -> float | None:
+    """One figure for a span, from the ledger entry the library builds.
+
+    Every number here comes from the library, including what is actually owed:
+    ``Bill.total`` subtracts every credit earned, while a statement only offsets
+    credit against charges it may offset and banks the rest. On an exporting
+    account those differ by whatever banked, which is the whole point of the
+    tariff -- and the bank is what makes ``cash_due`` need a ledger rather than
+    a bill, so the opening balance goes in with it.
+
+    A day is the cycle through today minus the cycle through yesterday. That
+    subtraction is the only arithmetic here, both operands are the library's,
+    and using the same opening for both is what cancels the bank out of the
+    difference rather than leaving a month's balance inside one day.
+    """
+    usage = data.usage
+    if usage is None:
+        return None
+    opening = data.opening
+
+    def figure(bill: Bill, balance: CreditBalances | None) -> float:
+        return read(bill, apply_credits(bill, balance))
+
+    if usage.cycle is None:
+        if span == "cycle" or usage.day is None:
+            return None
+        # A day standing in for an unpriceable cycle gets no bank. The bank
+        # belongs to the cycle, and `apply_credits` caps rather than
+        # apportions, so offering the whole balance to each day in turn spends
+        # a month's credit thirty times over -- every day of that cycle then
+        # reports the same near-zero charge.
+        return figure(usage.day, None)
+    whole = figure(usage.cycle, opening)
+    if span == "cycle":
+        return whole
+    if usage.through_yesterday is None:
+        # The cycle opened today, so today is the whole of it. Where the earlier
+        # days were *refused* rather than absent, there is no marginal figure to
+        # report and saying so is the only honest answer.
+        return whole if usage.opens_today else None
+    return whole - figure(usage.through_yesterday, opening)
 
 
 def _period(data: TariffKitData, span: str) -> BillingPeriod | None:
@@ -415,41 +549,90 @@ def _last_reset(data: TariffKitData, span: str) -> datetime | None:
     return datetime(start.year, start.month, start.day, tzinfo=PACIFIC)
 
 
+def _buckets(data: TariffKitData, span: str, bill: Bill) -> tuple[UsageBucket, ...]:
+    """The time-of-use split for a span, decomposing the figure it is shown with.
+
+    For a day that is the cycle's buckets less yesterday's, from
+    :meth:`tariffkit.billing.Bill.marginal_buckets` -- bucket energy and charge
+    accumulate hour by hour, so differencing them is exact, unlike the
+    cycle-cumulative parts the state is careful not to difference.
+
+    Reading the standalone day bill here instead was measurably wrong: on a
+    heavy day inside a light cycle its buckets summed 19% above the state they
+    were published beside, because a day priced alone gets a fresh baseline
+    allowance. An attribute that contradicts its own entity is worse than one
+    that is missing.
+    """
+    usage = data.usage
+    if span == "cycle" or usage is None or usage.cycle is None:
+        return bill.buckets
+    if usage.through_yesterday is None:
+        return usage.cycle.buckets if usage.opens_today else ()
+    return usage.cycle.marginal_buckets(usage.through_yesterday)
+
+
 def _money_attrs(span: str, description: str) -> Callable[[TariffKitData], dict[str, Any]]:
     """The bill behind one running total, so a surprising figure is auditable."""
 
     def attrs(data: TariffKitData) -> dict[str, Any]:
         usage = data.usage
-        bill = _bill(data, span)
         if usage is None:
             return _absent(data, description)
-        if bill is None:
-            # An unexplained `unknown` is the worst of both worlds: it neither
-            # gives a number nor says what stopped it.
+        # Keyed on whether there is a *figure*, not on whether some particular
+        # bill exists. A state with a number beside attributes that say nothing
+        # -- no period, no decomposition, an empty warnings list -- is the
+        # unexplained degraded reading this whole module refuses elsewhere, and
+        # it is what keying on the bill produced when a span had a figure the
+        # bill it named could not explain.
+        bill = _bill(data, span) or usage.cycle or usage.day
+        if bill is None or _figure(data, span, _cash_due) is None:
             return {
                 ATTR_QUALITY: {"complete": False},
-                "warnings": list(usage.warnings(span)),
+                "warnings": [
+                    *usage.warnings(span),
+                    *([data.opening_note] if data.opening_note else []),
+                ],
                 **({"cycle_boundary": usage.metered.cycle_source} if span == "cycle" else {}),
                 ATTR_DESCRIPTION: description,
             }
+        bill = _bill(data, span) or usage.cycle
+        assert bill is not None
+        period = _period(data, span) or bill.period
+
+        def figure(read: Reading) -> float:
+            # Never the bill's own field: for a day the bill above is only a
+            # source of buckets, not the figure the entity reports. The state
+            # and its decomposition have to add up, so both come through the
+            # same door.
+            return round(_figure(data, span, read) or 0.0, 4)
+
         found: dict[str, Any] = {
-            "period_start": bill.period.start.isoformat(),
-            "period_end": bill.period.end.isoformat(),
-            "days": bill.period.days,
+            "period_start": period.start.isoformat(),
+            "period_end": period.end.isoformat(),
+            "days": period.days,
             "imported_kwh": round(usage.metered.imported_kwh, 4)
             if span == "cycle"
             else round(usage.metered.imported_today, 4),
             "exported_kwh": round(usage.metered.exported_kwh, 4)
             if span == "cycle"
             else round(usage.metered.exported_today, 4),
-            "energy_charges": round(bill.energy_charges, 4),
-            "taxes": round(bill.taxes, 4),
-            "export_credits": round(-bill.export_credits, 4),
-            "fixed_charges": round(bill.fixed_charges, 4),
-            ATTR_BUCKETS: [bucket.to_dict() for bucket in bill.buckets],
-            ATTR_QUALITY: {"complete": usage.complete},
-            "compensated_kwh": round(bill.exported_kwh, 4),
-            "warnings": list(usage.warnings(span)),
+            "energy_charges": figure(_energy_charges),
+            "taxes": figure(_taxes),
+            "export_credits": figure(_earned),
+            "fixed_charges": figure(_fixed),
+            # The two halves of why the state is not simply charges minus
+            # credits, and their difference. `bank_change` is negative for a
+            # cycle that spends more than it earns, which is normal and is why
+            # it is not called "banked".
+            "credit_applied": figure(_applied),
+            "bank_change": figure(_bank_change),
+            ATTR_BUCKETS: [bucket.to_dict() for bucket in _buckets(data, span, bill)],
+            ATTR_QUALITY: {"complete": usage.complete and not data.opening_note},
+            "compensated_kwh": figure(_compensated),
+            "warnings": [
+                *usage.warnings(span),
+                *([data.opening_note] if data.opening_note else []),
+            ],
             **({"cycle_boundary": usage.metered.cycle_source} if span == "cycle" else {}),
             ATTR_DESCRIPTION: (
                 f"{description} {CYCLE_DESCRIPTION}" if span == "cycle" else description
@@ -480,7 +663,7 @@ def _energy_attrs(span: str, direction: str) -> Callable[[TariffKitData], dict[s
         if direction == "export" and bill is not None:
             # What the tariff will actually pay for, which is less than the
             # meter saw whenever a site exported before Permission To Operate.
-            found["compensated_kwh"] = round(bill.exported_kwh, 4)
+            found["compensated_kwh"] = round(_figure(data, span, _compensated) or 0.0, 4)
         return found
 
     return attrs
@@ -497,11 +680,11 @@ def _money_sensor(
     span: str,
     key: str,
     description: str,
-    value: Callable[[Bill], float],
+    value: Reading,
 ) -> TariffKitSensorDescription:
     def state(data: TariffKitData) -> float | None:
-        bill = _bill(data, span)
-        return None if bill is None else round(value(bill), 4)
+        figure = _figure(data, span, value)
+        return None if figure is None else round(figure, 4)
 
     return TariffKitSensorDescription(
         key=f"{key}_{span}",
@@ -541,7 +724,131 @@ def _energy_sensor(span: str, direction: str) -> TariffKitSensorDescription:
     )
 
 
-def usage_sensors(meters: MeterSettings) -> tuple[TariffKitSensorDescription, ...]:
+BANK_DESCRIPTION = (
+    "Export credits earned but not yet spent, carried between billing cycles. "
+    "Under Net Billing a credit does not settle at the end of the cycle that "
+    "earned it -- it banks, offsets later charges, and survives the annual "
+    "true-up, which claws back only what Net Surplus Compensation already paid "
+    "for. A balance at the last cycle close, not a figure any single statement "
+    "prints. Where a Community Choice Aggregator supplies generation these are "
+    "two banks on unrelated settlement calendars, and adding them together "
+    "would give a number that never settles as one."
+)
+
+
+def _no_bank_reason(data: TariffKitData) -> str:
+    """Why there is no balance, naming only what has actually been established.
+
+    The catch-all deliberately does not claim a cause. A balance can be absent
+    because the first refresh defers the fold, because folding raised and was
+    swallowed, or because the recorder's history does not reach the cycle
+    containing PTO -- and asserting a specific billing fact for all of them
+    tells some users something false about their account.
+    """
+    if data.usage is None:
+        return "no metered readings have been priced yet"
+    if not data.provenance.get("pto_date"):
+        return (
+            "no Permission To Operate date is set on this account, so no export "
+            "is compensated and there is no bank to carry"
+        )
+    return (
+        "no closed billing cycle has been folded yet; this settles within a few "
+        "minutes of a restart, and otherwise the metered history does not reach "
+        "the cycle containing the PTO date"
+    )
+
+
+def _bank_orphaned(data: TariffKitData) -> bool:
+    """True when the folded bank is split but no generation entity exists.
+
+    The entity set is decided at setup from *today's* supplier; the bank is
+    folded under the supplier of its last closed cycle. When an account leaves a
+    Community Choice Aggregator, only the utility entity is created while the
+    fold still splits three buckets two ways -- so the generation bucket has
+    nowhere to be reported and silently vanishes. Measured at $412 of a $452
+    balance, with the entity printing `complete: true` beside it.
+    """
+    return data.bank is not None and data.bank.split
+
+
+def _bank_sensor(holder: str, *, split: bool) -> TariffKitSensorDescription:
+    """The running credit bank.
+
+    `state_class` is measurement rather than total, and there is deliberately no
+    `monetary` device class. A bank is a *stock*, not an accumulator: it rises
+    and falls, and Home Assistant would otherwise record each fall as a negative
+    contribution to a lifetime sum that means nothing. Home Assistant permits
+    only `total` alongside `monetary`, so the device class is the thing that has
+    to go; the unit still says what the number is.
+    """
+
+    def state(data: TariffKitData) -> float | None:
+        if data.bank is None:
+            return None
+        if holder == "generation" and not data.bank.split:
+            # The disagreement in the other direction: the fold says one bank
+            # and two entities exist. Reporting the whole balance here as well
+            # would show it twice under names that read as halves.
+            return None
+        if holder == "utility" and not split and _bank_orphaned(data):
+            # The whole balance, not the utility's share of it. The generation
+            # bucket has no entity to be reported by, and dropping it is how a
+            # $452 bank prints as $40.
+            return round(data.bank.balance.total, 4)
+        return round(data.bank.held_by(holder), 4)
+
+    def attrs(data: TariffKitData) -> dict[str, Any]:
+        if data.bank is None:
+            return {
+                ATTR_QUALITY: {"complete": False},
+                ATTR_DESCRIPTION: BANK_DESCRIPTION,
+                "warnings": [data.usage_note or _no_bank_reason(data)],
+            }
+        if holder == "generation" and not data.bank.split:
+            return {
+                ATTR_QUALITY: {"complete": False},
+                ATTR_DESCRIPTION: BANK_DESCRIPTION,
+                "warnings": [
+                    "the folded cycles were supplied by the utility, so the whole "
+                    "balance is reported by the utility entity rather than split"
+                ],
+            }
+        found = dict(data.bank.to_dict())
+        complete = found.pop("complete")
+        if holder == "utility" and not split and _bank_orphaned(data):
+            complete = False
+            existing = found.get("warnings")
+            found["warnings"] = [
+                *(existing if isinstance(existing, list) else []),
+                "generation changed supplier, so the folded cycles split the bank between "
+                "two parties while only one entity exists. The whole balance is reported "
+                "here; it will split again once a cycle closes under the new supplier",
+            ]
+        found[ATTR_QUALITY] = {"complete": complete}
+        # The library has not reconciled the credit cap against a statement --
+        # doing so needs a cycle whose credits exceed the charges they may
+        # offset, which is precisely the case that produces a bank at all. Say
+        # so rather than letting `complete` imply more than it means.
+        found["credit_cap_verified"] = False
+        found[ATTR_DESCRIPTION] = BANK_DESCRIPTION
+        return found
+
+    key = "export_credit_bank" if holder == "utility" else "export_credit_bank_generation"
+    return TariffKitSensorDescription(
+        key=key,
+        translation_key=key,
+        native_unit_of_measurement=MONEY_UNIT,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        value_fn=state,
+        attrs_fn=attrs,
+    )
+
+
+def usage_sensors(
+    meters: MeterSettings, *, split: bool = False
+) -> tuple[TariffKitSensorDescription, ...]:
     """The running-total entities the configured meters can actually support.
 
     An account with no export entity gets no export-credit entity rather than a
@@ -563,7 +870,7 @@ def usage_sensors(meters: MeterSettings) -> tuple[TariffKitSensorDescription, ..
                     span,
                     "energy_cost",
                     COST_DESCRIPTION,
-                    lambda b: b.energy_charges + b.taxes,
+                    _import_cost,
                 )
             )
         if meters.export_entity:
@@ -572,10 +879,19 @@ def usage_sensors(meters: MeterSettings) -> tuple[TariffKitSensorDescription, ..
                     span,
                     "export_credit",
                     CREDIT_DESCRIPTION,
-                    lambda b: -b.export_credits,
+                    _earned,
                 )
             )
-        found.append(_money_sensor(span, "net_cost", NET_DESCRIPTION, lambda b: b.total))
+        found.append(_money_sensor(span, "amount_due", NET_DESCRIPTION, _cash_due))
+    if meters.export_entity:
+        # No export meter, no export credit, so no bank to carry.
+        found.append(_bank_sensor("utility", split=split))
+        if split:
+            # Only where a Community Choice Aggregator supplies generation is
+            # there a second bank. On a bundled account both entities would
+            # report the same figure under names that read as complementary
+            # halves, which is an invitation to add them and double the balance.
+            found.append(_bank_sensor("generation", split=split))
     return tuple(found)
 
 
@@ -585,7 +901,7 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     coordinator: TariffKitCoordinator = entry.runtime_data
-    descriptions = (*SENSORS, *usage_sensors(coordinator.meters))
+    descriptions = (*SENSORS, *usage_sensors(coordinator.meters, split=coordinator.split_supply))
     _prune_removed(hass, entry, descriptions)
     async_add_entities(
         TariffKitSensor(coordinator, entry, description) for description in descriptions

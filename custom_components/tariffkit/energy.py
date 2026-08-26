@@ -28,6 +28,7 @@ from calendar import monthrange
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from itertools import pairwise
 from typing import Any
 
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN, UnitOfEnergy
@@ -36,9 +37,8 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util.unit_conversion import EnergyConverter
 
 from tariffkit.account import AccountProfile
-from tariffkit.billing import Bill, BillingPeriod, IntervalReading, UsageBucket
-from tariffkit.billing.engine import Segment, compute_segments
-from tariffkit.billing.netting import find_gaps, find_overlaps
+from tariffkit.billing import Bill, BillingPeriod, IntervalReading, check_coverage
+from tariffkit.billing.engine import compute_segments
 from tariffkit.errors import TariffKitError
 from tariffkit.timeutil import PACIFIC, hour_floor, to_pacific
 
@@ -338,19 +338,50 @@ class UsageReader:
                         datetime.fromtimestamp(slot, tz=PACIFIC).isoformat(),
                     )
                     dropped.append(datetime.fromtimestamp(slot, tz=PACIFIC).date())
+                    # Deliberately not added to `covered`: the hour is a hole
+                    # now, and the hours either side of it carry or lost the
+                    # energy it held, which is what `_reconstructed` looks for.
                     continue
                 hours.setdefault(slot, [0.0, 0.0])[direction] += change
                 covered.setdefault(entity, set()).add(slot)
         self.discarded = tuple(sorted(set(dropped)))
         self.absent = self._absent_series(covered, opens_at, closes_at)
+        reconstructed = self._reconstructed(covered)
         return [
             IntervalReading(
                 datetime.fromtimestamp(slot, tz=PACIFIC),
                 imported=values[0],
                 exported=values[1],
+                estimated=slot in reconstructed,
             )
             for slot, values in sorted(hours.items())
         ]
+
+    @staticmethod
+    def _reconstructed(covered: Mapping[str, set[float]]) -> set[float]:
+        """Hours that carry more than their own energy.
+
+        A counter that was unreachable for a while reports its whole catch-up in
+        the first hour the recorder sees again, so that hour's `change` covers
+        the outage as well as itself. The kWh total survives -- a cumulative
+        counter only depends on its endpoints -- but the shape does not, and the
+        shape is what a time-of-use tariff prices.
+
+        :attr:`IntervalReading.estimated` is the library's own word for exactly
+        this, and marking it here is what lets everything downstream notice.
+        """
+        found: set[float] = set()
+        for slots in covered.values():
+            ordered = sorted(slots)
+            for previous, current in pairwise(ordered):
+                if current - previous > 3600.0:
+                    # Only the hour that *receives* the catch-up. The hour
+                    # before a hole has both its own sum and its predecessor's
+                    # recorded, so its change is exact and its day is priceable;
+                    # refusing it as well cost a second day for every outage and
+                    # moved a correctly-priced day's cost into the residual.
+                    found.add(current)
+        return found
 
     def _absent_series(
         self, covered: Mapping[str, set[float]], opens_at: datetime, closes_at: datetime
@@ -554,108 +585,23 @@ class UsageReader:
 def coverage_warnings(
     readings: Sequence[IntervalReading], period: BillingPeriod
 ) -> tuple[str, ...]:
-    """Ways the readings fail ``period`` that an open period does not excuse.
+    """The library's own coverage check, told what it is looking at.
 
-    :func:`tariffkit.billing.netting.check_coverage` also reports the elapsed
-    shortfall, which for a running total is always true and says nothing: the
-    rest of the day has not happened yet. Everything else it looks for is real.
-    A meter outage leaves a gap, and silence about a gap is how a cycle quietly
-    becomes a smaller number that still calls itself complete -- which is the
-    failure this package exists to refuse.
+    Two facts this caller knows and :func:`tariffkit.billing.check_coverage`
+    cannot see. The period may still be running, so the elapsed shortfall says
+    only that the rest of the day has not happened yet. And the readings come
+    from a meter's own import and export registers, which net at the meter's
+    interval and legitimately leave both non-zero once
+    :meth:`UsageReader._assemble` aggregates them to an hour -- on a solar site
+    every passing cloud produces one, so reporting it would mark every account
+    incomplete forever and train its readers to ignore the warnings that matter.
+
+    Declaring both is the whole of this function. An earlier version filtered
+    the library's messages by their text, which is the same mistake wearing a
+    disguise: it silently stopped filtering the moment the library grew a
+    warning the filter had not been written for, which is exactly what happened.
     """
-    if not readings:
-        return (f"no readings in {period.start}..{period.end}",)
-    ordered = sorted(readings, key=lambda reading: reading.start)
-    found: list[str] = []
-    gaps = list(find_gaps(ordered))
-    if gaps:
-        opens, closes = gaps[0]
-        found.append(
-            f"{len(gaps)} gap(s) in the metered series; first from "
-            f"{opens.isoformat()} to {closes.isoformat()}"
-        )
-    overlaps = list(find_overlaps(ordered))
-    if overlaps:
-        found.append(f"{len(overlaps)} overlapping interval(s); first at {overlaps[0].isoformat()}")
-    guessed = [reading for reading in ordered if reading.estimated]
-    if guessed:
-        energy = sum(reading.imported + reading.exported for reading in guessed)
-        found.append(
-            f"{len(guessed)} interval(s) totalling {energy:.1f} kWh were reconstructed "
-            f"across a gap, so their time-of-use split is a guess even though the "
-            f"total is not"
-        )
-    return tuple(found)
-
-
-def _combine(later: Mapping[str, float], earlier: Mapping[str, float]) -> dict[str, float]:
-    keys = set(later) | set(earlier)
-    return {key: later.get(key, 0.0) - earlier.get(key, 0.0) for key in sorted(keys)}
-
-
-def subtract(later: Bill, earlier: Bill, period: BillingPeriod) -> Bill:
-    """``later`` minus ``earlier``, presented as the bill for ``period``.
-
-    Used to get one day's share of a cycle rather than pricing that day alone.
-    The difference matters because parts of a bill are cumulative over the
-    cycle, not additive over its days: the baseline allowance is granted per
-    cycle and consumed in day order, so pricing a single day in isolation grants
-    it one day's allowance no matter how much the cycle had banked. A heavy day
-    is then capped at a daily allowance it would never really have been capped
-    at, and the day's total can exceed the cycle that contains it.
-
-    Differencing two cycle-to-date bills has neither problem by construction:
-    the day's figures sum to the cycle exactly, and no day can exceed it.
-    """
-    buckets: dict[tuple[object, object], UsageBucket] = {}
-    for bucket in later.buckets:
-        buckets[(bucket.season, bucket.period)] = bucket
-    merged: list[UsageBucket] = []
-    for bucket in earlier.buckets:
-        slot = (bucket.season, bucket.period)
-        head = buckets.pop(slot, None)
-        merged.append(
-            UsageBucket(
-                season=bucket.season,
-                period=bucket.period,
-                imported=(head.imported if head else 0.0) - bucket.imported,
-                exported=(head.exported if head else 0.0) - bucket.exported,
-                import_charge=(head.import_charge if head else 0.0) - bucket.import_charge,
-                export_credit=(head.export_credit if head else 0.0) - bucket.export_credit,
-            )
-        )
-    merged.extend(buckets.values())
-    return Bill(
-        period=period,
-        buckets=tuple(sorted(merged, key=lambda b: (b.season, b.period))),
-        import_components=_combine(later.import_components, earlier.import_components),
-        export_components=_combine(later.export_components, earlier.export_components),
-        fixed_components=_combine(later.fixed_components, earlier.fixed_components),
-        # The cycle's warnings, because the day was derived from it: a gap
-        # three days ago still makes today's share of the cycle uncertain.
-        warnings=later.warnings,
-        complete=later.complete and earlier.complete,
-    )
-
-
-def segments(profile: AccountProfile, period: BillingPeriod) -> list[Segment]:
-    """Split ``period`` wherever the account's own history changes epoch.
-
-    A cycle that crosses a tariff change is two blocks on one statement, not a
-    blended rate, and :func:`tariffkit.billing.engine.compute_segments` prices it
-    that way. A day almost never spans a change; a month-to-date total does
-    whenever the account changed schedule.
-    """
-    bounds = [d for d in profile.effective_dates if period.start < d <= period.end]
-    starts = [period.start, *bounds]
-    ends = [d - timedelta(days=1) for d in bounds] + [period.end]
-    return [
-        Segment(
-            config=profile.config_at(datetime(s.year, s.month, s.day, 12, tzinfo=PACIFIC)),
-            period=BillingPeriod(s, e),
-        )
-        for s, e in zip(starts, ends, strict=True)
-    ]
+    return tuple(check_coverage(list(readings), period, netted=True, require_full_span=False))
 
 
 def price(
@@ -680,7 +626,7 @@ def price(
     unexplained ``unknown``, so the reason travels with the refusal.
     """
     try:
-        return compute_segments(segments(profile, period), readings, check=False), ""
+        return compute_segments(profile.segments_for(period), readings, check=False), ""
     except (TariffKitError, ValueError) as err:
         _LOGGER.debug("Cannot price %s to %s: %s", period.start, period.end, err)
         return None, f"cannot price {period.start} to {period.end}: {err}"

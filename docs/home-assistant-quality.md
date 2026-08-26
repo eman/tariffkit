@@ -57,7 +57,7 @@ the percentages, since they drift as tests and flow branches are added.
 | `log-when-unavailable` | Not applicable | No network/device dependency to go offline or reconnect. |
 | `parallel-updates` | Met | `sensor.py` declares `PARALLEL_UPDATES = 0`; entities have no independent I/O to serialize. |
 | `reauthentication-flow` | Not applicable | The integration never authenticates to anything. |
-| `test-coverage` | **Not met** | 82% across `custom_components/tariffkit` today, still under the 95% bar; see [Measuring test coverage](#measuring-test-coverage) for the per-module breakdown and how to reproduce it. |
+| `test-coverage` | **Not met** | 84% across `custom_components/tariffkit` today, still under the 95% bar; see [Measuring test coverage](#measuring-test-coverage) for the per-module breakdown and how to reproduce it. |
 
 ## Gold
 
@@ -96,17 +96,21 @@ the percentages, since they drift as tests and flow branches are added.
 ## Measuring test coverage
 
 The numbers above (`config-flow-test-coverage`, `test-coverage`) come from
-running **both** Home Assistant test files with coverage restricted to the
-component. Running only `test_ha_component.py` understates the result badly,
-because the metered-energy tests live in their own file:
+running **all four** Home Assistant test files with coverage restricted to the
+component. Running fewer understates the result badly, because the metered
+energy, credit bank, and backfill tests each live in their own file:
 
 ```bash
 uv run pytest tests/test_ha_component.py tests/test_ha_energy.py \
+  tests/test_ha_bank.py tests/test_ha_backfill.py \
   --cov=custom_components.tariffkit --cov-report=term-missing
 ```
 
-At last measurement: 82% overall, with `config_flow.py` the largest gap at
-60% (`profile.py` legacy-import helpers and several `config_flow.py` history
-sub-steps are exercised only for their common path, not every branch).
-`sensor.py` is at 98%, `const.py` and `diagnostics.py` at 100%, `energy.py`
-at 93%, and `coordinator.py` at 91%.
+At last measurement: **84% overall**, with `config_flow.py` the largest gap at
+60% — the CCA and history sub-flows are exercised only for their common path,
+not every branch. Per module: `const.py` and `diagnostics.py` 100%,
+`backfill.py` 97%, `sensor.py` 95%, `bank.py` 94%, `energy.py` 93%,
+`__init__.py` 90%, `coordinator.py` 86%, `profile.py` 85%, `services.py` 81%.
+
+Re-run the command before trusting these: they drift as tests and flow branches
+are added, and a stale figure here is worse than none.

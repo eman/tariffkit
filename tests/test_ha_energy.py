@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -166,7 +167,7 @@ async def test_no_meters_configured_creates_no_usage_entities(hass: HomeAssistan
     await _setup(hass, entry)
 
     assert _entity_id(hass, entry, "import_price") is not None
-    for key in ("grid_import_today", "net_cost_today", "net_cost_cycle"):
+    for key in ("grid_import_today", "amount_due_today", "amount_due_cycle"):
         assert _entity_id(hass, entry, key) is None
 
 
@@ -213,7 +214,7 @@ async def test_running_totals_price_metered_hours(
 
     cost = _state(hass, entry, "energy_cost_today")
     credit = _state(hass, entry, "export_credit_today")
-    net = _state(hass, entry, "net_cost_today")
+    net = _state(hass, entry, "amount_due_today")
     assert cost.attributes["unit_of_measurement"] == "USD"
     assert cost.attributes["device_class"] == "monetary"
     assert float(cost.state) > 0
@@ -237,7 +238,7 @@ async def test_running_totals_price_metered_hours(
 
     # The cycle covers the same readings over more days, so it owes at least
     # the day does and carries more Base Services Charge.
-    cycle = _state(hass, entry, "net_cost_cycle")
+    cycle = _state(hass, entry, "amount_due_cycle")
     assert cycle.attributes["days"] == 24
     assert cycle.attributes["period_start"] == "2026-08-01"
     assert float(cycle.state) > float(net.state)
@@ -273,7 +274,7 @@ async def test_counter_restart_does_not_charge_for_a_whole_series(
     # No export entity means no export questions to answer.
     assert _entity_id(hass, entry, "export_credit_today") is None
     assert _entity_id(hass, entry, "grid_export_today") is None
-    assert _entity_id(hass, entry, "net_cost_today") is not None
+    assert _entity_id(hass, entry, "amount_due_today") is not None
 
 
 @pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
@@ -315,7 +316,7 @@ async def test_missing_statistics_are_reported_rather_than_priced(
     entry = _entry(_meter_options())
     await _setup(hass, entry)
 
-    net = _state(hass, entry, "net_cost_today")
+    net = _state(hass, entry, "amount_due_today")
     assert net.attributes["quality"]["complete"] is False
     assert any(IMPORT_ENTITY in warning for warning in net.attributes["warnings"])
     # Nothing metered still owes the day's Base Services Charge.
@@ -345,7 +346,7 @@ async def test_options_flow_configures_and_clears_meters(hass: HomeAssistant) ->
     assert entry.options[CONF_GRID_IMPORT_ENTITY] == IMPORT_ENTITY
     assert entry.options[CONF_CYCLE_START_DAY] == 12
     assert entry.runtime_data.meters.cycle_start_day == 12
-    assert _entity_id(hass, entry, "net_cost_cycle") is not None
+    assert _entity_id(hass, entry, "amount_due_cycle") is not None
 
     # Clearing both entities takes the running totals back out of service.
     result = await hass.config_entries.options.async_init(entry.entry_id)
@@ -422,15 +423,15 @@ async def test_money_entities_explain_themselves_without_bloating_the_recorder(
     entry = _entry(_meter_options())
     await _setup(hass, entry)
 
-    for key in ("energy_cost_today", "export_credit_today", "net_cost_today"):
+    for key in ("energy_cost_today", "export_credit_today", "amount_due_today"):
         assert _state(hass, entry, key).attributes["description"]
-    assert "cycle" in _state(hass, entry, "net_cost_cycle").attributes["description"]
+    assert "cycle" in _state(hass, entry, "amount_due_cycle").attributes["description"]
 
     # Rewritten every minute across six entities, so neither the breakdown nor
     # the fixed prose beside it may reach the database.
     assert "buckets" in TariffKitSensor._unrecorded_attributes
     assert "description" in TariffKitSensor._unrecorded_attributes
-    assert _state(hass, entry, "net_cost_today").attributes["buckets"]
+    assert _state(hass, entry, "amount_due_today").attributes["buckets"]
 
 
 @pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
@@ -458,13 +459,13 @@ async def test_a_cycle_the_account_history_predates_says_why_it_is_unknown(
     )
     await _setup(hass, entry)
 
-    cycle = _state(hass, entry, "net_cost_cycle")
+    cycle = _state(hass, entry, "amount_due_cycle")
     assert cycle.state == "unknown"
     assert cycle.attributes["quality"]["complete"] is False
     assert any("cannot price 2026-08-12" in w for w in cycle.attributes["warnings"])
 
     # The day is inside the history, so it still prices normally.
-    assert _state(hass, entry, "net_cost_today").state not in ("unknown", "unavailable")
+    assert _state(hass, entry, "amount_due_today").state not in ("unknown", "unavailable")
 
 
 @pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
@@ -507,7 +508,7 @@ async def test_metered_energy_is_configured_only_after_setup(hass: HomeAssistant
 
     entry = hass.config_entries.async_entries(DOMAIN)[0]
     assert entry.runtime_data.meters.configured is False
-    for key in ("grid_import_today", "net_cost_today", "net_cost_cycle"):
+    for key in ("grid_import_today", "amount_due_today", "amount_due_cycle"):
         assert _entity_id(hass, entry, key) is None
 
     # And the options menu is where it does appear.
@@ -590,13 +591,13 @@ async def test_the_cycle_entity_says_where_its_boundary_came_from(
     entry = _entry(_meter_options(**{CONF_CYCLE_START_DAY: 30}))
     await _setup(hass, entry)
 
-    cycle = _state(hass, entry, "net_cost_cycle")
+    cycle = _state(hass, entry, "amount_due_cycle")
     # This profile carries no statement evidence, so it says so rather than
     # implying the period matches a bill.
     assert cycle.attributes["cycle_boundary"] == "day_of_month"
     assert cycle.attributes["period_start"] == "2026-07-30"
     # The daily entity has no cycle boundary to report.
-    assert "cycle_boundary" not in _state(hass, entry, "net_cost_today").attributes
+    assert "cycle_boundary" not in _state(hass, entry, "amount_due_today").attributes
 
 
 def test_the_fall_back_hour_is_two_distinct_slots() -> None:
@@ -694,9 +695,271 @@ async def test_without_a_recorder_the_entities_say_so(
     entry = _entry(_meter_options())
     await _setup(hass, entry)
 
-    state = _state(hass, entry, "net_cost_today")
+    state = _state(hass, entry, "amount_due_today")
     assert state.state == "unknown"
     assert state.attributes["quality"]["complete"] is False
     assert any("recorder" in w for w in state.attributes["warnings"])
     # And the rate entities are entirely unaffected.
     assert _state(hass, entry, "import_price").state not in ("unknown", "unavailable")
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_the_bank_entity_appears_only_with_an_export_meter(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """No export meter means no export credit, so there is no bank to carry."""
+    freezer.move_to(NOW)
+    entry = _entry(_meter_options(**{CONF_GRID_EXPORT_ENTITY: ""}))
+    await _setup(hass, entry)
+    assert _entity_id(hass, entry, "export_credit_bank") is None
+
+    both = _entry(_meter_options())
+    await _setup(hass, both)
+    assert _entity_id(hass, both, "export_credit_bank") is not None
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_the_bank_says_why_it_has_no_figure_yet(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """An unexplained `unknown` is the failure this integration keeps fixing."""
+    freezer.move_to(NOW)
+    entry = _entry(_meter_options())
+    await _setup(hass, entry)
+
+    state = _state(hass, entry, "export_credit_bank")
+    assert state.state == "unknown"
+    assert state.attributes["quality"]["complete"] is False
+    assert state.attributes["warnings"], "an empty bank must explain itself"
+    assert state.attributes["unit_of_measurement"] == "USD"
+    # A balance is a stock, not an accumulator: recording each fall as a
+    # negative contribution to a lifetime sum would mean nothing.
+    assert state.attributes["state_class"] == "measurement"
+    assert "device_class" not in state.attributes
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_amount_due_is_what_a_statement_would_charge_not_the_bill_total(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """A cycle that earns more credit than it owes still owes something.
+
+    ``Bill.total`` subtracts every credit the cycle earned and goes negative,
+    which no statement has ever printed. The tariff offsets credit only against
+    the charges it may offset and banks the remainder, so the entity reports
+    what :func:`tariffkit.billing.apply_credits` leaves due and says separately
+    how much banked. Getting this wrong is not a rounding difference: it is the
+    difference between a bill and a refund.
+    """
+    freezer.move_to(NOW)
+    seed = datetime(2026, 8, 1, tzinfo=PACIFIC)
+    await _record(hass, IMPORT_ENTITY, [(seed, 1000.0), (NOW.replace(hour=13, minute=0), 1000.5)])
+    await _record(
+        hass,
+        EXPORT_ENTITY,
+        [(seed, 500.0)]
+        + [
+            (datetime(2026, 8, day, hour, tzinfo=PACIFIC), 500.0 + (day - 1) * 240.0 + hour * 10.0)
+            for day in range(1, 25)
+            for hour in range(24)
+            if (day, hour) <= (NOW.day, 13)
+        ],
+    )
+    hass.states.async_set(
+        IMPORT_ENTITY, "1000.5", {"unit_of_measurement": "kWh", "device_class": "energy"}
+    )
+    hass.states.async_set(
+        EXPORT_ENTITY, "6050.0", {"unit_of_measurement": "kWh", "device_class": "energy"}
+    )
+    await hass.async_block_till_done()
+
+    entry = _entry(_meter_options())
+    await _setup(hass, entry)
+
+    cycle = _state(hass, entry, "amount_due_cycle")
+    credit = float(_state(hass, entry, "export_credit_cycle").state)
+    cost = float(_state(hass, entry, "energy_cost_cycle").state)
+    fixed = cycle.attributes["fixed_charges"]
+
+    assert credit > cost + fixed, "the premise: more credit earned than charges to spend it on"
+    # So the bill's own arithmetic would hand back money...
+    assert cost + fixed - credit < 0
+    # ...and the entity does not. It reports the charges no credit could reach.
+    assert float(cycle.state) >= 0
+    assert cycle.attributes["bank_change"] > 0, "the unspendable credit banked"
+    # What is left owed is exactly the charges no credit was allowed to reach --
+    # the non-bypassable ones. That is the cap doing its job, and it is the
+    # whole difference between this figure and `Bill.total`.
+    applied = cycle.attributes["credit_applied"]
+    assert 0 < applied < credit, "some credit was spent, but not all of it"
+    # Tolerance is a cent, not a hundredth of one: every term here is a
+    # published attribute rounded to four places, so three of them cannot
+    # reconcile more tightly than their own rounding.
+    assert cost + fixed - applied == pytest.approx(float(cycle.state), abs=1e-2)
+    assert cycle.attributes["export_credits"] == pytest.approx(credit, abs=1e-4)
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_an_untrustworthy_bank_does_not_quietly_set_the_amount_due(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """A warned-about balance must not halve a bill in silence.
+
+    ``BankState`` refuses to vouch for a bank folded across a gap or a supplier
+    change, and the bank entity prints the reason. The money entities used to
+    take the number anyway: a $348 cycle read $156 with ``complete: true`` and
+    an empty ``warnings`` list. Refusing the opening balance is the safe
+    direction -- charges before any offset -- but only if the entity says so.
+    """
+    from custom_components.tariffkit.bank import BankState
+
+    from tariffkit.billing import CreditBalances
+
+    freezer.move_to(NOW)
+    seed = datetime(2026, 8, 1, tzinfo=PACIFIC)
+    await _record(hass, IMPORT_ENTITY, [(seed, 1000.0), (NOW.replace(hour=13, minute=0), 1300.0)])
+    await _record(hass, EXPORT_ENTITY, [(seed, 500.0), (NOW.replace(hour=13, minute=0), 500.0)])
+    hass.states.async_set(
+        IMPORT_ENTITY, "1300.0", {"unit_of_measurement": "kWh", "device_class": "energy"}
+    )
+    hass.states.async_set(
+        EXPORT_ENTITY, "500.0", {"unit_of_measurement": "kWh", "device_class": "energy"}
+    )
+    await hass.async_block_till_done()
+
+    entry = _entry(_meter_options())
+    await _setup(hass, entry)
+    coordinator = entry.runtime_data
+    unbanked = float(_state(hass, entry, "amount_due_cycle").state)
+
+    doubtful = BankState(
+        CreditBalances(delivery=200.0, bonus=160.0),
+        (date(2026, 7, 1), date(2026, 7, 31)),
+        1,
+        warnings=("the folded run of cycles has a hole in it",),
+    )
+    assert not doubtful.trustworthy
+    coordinator.data = replace(coordinator.data, bank=doubtful)
+    coordinator.async_update_listeners()
+    await hass.async_block_till_done()
+
+    cycle = _state(hass, entry, "amount_due_cycle")
+    assert float(cycle.state) == pytest.approx(unbanked), "the doubtful balance was not spent"
+    assert cycle.attributes["quality"]["complete"] is False
+    assert any("not trustworthy" in w for w in cycle.attributes["warnings"])
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_a_bank_not_folded_yet_is_declared_rather_than_assumed_absent(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """The first refresh skips the fold, and that refresh publishes the entities.
+
+    So the first figure every amount-due entity ever shows is computed with no
+    bank, and a minute later it moves by the whole balance with no usage behind
+    it. Measured at $19.46 then $0.61. Deferring the fold is right; doing it
+    without saying so is not.
+    """
+    freezer.move_to(NOW)
+    seed = datetime(2026, 8, 1, tzinfo=PACIFIC)
+    await _record(hass, IMPORT_ENTITY, [(seed, 1000.0), (NOW.replace(hour=13, minute=0), 1100.0)])
+    await _record(hass, EXPORT_ENTITY, [(seed, 500.0), (NOW.replace(hour=13, minute=0), 520.0)])
+    hass.states.async_set(
+        IMPORT_ENTITY, "1100.0", {"unit_of_measurement": "kWh", "device_class": "energy"}
+    )
+    hass.states.async_set(
+        EXPORT_ENTITY, "520.0", {"unit_of_measurement": "kWh", "device_class": "energy"}
+    )
+    await hass.async_block_till_done()
+
+    entry = _entry(_meter_options())
+    await _setup(hass, entry)
+
+    cycle = _state(hass, entry, "amount_due_cycle")
+    assert cycle.state not in ("unknown", "unavailable")
+    assert any("folded on the first tick" in w for w in cycle.attributes["warnings"])
+    assert cycle.attributes["quality"]["complete"] is False
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_a_refused_earlier_span_is_not_reported_as_the_whole_cycle(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Two unrelated reasons produce no earlier bill; only one is a zero.
+
+    The cycle's first day legitimately has nothing before it, so today is the
+    whole cycle. A cycle whose earlier days could not be *priced* has no
+    marginal figure at all -- and reporting the cycle anyway put 31 days of
+    fixed charges and 3396 kWh into an entity labelled today, days=1, marked
+    complete.
+    """
+    freezer.move_to(NOW)
+    seed = datetime(2026, 8, 1, tzinfo=PACIFIC)
+    await _record(hass, IMPORT_ENTITY, [(seed, 1000.0), (NOW.replace(hour=13, minute=0), 1100.0)])
+    await _record(hass, EXPORT_ENTITY, [(seed, 500.0), (NOW.replace(hour=13, minute=0), 505.0)])
+    hass.states.async_set(
+        IMPORT_ENTITY, "1100.0", {"unit_of_measurement": "kWh", "device_class": "energy"}
+    )
+    hass.states.async_set(
+        EXPORT_ENTITY, "505.0", {"unit_of_measurement": "kWh", "device_class": "energy"}
+    )
+    await hass.async_block_till_done()
+
+    entry = _entry(_meter_options())
+    await _setup(hass, entry)
+    coordinator = entry.runtime_data
+    usage = coordinator.data.usage
+    assert usage is not None and usage.cycle is not None
+    assert not usage.opens_today, "the cycle opened weeks ago"
+
+    refused = replace(usage, through_yesterday=None, today_reason="cannot price 2026-08-01")
+    coordinator.data = replace(coordinator.data, usage=refused)
+    coordinator.async_update_listeners()
+    await hass.async_block_till_done()
+
+    today = _state(hass, entry, "amount_due_today")
+    assert today.state == "unknown"
+    assert today.attributes["quality"]["complete"] is False
+    assert any("cannot price 2026-08-01" in w for w in today.attributes["warnings"])
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_todays_buckets_decompose_todays_figure(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """An attribute that contradicts its own entity is worse than none.
+
+    Reading the standalone day bill for the buckets put them 19% above the
+    state they were published beside, because a day priced alone gets a fresh
+    baseline allowance. They have to be the cycle's buckets less yesterday's.
+    """
+    freezer.move_to(NOW)
+    seed = datetime(2026, 8, 1, tzinfo=PACIFIC)
+    await _record(
+        hass,
+        IMPORT_ENTITY,
+        [(seed, 1000.0)]
+        + [
+            (datetime(2026, 8, day, hour, tzinfo=PACIFIC), 1000.0 + (day - 1) * 4.0 + hour * 0.2)
+            for day in range(1, 25)
+            for hour in range(24)
+            if (day, hour) <= (NOW.day, 13)
+        ],
+    )
+    hass.states.async_set(
+        IMPORT_ENTITY, "1094.6", {"unit_of_measurement": "kWh", "device_class": "energy"}
+    )
+    await hass.async_block_till_done()
+
+    entry = _entry(_meter_options(**{CONF_GRID_EXPORT_ENTITY: ""}))
+    await _setup(hass, entry)
+
+    today = _state(hass, entry, "energy_cost_today")
+    buckets = today.attributes["buckets"]
+    assert buckets, "a day still has a time-of-use split"
+    assert sum(b["import_charge"] for b in buckets) == pytest.approx(
+        today.attributes["energy_charges"] + today.attributes["taxes"], abs=1e-3
+    )
+    assert sum(b["imported_kwh"] for b in buckets) == pytest.approx(
+        today.attributes["imported_kwh"], abs=1e-3
+    )
