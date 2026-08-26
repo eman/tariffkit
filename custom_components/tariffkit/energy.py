@@ -28,6 +28,7 @@ from calendar import monthrange
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from itertools import pairwise
 from typing import Any
 
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN, UnitOfEnergy
@@ -343,14 +344,37 @@ class UsageReader:
                 covered.setdefault(entity, set()).add(slot)
         self.discarded = tuple(sorted(set(dropped)))
         self.absent = self._absent_series(covered, opens_at, closes_at)
+        reconstructed = self._reconstructed(covered)
         return [
             IntervalReading(
                 datetime.fromtimestamp(slot, tz=PACIFIC),
                 imported=values[0],
                 exported=values[1],
+                estimated=slot in reconstructed,
             )
             for slot, values in sorted(hours.items())
         ]
+
+    @staticmethod
+    def _reconstructed(covered: Mapping[str, set[float]]) -> set[float]:
+        """Hours that carry more than their own energy.
+
+        A counter that was unreachable for a while reports its whole catch-up in
+        the first hour the recorder sees again, so that hour's `change` covers
+        the outage as well as itself. The kWh total survives -- a cumulative
+        counter only depends on its endpoints -- but the shape does not, and the
+        shape is what a time-of-use tariff prices.
+
+        :attr:`IntervalReading.estimated` is the library's own word for exactly
+        this, and marking it here is what lets everything downstream notice.
+        """
+        found: set[float] = set()
+        for slots in covered.values():
+            ordered = sorted(slots)
+            for previous, current in pairwise(ordered):
+                if current - previous > 3600.0:
+                    found.add(current)
+        return found
 
     def _absent_series(
         self, covered: Mapping[str, set[float]], opens_at: datetime, closes_at: datetime

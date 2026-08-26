@@ -204,6 +204,10 @@ def price_cycle(
     cycle-to-date bills that bracket it.
     """
     within = _within(readings, cycle)
+    # A day is priceable only if it has readings *and* none of them carry
+    # another day's energy. An hour reconstructed across an outage cannot be
+    # separated from the hour's own usage -- the counter reports one number --
+    # so the day it lands on cannot be priced, only guessed at.
     seen = {_day_of(reading) for reading in within}
     days: list[DayFigures] = []
     previous: Bill | None = None
@@ -218,7 +222,7 @@ def price_cycle(
             return [], reason, ()
         warnings = running.warnings
         metered = [r for r in within if _day_of(r) == day]
-        if day in seen:
+        if day in seen and not any(reading.estimated for reading in metered):
             days.append(
                 DayFigures(
                     day=day,
@@ -236,9 +240,10 @@ def price_cycle(
     if unmetered:
         warnings = (
             *warnings,
-            f"{len(unmetered)} day(s) inside {cycle.start}..{cycle.end} have no metered "
-            f"readings ({unmetered[0]}..{unmetered[-1]}) and were left unpriced rather "
-            f"than charged a daily charge there is no evidence for",
+            f"{len(unmetered)} day(s) inside {cycle.start}..{cycle.end} could not be "
+            f"priced ({unmetered[0]}..{unmetered[-1]}): either no metered readings at "
+            f"all, or an hour carrying a counter's catch-up across an outage, whose "
+            f"energy belongs to days the tariff would price differently",
         )
     return days, "", warnings
 
