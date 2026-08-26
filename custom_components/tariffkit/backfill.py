@@ -128,6 +128,9 @@ class BackfillResult:
     """What a run wrote, and what it could not."""
 
     days: list[DayFigures] = field(default_factory=list)
+    #: One bill per priced cycle, oldest first. What a statement states, and
+    #: what a credit ledger folds.
+    bills: list[Bill] = field(default_factory=list)
     #: Cycles that could not be priced, with the reason.
     skipped: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -143,6 +146,22 @@ class BackfillResult:
             "export_credit": round(sum(d.export_credit for d in self.days), 2),
             "net_cost": round(sum(d.net_cost for d in self.days), 2),
             "statistic_ids": [s.statistic_id(profile_name) for s in SERIES],
+            "cycles": [
+                {
+                    "start": bill.period.start.isoformat(),
+                    "end": bill.period.end.isoformat(),
+                    "days": bill.period.days,
+                    "imported_kwh": round(bill.imported_kwh, 3),
+                    "exported_kwh": round(bill.exported_kwh, 3),
+                    "energy_charges": round(bill.energy_charges, 2),
+                    "taxes": round(bill.taxes, 2),
+                    "export_credits": round(-bill.export_credits, 2),
+                    "fixed_charges": round(bill.fixed_charges, 2),
+                    "total": round(bill.total, 2),
+                    "complete": bill.complete,
+                }
+                for bill in self.bills
+            ],
             "skipped": list(self.skipped),
             "warnings": list(self.warnings),
             "complete": not self.skipped and not self.warnings,
@@ -185,7 +204,7 @@ def price_cycle(
     profile: AccountProfile,
     readings: list[IntervalReading],
     cycle: BillingPeriod,
-) -> tuple[list[DayFigures], str, tuple[str, ...]]:
+) -> tuple[list[DayFigures], Bill | None, str, tuple[str, ...]]:
     """Each day's exact share of one cycle.
 
     Walks the cycle day by day, differencing consecutive cycle-to-date bills, so
@@ -219,7 +238,7 @@ def price_cycle(
         so_far = [r for r in within if _day_of(r) <= day]
         running, reason = price(profile, so_far, period)
         if running is None:
-            return [], reason, ()
+            return [], None, reason, ()
         warnings = running.warnings
         metered = [r for r in within if _day_of(r) == day]
         if day in seen and not any(reading.estimated for reading in metered):
@@ -245,7 +264,11 @@ def price_cycle(
             f"all, or an hour carrying a counter's catch-up across an outage, whose "
             f"energy belongs to days the tariff would price differently",
         )
-    return days, "", warnings
+    # `previous` is the cycle-to-date bill at its final day, which is the cycle's
+    # own bill. Returned rather than discarded because it is what a statement
+    # states, and what `tariffkit.billing.run_ledger` folds to carry an export
+    # credit bank between cycles -- neither of which a day decomposition can do.
+    return days, previous, "", warnings
 
 
 def _delta(running: Bill, previous: Bill | None, part: str) -> float:
@@ -316,13 +339,14 @@ def build(
                 f"Backfill from {cycle.start} or earlier to include it"
             )
             continue
-        days, reason, warnings = price_cycle(profile, readings, cycle)
-        if reason:
+        days, bill, reason, warnings = price_cycle(profile, readings, cycle)
+        if reason or bill is None:
             # `reason` already names a period, so quote only its explanation.
             detail = reason.split(": ", 1)[-1]
             result.skipped.append(f"{cycle.start}..{cycle.end}: {detail}")
             continue
         result.days.extend(days)
+        result.bills.append(bill)
         for warning in (*warnings, *coverage_warnings(_within(readings, cycle), cycle)):
             if warning not in result.warnings:
                 result.warnings.append(warning)
