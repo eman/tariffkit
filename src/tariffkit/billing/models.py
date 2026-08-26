@@ -103,6 +103,22 @@ class BillingPeriod:
         return self.start <= to_pacific(moment).date() <= self.end
 
     @property
+    def opens(self) -> datetime:
+        """The moment the period begins: local midnight on its first day."""
+        return datetime(self.start.year, self.start.month, self.start.day, tzinfo=PACIFIC)
+
+    @property
+    def closes(self) -> datetime:
+        """The moment the period ends: the local midnight after its last day.
+
+        Wall-clock arithmetic, deliberately -- the cycle closes at the next
+        local midnight however many real hours away that falls.
+        """
+        return datetime(self.end.year, self.end.month, self.end.day, tzinfo=PACIFIC) + timedelta(
+            days=1
+        )
+
+    @property
     def elapsed(self) -> timedelta:
         """Real time the cycle spans, which is not ``days`` times 24 hours.
 
@@ -110,13 +126,7 @@ class BillingPeriod:
         this to ask how much metered data *should* be there; use ``days`` for
         anything billed per calendar day, like the Base Services Charge.
         """
-        opens = datetime(self.start.year, self.start.month, self.start.day, tzinfo=PACIFIC)
-        # Wall-clock arithmetic is right here: the cycle closes at the next local
-        # midnight, however many real hours away that falls.
-        closes = datetime(self.end.year, self.end.month, self.end.day, tzinfo=PACIFIC) + timedelta(
-            days=1
-        )
-        return closes.astimezone(UTC) - opens.astimezone(UTC)
+        return self.closes.astimezone(UTC) - self.opens.astimezone(UTC)
 
     def to_dict(self) -> dict[str, Any]:
         return {

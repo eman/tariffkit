@@ -171,14 +171,15 @@ def test_a_bundled_account_holds_one_bank() -> None:
     assert state.held_by("generation") == pytest.approx(state.balance.total)
 
 
-def test_a_trailing_hole_is_invisible_to_the_coverage_check() -> None:
-    """Which is why the bank has to ask the reader, not only the readings.
+def test_a_trailing_hole_is_reported_once_there_is_a_clock_to_see_it() -> None:
+    """A missing hour at the *end* is not a gap between readings.
 
-    A missing hour at the *end* of a window is not a gap between readings, so
-    nothing in the series itself reveals it -- and the day it belongs to still
-    has its other twenty-three hours and prices without complaint. That is the
-    shape of every cycle rollover, because the recorder compiles a cycle's final
-    hour after midnight has already opened the next one.
+    Nothing in the series itself reveals it -- the day it belongs to still has
+    its other twenty-three hours and prices without complaint -- so only a clock
+    can tell an hour that arrived empty from one that has not arrived. That is
+    what `through` gives :func:`tariffkit.billing.check_coverage`, and without it
+    a meter that stopped reporting goes on quietly producing a smaller number
+    that still calls itself complete.
     """
     from custom_components.tariffkit.energy import coverage_warnings
 
@@ -188,15 +189,42 @@ def test_a_trailing_hole_is_invisible_to_the_coverage_check() -> None:
         for day in (1, 2)
         for hour in range(24)
     ]
-    assert coverage_warnings(full, period) == ()
-    assert coverage_warnings(full[:-1], period) == (), "a trailing hole is silent"
+    closed = datetime(2026, 7, 3, 6, tzinfo=PACIFIC)
+    assert coverage_warnings(full, period, closed) == ()
 
-    # So the missing hour changes the priced total with nothing to flag it.
+    # One missing hour is counted -- 1h of 48 is over the tolerance -- but the
+    # series has not *stopped*, so it is not accused of having.
+    brief = coverage_warnings(full[:-1], period, closed)
+    assert any("1.0h missing" in warning for warning in brief)
+    assert not any("the series stops at" in warning for warning in brief)
+
+    # A meter silent for a day is named, and told where it fell over.
+    stopped = coverage_warnings(full[:-24], period, closed)
+    assert any("the series stops at" in warning for warning in stopped)
+    # Named by where the data ends, not by the last reading's start.
+    assert any("2026-07-02T00:00" in warning for warning in stopped)
+
+    # And the missing hours really did change the priced total, which is what
+    # made the silence expensive.
     profile = _profile()
     whole, _ = price(profile, full, period)
-    short, _ = price(profile, full[:-1], period)
+    short, _ = price(profile, full[:-24], period)
     assert whole is not None and short is not None
     assert short.imported_kwh < whole.imported_kwh
+
+
+def test_a_period_still_running_is_not_told_its_remainder_is_missing() -> None:
+    """The shortfall is measured against elapsed time, not the whole period."""
+    from custom_components.tariffkit.energy import coverage_warnings
+
+    period = BillingPeriod(date(2026, 7, 1), date(2026, 7, 31))
+    so_far = [
+        IntervalReading(datetime(2026, 7, day, hour, tzinfo=PACIFIC), imported=1.0)
+        for day in range(1, 3)
+        for hour in range(24)
+    ]
+    # Two days into a month-long cycle, with two days of readings.
+    assert coverage_warnings(so_far, period, datetime(2026, 7, 3, 0, tzinfo=PACIFIC)) == ()
 
 
 def _long_run(profile: AccountProfile, opens: date, closes: date) -> list:
