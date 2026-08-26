@@ -35,7 +35,7 @@ the percentages, since they drift as tests and flow branches are added.
 | `docs-conditions` | Not applicable | The integration provides no conditions. |
 | `docs-high-level-description` | Met | [Home Assistant](home-assistant.md) intro and README's "Works with". |
 | `docs-installation-instructions` | Met | [Install](home-assistant.md#install). |
-| `docs-removal-instructions` | Met | [Removal](home-assistant.md#removal). |
+| `docs-removal-instructions` | Met | [Removal](home-assistant.md#removal). [Upgrading](home-assistant.md#upgrading) covers the other end of the lifecycle, which the scale does not ask for but a released integration needs. |
 | `entity-event-setup` | Met | Entities subclass `CoordinatorEntity`, which handles listener (un)registration in its own lifecycle methods; no entity manages a subscription by hand. |
 | `entity-unique-id` | Met | `f"{entry.entry_id}_{description.key}"` -- stable and config-entry-scoped, never derived from tariff or dates. |
 | `has-entity-name` | Met | Every entity sets `_attr_has_entity_name = True`. |
