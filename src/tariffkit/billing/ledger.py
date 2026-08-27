@@ -10,8 +10,10 @@ Credits are not fungible. PG&E's statement states the rule directly:
     2. Energy Delivered credits can only offset Energy Delivered charges
     3. Energy Export Bonus Credit can offset any and all electric charges
 
-So a balance is three buckets, not a number, and applying it needs each charge
-classified by which bucket may offset it.
+So a balance is four buckets, not a number, and applying it needs each charge
+classified by which bucket may offset it. Four rather than three because a CCA
+account is credited the ACC Plus adder twice -- the utility's half is spent
+where it is earned, the CCA's half banks on the CCA's own page.
 
 **One bank at a time.** A CCA customer has two, kept separately: PG&E's and the
 CCA's, each with its own balance and its own charges to offset. A :class:`Bill`
@@ -46,20 +48,40 @@ class CreditBucket(StrEnum):
     DELIVERY = "delivery"
     #: Offsets anything not explicitly non-bypassable.
     BONUS = "bonus"
+    #: The generation supplier's own bonus credit, banked on its page and
+    #: settled on its calendar. The ACC Plus adder is credited twice on a CCA
+    #: account -- see ``CREDIT_BUCKETS`` -- and the two halves are not one
+    #: bucket: the utility spends its half against delivery charges in the
+    #: cycle that earns it, while this one accumulates untouched.
+    CCA_BONUS = "cca_bonus"
 
 
 #: Export credit component -> the bucket it banks into.
 #:
-#: Verified against the 2026-08-04 statement, whose credit bank splits into
-#: "Energy Delivered Credits" $6.25 (the ``delivery`` component) and "Bonus
-#: Credits" $1.71 (``acc_plus``), and whose CCA page reports an Energy Export
-#: Credit of $9.63 (``cca_generation``).
+#: Verified against the 2026-08-04 statement. Its two credit banks print:
 #:
+#:   PG&E "YOUR ENERGY EXPORT CREDIT BANK"
+#:     Energy Delivered Credits  earned $6.25, applied -$6.25, remaining $0.00
+#:     Bonus Credits             earned $1.71, applied -$1.71, remaining $0.00
+#:   MCE
+#:     Solar Export Credits (EEC) earned this cycle        $9.63
+#:     Solar Export Bonus Credits (EEBC) earned this cycle  $1.70
+#:     Current EEC Balance $9.34, Current EEBC Balance $3.29, SBP total $12.63
+#:
+#: The ACC Plus adder is therefore credited TWICE, once by each party at the
+#: same $/kWh: the utility earns and spends its half inside the cycle, and the
+#: CCA banks its own half without ever applying it -- MCE's "Energy Export
+#: Bonus Credits Applied" line prints $0.00 while its EEBC balance grows by the
+#: full amount every cycle ($1.59 in June plus $1.70 in July gives the printed
+#: $3.29). Modelling one adder understated the CCA's bank by its whole balance
+#: and no reconciled bill noticed, because a credit that is never applied never
+#: reaches a charge the audit compares.
 CREDIT_BUCKETS: dict[str, CreditBucket] = {
     "delivery": CreditBucket.DELIVERY,
     "generation": CreditBucket.GENERATION,
     "cca_generation": CreditBucket.GENERATION,
     "acc_plus": CreditBucket.BONUS,
+    "cca_acc_plus": CreditBucket.CCA_BONUS,
 }
 
 #: Export-side components a statement spends inside the cycle instead of banking.
@@ -132,10 +154,12 @@ SCOPING_VERIFIED = False
 #: Which buckets each party's bank holds when a CCA supplies generation.
 #:
 #: PG&E's "Energy Delivered Credits" and "Bonus Credits" against the CCA's
-#: "Energy Export Credit". They settle on unrelated calendars -- PG&E at the
-#: Permission To Operate anniversary, the CCA on its own cash-out year.
+#: "Energy Export Credit" and its own bonus credit -- MCE prints the latter two
+#: as the EEC and EEBC balances that sum to the SBP balance. They settle on
+#: unrelated calendars -- PG&E at the Permission To Operate anniversary, the CCA
+#: on its own cash-out year.
 UTILITY_BUCKETS = (CreditBucket.DELIVERY, CreditBucket.BONUS)
-GENERATION_BUCKETS = (CreditBucket.GENERATION,)
+GENERATION_BUCKETS = (CreditBucket.GENERATION, CreditBucket.CCA_BONUS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +169,7 @@ class CreditBalances:
     generation: float = 0.0
     delivery: float = 0.0
     bonus: float = 0.0
+    cca_bonus: float = 0.0
 
     def __post_init__(self) -> None:
         for bucket in CreditBucket:
@@ -159,7 +184,7 @@ class CreditBalances:
 
     @property
     def total(self) -> float:
-        return self.generation + self.delivery + self.bonus
+        return self.generation + self.delivery + self.bonus + self.cca_bonus
 
     def held_by(self, party: str, *, split: bool) -> float:
         """The balance one party holds.
@@ -188,6 +213,7 @@ class CreditBalances:
             "generation": round(self.generation, 4),
             "delivery": round(self.delivery, 4),
             "bonus": round(self.bonus, 4),
+            "cca_bonus": round(self.cca_bonus, 4),
             "total": round(self.total, 4),
         }
 
@@ -248,6 +274,7 @@ def credits_earned(bill: Bill) -> CreditBalances:
         generation=totals[CreditBucket.GENERATION],
         delivery=totals[CreditBucket.DELIVERY],
         bonus=totals[CreditBucket.BONUS],
+        cca_bonus=totals[CreditBucket.CCA_BONUS],
     )
 
 
@@ -322,6 +349,7 @@ def apply_credits(bill: Bill, opening: CreditBalances | None = None) -> LedgerEn
         generation=opening.generation + earned.generation,
         delivery=opening.delivery + earned.delivery,
         bonus=opening.bonus + earned.bonus,
+        cca_bonus=opening.cca_bonus + earned.cca_bonus,
     )
     applied = CreditBalances()
     remaining = dict(offsettable)
@@ -330,6 +358,15 @@ def apply_credits(bill: Bill, opening: CreditBalances | None = None) -> LedgerEn
         spend = min(available[bucket], remaining[bucket])
         applied = applied.with_bucket(bucket, spend)
         remaining[bucket] -= spend
+
+    # The CCA's bonus reaches its own generation charges, and only after its
+    # export credit has. That order is the statement's, not a preference: on
+    # 2026-08-04 MCE applied $3.63 of Energy Export Credit and $0.00 of Energy
+    # Export Bonus Credit against the same $3.63 of net generation charges.
+    # Spending it first would drain the bank that the statement shows growing.
+    cca_bonus_spend = min(available.cca_bonus, remaining[CreditBucket.GENERATION])
+    applied = applied.with_bucket(CreditBucket.CCA_BONUS, cca_bonus_spend)
+    remaining[CreditBucket.GENERATION] -= cca_bonus_spend
 
     # The bonus reaches anything still standing, except charges the tariff makes
     # non-bypassable -- that is what "non-bypassable" means.
@@ -340,6 +377,7 @@ def apply_credits(bill: Bill, opening: CreditBalances | None = None) -> LedgerEn
         generation=available.generation - applied.generation,
         delivery=available.delivery - applied.delivery,
         bonus=available.bonus - applied.bonus,
+        cca_bonus=available.cca_bonus - applied.cca_bonus,
     )
     gross = sum(offsettable.values()) + non_offsettable
     # A statement charges nothing rather than paying out. `non_offsettable` can
@@ -355,6 +393,7 @@ def apply_credits(bill: Bill, opening: CreditBalances | None = None) -> LedgerEn
             generation=available.generation - applied.generation,
             delivery=available.delivery - applied.delivery,
             bonus=available.bonus - applied.bonus,
+            cca_bonus=available.cca_bonus - applied.cca_bonus,
         )
     return LedgerEntry(
         period=bill.period,
@@ -378,7 +417,12 @@ def _reduce(applied: CreditBalances, by: float) -> CreditBalances:
     needed it.
     """
     left = by
-    for bucket in (CreditBucket.BONUS, CreditBucket.DELIVERY, CreditBucket.GENERATION):
+    for bucket in (
+        CreditBucket.BONUS,
+        CreditBucket.DELIVERY,
+        CreditBucket.CCA_BONUS,
+        CreditBucket.GENERATION,
+    ):
         give = min(applied[bucket], left)
         applied = applied.with_bucket(bucket, applied[bucket] - give)
         left -= give

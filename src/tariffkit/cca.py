@@ -93,6 +93,18 @@ class CcaRateCard:
         """Whether this provider's export credit basis has been confirmed."""
         return bool(self.raw.get("export", {}).get("export_credit_verified", False))
 
+    @property
+    def credits_acc_plus(self) -> bool:
+        """Whether this provider credits the ACC Plus adder in its own right.
+
+        The utility credits it too, on its own page and at the same rate, so a
+        provider that does this pays the customer a second adder rather than a
+        share of one. Default false: crediting an adder nobody pays is an
+        invented credit, which is the class of defect the audit exists to
+        catch, so a provider claims this only once a statement has shown it.
+        """
+        return bool(self.raw.get("export", {}).get("credits_acc_plus", False))
+
 
 @lru_cache(maxsize=8)
 def load_rate_card(provider: str, on: date) -> CcaRateCard:

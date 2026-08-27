@@ -171,6 +171,13 @@ class NbtExportRates:
                     components["cca_solar_bonus"] = (
                         components["cca_generation"] * card.solar_bonus_fraction
                     )
+                if card.credits_acc_plus and self._acc_plus:
+                    # A second ACC Plus adder, not a share of the utility's.
+                    # MCE credits its own at the same $/kWh and banks it as the
+                    # Energy Export Bonus Credit; the 2026-08-04 statement
+                    # prints both, $1.71 applied on PG&E's page and $1.70 added
+                    # to MCE's EEBC balance in the same cycle.
+                    components["cca_acc_plus"] = self._acc_plus
                 complete = card.export_credit_verified
             else:
                 complete = False
@@ -199,10 +206,26 @@ class NbtExportRates:
         generation = data["generation"][month_index][day_index]
         delivery = data["delivery"][month_index][day_index]
         include_generation = self.config.supplier is Supplier.BUNDLED
+        # Both adders where the CCA credits its own, so the curve sums to what
+        # `price_at` reports for the same hour.
+        adder = self._acc_plus * (
+            1 + self._cca_credits_acc_plus(date(year, MONTHS.index(month) + 1, 1))
+        )
         return tuple(
-            round((generation[h] if include_generation else 0.0) + delivery[h] + self._acc_plus, 6)
+            round((generation[h] if include_generation else 0.0) + delivery[h] + adder, 6)
             for h in range(24)
         )
+
+    def _cca_credits_acc_plus(self, on: date) -> bool:
+        """Whether the configured CCA credits an ACC Plus adder of its own."""
+        if self.config.supplier is Supplier.BUNDLED:
+            return False
+        cca = self.config.cca
+        if cca is None or cca.rate_card is None:
+            return False
+        from ..cca import load_rate_card
+
+        return load_rate_card(cca.rate_card, on).credits_acc_plus
 
 
 __all__ = ["FLOATING_VINTAGE", "NbtExportRates"]

@@ -299,8 +299,15 @@ MAP: tuple[LineRule, ...] = (
     # this line against what was earned reports a mismatch on a correct bill.
     #
     # The bonus line is grouped in rather than given a rule of its own: the CCA
-    # prints it and always at 0.00, because the bonus bucket is spent on the
-    # utility's side. Left unclaimed it reads as a line nobody understands.
+    # prints it and always at 0.00, because its bonus credit banks instead of
+    # being applied -- the EEBC balance on the same page grows by the full
+    # adder every cycle. Left unclaimed it reads as a line nobody understands.
+    #
+    # That $0.00 is why nothing here caught the EEBC going unmodelled for a
+    # release: this map reconciles charges, and a credit that is never applied
+    # never reaches one. The balances it banks into are printed as free text
+    # beside the section rather than as lines, so they are checked in
+    # tests/test_ledger.py against the figures, not here.
     LineRule(
         "Energy Export Credits Applied",
         Section.CCA_GENERATION,

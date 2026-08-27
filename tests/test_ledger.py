@@ -51,15 +51,30 @@ def pge_bill() -> Bill:
 def mce_bill() -> Bill:
     """The MCE half.
 
-    Bank prints: opening $4.93, earned $11.33, applied $3.63, remaining $12.63.
-    Charges are 4.84 generation less the 0.25 cost relief credit and the 0.96
-    solar bonus, giving the $3.63 "Net Charges" the statement shows.
+    Bank prints: opening $4.93, earned $11.33, applied $3.63, remaining $12.63,
+    and beside it the two balances that total: "Current Energy Export Credit
+    (EEC) Balance $9.34", "Current Energy Export Bonus Credit (EEBC) Balance
+    $3.29". Charges are 4.84 generation less the 0.25 cost relief credit and the
+    0.96 solar bonus, giving the $3.63 "Net Charges" the statement shows.
+
+    The bonus here is ``cca_acc_plus``, not ``acc_plus``: PG&E credits its own
+    adder of $1.71 on its page and spends it there in the same cycle, so the
+    $1.70 on this page is a second credit rather than the same one seen twice.
     """
     return Bill(
         period=PERIOD,
         import_components={"cca_generation": 4.84, "cca_cost_relief_credit": -0.25},
-        export_components={"cca_generation": -9.63, "cca_solar_bonus": -0.96, "acc_plus": -1.70},
+        export_components={
+            "cca_generation": -9.63,
+            "cca_solar_bonus": -0.96,
+            "cca_acc_plus": -1.70,
+        },
     )
+
+
+#: The statement's own split of MCE's $4.93 opening: EEC $3.34, EEBC $1.59 --
+#: June's adder, which nothing has spent.
+MCE_OPENING = CreditBalances(generation=3.34, cca_bonus=1.59)
 
 
 class TestPgeBank:
@@ -100,12 +115,32 @@ class TestMceBank:
     """Credits exceed charges here, so the cap binds and the excess carries."""
 
     def test_reconciles_against_the_printed_bank(self) -> None:
-        entry = apply_credits(mce_bill(), CreditBalances(generation=4.93))
+        entry = apply_credits(mce_bill(), MCE_OPENING)
         assert entry.opening.total == pytest.approx(4.93)
         assert entry.earned.total == pytest.approx(11.33)
         assert entry.applied.total == pytest.approx(3.63)
         assert entry.closing.total == pytest.approx(12.63)
         assert entry.cash_due == pytest.approx(0.0)
+
+    def test_the_two_printed_balances_are_tracked_apart(self) -> None:
+        """The statement prints EEC and EEBC as separate balances, so do we.
+
+        Totalling them was enough to reconcile this cycle and not enough to
+        stay right: the EEBC is never applied -- MCE's "Energy Export Bonus
+        Credits Applied" line prints $0.00 here -- so a model that lets it
+        offset generation charges alongside the EEC drains a balance the
+        statement shows growing every cycle.
+        """
+        entry = apply_credits(mce_bill(), MCE_OPENING)
+        assert entry.closing.generation == pytest.approx(9.34)
+        assert entry.closing.cca_bonus == pytest.approx(3.29)
+        assert entry.applied.cca_bonus == pytest.approx(0.0)
+
+    def test_the_cca_bonus_belongs_to_the_cca_bank(self) -> None:
+        """Not the utility's, whose own bonus column closes at $0.00."""
+        closing = apply_credits(mce_bill(), MCE_OPENING).closing
+        assert closing.held_by("generation", split=True) == pytest.approx(12.63)
+        assert closing.held_by("utility", split=True) == pytest.approx(0.0)
 
     def test_solar_bonus_reduces_charges_instead_of_banking(self) -> None:
         """The regression this class exists for.

@@ -139,6 +139,7 @@ COMPONENT_GROUPS: dict[str, ComponentGroup] = {
     # Discounts and incentives.
     "medical_discount": ComponentGroup.CREDITS,
     "acc_plus": ComponentGroup.CREDITS,
+    "cca_acc_plus": ComponentGroup.CREDITS,
     # Bill-level components. A marginal price never carries these -- a baseline
     # credit depends on cumulative usage, and a tax on a whole cycle's charges
     # -- but ``group_of`` is public, so a caller grouping a ``Bill``'s

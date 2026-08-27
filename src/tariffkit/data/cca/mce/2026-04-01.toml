@@ -150,3 +150,16 @@ care_fera_bonus_through = "2028-12-31"
 # and 193 kWh spread across all three TOU periods is a fair test of that.
 export_credit_basis = "acc_generation"
 export_credit_verified = true
+
+# MCE credits an ACC Plus adder of its OWN, additional to PG&E's, at the same
+# $/kWh -- it banks as the Energy Export Bonus Credit (EEBC) and is settled on
+# MCE's Solar Billing Plan year rather than PG&E's True-Up.
+#
+# Read from the 2026-08-04 statement, which prints both in the same cycle:
+# PG&E's page applies -$1.71 of "Energy Export Bonus Credits" and closes its
+# Bonus Credits bank at $0.00, while MCE's page reports "Solar Export Bonus
+# Credits (EEBC) earned this cycle $1.70" and a "Current EEBC Balance" of
+# $3.29 -- June's $1.59 plus July's $1.70, nothing applied. MCE's own "Energy
+# Export Bonus Credits Applied" line prints $0.00 in the same cycle, so the
+# balance is not PG&E's adder shown twice; it is a second one.
+credits_acc_plus = true
