@@ -42,6 +42,11 @@ All notable changes to this project are documented here. This project follows
   component on every MCE cycle, and without the second it would have reported a
   mismatch on the first correct bill that spends the bonus.
 
+  `month_curve` plots the export price again. It had been the delivery
+  component plus the ACC Plus adders on a CCA account, omitting the CCA's
+  generation credit and its bonuses -- a figure neither party pays. It and
+  `price_at` are now built from one component rule instead of two copies of it.
+
   **Export prices change for CCA accounts**, by the ACC Plus rate --
   $0.00880/kWh for a 2026 residential interconnection. Forecasts, the MQTT
   payloads, and the EMHASS and Predbat attributes all carry the higher figure,

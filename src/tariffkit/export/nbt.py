@@ -140,8 +140,30 @@ class NbtExportRates:
         day_index = 0 if kind is DayType.WEEKDAY else 1
         hour = export_hour(moment)
 
-        delivery = float(data["delivery"][month_index][day_index][hour])
-        components: dict[str, float] = {"delivery": delivery}
+        components, complete = self._components(data, month_index, day_index, hour, moment.date())
+        return ExportPrice(
+            total=round(sum(components.values()), 6),
+            vintage=self.vintage,
+            day_type=kind,
+            components={k: round(v, 6) for k, v in components.items()},
+            locked=self.is_locked(moment),
+            complete=complete,
+            exact=moment.year <= self.exact_through,
+        )
+
+    def _components(
+        self, data: dict[str, Any], month_index: int, day_index: int, hour: int, on: date
+    ) -> tuple[dict[str, float], bool]:
+        """One hour's export credit components, and whether they are verified.
+
+        Shared with ``month_curve`` rather than duplicated into it. The two had
+        drifted -- the curve was the delivery component plus adders on a CCA
+        account, a figure neither party pays -- and a second copy of a rule this
+        fiddly is a second place for it to go wrong.
+        """
+        components: dict[str, float] = {
+            "delivery": float(data["delivery"][month_index][day_index][hour])
+        }
         complete = True
 
         if self.config.supplier is Supplier.BUNDLED:
@@ -163,7 +185,7 @@ class NbtExportRates:
                 # MCE's is reconciled against a real cycle, others are estimates.
                 from ..cca import load_rate_card
 
-                card = load_rate_card(cca.rate_card, moment.date())
+                card = load_rate_card(cca.rate_card, on)
                 components["cca_generation"] = float(
                     data["generation"][month_index][day_index][hour]
                 )
@@ -184,58 +206,27 @@ class NbtExportRates:
 
         if self._acc_plus:
             components["acc_plus"] = self._acc_plus
-
-        return ExportPrice(
-            total=round(sum(components.values()), 6),
-            vintage=self.vintage,
-            day_type=kind,
-            components={k: round(v, 6) for k, v in components.items()},
-            locked=self.is_locked(moment),
-            complete=complete,
-            exact=moment.year <= self.exact_through,
-        )
+        return components, complete
 
     def month_curve(self, year: int, month: str, kind: DayType) -> tuple[float, ...]:
-        """The 24 hourly totals for one month and day type -- handy for plots."""
+        """The 24 hourly totals for one month and day type -- handy for plots.
+
+        Each hour is what ``price_at`` totals for it, CCA generation and both
+        bonus credits included, so a plotted curve is the export price rather
+        than a subset of it. The card is read for the first of the month, which
+        is the same card ``price_at`` reads for any hour it contains.
+        """
         data = self._payload["data"].get(str(year))
         if data is None:
             low, high = self.covered_years
             raise OutOfRangeError(f"{self.vintage}: {year} outside {low}-{high}")
         month_index = MONTHS.index(month)
         day_index = 0 if kind is DayType.WEEKDAY else 1
-        generation = data["generation"][month_index][day_index]
-        delivery = data["delivery"][month_index][day_index]
-        include_generation = self.config.supplier is Supplier.BUNDLED
-        # Both adders where the CCA credits its own, matching what `price_at`
-        # puts in an hour's components. The curve still omits CCA generation, as
-        # it always has -- this package ships no CCA generation matrix -- so on
-        # such an account it is the utility's half of the credit plus the
-        # adders, not the whole export price.
-        adder = self._acc_plus * (
-            1 + self._cca_credits_acc_plus(date(year, MONTHS.index(month) + 1, 1))
-        )
+        on = date(year, month_index + 1, 1)
         return tuple(
-            round((generation[h] if include_generation else 0.0) + delivery[h] + adder, 6)
+            round(sum(self._components(data, month_index, day_index, h, on)[0].values()), 6)
             for h in range(24)
         )
-
-    def _cca_credits_acc_plus(self, on: date) -> bool:
-        """Whether the configured CCA credits an ACC Plus adder of its own.
-
-        Gated exactly as ``price_at`` gates the component, explicit rate
-        included: a config carrying both an ``export_generation_rate`` and a
-        ``rate_card`` takes the explicit rate there and never reaches the card,
-        so reading the card here would add an adder the priced hour does not
-        have.
-        """
-        if self.config.supplier is Supplier.BUNDLED:
-            return False
-        cca = self.config.cca
-        if cca is None or cca.export_generation_rate is not None or cca.rate_card is None:
-            return False
-        from ..cca import load_rate_card
-
-        return load_rate_card(cca.rate_card, on).credits_acc_plus
 
 
 __all__ = ["FLOATING_VINTAGE", "NbtExportRates"]
