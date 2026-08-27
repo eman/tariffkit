@@ -139,9 +139,10 @@ def test_a_cca_account_holds_two_banks_that_never_settle_together() -> None:
     """A statement prints them on separate pages, on unrelated calendars.
 
     PG&E keeps "Energy Delivered Credits" and "Bonus Credits"; the CCA keeps its
-    "Energy Export Credit". PG&E settles at the Permission To Operate
-    anniversary and the CCA on its own cash-out year, so a single total is a
-    figure no statement shows and that never settles as a whole.
+    "Energy Export Credit" and its own bonus credit. PG&E settles at the
+    Permission To Operate anniversary and the CCA on its own cash-out year, so a
+    single total is a figure no statement shows and that never settles as a
+    whole.
     """
     profile = _cca_profile()
     bills = [
@@ -154,7 +155,7 @@ def test_a_cca_account_holds_two_banks_that_never_settle_together() -> None:
     utility = state.held_by("utility")
     generation = state.held_by("generation")
     assert utility == pytest.approx(state.balance.delivery + state.balance.bonus)
-    assert generation == pytest.approx(state.balance.generation)
+    assert generation == pytest.approx(state.balance.generation + state.balance.cca_bonus)
     assert utility + generation == pytest.approx(state.balance.total)
     # Neither alone is the whole bank, which is the point.
     assert utility != pytest.approx(state.balance.total)

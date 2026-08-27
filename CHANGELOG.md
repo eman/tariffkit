@@ -5,6 +5,54 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+- A CCA that credits an ACC Plus adder of its own is now paid for it. The adder
+  is credited **twice** on such an account, once by each party at the same
+  $/kWh, and only the utility's half was modelled -- so `export_price.total`
+  understated a CCA export by the adder, and the CCA's credit bank was short by
+  its entire balance.
+
+  The two halves do not behave alike, which is why they are now separate
+  buckets rather than one. The utility earns its half and spends it against
+  delivery charges in the same cycle: on the 2026-08-04 statement PG&E's bank
+  prints Bonus Credits earned $1.71, applied -$1.71, remaining $0.00. MCE earns
+  its own $1.70 in that cycle and applies none of it -- its "Energy Export Bonus
+  Credits Applied" line prints $0.00 -- so its EEBC balance reaches $3.29, being
+  June's $1.59 plus July's $1.70 with nothing taken out. Folding both into one
+  bonus bucket let the utility's spending drain a balance the statement shows
+  growing, and reported the CCA's bank $3.29 light on a $12.63 balance.
+
+  A new `cca_acc_plus` export component carries it, `CreditBucket.CCA_BONUS`
+  banks it, and it is spent only after the CCA's export credit is exhausted --
+  the order the statement's own applied figures imply. Providers declare it
+  with `credits_acc_plus` in their rate card, defaulting to false, so no
+  provider is credited an adder no statement has shown them paying. Only MCE's
+  card sets it.
+
+  No reconciled bill caught this and none could: the audit compares printed
+  charges against computed ones, and a credit that is never applied never
+  reaches a charge. It was found by folding a real meter series against the
+  statement's printed balances instead of its charges.
+
+  The audit map keeps up with it: the earned component is declared as one the
+  statement does not print separately, and the CCA's grouped "Energy Export
+  Credits Applied" rule now sums the bonus applied alongside the export credit
+  applied, as the two printed lines it already reads do. Both were needed for
+  `audit reconcile` to keep passing -- without the first it reported an unmapped
+  component on every MCE cycle, and without the second it would have reported a
+  mismatch on the first correct bill that spends the bonus.
+
+  `month_curve` plots the export price again. It had been the delivery
+  component plus the ACC Plus adders on a CCA account, omitting the CCA's
+  generation credit and its bonuses -- a figure neither party pays. It and
+  `price_at` are now built from one component rule instead of two copies of it.
+
+  **Export prices change for CCA accounts**, by the ACC Plus rate --
+  $0.00880/kWh for a 2026 residential interconnection. Forecasts, the MQTT
+  payloads, and the EMHASS and Predbat attributes all carry the higher figure,
+  because it is what the two statements between them actually credit.
+
+
 ## [0.4.0] - 2026-08-26
 
 ### Added

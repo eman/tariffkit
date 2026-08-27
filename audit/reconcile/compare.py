@@ -60,6 +60,9 @@ NOT_PRINTED_SEPARATELY: Mapping[str, str] = {
     "delivery": "an export credit earned; the statement prints credits applied, not earned",
     "acc_plus": "the bonus export credit earned; only the applied amount is printed",
     "cca_generation": "the CCA's export credit earned; only the applied amount is printed",
+    "cca_acc_plus": "the CCA's own bonus export credit earned; only the applied "
+    "amount is printed, and it prints $0.00 while the CCA still has export "
+    "credit to spend first",
 }
 
 
@@ -226,7 +229,7 @@ def _from_metered(rule: LineRule, metered: Mapping[str, float]) -> float | None:
 
 def applied_across(bills: Sequence[Bill]) -> dict[str, float]:
     """Credits applied, summed over the agreements that applied them."""
-    totals = {"generation": 0.0, "delivery": 0.0, "bonus": 0.0}
+    totals = {"generation": 0.0, "delivery": 0.0, "bonus": 0.0, "cca_bonus": 0.0}
     for bill in bills:
         for key, value in applied_credits(bill).items():
             totals[key] += value
@@ -245,6 +248,11 @@ def applied_credits(bill: Bill) -> dict[str, float]:
         "generation": -entry.applied.generation,
         "delivery": -entry.applied.delivery,
         "bonus": -entry.applied.bonus,
+        # $0.00 on every statement reconciled so far, because the CCA spends its
+        # export credit first and has never run out. Absent from here it would
+        # stay $0.00 on the computed side forever, and the first cycle that
+        # spends it would report a mismatch on a correct bill.
+        "cca_bonus": -entry.applied.cca_bonus,
     }
 
 

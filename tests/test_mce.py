@@ -193,9 +193,9 @@ class TestExport:
     @pytest.mark.parametrize(
         ("hour", "delivery", "generation", "total"),
         [
-            (19, 0.35038, 0.10708, 0.476968),  # peak
-            (15, 0.00119, 0.05522, 0.070732),  # part-peak
-            (12, 0.00077, 0.05686, 0.072116),  # off-peak
+            (19, 0.35038, 0.10708, 0.485768),  # peak
+            (15, 0.00119, 0.05522, 0.079532),  # part-peak
+            (12, 0.00077, 0.05686, 0.080916),  # off-peak
         ],
     )
     def test_export_components_reproduce_the_reconciled_cycle_rates(
@@ -218,6 +218,9 @@ class TestExport:
         assert components["delivery"] == pytest.approx(delivery)
         assert components["cca_generation"] == pytest.approx(generation)
         assert components["acc_plus"] == pytest.approx(0.00880)
+        # MCE credits an ACC Plus adder of its own at the same rate, banked as
+        # its Energy Export Bonus Credit. The total carries both.
+        assert components["cca_acc_plus"] == pytest.approx(0.00880)
         assert components["cca_solar_bonus"] == pytest.approx(generation * 0.10)
         assert price.export_price.total == pytest.approx(total)
 

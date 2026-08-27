@@ -140,8 +140,30 @@ class NbtExportRates:
         day_index = 0 if kind is DayType.WEEKDAY else 1
         hour = export_hour(moment)
 
-        delivery = float(data["delivery"][month_index][day_index][hour])
-        components: dict[str, float] = {"delivery": delivery}
+        components, complete = self._components(data, month_index, day_index, hour, moment.date())
+        return ExportPrice(
+            total=round(sum(components.values()), 6),
+            vintage=self.vintage,
+            day_type=kind,
+            components={k: round(v, 6) for k, v in components.items()},
+            locked=self.is_locked(moment),
+            complete=complete,
+            exact=moment.year <= self.exact_through,
+        )
+
+    def _components(
+        self, data: dict[str, Any], month_index: int, day_index: int, hour: int, on: date
+    ) -> tuple[dict[str, float], bool]:
+        """One hour's export credit components, and whether they are verified.
+
+        Shared with ``month_curve`` rather than duplicated into it. The two had
+        drifted -- the curve was the delivery component plus adders on a CCA
+        account, a figure neither party pays -- and a second copy of a rule this
+        fiddly is a second place for it to go wrong.
+        """
+        components: dict[str, float] = {
+            "delivery": float(data["delivery"][month_index][day_index][hour])
+        }
         complete = True
 
         if self.config.supplier is Supplier.BUNDLED:
@@ -163,7 +185,7 @@ class NbtExportRates:
                 # MCE's is reconciled against a real cycle, others are estimates.
                 from ..cca import load_rate_card
 
-                card = load_rate_card(cca.rate_card, moment.date())
+                card = load_rate_card(cca.rate_card, on)
                 components["cca_generation"] = float(
                     data["generation"][month_index][day_index][hour]
                 )
@@ -171,36 +193,38 @@ class NbtExportRates:
                     components["cca_solar_bonus"] = (
                         components["cca_generation"] * card.solar_bonus_fraction
                     )
+                if card.credits_acc_plus and self._acc_plus:
+                    # A second ACC Plus adder, not a share of the utility's.
+                    # MCE credits its own at the same $/kWh and banks it as the
+                    # Energy Export Bonus Credit; the 2026-08-04 statement
+                    # prints both, $1.71 applied on PG&E's page and $1.70 added
+                    # to MCE's EEBC balance in the same cycle.
+                    components["cca_acc_plus"] = self._acc_plus
                 complete = card.export_credit_verified
             else:
                 complete = False
 
         if self._acc_plus:
             components["acc_plus"] = self._acc_plus
-
-        return ExportPrice(
-            total=round(sum(components.values()), 6),
-            vintage=self.vintage,
-            day_type=kind,
-            components={k: round(v, 6) for k, v in components.items()},
-            locked=self.is_locked(moment),
-            complete=complete,
-            exact=moment.year <= self.exact_through,
-        )
+        return components, complete
 
     def month_curve(self, year: int, month: str, kind: DayType) -> tuple[float, ...]:
-        """The 24 hourly totals for one month and day type -- handy for plots."""
+        """The 24 hourly totals for one month and day type -- handy for plots.
+
+        Each hour is what ``price_at`` totals for it, CCA generation and both
+        bonus credits included, so a plotted curve is the export price rather
+        than a subset of it. The card is read for the first of the month, which
+        is the same card ``price_at`` reads for any hour it contains.
+        """
         data = self._payload["data"].get(str(year))
         if data is None:
             low, high = self.covered_years
             raise OutOfRangeError(f"{self.vintage}: {year} outside {low}-{high}")
         month_index = MONTHS.index(month)
         day_index = 0 if kind is DayType.WEEKDAY else 1
-        generation = data["generation"][month_index][day_index]
-        delivery = data["delivery"][month_index][day_index]
-        include_generation = self.config.supplier is Supplier.BUNDLED
+        on = date(year, month_index + 1, 1)
         return tuple(
-            round((generation[h] if include_generation else 0.0) + delivery[h] + self._acc_plus, 6)
+            round(sum(self._components(data, month_index, day_index, h, on)[0].values()), 6)
             for h in range(24)
         )
 

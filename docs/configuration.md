@@ -358,11 +358,19 @@ Under NEM 3.0 a CCA customer receives only the **delivery** component of the
 export credit from PG&E. Generation compensation comes from the CCA, and the
 two halves of your import price come from two different bills.
 
+The ACC Plus adder is the exception to that split: where a provider credits one
+of its own — MCE does — you are paid it **twice**, once by each party at the
+same $/kWh, and `export_price.total` carries both. They do not behave alike.
+PG&E's is spent against delivery charges in the cycle that earns it, so its
+Bonus Credits balance normally closes at $0.00; MCE's banks as the Energy
+Export Bonus Credit (EEBC), is never applied while export credit remains to
+spend, and settles on MCE's Solar Billing Plan year rather than PG&E's True-Up.
+
 One rate card is vendored:
 
 | Provider | `rate_card` | Covers |
 |---|---|---|
-| MCE (Marin Clean Energy) | `"mce"` | ELEC generation by season/period, Cost Relief Credit (expires 2026-12-31), Deep Green premium, 10% Solar Bonus Credit |
+| MCE (Marin Clean Energy) | `"mce"` | ELEC generation by season/period, Cost Relief Credit (expires 2026-12-31), Deep Green premium, 10% Solar Bonus Credit, its own ACC Plus adder banked as the EEBC |
 
 For any other CCA, supply rates directly:
 

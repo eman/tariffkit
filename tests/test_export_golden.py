@@ -99,3 +99,38 @@ def test_lock_window_falls_inside_the_exactly_verified_range() -> None:
     lock_end = config.lock_end
     assert lock_end is not None
     assert lock_end.year <= rates.exact_through
+
+
+@pytest.mark.parametrize("supplier", ["bundled", "cca"])
+def test_the_month_curve_is_the_price_it_plots(supplier: str) -> None:
+    """Each hour of the curve equals what ``price_at`` totals for that hour.
+
+    Untested until now, and it had drifted: on a CCA account the curve was the
+    delivery component plus the ACC Plus adders, omitting the CCA's generation
+    credit and its bonuses -- a figure neither party pays, plotted as though it
+    were the export price. Both are built from one component rule now, and this
+    is what says they still are.
+    """
+    from datetime import date
+
+    from tariffkit.config import CcaConfig
+    from tariffkit.models import Supplier
+
+    config = (
+        Config(
+            tariff="E-ELEC",
+            supplier=Supplier.CCA,
+            cca=CcaConfig(name="MCE", rate_card="mce"),
+            interconnection_year=2026,
+            pto_date=date(2026, 1, 1),
+        )
+        if supplier == "cca"
+        else Config()
+    )
+    rates = NbtExportRates(config)
+    curve = rates.month_curve(2026, "Jul", DayType.WEEKDAY)
+    # 2026-07-15 is a Wednesday, so every hour of it is a weekday hour.
+    hourly = [
+        rates.price_at(datetime(2026, 7, 15, hour, tzinfo=PACIFIC)).total for hour in range(24)
+    ]
+    assert list(curve) == pytest.approx(hourly)

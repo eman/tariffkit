@@ -68,6 +68,9 @@ class BankState:
             "generation": round(self.balance.generation, 4),
             "delivery": round(self.balance.delivery, 4),
             "bonus": round(self.balance.bonus, 4),
+            # The CCA's own bonus credit, which its statement prints as a
+            # balance beside the export credit rather than folded into it.
+            "cca_bonus": round(self.balance.cca_bonus, 4),
             "cycles": self.cycles,
             "from": self.period[0].isoformat() if self.period else None,
             "through": self.period[1].isoformat() if self.period else None,
