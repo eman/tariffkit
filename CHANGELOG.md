@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-27
+
 ### Fixed
 - A CCA that credits an ACC Plus adder of its own is now paid for it. The adder
   is credited **twice** on such an account, once by each party at the same
@@ -51,7 +53,6 @@ All notable changes to this project are documented here. This project follows
   $0.00880/kWh for a 2026 residential interconnection. Forecasts, the MQTT
   payloads, and the EMHASS and Predbat attributes all carry the higher figure,
   because it is what the two statements between them actually credit.
-
 
 ## [0.4.0] - 2026-08-26
 
@@ -525,7 +526,8 @@ Initial release.
 - Holiday calendars are extracted per vintage from the source data rather than
   recomputed, because the vintage files disagree in far-future years.
 
-[Unreleased]: https://github.com/eman/tariffkit/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/eman/tariffkit/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/eman/tariffkit/releases/tag/v0.4.1
 [0.4.0]: https://github.com/eman/tariffkit/releases/tag/v0.4.0
 [0.3.0]: https://github.com/eman/tariffkit/releases/tag/v0.3.0
 [0.2.3]: https://github.com/eman/tariffkit/releases/tag/v0.2.3
