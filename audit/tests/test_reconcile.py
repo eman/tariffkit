@@ -14,6 +14,7 @@ from datetime import date
 import pytest
 
 from audit.reconcile import Outcome, Reconciliation, Tolerance, reconcile
+from audit.reconcile.compare import unclaimed_components
 from audit.reconcile.mapping import MAP, LineRule, Side, check_map, normalize_label, split_side
 from audit.reconcile.report import render
 from tariffkit.billing import Bill, BillingPeriod
@@ -136,6 +137,36 @@ class TestOutcomes:
         result = reconcile(parse_statement(pages), _bill({}), CONFIG)
         unmapped = [c for c in result.comparisons if c.outcome is Outcome.UNMAPPED_LINE]
         assert [c.label for c in unmapped] == ["Brand New Rider"]
+
+    def test_the_map_accounts_for_every_component_the_engine_emits(self) -> None:
+        """Every rule here is fed by the engine, so the map has to keep up.
+
+        The rest of this file builds bills by hand, which is why adding a real
+        export component to a CCA account once slipped through: the fixtures
+        never grew it, while `audit reconcile` -- pricing a real statement --
+        reported it unmapped on every MCE cycle and exited non-zero. Pricing an
+        hour through the engine is what makes that visible here.
+        """
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from tariffkit import RateEngine
+
+        config = Config(
+            tariff="E-ELEC",
+            supplier=Supplier.CCA,
+            cca=CcaConfig(name="MCE", rate_card="mce"),
+            interconnection_year=2026,
+            pto_date=date(2026, 1, 1),
+        )
+        priced = RateEngine(config).price_at(
+            datetime(2026, 7, 15, 12, tzinfo=ZoneInfo("America/Los_Angeles"))
+        )
+        bill = Bill(
+            period=BillingPeriod(date(2026, 6, 30), date(2026, 7, 28)),
+            export_components={k: -v for k, v in priced.export_price.components.items()},
+        )
+        assert unclaimed_components(bill) == {}
 
     def test_a_computed_component_no_rule_claims_is_reported(self) -> None:
         # The sneakiest failure: every printed line can agree while the total is

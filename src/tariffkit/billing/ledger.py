@@ -412,15 +412,19 @@ def apply_credits(bill: Bill, opening: CreditBalances | None = None) -> LedgerEn
 def _reduce(applied: CreditBalances, by: float) -> CreditBalances:
     """Un-spend ``by`` dollars of credit, bonus first.
 
-    Reverse of the order it was spent in: the bonus is the most widely usable
-    bucket, so it is the one to hand back when the charges turn out not to have
-    needed it.
+    Reverse of the order it was spent in, exactly: the bonus is the most widely
+    usable bucket, so it is the one to hand back when the charges turn out not
+    to have needed it, and the CCA's bonus is next because it is spent last of
+    the scoped buckets. Handing back a scoped bucket ahead of one spent after it
+    moves credit between the two banks -- returning delivery credit to the
+    utility while leaving the CCA's bonus spent is the misattribution
+    ``CCA_BONUS`` exists to prevent.
     """
     left = by
     for bucket in (
         CreditBucket.BONUS,
-        CreditBucket.DELIVERY,
         CreditBucket.CCA_BONUS,
+        CreditBucket.DELIVERY,
         CreditBucket.GENERATION,
     ):
         give = min(applied[bucket], left)

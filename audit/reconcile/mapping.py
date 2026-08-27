@@ -312,8 +312,15 @@ MAP: tuple[LineRule, ...] = (
         "Energy Export Credits Applied",
         Section.CCA_GENERATION,
         Side.APPLIED,
-        ("generation",),
+        ("generation", "cca_bonus"),
         aliases=("Energy Export Bonus Credits Applied",),
+        combines="the CCA prints its export credit applied and its bonus credit "
+        "applied as two lines against one block of generation charges, and this "
+        "rule sums both printed lines, so it has to sum both computed ones. The "
+        "bonus line has printed 0.00 on every statement reconciled so far -- the "
+        "export credit is spent first and has never run out -- which is exactly "
+        "why claiming only `generation` looked right and would report a mismatch "
+        "on the first correct bill that spends the bonus",
         verified=(AUG,),
     ),
 )

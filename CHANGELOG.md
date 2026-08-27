@@ -34,6 +34,14 @@ All notable changes to this project are documented here. This project follows
   reaches a charge. It was found by folding a real meter series against the
   statement's printed balances instead of its charges.
 
+  The audit map keeps up with it: the earned component is declared as one the
+  statement does not print separately, and the CCA's grouped "Energy Export
+  Credits Applied" rule now sums the bonus applied alongside the export credit
+  applied, as the two printed lines it already reads do. Both were needed for
+  `audit reconcile` to keep passing -- without the first it reported an unmapped
+  component on every MCE cycle, and without the second it would have reported a
+  mismatch on the first correct bill that spends the bonus.
+
   **Export prices change for CCA accounts**, by the ACC Plus rate --
   $0.00880/kWh for a 2026 residential interconnection. Forecasts, the MQTT
   payloads, and the EMHASS and Predbat attributes all carry the higher figure,

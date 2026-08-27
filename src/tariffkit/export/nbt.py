@@ -206,8 +206,11 @@ class NbtExportRates:
         generation = data["generation"][month_index][day_index]
         delivery = data["delivery"][month_index][day_index]
         include_generation = self.config.supplier is Supplier.BUNDLED
-        # Both adders where the CCA credits its own, so the curve sums to what
-        # `price_at` reports for the same hour.
+        # Both adders where the CCA credits its own, matching what `price_at`
+        # puts in an hour's components. The curve still omits CCA generation, as
+        # it always has -- this package ships no CCA generation matrix -- so on
+        # such an account it is the utility's half of the credit plus the
+        # adders, not the whole export price.
         adder = self._acc_plus * (
             1 + self._cca_credits_acc_plus(date(year, MONTHS.index(month) + 1, 1))
         )
@@ -217,11 +220,18 @@ class NbtExportRates:
         )
 
     def _cca_credits_acc_plus(self, on: date) -> bool:
-        """Whether the configured CCA credits an ACC Plus adder of its own."""
+        """Whether the configured CCA credits an ACC Plus adder of its own.
+
+        Gated exactly as ``price_at`` gates the component, explicit rate
+        included: a config carrying both an ``export_generation_rate`` and a
+        ``rate_card`` takes the explicit rate there and never reaches the card,
+        so reading the card here would add an adder the priced hour does not
+        have.
+        """
         if self.config.supplier is Supplier.BUNDLED:
             return False
         cca = self.config.cca
-        if cca is None or cca.rate_card is None:
+        if cca is None or cca.export_generation_rate is not None or cca.rate_card is None:
             return False
         from ..cca import load_rate_card
 
