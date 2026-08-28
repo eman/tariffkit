@@ -413,7 +413,10 @@ def main(argv: list[str] | None = None) -> int:
         "archive_sha256": archive_sha,
         "vintages": manifest_vintages,
     }
-    manifest_path = DATA_DIR / "manifest.json"
+    # Not "manifest.json": hacs/default rejects a repository that contains
+    # more than one *manifest.json, which would collide with the Home
+    # Assistant manifest in custom_components/tariffkit.
+    manifest_path = DATA_DIR / "sources.json"
     manifest_body = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     if args.check:
         current = manifest_path.read_text() if manifest_path.exists() else ""

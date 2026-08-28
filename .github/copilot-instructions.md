@@ -72,7 +72,7 @@ hand-transcribed. Never hand-edit a generated file; regenerate it.
 
 ### Export rates (NBT matrices + holiday calendar)
 
-`src/tariffkit/data/export/pge/*.json.gz`, `holidays.toml`, and `manifest.json`
+`src/tariffkit/data/export/pge/*.json.gz`, `holidays.toml`, and `sources.json`
 come from PG&E's published CSV archive. It is 843 MB, so it has its own entry
 point rather than sharing the PDF-driven one.
 
