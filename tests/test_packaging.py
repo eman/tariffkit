@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import struct
 import tomllib
 from pathlib import Path
 
@@ -59,3 +60,22 @@ def test_home_assistant_does_not_vendor_the_library() -> None:
     assert not (component / "vendored").exists()
     assert "sys.path" not in source
     assert (component / "brand" / "icon.png").is_file()
+
+
+def test_brand_assets_match_the_home_assistant_spec() -> None:
+    """HACS requires brand/icon.png; the brands CDN spec fixes the sizes.
+
+    Home Assistant only ever serves PNGs out of brand/ (see the ALLOWED_IMAGES
+    allowlist in homeassistant.components.brands), so anything else in there is
+    dead weight shipped to every install.
+    """
+    brand = ROOT / "custom_components" / "tariffkit" / "brand"
+    expected = {"icon.png": 256, "icon@2x.png": 512}
+
+    assert sorted(path.name for path in brand.iterdir()) == sorted(expected)
+    for name, side in expected.items():
+        header = (brand / name).read_bytes()[:26]
+        assert header[12:16] == b"IHDR", f"{name} is not a PNG"
+        width, height, _depth, color_type = struct.unpack(">IIBB", header[16:26])
+        assert (width, height) == (side, side)
+        assert color_type == 6, f"{name} must keep its alpha channel"
