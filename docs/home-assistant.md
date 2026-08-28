@@ -639,6 +639,26 @@ however large the bank. Two attributes say where the difference went:
 |---|---|
 | `credit_applied` | Credit actually spent against this period's charges |
 | `bank_change` | How much the bank moved: earned less applied. **Negative** for any period that spends more than it earns, which is the normal winter case |
+| `gross_charges` | The ledger's own charge total, before credits. Already **net** of anything the statement spends inside the cycle rather than banking, which is why the charge components below do not sum to it |
+| `non_offsettable` | The part of `gross_charges` no credit may reach. `max(0, non_offsettable)` is the floor under a cycle's state. It can itself go negative where a baseline credit outweighs the charges beside it |
+| `not_paid_out` | Credit that would have made the amount owed negative, had it been spent. A statement charges nothing rather than refunding, and this is that clamp |
+
+The three of them exist so the breakdown can be added up. The charge components
+alone cannot reach the state, and the shortfall is not a rounding error:
+
+```
+gross_charges − credit_applied + not_paid_out == state
+```
+
+exactly, on **today** and on the **cycle**. `energy_charges + taxes +
+fixed_charges` reaches `gross_charges` only on an account with nothing spent
+in-cycle — a CCA that credits a solar bonus reduces that cycle's generation
+charges with it rather than banking it, so it appears in no other attribute.
+
+Reach for the floored form on a cycle (`max(0, gross_charges − credit_applied)`)
+only if you are not carrying `not_paid_out`; it does **not** work for a day,
+because a day is one cycle-to-date figure minus the previous one and each was
+floored on its own.
 
 It is never negative for a cycle, because a statement charges nothing rather
 than paying out. A negative figure for **today** means today's exports offset
@@ -659,9 +679,9 @@ bundled account only the second reading is exact.
 
 Every money entity carries its own decomposition as attributes —
 `energy_charges`, `taxes`, `export_credits`, `fixed_charges`, `credit_applied`,
-`bank_change`, `imported_kwh`, `exported_kwh`, the time-of-use `buckets`,
-`quality`, and any pricing `warnings` — so a surprising figure is auditable from
-the entity:
+`bank_change`, `gross_charges`, `non_offsettable`, `not_paid_out`,
+`imported_kwh`, `exported_kwh`, the time-of-use `buckets`, `quality`, and any
+pricing `warnings` — so a surprising figure is auditable from the entity:
 
 ```yaml
 {{ state_attr('sensor.tariffkit_home_amount_due_today', 'buckets') }}
@@ -964,11 +984,16 @@ export_credit: 731.05
 # credit they could not spend carried into the bank rather than refunded.
 amount_due: 154.98
 residual: 0.0
+# Each cycle carries `gross_charges` and `non_offsettable` beside `cash_due`,
+# so the block reconciles: cash_due == max(0, gross_charges - credit_applied),
+# to the cent each term is rounded to.
 cycles:
   - start: "2026-06-03"
     end: "2026-06-29"
     total: -119.60        # the bill's own sum, every credit subtracted
     cash_due: 25.27       # what the statement charged
+    gross_charges: 34.31  # charges before credit; cash_due is this less applied
+    non_offsettable: 6.12 # the part of it no credit may reach
     credit_applied: 9.04  # what the charges could absorb
     bank_closing: 144.87  # the balance standing after this cycle
     complete: true

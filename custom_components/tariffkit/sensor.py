@@ -488,11 +488,34 @@ def _non_offsettable(bill: Bill, entry: LedgerEntry) -> float:
     """The part of the charges no credit is allowed to reach.
 
     The non-bypassable charges, in the tariff's own word. Published beside
-    ``gross_charges`` because it is the floor under the state: no bank, however
-    large, brings the amount owed below it.
+    ``gross_charges`` because ``max(0, non_offsettable)`` is the floor under a
+    cycle's state: no bank, however large, brings the amount owed below it. The
+    clamp is not decoration -- ``baseline_credit`` is a negative import
+    component counted here, and at a high enough export ratio it outweighs the
+    charges beside it and this goes negative while the state stays at zero.
     """
     del bill
     return entry.non_offsettable
+
+
+def _not_paid_out(bill: Bill, entry: LedgerEntry) -> float:
+    """Credit that would have made the amount owed negative, had it been spent.
+
+    A statement charges nothing rather than paying out, so ``cash_due`` is
+    floored at zero and ``gross_charges - credit_applied`` alone undershoots
+    wherever that floor binds. This is the difference, and it is what closes the
+    breakdown: ``gross_charges - credit_applied + not_paid_out`` is the state
+    exactly, on a cycle and on a day.
+
+    It has to be published rather than derived. A day is one cycle-to-date
+    figure minus the previous one, so a consumer holding only the day's numbers
+    cannot tell whether either cycle hit the floor -- and if one did, no
+    expression over the other attributes recovers the state. Sending this
+    through the same door as the rest means the day's copy is the difference of
+    the two floors, which is precisely the correction the day needs.
+    """
+    del bill
+    return max(0.0, entry.applied.total - entry.gross_charges)
 
 
 def _energy_charges(bill: Bill, entry: LedgerEntry) -> float:
@@ -648,10 +671,14 @@ def _money_attrs(span: str, description: str) -> Callable[[TariffKitData], dict[
             "fixed_charges": figure(_fixed),
             # What the terms above cannot be added into. `gross_charges` is the
             # ledger's own charge total, already net of anything spent in-cycle
-            # instead of banked, so `gross_charges - credit_applied` reaches the
-            # state and the three components above do not.
+            # instead of banked, and `not_paid_out` is the zero floor a
+            # statement applies rather than refunding. Together:
+            #     gross_charges - credit_applied + not_paid_out == state
+            # exactly, for both spans. The three components above do not reach
+            # it and were never meant to be summed on their own.
             "gross_charges": figure(_gross),
             "non_offsettable": figure(_non_offsettable),
+            "not_paid_out": figure(_not_paid_out),
             # The two halves of why the state is not simply charges minus
             # credits, and their difference. `bank_change` is negative for a
             # cycle that spends more than it earns, which is normal and is why

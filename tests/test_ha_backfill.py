@@ -936,3 +936,33 @@ def test_a_recorded_hour_this_refuses_is_not_reported_as_missing() -> None:
     # The genuine hole still reads as one, in the same words as before.
     absent = warnings_for(refuse=False)
     assert absent == ("sensor.x is missing 12 of 72 hour(s) in this window",)
+
+
+def test_the_summary_cycles_carry_the_terms_that_reconcile_them() -> None:
+    """The payload has to add up for the same reason the entity attributes do.
+
+    `cash_due` is `max(0, gross_charges - credit_applied)`, so a consumer given
+    only the charge components lands short of it by whatever the statement spent
+    in-cycle instead of banking. Both terms are published; this is what notices
+    if either stops being.
+    """
+    profile = _profile()
+    readings = _hours(date(2026, 6, 1), date(2026, 7, 31), imported=0.2, exported=2.0)
+    result = backfill.build(profile, readings, date(2026, 6, 1), date(2026, 7, 31), 1)
+    from tariffkit.billing import run_ledger
+
+    entries = {entry.period: entry for entry in run_ledger(result.bills).entries}
+
+    cycles = result.summary("probe")["cycles"]
+    assert len(cycles) == 2
+    for cycle in cycles:
+        entry = entries[
+            next(b.period for b in result.bills if b.period.start.isoformat() == cycle["start"])
+        ]
+        assert cycle["gross_charges"] == pytest.approx(round(entry.gross_charges, 2))
+        assert cycle["non_offsettable"] == pytest.approx(round(entry.non_offsettable, 2))
+        # Each term is rounded to cents independently, so the identity over the
+        # payload cannot hold tighter than the three roundings it carries.
+        assert cycle["cash_due"] == pytest.approx(
+            max(0.0, cycle["gross_charges"] - cycle["credit_applied"]), abs=0.02
+        )

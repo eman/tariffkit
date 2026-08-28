@@ -428,10 +428,13 @@ class UsageReader:
                 found.append(f"{entity} is missing {missing} of {expected} hour(s) in this window")
             refused = len(rows) - len(covered.get(entity, set()))
             if refused > 0:
+                # Every reason an existing row is unusable, because the count
+                # covers all of them: a row can also arrive with no `change` at
+                # all when the recorder has no sum to difference against.
                 found.append(
                     f"{entity} recorded {refused} of {expected} hour(s) this could not use: "
-                    f"a counter that went backwards or advanced by more than "
-                    f"{MAX_INTERVAL_KW:.0f} kWh within the hour"
+                    f"a counter that went backwards, advanced by more than "
+                    f"{MAX_INTERVAL_KW:.0f} kWh within the hour, or carried no usable total"
                 )
         return tuple(found)
 

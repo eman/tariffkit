@@ -46,7 +46,7 @@ from tariffkit.account.model import (
     MeterSources,
     ObservedAgreement,
 )
-from tariffkit.billing import BillingPeriod
+from tariffkit.billing import Bill, BillingPeriod
 from tariffkit.timeutil import PACIFIC
 
 IMPORT_ENTITY = "sensor.grid_energy_delivered"
@@ -171,6 +171,20 @@ async def test_no_meters_configured_creates_no_usage_entities(hass: HomeAssistan
         assert _entity_id(hass, entry, key) is None
 
 
+def _assert_reconciles(hass: HomeAssistant, entry: MockConfigEntry, span: str) -> None:
+    """`gross_charges - credit_applied + not_paid_out` is the state, exactly.
+
+    The published contract for the Amount Due breakdown. Written once because
+    the point of it is that it holds for every span and every account, and a
+    copy per test invites one of them to drift back into the unfloored version
+    that only looks right until a cycle earns more credit than it owes.
+    """
+    state = _state(hass, entry, f"amount_due_{span}")
+    figures = state.attributes
+    reached = figures["gross_charges"] - figures["credit_applied"] + figures["not_paid_out"]
+    assert float(state.state) == pytest.approx(reached, abs=1e-4), span
+
+
 @pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
 async def test_running_totals_price_metered_hours(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
@@ -238,14 +252,10 @@ async def test_running_totals_price_metered_hours(
 
     # The identity that holds on every account, including the ones the sum
     # above does not reach: a CCA statement spends its solar bonus in-cycle, so
-    # the charge components are already short of the ledger's own total by it.
-    # `gross_charges` is that total, and it is what makes the block add up.
+    # the charge components are already short of the ledger's own total by it,
+    # and a statement floors what it charges at zero rather than paying out.
     for span in ("today", "cycle"):
-        figures = _state(hass, entry, f"amount_due_{span}").attributes
-        assert float(_state(hass, entry, f"amount_due_{span}").state) == pytest.approx(
-            figures["gross_charges"] - figures["credit_applied"], abs=1e-4
-        )
-        assert figures["non_offsettable"] <= figures["gross_charges"]
+        _assert_reconciles(hass, entry, span)
 
     # The cycle covers the same readings over more days, so it owes at least
     # the day does and carries more Base Services Charge.
@@ -974,3 +984,53 @@ async def test_todays_buckets_decompose_todays_figure(
     assert sum(b["imported_kwh"] for b in buckets) == pytest.approx(
         today.attributes["imported_kwh"], abs=1e-3
     )
+
+
+def test_a_day_reconciles_when_either_cycle_hits_the_floor() -> None:
+    """The day is where the review's objection actually bites.
+
+    A day is one cycle-to-date figure minus the previous one, and `cash_due` is
+    floored at zero on each of them independently. So `Δmax(0, gross - applied)`
+    is not `Δgross - Δapplied`, and no expression over those two recovers the
+    state once either floor binds. `not_paid_out` is differenced by the same
+    door as the rest, which makes the day's copy the difference of the two
+    floors -- exactly the correction the day needs.
+
+    Driven at the reading functions rather than through a config entry because
+    the floor needs a cycle whose credits outweigh even its non-bypassable
+    charges, which takes a `baseline_credit` tariff rather than a large export.
+    """
+    from custom_components.tariffkit.sensor import (
+        _applied,
+        _cash_due,
+        _gross,
+        _not_paid_out,
+    )
+
+    from tariffkit.billing import apply_credits
+
+    def bill(distribution: float, export: float) -> Bill:
+        return Bill(
+            period=BillingPeriod(date(2026, 8, 1), date(2026, 8, 31)),
+            import_components={"distribution": distribution, "baseline_credit": -12.0},
+            export_components={"delivery": -export},
+        )
+
+    # Yesterday's cycle-to-date floors; today's has run up enough charge to
+    # climb back out of it. Only one of the two is clamped, which is the case
+    # an unfloored identity gets wrong by the most.
+    yesterday, cycle = bill(2.0, 40.0), bill(60.0, 40.0)
+
+    def day(read: object) -> float:
+        return read(cycle, apply_credits(cycle)) - read(  # type: ignore[operator]
+            yesterday, apply_credits(yesterday)
+        )
+
+    assert apply_credits(yesterday).cash_due == pytest.approx(0.0), "the floor has to bind"
+    assert apply_credits(cycle).cash_due > 0, "and today has to be out of it"
+    assert day(_not_paid_out) != pytest.approx(0.0), "otherwise this proves nothing"
+
+    assert day(_gross) - day(_applied) != pytest.approx(day(_cash_due)), (
+        "the unfloored identity the review caught"
+    )
+    assert day(_gross) - day(_applied) + day(_not_paid_out) == pytest.approx(day(_cash_due))
