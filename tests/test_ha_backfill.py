@@ -888,3 +888,51 @@ def test_a_settlement_lowers_what_the_cycles_after_it_can_offset() -> None:
     after = [e for e in result.lifetime.entries if e.period.start > settled]
     assert before and after
     assert after[0].opening.total < before[-1].closing.total, "the clawback reached the next cycle"
+
+
+def test_a_recorded_hour_this_refuses_is_not_reported_as_missing() -> None:
+    """An hour the recorder wrote is not an hour the recorder lost.
+
+    The coverage warning counted every hour absent from `covered`, and an hour
+    whose counter jumped further than a house can draw is refused rather than
+    absent. Reporting it as missing told an owner their meter history had holes
+    in it when every hour was on disk.
+    """
+    import asyncio
+    from datetime import datetime, timedelta
+
+    from custom_components.tariffkit.energy import MeterSettings, UsageReader
+
+    from tariffkit.timeutil import PACIFIC
+
+    def warnings_for(*, refuse: bool) -> tuple[str, ...]:
+        reader = UsageReader(None, MeterSettings(import_entity="sensor.x"))  # type: ignore[arg-type]
+        opens = datetime(2026, 6, 1, tzinfo=PACIFIC)
+        rows: list[dict[str, float]] = []
+        total = 0.0
+        for index in range(73):
+            hole = bool(index) and index % 6 == 0
+            if hole and not refuse:
+                continue  # the recorder never wrote this hour
+            total += 500.0 if hole else 0.5
+            rows.append(
+                {"start": (opens - timedelta(hours=1)).timestamp() + index * 3600, "sum": total}
+                | {"change": 500.0 if hole else 0.5, "state": total}
+            )
+
+        async def query(window: datetime, until: datetime) -> dict[str, list[dict[str, float]]]:
+            del window, until
+            return {"sensor.x": rows}
+
+        reader._async_query = query  # type: ignore[method-assign]
+        asyncio.run(reader.async_readings(date(2026, 6, 1), date(2026, 6, 3)))
+        return reader.absent
+
+    refused = warnings_for(refuse=True)
+    assert len(refused) == 1
+    assert "could not use" in refused[0]
+    assert "is missing" not in refused[0], "every hour was on disk"
+
+    # The genuine hole still reads as one, in the same words as before.
+    absent = warnings_for(refuse=False)
+    assert absent == ("sensor.x is missing 12 of 72 hour(s) in this window",)
