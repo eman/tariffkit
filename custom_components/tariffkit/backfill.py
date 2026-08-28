@@ -213,6 +213,12 @@ class BackfillResult:
                     # contribution to it -- the entity attribute named
                     # `bank_change` is that, and they are different numbers.
                     "cash_due": round(entry.cash_due, 2),
+                    # `cash_due` is `gross_charges - credit_applied`, and the
+                    # components above do not sum to `gross_charges`: anything
+                    # the statement spends in-cycle instead of banking is
+                    # already out of it. Published so the block reconciles.
+                    "gross_charges": round(entry.gross_charges, 2),
+                    "non_offsettable": round(entry.non_offsettable, 2),
                     "credit_applied": round(entry.applied.total, 2),
                     "bank_closing": round(entry.closing.total, 2),
                     "complete": bill.complete,

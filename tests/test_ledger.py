@@ -20,7 +20,7 @@ from tariffkit.billing import (
     credits_earned,
     run_ledger,
 )
-from tariffkit.billing.ledger import charges_by_bucket
+from tariffkit.billing.ledger import CHARGE_OFFSETS, charges_by_bucket
 
 PERIOD = BillingPeriod(date(2026, 6, 30), date(2026, 7, 28))
 
@@ -165,6 +165,40 @@ class TestMceBank:
         assert second.applied.generation == pytest.approx(5.00)
         assert second.cash_due == pytest.approx(0.0)
         assert second.closing.total == pytest.approx(12.63 - 5.00)
+
+
+class TestThePublishedTermsReconcile:
+    """What a consumer adds up has to reach the state.
+
+    `amount_due_*` publishes a breakdown, and the in-cycle charge offset used to
+    appear in none of it: not in `export_credits`, not in `credit_applied`. A
+    consumer summing the terms landed short by exactly that, with no way to tell
+    a missing term from a rounding error. `gross_charges` is the term that
+    closes it, so the identity it rests on is pinned here.
+    """
+
+    def test_charge_components_alone_do_not_reach_the_state(self) -> None:
+        """The gap is the offset, not an error -- which is why it needed a name."""
+        bill = mce_bill()
+        entry = apply_credits(bill, MCE_OPENING)
+
+        naive = bill.energy_charges + bill.taxes + bill.fixed_charges - entry.applied.total
+        offset = sum(
+            abs(value) for name, value in bill.export_components.items() if name in CHARGE_OFFSETS
+        )
+        assert offset > 0, "the fixture has to exercise an offset for this to mean anything"
+        assert naive - entry.cash_due == pytest.approx(offset)
+
+    def test_gross_charges_less_credit_applied_is_the_state(self) -> None:
+        for bill, opening in ((mce_bill(), MCE_OPENING), (pge_bill(), None)):
+            entry = apply_credits(bill, opening)
+            assert entry.gross_charges - entry.applied.total == pytest.approx(entry.cash_due)
+
+    def test_no_credit_reaches_below_the_non_offsettable_floor(self) -> None:
+        """Published beside it, and the reason a large bank still leaves a bill."""
+        bill = pge_bill()
+        entry = apply_credits(bill, CreditBalances(bonus=10_000.0))
+        assert entry.cash_due == pytest.approx(entry.non_offsettable)
 
 
 class TestInCycleOffsetOverrun:

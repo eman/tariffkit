@@ -469,6 +469,32 @@ def _compensated(bill: Bill, entry: LedgerEntry) -> float:
     return entry.exported_kwh
 
 
+def _gross(bill: Bill, entry: LedgerEntry) -> float:
+    """Charges as the ledger sees them, before any credit is applied.
+
+    Not simply ``energy_charges + taxes + fixed_charges``. A component the
+    statement spends inside the cycle rather than banking -- MCE's Solar Bonus
+    Credit is the one vendored, see ``CHARGE_OFFSETS`` -- is already subtracted
+    here, and it appears in no other attribute: it is not an export credit and
+    it is not credit applied. Without this figure the published terms cannot be
+    made to reach the state, and a consumer cannot tell the shortfall from a
+    rounding error.
+    """
+    del bill
+    return entry.gross_charges
+
+
+def _non_offsettable(bill: Bill, entry: LedgerEntry) -> float:
+    """The part of the charges no credit is allowed to reach.
+
+    The non-bypassable charges, in the tariff's own word. Published beside
+    ``gross_charges`` because it is the floor under the state: no bank, however
+    large, brings the amount owed below it.
+    """
+    del bill
+    return entry.non_offsettable
+
+
 def _energy_charges(bill: Bill, entry: LedgerEntry) -> float:
     del entry
     return bill.energy_charges
@@ -620,6 +646,12 @@ def _money_attrs(span: str, description: str) -> Callable[[TariffKitData], dict[
             "taxes": figure(_taxes),
             "export_credits": figure(_earned),
             "fixed_charges": figure(_fixed),
+            # What the terms above cannot be added into. `gross_charges` is the
+            # ledger's own charge total, already net of anything spent in-cycle
+            # instead of banked, so `gross_charges - credit_applied` reaches the
+            # state and the three components above do not.
+            "gross_charges": figure(_gross),
+            "non_offsettable": figure(_non_offsettable),
             # The two halves of why the state is not simply charges minus
             # credits, and their difference. `bank_change` is negative for a
             # cycle that spends more than it earns, which is normal and is why

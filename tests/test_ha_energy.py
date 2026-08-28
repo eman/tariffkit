@@ -236,6 +236,17 @@ async def test_running_totals_price_metered_hours(
     )
     assert breakdown["buckets"]
 
+    # The identity that holds on every account, including the ones the sum
+    # above does not reach: a CCA statement spends its solar bonus in-cycle, so
+    # the charge components are already short of the ledger's own total by it.
+    # `gross_charges` is that total, and it is what makes the block add up.
+    for span in ("today", "cycle"):
+        figures = _state(hass, entry, f"amount_due_{span}").attributes
+        assert float(_state(hass, entry, f"amount_due_{span}").state) == pytest.approx(
+            figures["gross_charges"] - figures["credit_applied"], abs=1e-4
+        )
+        assert figures["non_offsettable"] <= figures["gross_charges"]
+
     # The cycle covers the same readings over more days, so it owes at least
     # the day does and carries more Base Services Charge.
     cycle = _state(hass, entry, "amount_due_cycle")
