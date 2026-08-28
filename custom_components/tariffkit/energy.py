@@ -316,6 +316,12 @@ class UsageReader:
         # produce a gapless-looking series of `exported=0`, and every credit the
         # site earned disappears without a gap ever being detected.
         covered: dict[str, set[float]] = {}
+        # What the recorder actually held, before this decides what it can use.
+        # Kept apart from `covered` so the coverage warning can say which of the
+        # two it means: an hour with no row is a hole in the history, an hour
+        # whose row was refused is a reading this could not price. Counting both
+        # as "missing" sent an owner looking for data loss that is not there.
+        recorded: dict[str, set[float]] = {}
         for direction, entity in (
             (0, self.settings.import_entity),
             (1, self.settings.export_entity),
@@ -323,9 +329,12 @@ class UsageReader:
             if not entity:
                 continue
             for row in rows.get(entity) or []:
-                change = row.get("change")
                 slot = float(row["start"])
-                if change is None or slot < opens_at.timestamp():
+                if slot < opens_at.timestamp():
+                    continue
+                recorded.setdefault(entity, set()).add(slot)
+                change = row.get("change")
+                if change is None:
                     continue
                 if change < 0 or change > MAX_INTERVAL_KW:
                     # Loudly, unlike a silent skip: this is a statistics series
@@ -345,7 +354,7 @@ class UsageReader:
                 hours.setdefault(slot, [0.0, 0.0])[direction] += change
                 covered.setdefault(entity, set()).add(slot)
         self.discarded = tuple(sorted(set(dropped)))
-        self.absent = self._absent_series(covered, opens_at, closes_at)
+        self.absent = self._absent_series(covered, recorded, opens_at, closes_at)
         reconstructed = self._reconstructed(covered)
         return [
             IntervalReading(
@@ -384,23 +393,49 @@ class UsageReader:
         return found
 
     def _absent_series(
-        self, covered: Mapping[str, set[float]], opens_at: datetime, closes_at: datetime
+        self,
+        covered: Mapping[str, set[float]],
+        recorded: Mapping[str, set[float]],
+        opens_at: datetime,
+        closes_at: datetime,
     ) -> tuple[str, ...]:
         """Say which configured meters the window does not fully account for.
 
         A meter with no statistics at all is the dangerous case: its direction
         silently reads zero for every hour, so the totals look complete while an
         entire side of the bill is missing.
+
+        The two shortfalls are reported apart because they mean different things
+        to whoever reads them. An hour the recorder never wrote is history that
+        is gone, and nothing here can recover it. An hour it wrote and this
+        refused is a reading that exists and is unusable -- a counter that went
+        backwards, or jumped further in one hour than a house can draw -- which
+        points at the meter or the integration feeding it, not at the recorder.
+        Reporting the second as "missing" sent an owner hunting for data loss
+        that had not happened.
         """
         expected = int((closes_at.timestamp() - opens_at.timestamp()) // 3600)
         found: list[str] = []
         for entity in self.settings.entities:
-            slots = covered.get(entity, set())
-            if not slots:
+            rows = recorded.get(entity, set())
+            if not rows:
                 found.append(f"no recorder statistics at all for {entity} over this window")
-            elif expected and len(slots) < expected:
-                missing = expected - len(slots)
+                continue
+            if not expected:
+                continue
+            missing = expected - len(rows)
+            if missing > 0:
                 found.append(f"{entity} is missing {missing} of {expected} hour(s) in this window")
+            refused = len(rows) - len(covered.get(entity, set()))
+            if refused > 0:
+                # Every reason an existing row is unusable, because the count
+                # covers all of them: a row can also arrive with no `change` at
+                # all when the recorder has no sum to difference against.
+                found.append(
+                    f"{entity} recorded {refused} of {expected} hour(s) this could not use: "
+                    f"a counter that went backwards, advanced by more than "
+                    f"{MAX_INTERVAL_KW:.0f} kWh within the hour, or carried no usable total"
+                )
         return tuple(found)
 
     async def _async_query(

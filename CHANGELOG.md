@@ -5,6 +5,32 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+- The Amount Due entities and the backfill response publish the terms their
+  breakdown rests on. `gross_charges` is the ledger's own charge total,
+  `non_offsettable` the part of it no credit may reach, and `not_paid_out` the
+  clamp a statement applies rather than refunding. Together
+  `gross_charges - credit_applied + not_paid_out` is the state exactly, for a
+  day and for a cycle.
+
+  The published components could not be added into the state before this. A
+  component the statement spends inside the cycle rather than banking -- MCE's
+  Solar Bonus Credit is the one vendored -- is subtracted from the charges
+  before credits are applied and appeared in no attribute: not in
+  `export_credits`, not in `credit_applied`. A consumer summing what was there
+  landed short by exactly that, with no way to tell a missing term from a
+  rounding error.
+
+### Fixed
+- The backfill coverage check no longer reports an hour it refused as an hour
+  the recorder lost. An hour falls outside the priced set for three reasons and
+  only one of them is absence: no statistics row, no usable total on the row,
+  or a change refused as a counter's catch-up across an outage. All three
+  printed as "is missing N of M hour(s)", which reads as data loss -- on a
+  window whose 1392 hours were all on disk it claimed 299 were gone. What the
+  recorder held and what could be priced are now counted apart and reported in
+  their own words.
+
 ## [0.4.1] - 2026-08-27
 
 ### Fixed

@@ -20,7 +20,7 @@ from tariffkit.billing import (
     credits_earned,
     run_ledger,
 )
-from tariffkit.billing.ledger import charges_by_bucket
+from tariffkit.billing.ledger import CHARGE_OFFSETS, charges_by_bucket
 
 PERIOD = BillingPeriod(date(2026, 6, 30), date(2026, 7, 28))
 
@@ -69,6 +69,22 @@ def mce_bill() -> Bill:
             "cca_solar_bonus": -0.96,
             "cca_acc_plus": -1.70,
         },
+    )
+
+
+def _payout_bill() -> Bill:
+    """A cycle whose credits outweigh its charges.
+
+    `baseline_credit` is a negative import component and counts as
+    non-offsettable, so at a high enough export ratio both `non_offsettable` and
+    `gross_charges` go negative while `cash_due` stays at zero -- a statement
+    charges nothing rather than paying out. Shares its shape with
+    ``TestAStatementNeverPaysYou``, which is where that rule is pinned.
+    """
+    return Bill(
+        period=PERIOD,
+        import_components={"distribution": 2.0, "baseline_credit": -12.0},
+        export_components={"delivery": -40.0},
     )
 
 
@@ -165,6 +181,62 @@ class TestMceBank:
         assert second.applied.generation == pytest.approx(5.00)
         assert second.cash_due == pytest.approx(0.0)
         assert second.closing.total == pytest.approx(12.63 - 5.00)
+
+
+class TestThePublishedTermsReconcile:
+    """What a consumer adds up has to reach the state.
+
+    `amount_due_*` publishes a breakdown, and the in-cycle charge offset used to
+    appear in none of it: not in `export_credits`, not in `credit_applied`. A
+    consumer summing the terms landed short by exactly that, with no way to tell
+    a missing term from a rounding error. `gross_charges` is the term that
+    closes it, so the identity it rests on is pinned here.
+    """
+
+    def test_charge_components_alone_do_not_reach_the_state(self) -> None:
+        """The gap is the offset, not an error -- which is why it needed a name."""
+        bill = mce_bill()
+        entry = apply_credits(bill, MCE_OPENING)
+
+        naive = bill.energy_charges + bill.taxes + bill.fixed_charges - entry.applied.total
+        offset = sum(
+            abs(value) for name, value in bill.export_components.items() if name in CHARGE_OFFSETS
+        )
+        assert offset > 0, "the fixture has to exercise an offset for this to mean anything"
+        assert naive - entry.cash_due == pytest.approx(offset)
+
+    #: Every shape the published terms have to reconcile over, the last of them
+    #: the one where the zero floor binds and an unfloored identity breaks.
+    CASES = (
+        ("cca in-cycle offset", mce_bill, MCE_OPENING),
+        ("plain cycle", pge_bill, None),
+        ("bank larger than the charges", pge_bill, CreditBalances(bonus=10_000.0)),
+        ("credit outweighs the charges", _payout_bill, None),
+    )
+
+    def test_the_floor_is_what_makes_it_exact(self) -> None:
+        """`gross - applied` alone is short wherever a statement declines to pay."""
+        entry = apply_credits(_payout_bill())
+        assert entry.gross_charges < 0, "this case has to reach the floor to mean anything"
+        assert entry.gross_charges - entry.applied.total != pytest.approx(entry.cash_due)
+        assert entry.cash_due == pytest.approx(0.0)
+
+    def test_the_published_terms_reach_the_state(self) -> None:
+        for label, make, opening in self.CASES:
+            entry = apply_credits(make(), opening)
+            not_paid_out = max(0.0, entry.applied.total - entry.gross_charges)
+            reached = entry.gross_charges - entry.applied.total + not_paid_out
+            assert reached == pytest.approx(entry.cash_due), label
+
+    def test_the_floor_under_a_cycle_is_the_clamped_non_offsettable(self) -> None:
+        """Clamped, because `baseline_credit` can drive it below zero on its own."""
+        entry = apply_credits(pge_bill(), CreditBalances(bonus=10_000.0))
+        assert entry.non_offsettable > 0
+        assert entry.cash_due == pytest.approx(entry.non_offsettable)
+
+        payout = apply_credits(_payout_bill())
+        assert payout.non_offsettable < 0, "the clamp is not decoration"
+        assert payout.cash_due == pytest.approx(max(0.0, payout.non_offsettable))
 
 
 class TestInCycleOffsetOverrun:
