@@ -34,6 +34,21 @@ All notable changes to this project are documented here. This project follows
   charges it could already reach.
 
 ### Fixed
+- A meter that restarts its counter is refused rather than silently zeroing the
+  rest of the window. Readings below the running maximum are dropped as device
+  artefacts, which is right for the Eagle-100's momentary zeroes and wrong for
+  a counter that begins again from a lower base after a meter swap, a firmware
+  reset or a wrap: every later sample sits below the old maximum, so all of
+  them were discarded, and only an empty result was checked for. The bill came
+  out short and entirely plausible. A run of climbing below-maximum samples now
+  raises, naming the meter and the moment; single dropouts are filtered as
+  before.
+- Changing supplier or schedule through the options flow is validated. Only the
+  setup flow checked the choice against the CCA's rate card, so a schedule the
+  card does not cover was accepted through Configure, written to the entry, and
+  left the reload failing -- every entity unavailable, with a log line as the
+  only explanation. Both option branches now surface the same in-form error
+  setup does.
 - The annual cash-out reverses at the rate MCE's tariff names. Its Solar
   Billing Plan tariff says "the initial export credit will be reversed at the
   average Energy Export Credit (including Solar Bonus Credit) rate", and the

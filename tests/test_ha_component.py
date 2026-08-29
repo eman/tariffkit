@@ -1013,3 +1013,45 @@ async def test_cca_validation_loads_the_rate_card_off_the_event_loop(
     assert result["type"] == "create_entry"
     assert seen, "the CCA step never loaded a rate card"
     assert loop_thread not in seen, "the rate card was loaded on the event loop"
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_options_reject_a_schedule_the_cca_card_does_not_cover(
+    hass: HomeAssistant,
+) -> None:
+    """The options flow used to accept this and leave the entry unloadable.
+
+    Only the config flow validated the pick against the rate card, so the same
+    submission was rejected in-form during setup and written to the entry
+    through Configure -- where the reload then failed and every TariffKit
+    entity went unavailable with nothing but a log line to say why.
+    """
+    entry = _entry(profile=_profile_data("E-ELEC"), version=CONFIG_VERSION)
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "settings"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {"supplier": "cca", "tariff": "E-1", "export_enabled": False},
+    )
+    assert result["step_id"] == "settings_delivery"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "base_services_charge_tier": 3,
+            "baseline_code": "basic",
+            "baseline_territory": "",
+        },
+    )
+    assert result["step_id"] == "settings_cca"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {"cca_rate_card": "MCE", "cca_option": "light_green", "cca_pcia_vintage": 2026},
+    )
+
+    assert result["type"] == "form"
+    assert result["errors"] == {"base": "invalid_config"}
+    assert "E-1" in result["description_placeholders"]["detail"]

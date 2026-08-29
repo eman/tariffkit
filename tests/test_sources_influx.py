@@ -423,3 +423,30 @@ class TestSmearedGaps:
         ]
         problems = list(check_coverage(readings, period))
         assert any("reconstructed across gaps" in problem for problem in problems)
+
+
+class TestACounterThatRestarts:
+    """A restart is not a dropout, and used to be treated as one."""
+
+    BASE = datetime(2026, 7, 1, tzinfo=PACIFIC)
+
+    def test_a_restart_is_refused_by_name(self) -> None:
+        """Every later sample sits below the old maximum, so the artefact rule
+        discarded the whole remainder of the window and nothing noticed."""
+        samples = [(self.BASE + timedelta(hours=h), 1000.0 + h) for h in range(4)]
+        samples += [(self.BASE + timedelta(hours=h), 0.5 + (h - 4)) for h in range(4, 8)]
+        with pytest.raises(DataError, match="restarted at"):
+            influx.monotonic(samples)
+
+    def test_the_eagle_100_dropouts_are_still_filtered_quietly(self) -> None:
+        """One sample in ten on this data is exactly 0.0; that is not a restart."""
+        samples: list[tuple[datetime, float]] = []
+        for hour in range(12):
+            samples.append((self.BASE + timedelta(hours=hour), 1000.0 + hour))
+            samples.append((self.BASE + timedelta(hours=hour, minutes=30), 0.0))
+        assert len(influx.monotonic(samples)) == 12
+
+    def test_a_single_dip_is_still_an_artefact(self) -> None:
+        samples = [(self.BASE + timedelta(hours=h), 1000.0 + h) for h in range(6)]
+        samples[3] = (samples[3][0], 900.0)
+        assert len(influx.monotonic(samples)) == 5

@@ -858,6 +858,22 @@ class TariffKitOptionsFlow(OptionsFlow):
             if identity.get(CONF_SUPPLIER) == "cca":
                 return await self.async_step_settings_cca()
             data = _manual_config_data(identity, self._settings_delivery)
+            # The same check the config flow's manual branch runs. Without it
+            # this path accepted a schedule the chosen CCA card does not cover,
+            # wrote it to the entry, and left the reload failing -- every
+            # entity unavailable, with only a log line saying why.
+            errors = await _async_validate(self.hass, data)
+            if errors:
+                return self.async_show_form(
+                    step_id="settings_delivery",
+                    data_schema=_delivery_schema(
+                        {**defaults, **user_input},
+                        tariff=identity.get(CONF_TARIFF, current_config.tariff),
+                        export_enabled=bool(identity.get(CONF_EXPORT_ENABLED, True)),
+                    ),
+                    errors={"base": errors["base"]},
+                    description_placeholders={"detail": errors["detail"]},
+                )
             try:
                 config = config_from_entry(data)
                 name = _profile_name(identity.get(CONF_PROFILE_NAME, profile.name))
@@ -900,6 +916,14 @@ class TariffKitOptionsFlow(OptionsFlow):
             return self.async_abort(reason="invalid_profile")
         if user_input is not None:
             data = _manual_config_data(identity, delivery, dict(user_input))
+            errors = await _async_validate(self.hass, data)
+            if errors:
+                return self.async_show_form(
+                    step_id="settings_cca",
+                    data_schema=_cca_schema({**defaults, **user_input}),
+                    errors={"base": errors["base"]},
+                    description_placeholders={"detail": errors["detail"]},
+                )
             try:
                 config = config_from_entry(data)
                 name = _profile_name(identity.get(CONF_PROFILE_NAME, profile.name))
