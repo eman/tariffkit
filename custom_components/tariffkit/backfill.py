@@ -637,9 +637,18 @@ async def async_publish(hass: HomeAssistant, profile_name: str, result: Backfill
         async_add_external_statistics,
     )
 
-    if not result.days:
+    published = sorted({figures.day for figures in result.days}.union(result.unpriced))
+    if not published:
         return
-    bases = await async_base_sums(hass, profile_name, result.days[0].day)
+    # Anchored at the first row actually written, not the first *priced* day.
+    # `statistics_for` emits a zero row for every day in priced + unpriced, so
+    # when a rerun's leading day flips to refused the span opens earlier than
+    # `days[0]`. Reading the base from the later date meant the refused day's
+    # own previous contribution was already inside the base, and was then
+    # re-added under a row whose state reads 0.0 -- so the day still charged
+    # its old figure and every later day carried it, permanently. External
+    # statistics are never deleted, so no rerun with the same start undid it.
+    bases = await async_base_sums(hass, profile_name, published[0])
     for series in SERIES:
         statistic_id = series.statistic_id(profile_name)
         rows = statistics_for(result, series, bases.get(statistic_id, 0.0))

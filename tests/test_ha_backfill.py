@@ -966,3 +966,39 @@ def test_the_summary_cycles_carry_the_terms_that_reconcile_them() -> None:
         assert cycle["cash_due"] == pytest.approx(
             max(0.0, cycle["gross_charges"] - cycle["credit_applied"]), abs=0.02
         )
+
+
+async def test_the_sum_is_anchored_at_the_first_row_written(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refused leading day must not leave its old figure inside the base.
+
+    `statistics_for` writes a zero row for every day in priced + unpriced, so a
+    rerun whose first day flips to refused opens the span earlier than
+    `days[0]`. Anchoring the base at `days[0]` left that day's previous
+    contribution in the base and re-added it under a row reading 0.0, so the
+    day still charged and every later day carried it -- permanently, since
+    external statistics are never deleted.
+    """
+    from custom_components.tariffkit import backfill
+
+    asked: list[date] = []
+
+    async def recording(_hass: HomeAssistant, _profile: str, opens: date) -> dict[str, float]:
+        asked.append(opens)
+        return {}
+
+    monkeypatch.setattr(backfill, "async_base_sums", recording)
+    # Imported inside `async_publish`, so it has to be patched at its source.
+    monkeypatch.setattr(
+        "homeassistant.components.recorder.statistics.async_add_external_statistics",
+        lambda *a, **k: None,
+    )
+
+    result = backfill.BackfillResult(
+        days=[backfill.DayFigures(day=date(2026, 7, 2), grid_import=24.0)],
+        unpriced=[date(2026, 7, 1)],
+    )
+    await backfill.async_publish(hass, "home", result)
+
+    assert asked == [date(2026, 7, 1)], "base must be read from the earliest written row"

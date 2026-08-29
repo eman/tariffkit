@@ -6,6 +6,15 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Fixed
+- Re-running a backfill no longer inflates the published history permanently.
+  Every day in the window is written, including the ones that could not be
+  priced, but the running total was anchored at the first day that *was*
+  priced. When a rerun refused a day that a previous run had published -- a
+  counter's catch-up across an outage is enough -- the base already held that
+  day's old figure, and it was added again beneath a row reading zero. The day
+  went on charging what it used to, and every later day carried it. External
+  statistics are never deleted, so no rerun over the same window undid it. The
+  total is now anchored at the first row actually written.
 - A 29 February interconnection no longer breaks export pricing outright. The
   nine-year rate lock is measured to the PTO anniversary, which does not exist
   in the common year nine years after a leap year, so `lock_end` raised -- and
