@@ -76,6 +76,19 @@ class CcaConfig:
     #: file's generation component does not apply to CCA customers.
     export_generation_rate: float | None = None
 
+    def __post_init__(self) -> None:
+        if self.export_generation_rate is not None and self.rate_card is not None:
+            # `export_generation_rate` wins in the export path, and taking that
+            # branch skips the card's solar bonus and its ACC Plus adder
+            # entirely -- a 22% under-credit into the CCA's bank on MCE, with
+            # `complete` still reporting True. Setting both looks like "card for
+            # generation charges, explicit rate for exports"; it silently means
+            # something else, so it is refused rather than resolved.
+            raise ConfigError(
+                "set either cca.export_generation_rate or cca.rate_card, not both: "
+                "an explicit export rate bypasses the card's solar bonus and ACC Plus"
+            )
+
     @property
     def complete(self) -> bool:
         has_generation = bool(self.generation_rates) or self.rate_card is not None
@@ -217,11 +230,26 @@ class Config:
 
     @property
     def resolved_vintage(self) -> str:
-        """The NBT vintage whose matrix applies to this customer."""
+        """The NBT vintage whose matrix applies to this customer.
+
+        A year before the first vendored vintage floats, which is what the
+        floating vintage is for. A year *after* the last one does not: it means
+        the vintage table has not been vendored yet, and falling through to
+        NBT00 produced an account that was floating for its energy value while
+        still resolving an ACC Plus row -- locked for the adder, unlocked for
+        everything else, with `lock_end` None and no warning anywhere.
+        """
         if self.vintage is not None:
             return self.vintage
         assert self.interconnection_year is not None
-        return VINTAGE_BY_YEAR.get(self.interconnection_year, FLOATING_VINTAGE)
+        year = self.interconnection_year
+        if year > max(VINTAGE_BY_YEAR):
+            raise ConfigError(
+                f"no NBT vintage is vendored for interconnection year {year}; "
+                f"the newest is {VINTAGE_BY_YEAR[max(VINTAGE_BY_YEAR)]} "
+                f"({max(VINTAGE_BY_YEAR)}). Set vintage= explicitly to override."
+            )
+        return VINTAGE_BY_YEAR.get(year, FLOATING_VINTAGE)
 
     @property
     def lock_end(self) -> date | None:

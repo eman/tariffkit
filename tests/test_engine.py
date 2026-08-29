@@ -194,10 +194,26 @@ class TestLockWindow:
 class TestVintageResolution:
     @pytest.mark.parametrize(
         ("year", "expected"),
-        [(2023, "NBT23"), (2024, "NBT24"), (2025, "NBT25"), (2026, "NBT26"), (2030, "NBT00")],
+        [(2023, "NBT23"), (2024, "NBT24"), (2025, "NBT25"), (2026, "NBT26"), (2022, "NBT00")],
     )
     def test_from_interconnection_year(self, year: int, expected: str) -> None:
         assert Config(interconnection_year=year, pto_date=None).resolved_vintage == expected
+
+    def test_a_year_past_the_vendored_tables_is_refused(self) -> None:
+        """Not the same as floating.
+
+        A year before the first vintage genuinely floats. A year after the last
+        one means the table has not been vendored, and falling through to NBT00
+        produced an account floating for its energy value while still resolving
+        an ACC Plus row for that year -- locked for the adder, unlocked for
+        everything else, with no warning.
+        """
+        config = Config(interconnection_year=2030, pto_date=None)
+        with pytest.raises(ConfigError, match="no NBT vintage is vendored"):
+            _ = config.resolved_vintage
+
+    def test_an_explicit_vintage_still_overrides(self) -> None:
+        assert Config(interconnection_year=2030, vintage="NBT26").resolved_vintage == "NBT26"
 
     def test_explicit_vintage_wins(self) -> None:
         assert Config(interconnection_year=2026, vintage="NBT23").resolved_vintage == "NBT23"

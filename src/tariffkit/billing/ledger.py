@@ -82,6 +82,12 @@ CREDIT_BUCKETS: dict[str, CreditBucket] = {
     "cca_generation": CreditBucket.GENERATION,
     "acc_plus": CreditBucket.BONUS,
     "cca_acc_plus": CreditBucket.CCA_BONUS,
+    # The CCA's low-income export bonus. Banked with its other bonus credit
+    # rather than its export credit: the tariff calls it a "bonus credit" and
+    # pays it on top of the export credit, which is how the ACC Plus half
+    # behaves too. No statement has reconciled it, so if one shows it spent on
+    # a different calendar this is the line to revisit.
+    "cca_care_fera_bonus": CreditBucket.CCA_BONUS,
 }
 
 #: Export-side components a statement spends inside the cycle instead of banking.
@@ -96,6 +102,24 @@ CREDIT_BUCKETS: dict[str, CreditBucket] = {
 CHARGE_OFFSETS: dict[str, CreditBucket] = {
     "cca_solar_bonus": CreditBucket.GENERATION,
 }
+
+#: The non-bypassable charges, exactly as Schedule NBT names them.
+#:
+#: Special Condition 2.f, sheet 17 (57359-E): "The following NBCs may not be
+#: reduced by any credits for exports to the grid, except for the ACC Plus
+#: credit: Public Purpose Program, Nuclear Decommissioning Charge, Competition
+#: Transition Charge, and Wildfire Fund Charge."
+#:
+#: Four, not five. ``energy_cost_recovery`` was in this set and is not one of
+#: them; the tariff never calls it non-bypassable.
+NON_BYPASSABLE = frozenset(
+    {
+        "public_purpose_programs",
+        "wildfire_fund_charge",
+        "competition_transition_charges",
+        "nuclear_decommissioning",
+    }
+)
 
 #: Charge component -> the bucket whose credits may offset it.
 #:
@@ -117,26 +141,47 @@ CHARGE_BUCKETS: dict[str, CreditBucket] = {
     "recovery_bond_credit": CreditBucket.DELIVERY,
     "new_system_generation": CreditBucket.DELIVERY,
     "bundled_pcia": CreditBucket.DELIVERY,
+    # The Conservation Incentive Adjustment is a distribution line -- it is the
+    # rate the tariff implements the baseline credit with, and plain
+    # `distribution` is already DELIVERY. Absent from this map it fell to the
+    # non-offsettable default, putting a distribution charge where no credit
+    # could reach it.
+    "conservation_incentive_adjustment": CreditBucket.DELIVERY,
+    # Reachable by the ACC Plus bonus and by nothing else. See NON_BYPASSABLE.
+    **dict.fromkeys(NON_BYPASSABLE, CreditBucket.BONUS),
+    # Not non-bypassable in the tariff's sense, and SC 2.d puts every other
+    # charge within reach of the bonus adder.
+    "energy_cost_recovery": CreditBucket.BONUS,
+    "pcia": CreditBucket.BONUS,
+    "franchise_fee_surcharge": CreditBucket.BONUS,
 }
 
-#: Charges no export credit may offset, so they are payable in cash.
+#: Charges no export credit may offset at all, so they are payable in cash.
 #:
-#: The five non-bypassable charges are non-bypassable in the tariff's own sense
-#: -- that is what the term means -- so not even a bonus credit reaches them.
-#: PCIA, the franchise fee surcharge and the Base Services Charge are listed
-#: here as the conservative reading; see ``SCOPING_VERIFIED``.
-NON_OFFSETTABLE = frozenset(
-    {
-        "public_purpose_programs",
-        "wildfire_fund_charge",
-        "competition_transition_charges",
-        "nuclear_decommissioning",
-        "energy_cost_recovery",
-        "pcia",
-        "franchise_fee_surcharge",
-        "baseline_credit",
-    }
-)
+#: ``baseline_credit`` only. It is a credit rather than a charge, and being
+#: negative it *deflates* this floor instead of raising it, which lets a
+#: scoped export credit reach charges it should not. Bucketing it with the
+#: distribution charges it reduces is the obvious repair and is wrong in a
+#: different way: it is an import-side credit, so the bucket clamp banks the
+#: excess as though the customer had exported it. Settling it needs a statement
+#: whose baseline credit exceeds its distribution charges -- the same evidence
+#: ``SCOPING_VERIFIED`` is waiting on -- so it stays put and stays documented.
+#:
+#: Every other named charge now has a bucket: the
+#: non-bypassable four are reachable by the ACC Plus bonus and nothing else,
+#: which is what the tariff says three separate times --
+#:
+#:   SC 2.c, sheet 17: "Export credits associated with the ACC Plus adder will
+#:   apply to all charges (including NBC charges)."
+#:   SC 2.d, sheet 17: "However, export credits associated with the ACC plus
+#:   adder may be used to offset any charges incurred by the customer."
+#:   SC 2, sheet 19: "The ACC Plus credit can offset all charges including the
+#:   NBC charges."
+#:
+#: A component with no bucket still lands outside every bank, so an unrecognised
+#: charge is payable in cash rather than silently creditable. That default is
+#: the safety property this set used to provide.
+NON_OFFSETTABLE = frozenset({"baseline_credit"})
 
 #: False while the classification above is only partly reconciled.
 #:

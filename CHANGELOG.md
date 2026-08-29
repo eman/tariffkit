@@ -21,7 +21,41 @@ All notable changes to this project are documented here. This project follows
   a pasted issue report. `PgeSettings` had marked its own `repr=False` for this
   reason; its three siblings had not.
 
+### Changed
+- The ACC Plus bonus credit now offsets the non-bypassable charges, which is
+  what Schedule NBT says three separate times -- Special Condition 2.f names
+  the four NBCs and adds "except for the ACC Plus credit", and 2.d and sheet 19
+  say the same in their own words. They were modelled as reachable by nothing,
+  so a bonus bank left them standing as cash owed. Ordinary export credits
+  still cannot reach them. `energy_cost_recovery` is no longer counted among
+  them; the tariff names four and it is not one. Accounts whose bonus bank
+  exceeded their other charges will see a lower amount due; every reconciled
+  statement is unaffected, because on those the bonus was smaller than the
+  charges it could already reach.
+
 ### Fixed
+- A CARE or FERA account on a CCA that pays a low-income export bonus is
+  credited it. MCE's Solar Billing Plan tariff pays "$0.05/kWh generation
+  export bonus credit on all exports until December 31, 2028" -- more per kWh
+  than the ACC Plus adder -- and the rate was vendored but read by nothing, so
+  it reached no bill and the export price still reported itself complete.
+- The Conservation Incentive Adjustment is offsettable by delivery credits. It
+  is the distribution line the tariff implements the baseline credit with, and
+  plain distribution was already treated that way, but it was absent from the
+  bucket map and so fell to the non-offsettable default.
+- An interconnection year past the vendored NBT tables is refused instead of
+  floating. It fell through to NBT00, which left the account floating for its
+  energy value while still resolving an ACC Plus row for that year -- locked
+  for the adder, unlocked for everything else, `lock_end` unset, no warning.
+  A year *before* the first vintage still floats, which is what floating means.
+- An interconnection after the ACC Plus table ends earns no adder rather than
+  raising. Schedule NBT makes the adder available to customers interconnecting
+  "during the first five years of the tariff", decreasing "until the adder
+  reaches zero"; the adopted table runs 2023 to 2027, so 2028 onward is zero.
+- Setting both `cca.rate_card` and `cca.export_generation_rate` is refused. The
+  explicit rate won, and taking that branch skipped the card's solar bonus and
+  its ACC Plus adder entirely -- a 22% under-credit into the CCA's bank, with
+  the export price still reporting itself complete.
 - MCE's Deep Green premium is priced at the rate the card published. It moved
   from $0.01 to $0.0125/kWh and only the 2023 and 2026 cards were vendored, so
   a Deep Green account was credited the older premium until 2026-04-01. Light

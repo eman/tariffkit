@@ -14,6 +14,7 @@ from tariffkit import Config, RateEngine, Supplier, Utility
 from tariffkit.cca import load_rate_card
 from tariffkit.config import CcaConfig
 from tariffkit.errors import DataError
+from tariffkit.export.nbt import NbtExportRates
 from tariffkit.tariff.retail import RetailTariff, load_snapshot
 from tariffkit.timeutil import PACIFIC
 
@@ -229,4 +230,43 @@ class TestExport:
         price = RateEngine(config()).price_at(at(19, month=9)).export_price
         assert price.components["cca_solar_bonus"] == pytest.approx(
             price.components["cca_generation"] * 0.10
+        )
+
+
+class TestCareFeraExportBonus:
+    """MCE's SBP tariff pays low-income accounts an extra export bonus.
+
+    "CARE and FERA customers will receive a $0.05/kWh generation export bonus
+    credit on all exports until December 31, 2028." The values were vendored
+    and read by nothing, so the bonus reached no bill.
+    """
+
+    def _rates(self, discount: str) -> NbtExportRates:
+        kwargs: dict[str, object] = {
+            "tariff": "E-ELEC",
+            "supplier": Supplier.CCA,
+            "cca": CcaConfig(name="MCE", rate_card="mce", pcia_vintage=2021),
+            "discount": discount,
+        }
+        if discount != "none":
+            kwargs["acc_plus_segment"] = "residential_low_income"
+        return NbtExportRates(Config(**kwargs))
+
+    def test_a_care_account_is_credited_the_bonus(self) -> None:
+        moment = datetime(2026, 7, 15, 13, tzinfo=PACIFIC)
+        care = self._rates("care").price_at(moment)
+        plain = self._rates("none").price_at(moment)
+        assert care.components["cca_care_fera_bonus"] == pytest.approx(0.05)
+        assert "cca_care_fera_bonus" not in plain.components
+
+    def test_the_bonus_stops_when_the_tariff_says_it_does(self) -> None:
+        """Through 2028-12-31, per the card."""
+        rates = self._rates("care")
+        assert (
+            "cca_care_fera_bonus"
+            in rates.price_at(datetime(2028, 12, 31, 13, tzinfo=PACIFIC)).components
+        )
+        assert (
+            "cca_care_fera_bonus"
+            not in rates.price_at(datetime(2029, 1, 2, 13, tzinfo=PACIFIC)).components
         )

@@ -105,6 +105,16 @@ class NbtExportRates:
             raise ConfigError(f"unknown acc_plus_segment {segment!r}")
         value = table.get(str(year))
         if value is None:
+            # Schedule NBT RATES section D, sheet 11 (57255-E): the adder "is
+            # available to residential NBT customers who interconnect during
+            # the first five years of the tariff", and "will decrease by 20
+            # percent annually ... until the adder reaches zero". The adopted
+            # table runs 2023-2027 and 20% of the first-year rate is exactly
+            # one fifth, so it reaches zero in 2028. A later interconnection
+            # earns no adder -- which is a rate of zero, not a missing table.
+            latest = max((int(key) for key in table), default=0)
+            if year > latest:
+                return 0.0
             raise ConfigError(
                 f"no ACC Plus rate vendored for {segment} {year}; available years: {sorted(table)}"
             )
@@ -200,6 +210,15 @@ class NbtExportRates:
                     # prints both, $1.71 applied on PG&E's page and $1.70 added
                     # to MCE's EEBC balance in the same cycle.
                     components["cca_acc_plus"] = self._acc_plus
+                if self.config.discount != "none":
+                    # MCE's SBP tariff: "CARE and FERA customers will receive a
+                    # $0.05/kWh generation export bonus credit on all exports
+                    # until December 31, 2028. This credit is additional to any
+                    # PG&E delivery-based export bonus credits." Larger per kWh
+                    # than the ACC Plus adder, and read by nothing until now.
+                    care_fera = card.care_fera_bonus(on)
+                    if care_fera:
+                        components["cca_care_fera_bonus"] = care_fera
                 complete = card.export_credit_verified
             else:
                 complete = False

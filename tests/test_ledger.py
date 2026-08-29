@@ -110,11 +110,22 @@ class TestPgeBank:
         entry = apply_credits(pge_bill())
         assert entry.applied.delivery == pytest.approx(6.25)
 
-    def test_non_bypassable_charges_are_not_offsettable(self) -> None:
-        """Not even by the bonus credit -- that is what non-bypassable means."""
-        _, non_offsettable, _ = charges_by_bucket(pge_bill())
-        # PPP + wildfire fund + CTC, plus PCIA and the franchise fee.
-        assert non_offsettable == pytest.approx(0.24 + 0.23 + 0.01 + 1.39 + 0.02)
+    def test_non_bypassable_charges_are_reachable_only_by_the_bonus(self) -> None:
+        """Schedule NBT SC 2.f: "except for the ACC Plus credit".
+
+        The four NBCs -- PPP, wildfire fund, CTC, nuclear decommissioning --
+        plus the PCIA and franchise fee are out of reach of a scoped export
+        credit, and within reach of the bonus adder. SC 2.d: "export credits
+        associated with the ACC plus adder may be used to offset any charges
+        incurred by the customer."
+        """
+        offsettable, non_offsettable, _ = charges_by_bucket(pge_bill())
+        nbcs_and_more = 0.24 + 0.23 + 0.01 + 1.39 + 0.02
+        # They used to sit outside every bucket, payable in cash.
+        assert non_offsettable == pytest.approx(0.0)
+        assert offsettable[CreditBucket.BONUS] >= nbcs_and_more
+        # And a generation-scoped credit still cannot reach them.
+        assert offsettable[CreditBucket.GENERATION] == pytest.approx(0.0)
 
     def test_the_fixed_charge_is_reachable_by_the_bonus_credit(self) -> None:
         # It was modelled as out of reach until a statement said otherwise. The
@@ -228,14 +239,18 @@ class TestThePublishedTermsReconcile:
             reached = entry.gross_charges - entry.applied.total + not_paid_out
             assert reached == pytest.approx(entry.cash_due), label
 
-    def test_the_floor_under_a_cycle_is_the_clamped_non_offsettable(self) -> None:
-        """Clamped, because `baseline_credit` can drive it below zero on its own."""
+    def test_a_large_enough_bonus_bank_reaches_every_charge(self) -> None:
+        """Schedule NBT sheet 19: "can offset all charges including the NBCs".
+
+        This used to assert the opposite -- that a bonus bank of any size left
+        the non-bypassable charges standing as cash owed. The tariff says three
+        separate times that the ACC Plus credit is the one exception to their
+        non-bypassability.
+        """
         entry = apply_credits(pge_bill(), CreditBalances(bonus=10_000.0))
-        assert entry.non_offsettable > 0
-        assert entry.cash_due == pytest.approx(entry.non_offsettable)
+        assert entry.cash_due == pytest.approx(0.0)
 
         payout = apply_credits(_payout_bill())
-        assert payout.non_offsettable < 0, "the clamp is not decoration"
         assert payout.cash_due == pytest.approx(max(0.0, payout.non_offsettable))
 
 
@@ -256,8 +271,12 @@ class TestInCycleOffsetOverrun:
         A generation-scoped offset reaching the non-bypassable charges would be
         exactly backwards -- non-bypassable is what those charges are.
         """
-        _, non_offsettable, _ = charges_by_bucket(self.bill())
-        assert non_offsettable == pytest.approx(0.50)
+        offsettable, _, _ = charges_by_bucket(self.bill())
+        # The non-bypassable charges sit in the bonus bucket now, out of reach
+        # of a generation-scoped offset, which is the property under test. An
+        # overrun banks instead of reaching them.
+        assert offsettable[CreditBucket.GENERATION] == pytest.approx(0.0)
+        assert offsettable[CreditBucket.BONUS] >= 0.50
 
     def test_the_excess_banks_rather_than_becoming_cash_owed(self) -> None:
         """The statement's rule for any credit it cannot spend: saved for later."""
