@@ -457,3 +457,24 @@ class TestAStatementNeverPaysYou:
         assert entry.opening.total + entry.earned.total == pytest.approx(
             entry.applied.total + entry.closing.total
         )
+
+
+class TestInCycleOffsetsSurviveTheCycle:
+    """The true-up reverses at a rate that includes them, so they must."""
+
+    def _bill(self) -> Bill:
+        return Bill(
+            period=BillingPeriod(start=date(2026, 7, 1), end=date(2026, 7, 31)),
+            import_components={"generation": 20.0},
+            export_components={"cca_generation": -5.0, "cca_solar_bonus": -0.5},
+        )
+
+    def test_the_solar_bonus_is_absent_from_earned(self) -> None:
+        """It is spent against charges, not banked -- that is what it is."""
+        entry = apply_credits(self._bill())
+        assert entry.earned.generation == pytest.approx(5.0)
+
+    def test_but_it_is_recorded_as_an_in_cycle_offset(self) -> None:
+        """Without this the reversal averaged 5.00 on a cycle that earned 5.50."""
+        entry = apply_credits(self._bill())
+        assert entry.in_cycle_offsets.generation == pytest.approx(0.5)

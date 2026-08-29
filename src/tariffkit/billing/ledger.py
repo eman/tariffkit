@@ -284,6 +284,12 @@ class LedgerEntry:
     #: imported energy over the period.
     imported_kwh: float = 0.0
     exported_kwh: float = 0.0
+    #: Export credits the statement spent inside this cycle instead of banking,
+    #: by the bucket whose charges they reduced. MCE's Solar Bonus Credit is the
+    #: one vendored. They never enter ``earned`` -- that is what makes them
+    #: in-cycle -- but the annual true-up reverses at a rate that includes them,
+    #: so the figure has to survive the cycle to be averaged later.
+    in_cycle_offsets: CreditBalances = field(default_factory=CreditBalances)
     #: False while the charge classification is only partly reconciled against a
     #: statement; see ``SCOPING_VERIFIED``.
     complete: bool = SCOPING_VERIFIED
@@ -302,6 +308,28 @@ class LedgerEntry:
             "exported_kwh": round(self.exported_kwh, 3),
             "complete": self.complete,
         }
+
+
+def in_cycle_offsets(bill: Bill) -> CreditBalances:
+    """Export credits the statement spends this cycle rather than banking.
+
+    The mirror of :func:`credits_earned` over ``CHARGE_OFFSETS``. These reduce
+    their bucket's charges directly and never reach a balance, so nothing that
+    reads ``earned`` can see them -- which is why the annual true-up, whose
+    reversal rate is defined to include the Solar Bonus Credit, was averaging
+    without it.
+    """
+    totals: dict[CreditBucket, float] = dict.fromkeys(CreditBucket, 0.0)
+    for name, value in bill.export_components.items():
+        bucket = CHARGE_OFFSETS.get(name)
+        if bucket is not None:
+            totals[bucket] += abs(value)
+    return CreditBalances(
+        generation=totals[CreditBucket.GENERATION],
+        delivery=totals[CreditBucket.DELIVERY],
+        bonus=totals[CreditBucket.BONUS],
+        cca_bonus=totals[CreditBucket.CCA_BONUS],
+    )
 
 
 def credits_earned(bill: Bill) -> CreditBalances:
@@ -451,6 +479,7 @@ def apply_credits(bill: Bill, opening: CreditBalances | None = None) -> LedgerEn
         non_offsettable=non_offsettable,
         imported_kwh=sum(b.imported for b in bill.buckets),
         exported_kwh=sum(b.exported for b in bill.buckets),
+        in_cycle_offsets=in_cycle_offsets(bill),
     )
 
 

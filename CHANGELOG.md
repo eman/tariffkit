@@ -34,6 +34,19 @@ All notable changes to this project are documented here. This project follows
   charges it could already reach.
 
 ### Fixed
+- The annual cash-out reverses at the rate MCE's tariff names. Its Solar
+  Billing Plan tariff says "the initial export credit will be reversed at the
+  average Energy Export Credit (including Solar Bonus Credit) rate", and the
+  function's own docstring quoted that line while asserting the bonus was
+  already inside the figure it averaged. It was not -- the Solar Bonus Credit
+  is spent against the cycle's charges rather than banked, so nothing reading
+  earned credits could see it, and a cycle earning $5.50 averaged as $5.00.
+  The reversal came out too small and paid out surplus the tariff treats as
+  already covered.
+- A run crossing two settlements that end on the same cycle reports both. They
+  were de-duplicated by date alone, and because the sort puts the CCA cash-out
+  first it was always the utility's event that disappeared from the reported
+  settlements. No money moved either way; the attribute simply under-reported.
 - A CARE or FERA account on a CCA that pays a low-income export bonus is
   credited it. MCE's Solar Billing Plan tariff pays "$0.05/kWh generation
   export bonus credit on all exports until December 31, 2028" -- more per kWh

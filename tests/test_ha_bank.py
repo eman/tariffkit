@@ -307,7 +307,15 @@ def test_every_annual_settlement_is_applied_not_only_the_last() -> None:
         .entries[-1]
         .closing
     )
-    assert naive.total - correct.total == pytest.approx(reversal, abs=0.01)
+    # The discarded amount is the part of the reversal the bank could cover.
+    # It used to equal the reversal exactly; now that the reversal is computed
+    # at the rate MCE's tariff actually names -- "including Solar Bonus Credit"
+    # -- it can exceed the balance, and the tariff says so: the reversal "will
+    # be charged against any Export Credit Balance available, otherwise it will
+    # be charged against the NSC payment".
+    discarded = naive.total - correct.total
+    assert discarded > 0
+    assert discarded <= reversal + 0.01
     assert len(state.true_ups) == len(events)
 
 
