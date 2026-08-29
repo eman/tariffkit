@@ -9,6 +9,8 @@ import pytest
 from tariffkit import Config, RateEngine, Supplier, Utility
 from tariffkit.config import CcaConfig
 from tariffkit.errors import ConfigError, DataError, OutOfRangeError
+from tariffkit.export.nbt import NbtExportRates
+from tariffkit.tariff.retail import RetailTariff
 from tariffkit.timeutil import (
     PACIFIC,
     DayType,
@@ -400,3 +402,43 @@ def test_a_string_supplier_becomes_the_enum() -> None:
 def test_an_unknown_supplier_is_rejected() -> None:
     with pytest.raises(ValueError, match="not a valid Supplier"):
         Config(supplier="nonsense")  # type: ignore[arg-type]
+
+
+class TestLeapDayInterconnection:
+    """A 29 February PTO has no anniversary in the common year nine years on."""
+
+    def test_lock_end_falls_back_to_the_28th(self) -> None:
+        config = Config(interconnection_year=2024, pto_date=date(2024, 2, 29))
+        assert config.lock_end == date(2033, 2, 27)
+
+    def test_an_exported_kwh_still_prices(self) -> None:
+        """`is_locked` runs on every `price_at`, so this used to raise."""
+        config = Config(interconnection_year=2024, pto_date=date(2024, 2, 29))
+        rates = NbtExportRates(config)
+        assert rates.price_at(pt(2026, 7, 15, 13)).total > 0
+
+
+class TestBaseServicesChargeTier:
+    """D-CARE assigns tier 1, E-FERA tier 2. Nothing used to tie them."""
+
+    def test_tier_follows_the_discount_when_unset(self) -> None:
+        care = Config(discount="care", acc_plus_segment="residential_low_income")
+        fera = Config(discount="fera", acc_plus_segment="residential_low_income")
+        assert (care.resolved_bsc_tier, fera.resolved_bsc_tier, Config().resolved_bsc_tier) == (
+            1,
+            2,
+            3,
+        )
+
+    def test_a_care_account_is_billed_the_tier_1_daily_charge(self) -> None:
+        config = Config(discount="care", acc_plus_segment="residential_low_income")
+        charge = RetailTariff(config).daily_fixed_charge(pt(2026, 7, 15, 12))
+        assert charge == pytest.approx(0.19713)
+
+    def test_a_contradicting_tier_is_refused(self) -> None:
+        with pytest.raises(ConfigError, match="implies base_services_charge_tier=1"):
+            Config(
+                discount="care",
+                acc_plus_segment="residential_low_income",
+                base_services_charge_tier=3,
+            )

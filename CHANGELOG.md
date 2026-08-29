@@ -6,6 +6,19 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Fixed
+- A 29 February interconnection no longer breaks export pricing outright. The
+  nine-year rate lock is measured to the PTO anniversary, which does not exist
+  in the common year nine years after a leap year, so `lock_end` raised -- and
+  `is_locked` runs on every export price, so such an account could not price a
+  single exported kWh, fold a bank, or populate its rate-lock sensor. It falls
+  back to the 28th, which is what the annual true-up already did.
+- A CARE or FERA account is billed the Base Services Charge tier its programme
+  is assigned, rather than the undiscounted one. D-CARE assigns CARE customers
+  to tier 1 and E-FERA assigns FERA customers to tier 2, but the tier defaulted
+  to 3 and nothing connected the two settings -- so a CARE account that simply
+  never mentioned a tier paid $0.79343/day on E-ELEC instead of $0.19713, about
+  $18 a month. The tier is now derived from the discount unless set explicitly,
+  and an explicit tier that contradicts the programme is refused.
 - Setting up a CCA account no longer reads its rate card on the event loop.
   Choosing a CCA validates the pick against the vendored card, which scandirs
   the provider's directory and parses TOML -- on the event loop, so Home

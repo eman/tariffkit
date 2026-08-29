@@ -29,6 +29,11 @@ VINTAGE_BY_YEAR = {
 FLOATING_VINTAGE = "NBT00"
 
 LOCK_YEARS = 9
+#: Which Base Services Charge tier each discount programme is billed on.
+#: D-CARE assigns CARE customers to tier 1; FERA takes the middle tier, and an
+#: undiscounted account the standard one. Pinned here because nothing in the
+#: rate data ties the two fields together and the default is tier 3.
+BSC_TIER_BY_DISCOUNT: dict[str, int] = {"none": 3, "care": 1, "fera": 2}
 _ONE_DAY = timedelta(days=1)
 
 
@@ -103,7 +108,9 @@ class Config:
 
     acc_plus_segment: AccPlusSegment = "residential"
     discount: Discount = "none"
-    base_services_charge_tier: Literal[1, 2, 3] = 3
+    #: Leave unset to take the tier the discount programme implies, which is
+    #: what the tariff assigns. Set it only to override that.
+    base_services_charge_tier: Literal[1, 2, 3] | None = None
 
     #: Baseline territory letter, printed on the bill as e.g. "Baseline
     #: Territory X". Only schedules with a baseline allowance use it -- E-TOU-C
@@ -176,6 +183,37 @@ class Config:
                 f"discount={self.discount!r} implies acc_plus_segment="
                 "'residential_low_income'; set it explicitly"
             )
+        expected_tier = BSC_TIER_BY_DISCOUNT[self.discount]
+        if (
+            self.base_services_charge_tier is not None
+            and self.base_services_charge_tier != expected_tier
+        ):
+            # Schedule D-CARE sheet 1: "Customers whose otherwise applicable
+            # rate includes a base services charge will be assigned to Tier 1."
+            # FERA takes tier 2, the middle rate, matching its shallower
+            # discount. Tier 3 is the default, so a CARE account left at it
+            # pays $0.79343/day on E-ELEC against tier 1's $0.19713 -- about
+            # $18 a month charged to an account the tariff puts on the
+            # cheapest tier. Refused rather than corrected in place, matching
+            # the acc_plus_segment guard above: silently rewriting a value the
+            # caller set is harder to notice than being told.
+            raise ConfigError(
+                f"discount={self.discount!r} implies base_services_charge_tier="
+                f"{expected_tier}; got {self.base_services_charge_tier}"
+            )
+
+    @property
+    def resolved_bsc_tier(self) -> int:
+        """Base Services Charge tier actually billed.
+
+        Derived from the discount unless overridden, because the tariff ties
+        the two together and nothing else did: the field used to default to
+        tier 3, so a CARE account that simply did not mention it was billed
+        $0.79343/day on E-ELEC instead of $0.19713 -- about $18 a month.
+        """
+        if self.base_services_charge_tier is not None:
+            return self.base_services_charge_tier
+        return BSC_TIER_BY_DISCOUNT[self.discount]
 
     @property
     def resolved_vintage(self) -> str:
@@ -190,10 +228,21 @@ class Config:
         """Last date covered by the nine-year rate lock, inclusive.
 
         ``None`` for a floating (NBT00) customer, who has no lock at all.
+
+        A 29 February PTO has no anniversary in a common year, and 9 years on
+        from a leap year always lands in one. It falls back to the 28th, which
+        is what `trueup.relevant_period_end` does for the same reason -- and
+        without it `is_locked` raises on every `price_at`, so such an account
+        cannot price a single exported kWh.
         """
         if self.pto_date is None or self.resolved_vintage == FLOATING_VINTAGE:
             return None
-        return self.pto_date.replace(year=self.pto_date.year + LOCK_YEARS) - _ONE_DAY
+        anniversary_year = self.pto_date.year + LOCK_YEARS
+        try:
+            anniversary = self.pto_date.replace(year=anniversary_year)
+        except ValueError:  # 29 February in a common year
+            anniversary = self.pto_date.replace(year=anniversary_year, day=28)
+        return anniversary - _ONE_DAY
 
     def with_(self, **changes: Any) -> Config:
         return replace(self, **changes)

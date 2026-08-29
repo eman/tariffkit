@@ -326,4 +326,4 @@ class RetailTariff:
         table = snapshot.raw.get("base_services_charge")
         if not table:
             return 0.0
-        return float(table[f"tier_{self.config.base_services_charge_tier}"])
+        return float(table[f"tier_{self.config.resolved_bsc_tier}"])

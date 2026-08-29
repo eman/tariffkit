@@ -14,7 +14,7 @@ from homeassistant.helpers import selector
 
 from tariffkit.account import AccountEpoch, AccountError, AccountProfile
 from tariffkit.cca import available_rate_cards, load_rate_card
-from tariffkit.config import VINTAGE_BY_YEAR, Config
+from tariffkit.config import BSC_TIER_BY_DISCOUNT, VINTAGE_BY_YEAR, Config
 from tariffkit.errors import ConfigError, TariffKitError
 from tariffkit.models import Supplier
 from tariffkit.tariff.retail import SUPPORTED_TARIFFS
@@ -625,7 +625,10 @@ def _manual_config_data(
         data[CONF_PTO_DATE] = None
         data.setdefault(CONF_ACC_PLUS_SEGMENT, "residential")
         data.setdefault(CONF_DISCOUNT, "none")
-    data.setdefault(CONF_BSC_TIER, 3)
+    # No hardcoded 3: an absent tier means "take the one the discount
+    # implies", which is the tariff's rule. Defaulting it here billed a
+    # CARE account the undiscounted daily charge.
+    data.setdefault(CONF_BSC_TIER, BSC_TIER_BY_DISCOUNT[data.get(CONF_DISCOUNT, "none")])
     data.setdefault(CONF_BASELINE_CODE, "basic")
     data.setdefault(CONF_BASELINE_TERRITORY, None)
     if data.get(CONF_SUPPLIER) == "cca":

@@ -353,7 +353,10 @@ def config_from_entry(data: dict[str, Any]) -> Config:
         vintage=data.get(CONF_VINTAGE) or None,
         acc_plus_segment=data.get(CONF_ACC_PLUS_SEGMENT, "residential"),
         discount=data.get(CONF_DISCOUNT, "none"),
-        base_services_charge_tier=data.get(CONF_BSC_TIER, 3),
+        # No default: absent means "take the tier the discount implies", which
+        # is the tariff's own rule. Defaulting to 3 here billed a CARE account
+        # the undiscounted daily charge.
+        base_services_charge_tier=data.get(CONF_BSC_TIER),
         baseline_territory=data.get(CONF_BASELINE_TERRITORY) or None,
         baseline_code=data.get(CONF_BASELINE_CODE, "basic"),
         medical_baseline=bool(data.get(CONF_MEDICAL_BASELINE, False)),
