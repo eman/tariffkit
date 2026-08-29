@@ -5,6 +5,22 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Security
+- The cached PG&E session cookie keeps its 0600 permissions, and no longer
+  lands wherever the shell happened to be. `os.open`'s mode argument applies
+  only when it creates the file, so an existing 0644 -- from an older version,
+  a restore, another tool -- was rewritten world-readable despite the comment
+  promising otherwise; `fchmod` now enforces it, as the profile repository
+  already did. The default path was `.cache/pge/cookies.json`, relative to the
+  working directory and described as "already gitignored", which held for this
+  repository and nowhere else. It resolves under `XDG_CACHE_HOME` now, in a
+  0700 directory.
+- Home Assistant, InfluxDB and MQTT credentials are kept out of tracebacks.
+  Their settings objects rendered a long-lived token or password in the default
+  dataclass `repr`, which any frame-rendering traceback prints -- pytest, rich,
+  a pasted issue report. `PgeSettings` had marked its own `repr=False` for this
+  reason; its three siblings had not.
+
 ### Fixed
 - Re-running a backfill no longer inflates the published history permanently.
   Every day in the window is written, including the ones that could not be

@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -66,7 +66,9 @@ class InfluxSettings:
 
     host: str
     database: str
-    token: str
+    #: Never printed. `repr=False` keeps it out of tracebacks, which render
+    #: dataclass frames -- the same reason PgeSettings marks its own.
+    token: str = field(repr=False)
     import_entity: str = DEFAULT_IMPORT_ENTITY
     export_entity: str = DEFAULT_EXPORT_ENTITY
     table: str = DEFAULT_TABLE

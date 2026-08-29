@@ -9,7 +9,7 @@ import os
 import signal
 import threading
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from types import FrameType
@@ -43,7 +43,9 @@ class MqttSettings:
     broker: str
     port: int = 1883
     username: str | None = None
-    password: str | None = None
+    #: Never printed. `repr=False` keeps it out of tracebacks, which render
+    #: dataclass frames -- the same reason PgeSettings marks its own.
+    password: str | None = field(repr=False, default=None)
     topic_prefix: str = "tariffkit"
     discovery: bool = True
     discovery_prefix: str = "homeassistant"

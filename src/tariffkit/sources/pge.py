@@ -56,8 +56,22 @@ BASE = "https://myaccount.pge.com"
 LOGIN_PATH = "/myaccount/s/login/"
 AURA_PATH = "/myaccount/s/sfsites/aura"
 
-#: Where a session is cached between runs. Under .cache/, already gitignored.
-DEFAULT_COOKIE_PATH = Path(".cache/pge/cookies.json")
+def _default_cookie_path() -> Path:
+    """Where a session is cached between runs.
+
+    Anchored to XDG_CACHE_HOME rather than the working directory. The old
+    relative path was described as "already gitignored", which was true of this
+    repository and of nowhere else -- run the CLI from any other directory and
+    a live bearer credential was written wherever the shell happened to be.
+    `account.cli` has resolved its own cache this way all along.
+    """
+    root = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+    return root / "tariffkit" / "pge" / "cookies.json"
+
+
+#: Session cache location. Call `_default_cookie_path()` for the resolved path;
+#: this module-level value is kept for callers that referenced it.
+DEFAULT_COOKIE_PATH = _default_cookie_path()
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -480,7 +494,11 @@ class PgeSession:
         if self._client is None:
             return
         path = self.settings.cookie_path
-        path.parent.mkdir(parents=True, exist_ok=True)
+        # 0700 on the directory as well as 0600 on the file: the cache root is
+        # shared with other tools, and mkdir's mode is ignored when the
+        # directory already exists.
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.parent.chmod(0o700)
         # Keyed by name *and* domain and path, not name alone: the portal sets
         # several cookies that share a name across domains (renderCtx among
         # them), and collapsing them to a dict raises rather than silently
@@ -493,8 +511,13 @@ class PgeSession:
         )
         # 0600 via os.open: a session cookie is a bearer credential, and
         # Path.write_text would leave it world-readable under a lax umask.
+        # The mode argument only applies when os.open creates the file, so an
+        # existing 0644 -- left by an older version, a restore, another tool --
+        # was rewritten world-readable. fchmod makes the guarantee hold either
+        # way, which is what NamedProfileRepository.save already does.
         handle = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
         with os.fdopen(handle, "w", encoding="utf-8") as out:
+            os.fchmod(out.fileno(), 0o600)
             out.write(payload)
 
     def refresh_token(self) -> str:

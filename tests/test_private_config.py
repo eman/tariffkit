@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 
 from tariffkit import Config, Supplier, secrets
@@ -194,3 +195,43 @@ class TestConfiguredWebApi:
             json={"config": Config().to_dict(), "start": "2026-09-15T19:00:00", "hours": 2},
         )
         assert response.status_code == 422
+
+
+class TestCredentialsStayPrivate:
+    """Secrets must not leak through reprs or a world-readable cache."""
+
+    def test_settings_reprs_hide_their_secrets(self) -> None:
+        from tariffkit.mqtt.publisher import MqttSettings
+        from tariffkit.sources.homeassistant import HaSettings
+        from tariffkit.sources.influx import InfluxSettings
+
+        rendered = " ".join(
+            (
+                repr(HaSettings(host="http://h", token="HA-SECRET")),
+                repr(InfluxSettings(host="http://i", database="d", token="INFLUX-SECRET")),
+                repr(MqttSettings(broker="h", username="u", password="MQTT-SECRET", tls=True)),
+            )
+        )
+        assert "SECRET" not in rendered
+
+    def test_the_cookie_cache_is_not_relative_to_the_working_directory(self) -> None:
+        from tariffkit.sources.pge import _default_cookie_path
+
+        assert _default_cookie_path().is_absolute()
+
+    def test_an_existing_cookie_file_is_reduced_to_0600(self, tmp_path: Path) -> None:
+        """os.open's mode applies only on creation; fchmod covers the rest."""
+        from tariffkit.sources.pge import PgeSession, PgeSettings
+
+        path = tmp_path / "cookies.json"
+        path.write_text("[]", encoding="utf-8")
+        path.chmod(0o644)
+
+        session = PgeSession(PgeSettings(username="u", password="p", cookie_path=path))
+        session._client = httpx.Client()
+        try:
+            session._save_cookies()
+        finally:
+            session._client.close()
+
+        assert path.stat().st_mode & 0o777 == 0o600
