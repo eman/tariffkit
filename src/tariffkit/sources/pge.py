@@ -348,16 +348,12 @@ def _bill_rows(payload: Any) -> list[dict[str, Any]]:
         try:
             payload = json.loads(payload["returnValue"])
         except ValueError as exc:
-            raise BillHistoryError(
-                "the portal's bill history did not decode as JSON"
-            ) from exc
+            raise BillHistoryError("the portal's bill history did not decode as JSON") from exc
     elif isinstance(payload, str):
         try:
             payload = json.loads(payload)
         except ValueError as exc:
-            raise BillHistoryError(
-                "the portal's bill history did not decode as JSON"
-            ) from exc
+            raise BillHistoryError("the portal's bill history did not decode as JSON") from exc
 
     def walk(node: Any, depth: int = 0) -> list[dict[str, Any]] | None:
         if depth > 10:

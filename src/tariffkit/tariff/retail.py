@@ -318,11 +318,18 @@ class RetailTariff:
             for name in exemptions:
                 components.pop(str(name), None)
             if program_name == "dmedical":
-                bundled = dict(snapshot.raw["energy"][str(season)][str(period)])
-                bundled.update(snapshot.raw["adders"])
-                for name in medical["exempt_components"]:
-                    bundled.pop(str(name), None)
-                medical_credit = sum(bundled.values()) * float(medical["discount"])
+                # Bundled-equivalent for a CCA account too, which D-MEDICAL
+                # states in the same words D-CARE and E-FERA use: "the MEDICAL
+                # discount will be calculated for direct access and community
+                # choice aggregation customers based on the total charges as if
+                # they were subject to bundled service rates."
+                base = self._bundled_equivalent(
+                    snapshot,
+                    season,
+                    period,
+                    [str(name) for name in medical["exempt_components"]],
+                )
+                medical_credit = base * float(medical["discount"])
 
         total = sum(components.values())
         if self.config.discount != "none":
