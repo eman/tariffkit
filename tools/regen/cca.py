@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import tomllib
 from datetime import date
 from pathlib import Path
 
@@ -219,7 +220,7 @@ def render(
     lines = [
         f"# {provider.name} ({provider.key.upper()}) residential generation rates.",
         "#",
-        f"# Source: {provider.rate_card.url}",
+        f"# Source: {source_url or provider.rate_card.url}",
     ]
     if provider.tariff_url:
         lines.append(f"# Solar Billing Plan tariff: {provider.tariff_url}")
@@ -283,7 +284,6 @@ def render(
 
 
 def regenerate(provider: Cca, pdf: Path, *, check: bool, source_url: str = "") -> Result:
-    import tomllib
 
     directory = DATA_DIR / "cca" / provider.key
     existing = sorted(directory.glob("*.toml")) if directory.is_dir() else []
@@ -330,6 +330,16 @@ def regenerate(provider: Cca, pdf: Path, *, check: bool, source_url: str = "") -
 
     from .providers import utility as get_utility
 
+    # Provenance follows the document this actually read, not the card the
+    # provider points at today. A historical `--pdf` has no URL of its own, so
+    # the vintage it rewrites keeps the one already recorded against that same
+    # digest; only a genuinely new document falls back to the live URL.
+    target = directory / f"{effective.isoformat()}.toml"
+    if not source_url and target.exists():
+        recorded = tomllib.loads(target.read_text(encoding="utf-8"))
+        if str(recorded.get("source_sha256", "")) == digest:
+            source_url = str(recorded.get("source_url", ""))
+
     body = render(
         provider,
         generation,
@@ -342,7 +352,6 @@ def regenerate(provider: Cca, pdf: Path, *, check: bool, source_url: str = "") -
     )
     # Dated from the card's own statement of when it took force, so a historical
     # card lands beside the current one rather than overwriting it.
-    target = directory / f"{effective.isoformat()}.toml"
     return write_or_check(
         f"{provider.key} {effective}", target, body, check=check, messages=messages
     )

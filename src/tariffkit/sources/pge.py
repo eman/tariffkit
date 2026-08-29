@@ -333,6 +333,12 @@ class BillHistoryError(PortalError):
     """
 
 
+#: Names the portal gives the bill-list container. Matched only to tell an
+#: account with no bills from a reply this could not parse; a non-empty list is
+#: still recognised by the shape of its rows rather than by any key name.
+_BILL_LIST_KEY = re.compile(r"bill|invoice|statement", re.I)
+
+
 def _bill_rows(payload: Any) -> list[dict[str, Any]]:
     """Pull the statement rows out of an Integration Procedure's reply.
 
@@ -372,6 +378,15 @@ def _bill_rows(payload: Any) -> list[dict[str, Any]]:
             keys = " ".join(node[0]).lower()
             if any(w in keys for w in wanted):
                 return [r for r in node if isinstance(r, dict)]
+        if isinstance(node, Mapping):
+            # An account that genuinely has no bills answers with the container
+            # present and empty. `walk` recognises a bill list by the keys of
+            # its first row, so an empty one is invisible to it -- and treating
+            # that as "not found" would report a new account as a parse
+            # failure. The container is named instead.
+            for key, value in node.items():
+                if isinstance(value, list) and not value and _BILL_LIST_KEY.search(key):
+                    return []
         if isinstance(node, Mapping):
             for value in node.values():
                 found = walk(value, depth + 1)
@@ -514,11 +529,17 @@ class PgeSession:
         if self._client is None:
             return
         path = self.settings.cookie_path
-        # 0700 on the directory as well as 0600 on the file: the cache root is
-        # shared with other tools, and mkdir's mode is ignored when the
-        # directory already exists.
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        path.parent.chmod(0o700)
+        # 0700 on the directory as well as 0600 on the file, but only on the
+        # directory this package owns. `cookie_path` is configurable, and
+        # chmodding its parent unconditionally would reach whatever the caller
+        # pointed at -- `/tmp/cookies.json` would take `/tmp` to 0700 and break
+        # the machine. A custom parent this creates still gets the mode from
+        # mkdir; one that already exists is left exactly as the caller has it.
+        parent = path.parent
+        existed = parent.is_dir()
+        parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if existed and parent == _default_cookie_path().parent:
+            parent.chmod(0o700)
         # Keyed by name *and* domain and path, not name alone: the portal sets
         # several cookies that share a name across domains (renderCtx among
         # them), and collapsing them to a dict raises rather than silently

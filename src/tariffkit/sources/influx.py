@@ -31,7 +31,6 @@ import re
 import tomllib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -197,10 +196,17 @@ def monotonic(samples: list[tuple[datetime, float]]) -> list[tuple[datetime, flo
         if highest is not None and value < highest:
             # One dip is an artefact. A run of them that is itself climbing is
             # a counter counting again from a lower base.
-            below.append((moment, value))
-            if len(below) >= _RESTART_SAMPLES and all(
-                later >= earlier for (_, earlier), (_, later) in pairwise(below)
-            ):
+            #
+            # Only the latest consecutive run counts. Testing the whole
+            # below-maximum history meant one decrease anywhere inside it --
+            # 10, 9, 10, 11 after a restart -- made the check false for the
+            # rest of the window, so exactly the noisiest restarts went back to
+            # being silently discarded.
+            if below and value < below[-1][1]:
+                below = [(moment, value)]
+            else:
+                below.append((moment, value))
+            if len(below) >= _RESTART_SAMPLES:
                 first = below[0][0]
                 raise DataError(
                     f"the counter behind this series restarted at {first.isoformat()}: "

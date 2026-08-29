@@ -259,6 +259,21 @@ class TestCareFeraExportBonus:
         assert care.components["cca_care_fera_bonus"] == pytest.approx(0.05)
         assert "cca_care_fera_bonus" not in plain.components
 
+    def test_the_bonus_starts_when_the_sbp_tariff_took_effect(self) -> None:
+        """Its terms are dated by the SBP tariff, not by the rate card.
+
+        The card that covers 2023 predates the tariff and carries no export
+        terms at all; the vintage from 2023-12-01 does.
+        """
+        # Asserted at the card: which NBT vintage can price a 2023 export is a
+        # separate question from which card's terms apply to it.
+        before = date(2023, 11, 30)
+        assert load_rate_card("MCE", before).care_fera_bonus(before) == pytest.approx(0.0)
+        for on in (date(2023, 12, 1), date(2025, 6, 15), date(2026, 1, 15)):
+            card = load_rate_card("MCE", on)
+            assert card.care_fera_bonus(on) == pytest.approx(0.05), on
+            assert card.solar_bonus_fraction == pytest.approx(0.10), on
+
     def test_the_bonus_stops_when_the_tariff_says_it_does(self) -> None:
         """Through 2028-12-31, per the card."""
         rates = self._rates("care")

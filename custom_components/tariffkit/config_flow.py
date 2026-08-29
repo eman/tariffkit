@@ -14,7 +14,12 @@ from homeassistant.helpers import selector
 
 from tariffkit.account import AccountEpoch, AccountError, AccountProfile
 from tariffkit.cca import available_rate_cards, load_rate_card
-from tariffkit.config import BSC_TIER_BY_DISCOUNT, VINTAGE_BY_YEAR, Config
+from tariffkit.config import (
+    _LEGACY_BSC_TIER,
+    BSC_TIER_BY_DISCOUNT,
+    VINTAGE_BY_YEAR,
+    Config,
+)
 from tariffkit.errors import ConfigError, TariffKitError
 from tariffkit.models import Supplier
 from tariffkit.tariff.retail import SUPPORTED_TARIFFS
@@ -148,12 +153,14 @@ def _delivery_schema(
                 default=defaults.get(CONF_DISCOUNT, "none"),
             )
         ] = _select(["none", "care", "fera"], "discount")
-    fields[vol.Required(CONF_BSC_TIER, default=defaults.get(CONF_BSC_TIER, 3))] = (
-        selector.NumberSelector(
-            selector.NumberSelectorConfig(
-                min=1, max=3, step=1, mode=selector.NumberSelectorMode.BOX
-            )
+    fields[
+        vol.Required(
+            CONF_BSC_TIER,
+            default=defaults.get(CONF_BSC_TIER)
+            or BSC_TIER_BY_DISCOUNT[defaults.get(CONF_DISCOUNT, "none")],
         )
+    ] = selector.NumberSelector(
+        selector.NumberSelectorConfig(min=1, max=3, step=1, mode=selector.NumberSelectorMode.BOX)
     )
     if tariff in {"E-1", "E-TOU-C"}:
         fields[
@@ -249,12 +256,14 @@ def _history_schema(defaults: dict[str, Any], *, effective: bool = False) -> vol
     fields[vol.Required(CONF_DISCOUNT, default=defaults.get(CONF_DISCOUNT, "none"))] = _select(
         ["none", "care", "fera"], "discount"
     )
-    fields[vol.Required(CONF_BSC_TIER, default=defaults.get(CONF_BSC_TIER, 3))] = (
-        selector.NumberSelector(
-            selector.NumberSelectorConfig(
-                min=1, max=3, step=1, mode=selector.NumberSelectorMode.BOX
-            )
+    fields[
+        vol.Required(
+            CONF_BSC_TIER,
+            default=defaults.get(CONF_BSC_TIER)
+            or BSC_TIER_BY_DISCOUNT[defaults.get(CONF_DISCOUNT, "none")],
         )
+    ] = selector.NumberSelector(
+        selector.NumberSelectorConfig(min=1, max=3, step=1, mode=selector.NumberSelectorMode.BOX)
     )
     if defaults.get(CONF_TARIFF, "E-ELEC") in {"E-1", "E-TOU-C"}:
         fields[
@@ -625,10 +634,15 @@ def _manual_config_data(
         data[CONF_PTO_DATE] = None
         data.setdefault(CONF_ACC_PLUS_SEGMENT, "residential")
         data.setdefault(CONF_DISCOUNT, "none")
-    # No hardcoded 3: an absent tier means "take the one the discount
-    # implies", which is the tariff's rule. Defaulting it here billed a
-    # CARE account the undiscounted daily charge.
-    data.setdefault(CONF_BSC_TIER, BSC_TIER_BY_DISCOUNT[data.get(CONF_DISCOUNT, "none")])
+    # The tier is chosen in the same form as the discount, so its default
+    # cannot have followed from the discount the user picked in that same
+    # submission -- it is always the untouched 3. Taking that literally would
+    # reject every new CARE or FERA setup against the tariff's own mapping, so
+    # the old default is read as "unset" exactly as a stored profile is. A tier
+    # the user actually moved to 1 or 2 still speaks for itself.
+    implied = BSC_TIER_BY_DISCOUNT[data.get(CONF_DISCOUNT, "none")]
+    if data.get(CONF_BSC_TIER) in (None, _LEGACY_BSC_TIER):
+        data[CONF_BSC_TIER] = implied
     data.setdefault(CONF_BASELINE_CODE, "basic")
     data.setdefault(CONF_BASELINE_TERRITORY, None)
     if data.get(CONF_SUPPLIER) == "cca":

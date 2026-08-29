@@ -446,6 +446,18 @@ class TestACounterThatRestarts:
             samples.append((self.BASE + timedelta(hours=hour, minutes=30), 0.0))
         assert len(influx.monotonic(samples)) == 12
 
+    def test_a_restart_with_an_early_correction_is_still_caught(self) -> None:
+        """A counter that settles after restarting -- 10, 9, 10, 11 -- used to
+        slip through, because one decrease anywhere in the below-maximum
+        history made the run test false for the rest of the window."""
+        samples = [(self.BASE + timedelta(hours=h), 1000.0 + h) for h in range(4)]
+        samples += [
+            (self.BASE + timedelta(hours=4 + i), v)
+            for i, v in enumerate([10.0, 9.0, 10.0, 11.0, 12.0])
+        ]
+        with pytest.raises(DataError, match="restarted at"):
+            influx.monotonic(samples)
+
     def test_a_single_dip_is_still_an_artefact(self) -> None:
         samples = [(self.BASE + timedelta(hours=h), 1000.0 + h) for h in range(6)]
         samples[3] = (samples[3][0], 900.0)

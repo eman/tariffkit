@@ -1,3 +1,7 @@
+# SBP EXPORT TERMS ONLY. Identical to the 2023-01-01 vintage in every rate;
+# it exists because MCE's Solar Billing Plan tariff took effect 2023-12-01
+# and its export terms are dated by that tariff, not by the rate card.
+#
 # Marin Clean Energy (MCE) residential generation rates.
 #
 # Source: https://mcecleanenergy.org/wp-content/uploads/2023/05/MCE-Residential-Rates-05052023.pdf
@@ -18,7 +22,7 @@ provider = "MCE"
 name = "Marin Clean Energy"
 utility = "pacific_gas_and_electric"
 schedules = ["E-ELEC", "E-TOU-C", "EV2-A"]
-effective = "2023-01-01"
+effective = "2023-12-01"
 currency = "USD/kWh"
 source_url = "https://mcecleanenergy.org/wp-content/uploads/2023/05/MCE-Residential-Rates-05052023.pdf"
 
@@ -59,3 +63,30 @@ off_peak = 0.128
 peak = 0.155
 part_peak = 0.144
 off_peak = 0.121
+
+[export]
+# Terms from MCE's Solar Billing Plan tariff, effective 2023-12-01 -- a
+# different document from the rate card above, and on its own calendar. That is
+# why they appear from this vintage rather than from the 2023-01-01 card: the
+# SBP tariff did not exist when that card was published.
+#
+# "All customers will also receive a Solar Bonus Credit which provides an
+# additional 10% of the base export credit."
+solar_bonus_fraction = 0.10
+
+# "CARE and FERA customers will receive a $0.05/kWh generation export bonus
+# credit on all exports until December 31, 2028."
+care_fera_bonus_rate = 0.05
+care_fera_bonus_through = "2028-12-31"
+
+# Not verified for this period. The measurement behind the 2026-04-01 card was
+# made against the 2026-06-30..2026-07-28 statement and speaks only for the
+# rates on that card, so an export priced here is reported incomplete rather
+# than claimed exact.
+export_credit_basis = "acc_generation"
+export_credit_verified = false
+
+# Left at the default. MCE crediting an ACC Plus adder of its own was
+# established from the 2026-08-04 statement; nothing establishes it for this
+# period, and asserting it would invent credit.
+credits_acc_plus = false

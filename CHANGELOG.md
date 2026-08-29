@@ -18,6 +18,11 @@ All notable changes to this project are documented here. This project follows
   charges it could already reach.
 
 ### Fixed
+- A CARE or FERA account on MCE is credited the low-income export bonus from
+  the date its tariff starts paying it. The terms were vendored only on the
+  April 2026 rate card, so exports between the Solar Billing Plan tariff's
+  2023-12-01 effective date and 2026-03-31 still received nothing. They are
+  dated by that tariff rather than by the rate card, and are vendored from it.
 - Six weekday evenings in 2044 and 2045 are priced at peak again. Every export
   vintage covering those years duplicates Memorial Day, Independence Day and
   Labor Day onto the following day, and because no two of them disagreed the

@@ -34,6 +34,8 @@ LOCK_YEARS = 9
 #: undiscounted account the standard one. Pinned here because nothing in the
 #: rate data ties the two fields together and the default is tier 3.
 BSC_TIER_BY_DISCOUNT: dict[str, int] = {"none": 3, "care": 1, "fera": 2}
+#: The tier every profile serialized before the two fields were connected.
+_LEGACY_BSC_TIER = 3
 _ONE_DAY = timedelta(days=1)
 
 
@@ -278,6 +280,18 @@ class Config:
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> Config:
         data = dict(raw)
+        # Heal a profile stored before the tier followed the discount. Every
+        # such profile carries the old default of 3, because `to_dict` wrote
+        # the field unconditionally, so a CARE or FERA account that was never
+        # asked about a tier would now fail to load outright. Only the legacy
+        # default is forgiven: an explicitly chosen tier that contradicts the
+        # programme is still a configuration error worth hearing about.
+        if (
+            data.get("base_services_charge_tier") == _LEGACY_BSC_TIER
+            and BSC_TIER_BY_DISCOUNT.get(str(data.get("discount", "none")), _LEGACY_BSC_TIER)
+            != _LEGACY_BSC_TIER
+        ):
+            data["base_services_charge_tier"] = None
         unknown = set(data) - {f.name for f in cls.__dataclass_fields__.values()}
         if unknown:
             raise ConfigError(f"unknown config keys: {sorted(unknown)}")

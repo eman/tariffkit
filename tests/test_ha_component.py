@@ -1055,3 +1055,41 @@ async def test_options_reject_a_schedule_the_cca_card_does_not_cover(
     assert result["type"] == "form"
     assert result["errors"] == {"base": "invalid_config"}
     assert "E-1" in result["description_placeholders"]["detail"]
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_a_care_setup_completes_without_touching_the_tier(
+    hass: HomeAssistant,
+) -> None:
+    """The tier is chosen in the same form as the discount.
+
+    So its default cannot follow from the discount picked in that submission,
+    and taking the untouched 3 literally rejected every new CARE setup against
+    the tariff's own CARE-is-tier-1 rule.
+    """
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    flow_id = result["flow_id"]
+    await hass.config_entries.flow.async_configure(flow_id, {"next_step_id": "manual"})
+    result = await hass.config_entries.flow.async_configure(
+        flow_id,
+        {
+            "profile_name": "care-account",
+            "supplier": "bundled",
+            "tariff": "E-ELEC",
+            "export_enabled": True,
+        },
+    )
+    result = await hass.config_entries.flow.async_configure(
+        flow_id,
+        {
+            "interconnection_year": "2026",
+            "acc_plus_segment": "residential_low_income",
+            "discount": "care",
+            "base_services_charge_tier": 3,
+            "medical_baseline": False,
+        },
+    )
+
+    assert result["type"] == "create_entry", result.get("errors")
+    stored = Config.from_dict(result["data"][CONF_PROFILE]["epochs"][0]["config"])
+    assert stored.resolved_bsc_tier == 1

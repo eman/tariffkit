@@ -12,6 +12,7 @@ import tomllib
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from time import monotonic
 from types import FrameType
 from typing import Any
 
@@ -37,6 +38,8 @@ log = logging.getLogger(__name__)
 ONLINE = "online"
 #: How long to wait for the broker's CONNACK before giving up.
 CONNECT_TIMEOUT = 10.0  # seconds; overridden in tests via monkeypatch
+#: How long to wait for the broker to acknowledge everything published.
+PUBLISH_TIMEOUT = 10.0
 OFFLINE = "offline"
 
 
@@ -193,6 +196,7 @@ class MqttPublisher:
         self.settings = settings
         self._stop = threading.Event()
         self._connected = threading.Event()
+        self._pending: list[Any] = []
         self._client = self._configure(client if client is not None else self._build_client())
 
     def _build_client(self) -> Any:
@@ -262,6 +266,11 @@ class MqttPublisher:
                 f"MQTT publish to {topic} failed with rc={rc}. "
                 "The broker is still serving the previously retained value."
             )
+        # `rc` says only that paho accepted the message into its own queue. At
+        # QoS 1 delivery is complete at PUBACK, so a run that publishes and then
+        # stops its loop can still drop everything it queued -- which is what a
+        # one-shot run does. Held for `drain` to wait on before disconnecting.
+        self._pending.append(info)
 
     def connect(self) -> None:
         self._client.connect(self.settings.broker, self.settings.port, keepalive=60)
@@ -416,9 +425,32 @@ class MqttPublisher:
     def stop(self) -> None:
         self._stop.set()
 
+    def drain(self, timeout: float = PUBLISH_TIMEOUT) -> None:
+        """Block until the broker has acknowledged everything published.
+
+        Without this a one-shot run queues its retained values, stops the loop
+        and disconnects, and paho discards whatever had not gone out -- leaving
+        the broker serving the previous run's prices while the command exits
+        successfully.
+        """
+        deadline = monotonic() + timeout
+        pending, self._pending = self._pending, []
+        for info in pending:
+            wait_for = getattr(info, "wait_for_publish", None)
+            if wait_for is None:  # a client that does not model acknowledgement
+                continue
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise PublishError(
+                    f"the broker did not acknowledge every published message within "
+                    f"{timeout:g}s; some retained values may be stale"
+                )
+            wait_for(remaining)
+
     def close(self) -> None:
         try:
             self._publish("status", OFFLINE)
+            self.drain()
         finally:
             self._client.loop_stop()
             self._client.disconnect()

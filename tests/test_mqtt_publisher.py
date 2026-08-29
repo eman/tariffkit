@@ -22,7 +22,15 @@ class _FakeReason:
 
 
 class _FakeInfo:
+    """Models paho's MQTTMessageInfo, acknowledgement and all."""
+
     rc = 0
+
+    def __init__(self) -> None:
+        self.waited = False
+
+    def wait_for_publish(self, timeout: float | None = None) -> None:
+        self.waited = True
 
 
 class FakeClient:
@@ -37,6 +45,7 @@ class FakeClient:
         self.loop_running = False
         self.disconnected = False
         self.qos_used: list[int] = []
+        self.infos: list[_FakeInfo] = []
         self.on_connect: Any | None = None
         self.on_disconnect: Any | None = None
 
@@ -69,7 +78,9 @@ class FakeClient:
     def publish(self, topic: str, payload: str, qos: int = 0, retain: bool = False) -> _FakeInfo:
         self.published.append((topic, payload, retain))
         self.qos_used.append(qos)
-        return _FakeInfo()
+        info = _FakeInfo()
+        self.infos.append(info)
+        return info
 
     def topics(self) -> dict[str, str]:
         return {topic: payload for topic, payload, _ in self.published}
@@ -439,3 +450,33 @@ def test_publishing_waits_for_the_broker_to_acknowledge(
     client.on_connect = None  # a broker that never answers
     with pytest.raises(PublishError, match="did not acknowledge"):
         publisher.connect()
+
+
+def test_closing_waits_for_the_broker_to_acknowledge_everything() -> None:
+    """`rc` says only that paho queued the message.
+
+    At QoS 1 delivery completes at PUBACK, so a one-shot run that publishes and
+    immediately stops its loop drops whatever had not gone out -- and exits
+    successfully while the broker serves the previous run's prices.
+    """
+    publisher = make_publisher()
+    publisher.connect()
+    publisher.publish_now()
+    client = client_of(publisher)
+    assert client.infos, "nothing was published"
+    publisher.close()
+    assert all(info.waited for info in client.infos)
+
+
+def test_a_broker_that_never_acknowledges_is_reported() -> None:
+    publisher = make_publisher()
+    publisher.connect()
+    client = client_of(publisher)
+    for info in client.infos:
+        info.wait_for_publish = _never_returns  # type: ignore[method-assign]
+    with pytest.raises(PublishError, match="did not acknowledge every published"):
+        publisher.drain(timeout=-1.0)
+
+
+def _never_returns(timeout: float | None = None) -> None:
+    raise AssertionError("should not be reached; the deadline is already past")
