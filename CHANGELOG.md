@@ -34,6 +34,27 @@ All notable changes to this project are documented here. This project follows
   charges it could already reach.
 
 ### Fixed
+- Six weekday evenings in 2044 and 2045 are priced at peak again. Every export
+  vintage covering those years duplicates Memorial Day, Independence Day and
+  Labor Day onto the following day, and because no two of them disagreed the
+  intersection that removes the artifact everywhere else preserved it -- so
+  both years carried eleven holidays instead of eight, and E-TOU-D, whose peak
+  applies on weekdays only, priced those evenings as off-peak.
+- MQTT publishes at QoS 1 and reports a refusal. Everything is retained, so a
+  dropped message is not a gap: the broker keeps serving the previous hour's
+  price and the last will does not fire on a clean disconnect, so subscribers
+  saw a stale price presented as current. A one-shot run could also publish
+  before the broker acknowledged the connection, dropping every message and
+  exiting successfully; it waits for the acknowledgement now.
+- A bill history that cannot be parsed is reported as a failure rather than as
+  an account with no bills. Three decode paths returned an empty list, and the
+  CLI printed "received 0 statement update(s)" and exited successfully, so a
+  portal change looked like a completed sync.
+- A statement's recorded source no longer resolves against the working
+  directory. It holds a basename, so hashing it picked up whatever file of that
+  name was in the caller's directory -- binding one statement's facts to
+  another document's digest, which either blocks a legitimate import as a
+  conflict or records provenance for a file nobody read.
 - A meter that restarts its counter is refused rather than silently zeroing the
   rest of the window. Readings below the running maximum are dropped as device
   artefacts, which is right for the Eagle-100's momentary zeroes and wrong for

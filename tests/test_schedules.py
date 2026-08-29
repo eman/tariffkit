@@ -467,3 +467,20 @@ class TestDiscountBase:
             .baseline_credit
         )
         assert credit == pytest.approx(undiscounted * factor)
+
+
+def test_no_year_carries_two_consecutive_holidays() -> None:
+    """PG&E's observed-date rules never produce adjacent dates.
+
+    2044 and 2045 carried eleven holidays each -- Memorial Day, Independence
+    Day and Labor Day duplicated onto the following day by every vintage
+    covering them, so the intersection could not remove it. E-TOU-D prices its
+    5-8pm peak as off-peak on a holiday, so six weekday evenings were wrong.
+    """
+    from tariffkit.timeutil import holidays
+
+    for year in range(2024, 2046):
+        days = set(holidays(year))
+        adjacent = sorted(d for d in days if d - timedelta(days=1) in days)
+        assert not adjacent, f"{year} has consecutive holidays: {adjacent}"
+        assert 7 <= len(days) <= 9, f"{year} has {len(days)} holidays"

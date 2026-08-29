@@ -326,6 +326,13 @@ class InvalidSessionError(PortalError):
         self.new_token = new_token
 
 
+class BillHistoryError(PortalError):
+    """The bill history could not be parsed.
+
+    Distinct from an account with no bills, which is a legitimate empty list.
+    """
+
+
 def _bill_rows(payload: Any) -> list[dict[str, Any]]:
     """Pull the statement rows out of an Integration Procedure's reply.
 
@@ -340,13 +347,17 @@ def _bill_rows(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, Mapping) and isinstance(payload.get("returnValue"), str):
         try:
             payload = json.loads(payload["returnValue"])
-        except ValueError:
-            return []
+        except ValueError as exc:
+            raise BillHistoryError(
+                "the portal's bill history did not decode as JSON"
+            ) from exc
     elif isinstance(payload, str):
         try:
             payload = json.loads(payload)
-        except ValueError:
-            return []
+        except ValueError as exc:
+            raise BillHistoryError(
+                "the portal's bill history did not decode as JSON"
+            ) from exc
 
     def walk(node: Any, depth: int = 0) -> list[dict[str, Any]] | None:
         if depth > 10:
@@ -377,7 +388,19 @@ def _bill_rows(payload: Any) -> list[dict[str, Any]]:
                     return found
         return None
 
-    return walk(payload) or []
+    rows = walk(payload)
+    if rows is None:
+        # An empty list here is indistinguishable from "this account has no
+        # bills", and that is how the CLI reported it: "received 0 statement
+        # update(s)", exit 0, while a PG&E release had quietly moved the rows.
+        # The comment above already names this failure for the inner decode;
+        # the outer one gets the same treatment.
+        raise BillHistoryError(
+            "no statement rows were found in the portal's bill history. The reply "
+            "decoded but held nothing shaped like a bill list, which usually means "
+            "the portal changed. See audit/pge/PORTAL.md for how to re-capture it."
+        )
+    return rows
 
 
 def _frontdoor(answer: Any) -> str:

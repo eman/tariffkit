@@ -3,12 +3,18 @@
 # Extracted from the DayStart==8 rows of PG&E's NBT export-rate files, so
 # the observed-date rules (Saturday -> preceding Friday, Sunday -> following
 # Monday) come from the source rather than being reimplemented here.
-# These eight holidays affect the EXPORT day type only; E-ELEC import
-# pricing makes no weekday/weekend/holiday distinction at all.
+# These holidays set the EXPORT day type, and also E-TOU-D's peak, which
+# applies on weekdays only and prices a holiday as off-peak. E-ELEC,
+# E-TOU-C and EV2-A make no weekday/weekend/holiday distinction.
 #
-# This is the INTERSECTION across the vintage files covering each year.
-# They agree through 2036; beyond that NBT25/26/00 duplicate some holidays
-# onto the following day, and intersecting drops those artifacts. Export
+# This is the INTERSECTION across the vintage files covering each year,
+# less any date that immediately follows another. They agree through 2036;
+# beyond that NBT25/26/00 duplicate some holidays onto the following day.
+# Intersecting drops those wherever two vintages disagree, but 2044 is
+# covered by three files and 2045 by one, all carrying the duplicate, so
+# both years survived it at eleven holidays until the adjacency rule was
+# added. PG&E's observed-date rules never produce consecutive dates.
+# Export
 # lookups use the per-vintage calendar embedded in each matrix instead.
 
 [holidays]
@@ -32,5 +38,5 @@
 2041 = ["2041-01-01", "2041-02-18", "2041-05-27", "2041-07-04", "2041-09-02", "2041-11-11", "2041-11-28", "2041-12-25"]
 2042 = ["2042-01-01", "2042-02-17", "2042-05-26", "2042-07-04", "2042-09-01", "2042-11-11", "2042-11-27", "2042-12-25"]
 2043 = ["2043-01-01", "2043-02-16", "2043-05-25", "2043-07-03", "2043-09-07", "2043-11-11", "2043-11-26", "2043-12-25"]
-2044 = ["2044-01-01", "2044-02-15", "2044-05-30", "2044-05-31", "2044-07-04", "2044-07-05", "2044-09-05", "2044-09-06", "2044-11-11", "2044-11-24", "2044-12-26"]
-2045 = ["2045-01-02", "2045-02-20", "2045-05-29", "2045-05-30", "2045-07-04", "2045-07-05", "2045-09-04", "2045-09-05", "2045-11-10", "2045-11-23", "2045-12-25"]
+2044 = ["2044-01-01", "2044-02-15", "2044-05-30", "2044-07-04", "2044-09-05", "2044-11-11", "2044-11-24", "2044-12-26"]
+2045 = ["2045-01-02", "2045-02-20", "2045-05-29", "2045-07-04", "2045-09-04", "2045-11-10", "2045-11-23", "2045-12-25"]
