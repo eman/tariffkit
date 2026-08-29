@@ -28,9 +28,13 @@ class _FakeInfo:
 
     def __init__(self) -> None:
         self.waited = False
+        self.acknowledged = True
 
     def wait_for_publish(self, timeout: float | None = None) -> None:
         self.waited = True
+
+    def is_published(self) -> bool:
+        return self.acknowledged
 
 
 class FakeClient:
@@ -473,10 +477,30 @@ def test_a_broker_that_never_acknowledges_is_reported() -> None:
     publisher.connect()
     client = client_of(publisher)
     for info in client.infos:
-        info.wait_for_publish = _never_returns  # type: ignore[method-assign]
+        info.acknowledged = False
     with pytest.raises(PublishError, match="did not acknowledge every published"):
-        publisher.drain(timeout=-1.0)
+        publisher.drain(timeout=0.01)
 
 
-def _never_returns(timeout: float | None = None) -> None:
-    raise AssertionError("should not be reached; the deadline is already past")
+def test_a_single_unacknowledged_message_is_not_accepted_as_delivered() -> None:
+    """paho's wait_for_publish returns silently on timeout.
+
+    It re-raises only once the message's own rc is non-zero, which never
+    happens here, so trusting the call to raise accepted an undelivered
+    message -- leaving the broker serving a stale retained value.
+    """
+    publisher = make_publisher()
+    publisher.connect()
+    client = client_of(publisher)
+    client.infos[0].acknowledged = False
+    with pytest.raises(PublishError, match="did not acknowledge"):
+        publisher.drain()
+
+
+def test_a_long_run_does_not_accumulate_acknowledgements() -> None:
+    publisher = make_publisher()
+    publisher.connect()
+    for _ in range(50):
+        publisher.publish_now()
+        publisher.drain()
+    assert publisher._pending == []

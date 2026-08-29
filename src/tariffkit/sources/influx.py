@@ -159,12 +159,6 @@ def _sql_name(name: str, what: str) -> str:
     return name
 
 
-#: How many consecutive below-maximum samples distinguish a counter restart
-#: from the Eagle-100's single-sample dropouts. Three is comfortably past any
-#: dropout observed on this data and still catches a restart within minutes.
-_RESTART_SAMPLES = 3
-
-
 def monotonic(samples: list[tuple[datetime, float]]) -> list[tuple[datetime, float]]:
     """Drop readings that cannot be a cumulative counter moving forward.
 
@@ -178,45 +172,25 @@ def monotonic(samples: list[tuple[datetime, float]]) -> list[tuple[datetime, flo
     here so the unfiltered series -- which reaches back nine months further --
     can be used directly.
 
-    A counter that *restarts* is a different thing and is refused rather than
-    filtered. A meter swap, a firmware reset or a counter wrap leaves every
-    later sample below the old maximum, so the artefact rule discarded all of
-    them -- not just at the seam but for the rest of the window -- and
-    ``read_counters`` only checks that something survived. The result was a
-    short bill made of real-looking numbers. Raising names the meter and the
-    time instead.
+    KNOWN LIMITATION, deliberately not papered over: a counter that *restarts*
+    at a lower base -- a meter swap, a firmware reset, a 32-bit wrap -- leaves
+    every later sample below the old maximum, so this discards the remainder of
+    the window and the bill comes out short and plausible. Detecting it here
+    was tried and withdrawn: a rule strong enough to catch a noisy restart also
+    fired on a single spuriously *high* sample, which poisons the maximum and
+    makes every subsequent normal reading look like a restart. Turning that
+    into a hard error broke legitimate reads, which on the Home Assistant side
+    means every entity goes unavailable. Separating the two cases needs
+    upward-outlier rejection this does not have, so the artefact rule stands
+    and the gap is recorded rather than half-closed.
     """
     kept: list[tuple[datetime, float]] = []
     highest: float | None = None
-    below: list[tuple[datetime, float]] = []
     for moment, value in samples:
         if value is None or value <= 0:
-            below.clear()
             continue
         if highest is not None and value < highest:
-            # One dip is an artefact. A run of them that is itself climbing is
-            # a counter counting again from a lower base.
-            #
-            # Only the latest consecutive run counts. Testing the whole
-            # below-maximum history meant one decrease anywhere inside it --
-            # 10, 9, 10, 11 after a restart -- made the check false for the
-            # rest of the window, so exactly the noisiest restarts went back to
-            # being silently discarded.
-            if below and value < below[-1][1]:
-                below = [(moment, value)]
-            else:
-                below.append((moment, value))
-            if len(below) >= _RESTART_SAMPLES:
-                first = below[0][0]
-                raise DataError(
-                    f"the counter behind this series restarted at {first.isoformat()}: "
-                    f"{len(below)} consecutive samples below the previous maximum of "
-                    f"{highest:g}, climbing from {below[0][1]:g}. Readings after a "
-                    "restart cannot be differenced against readings before it; price "
-                    "the window either side of that moment separately."
-                )
             continue
-        below.clear()
         highest = value
         kept.append((moment, value))
     return kept

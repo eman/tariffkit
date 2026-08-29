@@ -184,9 +184,14 @@ class NbtExportRates:
             # which this package does not ship rates for.
             cca = self.config.cca
             assert cca is not None
-            if cca.export_generation_rate is not None:
-                components["cca_generation"] = cca.export_generation_rate
-            elif cca.rate_card is not None:
+            # The card comes first when both are set. An explicit export rate
+            # used to win, and that branch emits no solar bonus and no CCA ACC
+            # Plus adder -- a 22% under-credit into the CCA's bank on MCE, with
+            # the price still reporting itself complete. Preferring the card
+            # keeps those components; refusing the pair outright was tried and
+            # withdrawn, because a stored profile carrying both then could not
+            # be loaded at all.
+            if cca.rate_card is not None:
                 # The CCA pays the generation half. Their tariffs tend to say
                 # only that exports earn "the applicable Energy Export Credit
                 # Value", so whether that equals the ACC generation component
@@ -220,7 +225,10 @@ class NbtExportRates:
                     if care_fera:
                         components["cca_care_fera_bonus"] = care_fera
                 complete = card.export_credit_verified
+            elif cca.export_generation_rate is not None:
+                components["cca_generation"] = cca.export_generation_rate
             else:
+                # Delivery-only price. Flagged rather than silently understated.
                 complete = False
 
         if self._acc_plus:

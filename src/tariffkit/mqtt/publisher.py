@@ -405,6 +405,11 @@ class MqttPublisher:
         try:
             while not self._stop.is_set():
                 self.publish_now()
+                # Drained  cycle so the acknowledgement list cannot grow for
+                # the life of the process: an hourly publisher accumulates
+                # thousands of MQTTMessageInfo objects a year otherwise, each
+                # holding a threading.Condition.
+                self.drain()
                 delay = (next_hour(now_pacific()) - now_pacific()).total_seconds()
                 # Sleep until the boundary rather than polling; wakes early on stop.
                 self._stop.wait(max(delay, 1.0))
@@ -440,12 +445,19 @@ class MqttPublisher:
             if wait_for is None:  # a client that does not model acknowledgement
                 continue
             remaining = deadline - monotonic()
-            if remaining <= 0:
+            if remaining > 0:
+                wait_for(remaining)
+            # paho's wait_for_publish returns silently when it times out -- it
+            # only re-raises once the message's own rc is non-zero, which stays
+            # zero here -- so the acknowledgement has to be read afterwards.
+            # Trusting the call to raise accepted an unacknowledged message as
+            # delivered.
+            published = getattr(info, "is_published", None)
+            if published is not None and not published():
                 raise PublishError(
                     f"the broker did not acknowledge every published message within "
                     f"{timeout:g}s; some retained values may be stale"
                 )
-            wait_for(remaining)
 
     def close(self) -> None:
         try:

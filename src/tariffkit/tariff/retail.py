@@ -47,10 +47,21 @@ DISCOUNT_PROGRAM = {"care": "dcare", "fera": "efera"}
 def discount_terms(discount: str, on: date) -> tuple[float, list[str]]:
     """The rate and exempt components for a discount programme on a date.
 
-    Both come from the vendored sheet. D-CARE exempts four components and
-    E-FERA three -- FERA is not exempt from the Wildfire Fund Charge, which
-    CARE is -- so the two lists are genuinely different and neither can stand
-    in for the other.
+    Both come from the vendored sheet, and the two lists genuinely differ:
+    FERA is not exempt from the Wildfire Fund Charge, which CARE is, so neither
+    can stand in for the other.
+
+    One CARE exemption is not modelled. Advice 7846-E added "the CARE surcharge
+    portion of the public purpose program charge used to fund the CARE
+    discount" to D-CARE sheet 1, and PG&E publishes no separate rate for that
+    portion -- only the whole public purpose programs charge -- so it cannot be
+    subtracted here. The CARE discount is therefore taken on a base that still
+    includes it, and comes out slightly large. Order $0.50 a month at 500 kWh
+    on E-TOU-C, in the customer's favour.
+
+    The same sheet excludes the California Climate Credit from discounting.
+    That one costs nothing: the engine bills no such component -- it appears
+    only as a statement-level adjustment -- so there is nothing to exclude.
     """
     if discount == "none":
         return 0.0, []
@@ -181,12 +192,19 @@ class RetailTariff:
     def _discounted_baseline_credit(self, snapshot: Any, moment: datetime) -> float:
         """Baseline credit in $/kWh, carrying the same discount as the charges.
 
-        The credit is a distribution line like any other, and D-CARE applies
-        its discount "as a reduction to distribution charges". It was read raw
-        and applied at bill level at full value while every charge around it
-        was scaled, so a CARE customer received an undiscounted credit against
-        discounted charges: on a 250 kWh within-baseline E-TOU-C January that
-        was $46.29 against $54.66, 18% of the bill.
+        D-CARE takes its discount "on their total bundled volumetric charges",
+        and E-TOU-C sheet 2 prints "Baseline Credit (Applied to Baseline Usage
+        Only)" inside its TOTAL BUNDLED RATES table -- so the credit is part of
+        that total and carries the discount with everything else. (The sheet's
+        other clause, that discounts "will be applied as a reduction to
+        distribution charges", says where the discount lands on the bill, not
+        what is in its base; it does not support this and is not the authority
+        for it.)
+
+        Read raw and applied at bill level at full value while every charge
+        around it was scaled, a CARE customer received an undiscounted credit
+        against discounted charges: on a 250 kWh within-baseline E-TOU-C
+        January that was $46.29 against $54.66, 18% of the bill.
         """
         credit = float(snapshot.raw.get("baseline", {}).get("credit", 0.0))
         if not credit or self.config.discount == "none":

@@ -42,6 +42,12 @@ def extract(provider: Program, pages: list[Page]) -> tuple[date, str, dict[str, 
             {
                 "discount": _percent(text, r"D-CARE Discount:\s+([0-9.]+)\s+%"),
                 "eligible_schedules": ["E-1", "E-ELEC", "E-TOU-C", "E-TOU-D", "EV2-A"],
+                # Four of the five D-CARE sheet 1 names. The fifth, added by
+                # advice 7846-E -- "the CARE surcharge portion of the public
+                # purpose program charge used to fund the CARE discount" -- has
+                # no separately published rate to subtract, only the whole PPP
+                # charge, so it cannot be modelled from the sheet. Listed here
+                # so the omission is deliberate rather than overlooked.
                 "exempt_components": [
                     "wildfire_fund_charge",
                     "wildfire_hardening",

@@ -44,15 +44,6 @@ All notable changes to this project are documented here. This project follows
   name was in the caller's directory -- binding one statement's facts to
   another document's digest, which either blocks a legitimate import as a
   conflict or records provenance for a file nobody read.
-- A meter that restarts its counter is refused rather than silently zeroing the
-  rest of the window. Readings below the running maximum are dropped as device
-  artefacts, which is right for the Eagle-100's momentary zeroes and wrong for
-  a counter that begins again from a lower base after a meter swap, a firmware
-  reset or a wrap: every later sample sits below the old maximum, so all of
-  them were discarded, and only an empty result was checked for. The bill came
-  out short and entirely plausible. A run of climbing below-maximum samples now
-  raises, naming the meter and the moment; single dropouts are filtered as
-  before.
 - Changing supplier or schedule through the options flow is validated. Only the
   setup flow checked the choice against the CCA's rate card, so a schedule the
   card does not cover was accepted through Configure, written to the entry, and
@@ -81,19 +72,22 @@ All notable changes to this project are documented here. This project follows
   is the distribution line the tariff implements the baseline credit with, and
   plain distribution was already treated that way, but it was absent from the
   bucket map and so fell to the non-offsettable default.
-- An interconnection year past the vendored NBT tables is refused instead of
-  floating. It fell through to NBT00, which left the account floating for its
-  energy value while still resolving an ACC Plus row for that year -- locked
-  for the adder, unlocked for everything else, `lock_end` unset, no warning.
-  A year *before* the first vintage still floats, which is what floating means.
+- An interconnection year inside NBT's locked window whose vintage is not
+  vendored is refused rather than floating. Schedule NBT grants a nine-year
+  lock for applications "no later than December 31, 2027", so answering 2027
+  with the floating vintage priced it against the wrong values while still
+  resolving that year's ACC Plus row. A year outside the window floats at
+  either end, which is the tariff's own rule: "customers enrolling on NBT after
+  its initial five years of availability ... will instead be compensated at the
+  average hourly avoided cost values".
 - An interconnection after the ACC Plus table ends earns no adder rather than
   raising. Schedule NBT makes the adder available to customers interconnecting
   "during the first five years of the tariff", decreasing "until the adder
   reaches zero"; the adopted table runs 2023 to 2027, so 2028 onward is zero.
-- Setting both `cca.rate_card` and `cca.export_generation_rate` is refused. The
-  explicit rate won, and taking that branch skipped the card's solar bonus and
-  its ACC Plus adder entirely -- a 22% under-credit into the CCA's bank, with
-  the export price still reporting itself complete.
+- A CCA profile carrying both `rate_card` and `export_generation_rate` prices
+  from the card. The explicit rate used to win, and that branch emits neither
+  the card's solar bonus nor its ACC Plus adder -- a 22% under-credit into the
+  CCA's bank, with the export price still reporting itself complete.
 - MCE's Deep Green premium is priced at the rate the card published. It moved
   from $0.01 to $0.0125/kWh and only the 2023 and 2026 cards were vendored, so
   a Deep Green account was credited the older premium until 2026-04-01. Light

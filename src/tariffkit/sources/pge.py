@@ -339,6 +339,26 @@ class BillHistoryError(PortalError):
 _BILL_LIST_KEY = re.compile(r"bill|invoice|statement", re.I)
 
 
+def _has_empty_bill_list(node: Any, depth: int = 0) -> bool:
+    """Whether the payload holds a bill container that is present and empty."""
+    if depth > 10:
+        return False
+    if isinstance(node, str) and node[:1] in "{[":
+        try:
+            return _has_empty_bill_list(json.loads(node), depth + 1)
+        except ValueError:
+            return False
+    if isinstance(node, Mapping):
+        for key, value in node.items():
+            if isinstance(value, list) and not value and _BILL_LIST_KEY.search(key):
+                return True
+            if _has_empty_bill_list(value, depth + 1):
+                return True
+    elif isinstance(node, list):
+        return any(_has_empty_bill_list(value, depth + 1) for value in node)
+    return False
+
+
 def _bill_rows(payload: Any) -> list[dict[str, Any]]:
     """Pull the statement rows out of an Integration Procedure's reply.
 
@@ -379,15 +399,6 @@ def _bill_rows(payload: Any) -> list[dict[str, Any]]:
             if any(w in keys for w in wanted):
                 return [r for r in node if isinstance(r, dict)]
         if isinstance(node, Mapping):
-            # An account that genuinely has no bills answers with the container
-            # present and empty. `walk` recognises a bill list by the keys of
-            # its first row, so an empty one is invisible to it -- and treating
-            # that as "not found" would report a new account as a parse
-            # failure. The container is named instead.
-            for key, value in node.items():
-                if isinstance(value, list) and not value and _BILL_LIST_KEY.search(key):
-                    return []
-        if isinstance(node, Mapping):
             for value in node.values():
                 found = walk(value, depth + 1)
                 if found:
@@ -400,6 +411,17 @@ def _bill_rows(payload: Any) -> list[dict[str, Any]]:
         return None
 
     rows = walk(payload)
+    if rows is None and _has_empty_bill_list(payload):
+        # An account that genuinely has no bills answers with the container
+        # present and empty. `walk` recognises a bill list by the keys of its
+        # first row, so an empty one is invisible to it, and reporting that as
+        # a parse failure would tell a new customer the portal had changed.
+        #
+        # Only after `walk` has searched the whole payload: checked earlier, an
+        # unrelated empty list -- billMessages beside a populated billHistory --
+        # won the race and hid real statements, which is the very failure this
+        # function exists to stop.
+        return []
     if rows is None:
         # An empty list here is indistinguishable from "this account has no
         # bills", and that is how the CLI reported it: "received 0 statement

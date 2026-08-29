@@ -637,9 +637,14 @@ async def async_publish(hass: HomeAssistant, profile_name: str, result: Backfill
         async_add_external_statistics,
     )
 
-    published = sorted({figures.day for figures in result.days}.union(result.unpriced))
-    if not published:
+    if not result.days:
+        # Nothing could be priced, so this run knows nothing about the window.
+        # Publishing anyway would write a zero row for every unpriced day --
+        # `statistics_for` emits one per day by design -- straight over history
+        # a previous run got right, and external statistics are never deleted.
+        # Leaving the old figures standing is the lesser wrong.
         return
+    published = sorted({figures.day for figures in result.days}.union(result.unpriced))
     # Anchored at the first row actually written, not the first *priced* day.
     # `statistics_for` emits a zero row for every day in priced + unpriced, so
     # when a rerun's leading day flips to refused the span opens earlier than

@@ -199,17 +199,29 @@ class TestVintageResolution:
     def test_from_interconnection_year(self, year: int, expected: str) -> None:
         assert Config(interconnection_year=year, pto_date=None).resolved_vintage == expected
 
-    def test_a_year_past_the_vendored_tables_is_refused(self) -> None:
-        """Not the same as floating.
+    def test_a_year_past_the_locked_window_floats(self) -> None:
+        """Schedule NBT sheet 10 prescribes it.
 
-        A year before the first vintage genuinely floats. A year after the last
-        one means the table has not been vendored, and falling through to NBT00
-        produced an account floating for its energy value while still resolving
-        an ACC Plus row for that year -- locked for the adder, unlocked for
-        everything else, with no warning.
+        "Customers enrolling on NBT after its initial five years of
+        availability will not receive a locked-in nine-year schedule ... and
+        will instead be compensated at the average hourly avoided cost values."
+        Floating is the answer for 2028 onward, not an error -- and the adder,
+        whose table ends at 2027, is zero for them.
         """
-        config = Config(interconnection_year=2030, pto_date=None)
-        with pytest.raises(ConfigError, match="no NBT vintage is vendored"):
+        config = Config(interconnection_year=2030, pto_date=date(2030, 6, 3))
+        assert config.resolved_vintage == "NBT00"
+        assert config.lock_end is None
+        assert NbtExportRates(config).acc_plus == pytest.approx(0.0)
+
+    def test_an_unvendored_year_inside_the_locked_window_is_refused(self) -> None:
+        """2027 is promised a lock the vendored data cannot supply.
+
+        Answering with the floating vintage would price it against the wrong
+        values while still resolving that year's ACC Plus row -- locked for the
+        adder, floating for the energy, with `lock_end` reporting nothing.
+        """
+        config = Config(interconnection_year=2027, pto_date=None)
+        with pytest.raises(ConfigError, match="inside NBT's locked window"):
             _ = config.resolved_vintage
 
     def test_an_explicit_vintage_still_overrides(self) -> None:
@@ -451,10 +463,28 @@ class TestBaseServicesChargeTier:
         charge = RetailTariff(config).daily_fixed_charge(pt(2026, 7, 15, 12))
         assert charge == pytest.approx(0.19713)
 
-    def test_a_contradicting_tier_is_refused(self) -> None:
-        with pytest.raises(ConfigError, match="implies base_services_charge_tier=1"):
-            Config(
-                discount="care",
-                acc_plus_segment="residential_low_income",
-                base_services_charge_tier=3,
-            )
+    def test_an_explicit_tier_is_honoured_as_an_override(self) -> None:
+        """Refusing a mismatch was tried and withdrawn.
+
+        The old Home Assistant form let any account pick any tier, so a stored
+        profile can legitimately carry one the programme does not imply -- and
+        refusing it stopped those profiles loading at all, which in Home
+        Assistant means the integration never sets up and the options flow
+        cannot open to correct it.
+        """
+        config = Config(
+            discount="care",
+            acc_plus_segment="residential_low_income",
+            base_services_charge_tier=2,
+        )
+        assert config.resolved_bsc_tier == 2
+
+    def test_the_serialized_legacy_default_is_read_as_unset(self) -> None:
+        """Every profile written before the two fields were connected has 3."""
+        stored = {
+            "discount": "care",
+            "acc_plus_segment": "residential_low_income",
+            "base_services_charge_tier": 3,
+        }
+        assert Config.from_dict(stored).resolved_bsc_tier == 1
+        assert Config.from_dict({"base_services_charge_tier": 2}).resolved_bsc_tier == 2

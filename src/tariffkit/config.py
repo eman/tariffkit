@@ -27,6 +27,10 @@ VINTAGE_BY_YEAR = {
     2026: "NBT26",
 }
 FLOATING_VINTAGE = "NBT00"
+#: The interconnection-application years NBT grants a nine-year lock, from
+#: sheet 10: "on or after April 15, 2023 and no later than December 31, 2027".
+#: Applications outside it float, at either end.
+LOCK_WINDOW = (2023, 2027)
 
 LOCK_YEARS = 9
 #: Which Base Services Charge tier each discount programme is billed on.
@@ -77,19 +81,6 @@ class CcaConfig:
     #: Per-kWh export compensation the CCA pays, if any. Under NBT the PG&E
     #: file's generation component does not apply to CCA customers.
     export_generation_rate: float | None = None
-
-    def __post_init__(self) -> None:
-        if self.export_generation_rate is not None and self.rate_card is not None:
-            # `export_generation_rate` wins in the export path, and taking that
-            # branch skips the card's solar bonus and its ACC Plus adder
-            # entirely -- a 22% under-credit into the CCA's bank on MCE, with
-            # `complete` still reporting True. Setting both looks like "card for
-            # generation charges, explicit rate for exports"; it silently means
-            # something else, so it is refused rather than resolved.
-            raise ConfigError(
-                "set either cca.export_generation_rate or cca.rate_card, not both: "
-                "an explicit export rate bypasses the card's solar bonus and ACC Plus"
-            )
 
     @property
     def complete(self) -> bool:
@@ -198,24 +189,6 @@ class Config:
                 f"discount={self.discount!r} implies acc_plus_segment="
                 "'residential_low_income'; set it explicitly"
             )
-        expected_tier = BSC_TIER_BY_DISCOUNT[self.discount]
-        if (
-            self.base_services_charge_tier is not None
-            and self.base_services_charge_tier != expected_tier
-        ):
-            # Schedule D-CARE sheet 1: "Customers whose otherwise applicable
-            # rate includes a base services charge will be assigned to Tier 1."
-            # FERA takes tier 2, the middle rate, matching its shallower
-            # discount. Tier 3 is the default, so a CARE account left at it
-            # pays $0.79343/day on E-ELEC against tier 1's $0.19713 -- about
-            # $18 a month charged to an account the tariff puts on the
-            # cheapest tier. Refused rather than corrected in place, matching
-            # the acc_plus_segment guard above: silently rewriting a value the
-            # caller set is harder to notice than being told.
-            raise ConfigError(
-                f"discount={self.discount!r} implies base_services_charge_tier="
-                f"{expected_tier}; got {self.base_services_charge_tier}"
-            )
 
     @property
     def resolved_bsc_tier(self) -> int:
@@ -225,6 +198,16 @@ class Config:
         the two together and nothing else did: the field used to default to
         tier 3, so a CARE account that simply did not mention it was billed
         $0.79343/day on E-ELEC instead of $0.19713 -- about $18 a month.
+
+        An explicit value is honoured, because the field is documented as an
+        override and a stored profile may legitimately carry one -- the old
+        Home Assistant form let any account pick any tier. Refusing a mismatch
+        was tried and withdrawn: it stopped those profiles loading at all, and
+        in Home Assistant that means the integration never sets up and the
+        options flow cannot open to correct it. Deriving when unset is what
+        fixes the defect; `from_dict` additionally reads the pre-existing
+        serialized default as unset, which covers every profile written before
+        the two fields were connected.
         """
         if self.base_services_charge_tier is not None:
             return self.base_services_charge_tier
@@ -234,24 +217,32 @@ class Config:
     def resolved_vintage(self) -> str:
         """The NBT vintage whose matrix applies to this customer.
 
-        A year before the first vendored vintage floats, which is what the
-        floating vintage is for. A year *after* the last one does not: it means
-        the vintage table has not been vendored yet, and falling through to
-        NBT00 produced an account that was floating for its energy value while
-        still resolving an ACC Plus row -- locked for the adder, unlocked for
-        everything else, with `lock_end` None and no warning anywhere.
+        Floating either side of the locked window, which is the tariff's own
+        rule at both ends. Schedule NBT sheet 10: the nine-year lock is for
+        applications "on or after April 15, 2023 and no later than December 31,
+        2027", and "customers enrolling on NBT after its initial five years of
+        availability will not receive a locked-in nine-year schedule ... and
+        will instead be compensated at the average hourly avoided cost values".
+        A 2028 interconnection is therefore a floating customer, not an error.
+
+        Inside the window is the case worth refusing. Such an applicant is
+        promised a locked schedule, so answering with the floating vintage
+        would price them against the wrong values while `lock_end` reported
+        nothing -- locked for the ACC Plus adder, floating for the energy.
         """
         if self.vintage is not None:
             return self.vintage
         assert self.interconnection_year is not None
         year = self.interconnection_year
-        if year > max(VINTAGE_BY_YEAR):
+        if year in VINTAGE_BY_YEAR:
+            return VINTAGE_BY_YEAR[year]
+        if LOCK_WINDOW[0] <= year <= LOCK_WINDOW[1]:
             raise ConfigError(
-                f"no NBT vintage is vendored for interconnection year {year}; "
-                f"the newest is {VINTAGE_BY_YEAR[max(VINTAGE_BY_YEAR)]} "
-                f"({max(VINTAGE_BY_YEAR)}). Set vintage= explicitly to override."
+                f"interconnection year {year} is inside NBT's locked window "
+                f"({LOCK_WINDOW[0]}-{LOCK_WINDOW[1]}) but its vintage is not vendored; "
+                f"vendored years are {sorted(VINTAGE_BY_YEAR)}. Set vintage= to override."
             )
-        return VINTAGE_BY_YEAR.get(year, FLOATING_VINTAGE)
+        return FLOATING_VINTAGE
 
     @property
     def lock_end(self) -> date | None:

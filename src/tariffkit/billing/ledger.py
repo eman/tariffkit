@@ -310,6 +310,17 @@ class LedgerEntry:
         }
 
 
+def _spent_offsets(bill: Bill, unspent: dict[CreditBucket, float]) -> CreditBalances:
+    """In-cycle offsets less the part that overran its bucket and banked."""
+    gross = in_cycle_offsets(bill)
+    return CreditBalances(
+        generation=max(0.0, gross.generation - unspent[CreditBucket.GENERATION]),
+        delivery=max(0.0, gross.delivery - unspent[CreditBucket.DELIVERY]),
+        bonus=max(0.0, gross.bonus - unspent[CreditBucket.BONUS]),
+        cca_bonus=max(0.0, gross.cca_bonus - unspent[CreditBucket.CCA_BONUS]),
+    )
+
+
 def in_cycle_offsets(bill: Bill) -> CreditBalances:
     """Export credits the statement spends this cycle rather than banking.
 
@@ -479,7 +490,12 @@ def apply_credits(bill: Bill, opening: CreditBalances | None = None) -> LedgerEn
         non_offsettable=non_offsettable,
         imported_kwh=sum(b.imported for b in bill.buckets),
         exported_kwh=sum(b.exported for b in bill.buckets),
-        in_cycle_offsets=in_cycle_offsets(bill),
+        # Only the part actually spent against this cycle's charges. Whatever
+        # an offset could not cover has already been banked into `earned` by
+        # the clamp above, so carrying the gross figure here would let the
+        # annual reversal count that excess twice -- and it exceeds the charges
+        # precisely in the heavy-export months that produce a surplus true-up.
+        in_cycle_offsets=_spent_offsets(bill, unspent),
     )
 
 
