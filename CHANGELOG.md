@@ -22,6 +22,27 @@ All notable changes to this project are documented here. This project follows
   reason; its three siblings had not.
 
 ### Fixed
+- A CARE or FERA baseline credit is discounted like the charges it offsets. It
+  was read straight from the rate sheet and applied at full value while every
+  charge around it was scaled, so a discounted bill was met by an undiscounted
+  credit: a 250 kWh within-baseline E-TOU-C January came to $46.29 where the
+  same figures reconcile at $54.66, 18% of the bill.
+- A CCA account's CARE or FERA discount is calculated on bundled-equivalent
+  charges. Both sheets say so in identical words -- "the discount will be
+  calculated for direct access and community choice aggregation customers based
+  on the total charges as if they were subject to bundled service rates" -- and
+  the CCA stack was being discounted instead, making the base several cents per
+  kWh too high and the credit correspondingly too large. D-MEDICAL already
+  rebuilt the bundled base; the two agree now.
+- FERA is priced from Schedule E-FERA rather than a hardcoded 18% with no
+  exemptions. The sheet exempts the Wildfire Hardening Charge, Recovery Bond
+  Charge and Recovery Bond Credit before the discount is applied -- three
+  components, where D-CARE exempts those and the Wildfire Fund Charge -- so a
+  FERA discount was taken over a base that wrongly included all three, and was
+  too large on every FERA bill. The rate and the exemptions are now vendored
+  and regenerated like D-CARE's. A FERA bill dated before the sheet's
+  2026-03-01 effective date now refuses rather than guessing at an earlier
+  exemption list, which is how the schedules with one vintage already behave.
 - Re-running a backfill no longer inflates the published history permanently.
   Every day in the window is written, including the ones that could not be
   priced, but the running total was anchored at the first day that *was*

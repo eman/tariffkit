@@ -37,7 +37,25 @@ SUPPORTED_TARIFFS: Final[tuple[str, ...]] = (
     "E-TOU-D",
     "EV2-A",
 )
-FERA_DISCOUNT = 0.18
+#: Which vendored programme sheet carries each discount's rate and exemptions.
+#: FERA used to be a hardcoded 0.18 with no exemptions at all, so a FERA bill
+#: was discounted over a base that wrongly included the wildfire hardening and
+#: both recovery bond line items.
+DISCOUNT_PROGRAM = {"care": "dcare", "fera": "efera"}
+
+
+def discount_terms(discount: str, on: date) -> tuple[float, list[str]]:
+    """The rate and exempt components for a discount programme on a date.
+
+    Both come from the vendored sheet. D-CARE exempts four components and
+    E-FERA three -- FERA is not exempt from the Wildfire Fund Charge, which
+    CARE is -- so the two lists are genuinely different and neither can stand
+    in for the other.
+    """
+    if discount == "none":
+        return 0.0, []
+    program = load_program(DISCOUNT_PROGRAM[discount], on)
+    return float(program["discount"]), [str(name) for name in program["exempt_components"]]
 
 
 def load_program(name: str, on: date) -> dict[str, Any]:
@@ -157,8 +175,24 @@ class RetailTariff:
             period=period,
             components={k: round(v, 6) for k, v in components.items()},
             complete=complete,
-            baseline_credit=float(snapshot.raw.get("baseline", {}).get("credit", 0.0)),
+            baseline_credit=self._discounted_baseline_credit(snapshot, moment),
         )
+
+    def _discounted_baseline_credit(self, snapshot: Any, moment: datetime) -> float:
+        """Baseline credit in $/kWh, carrying the same discount as the charges.
+
+        The credit is a distribution line like any other, and D-CARE applies
+        its discount "as a reduction to distribution charges". It was read raw
+        and applied at bill level at full value while every charge around it
+        was scaled, so a CARE customer received an undiscounted credit against
+        discounted charges: on a 250 kWh within-baseline E-TOU-C January that
+        was $46.29 against $54.66, 18% of the bill.
+        """
+        credit = float(snapshot.raw.get("baseline", {}).get("credit", 0.0))
+        if not credit or self.config.discount == "none":
+            return credit
+        rate, _exempt = discount_terms(self.config.discount, moment.date())
+        return credit * (1.0 - rate)
 
     def baseline_allowance(self, moment: datetime) -> float:
         """Baseline kWh allowed for the day containing ``moment``.
@@ -292,19 +326,44 @@ class RetailTariff:
 
         total = sum(components.values())
         if self.config.discount != "none":
-            if self.config.discount == "care":
-                care = load_program("dcare", moment.date())
-                rate = float(care["discount"])
-                for name in care["exempt_components"]:
-                    name = str(name)
-                    if name in components:
-                        total -= components.pop(name)
-            else:
-                rate = FERA_DISCOUNT
+            rate, exempt = discount_terms(self.config.discount, moment.date())
+            for name in exempt:
+                if name in components:
+                    total -= components.pop(name)
+            if self.config.supplier is Supplier.CCA:
+                # D-CARE sheet 1 and E-FERA sheet 1, identically: "The discount
+                # will be calculated for direct access and community choice
+                # aggregation customers based on the total charges as if they
+                # were subject to bundled service rates." Discounting the CCA
+                # stack instead -- cca_generation plus a vintaged PCIA plus the
+                # franchise fee surcharge -- made the base several cents per
+                # kWh too high, so the credit came out too large. D-MEDICAL
+                # below has always rebuilt the bundled base for this reason.
+                total = self._bundled_equivalent(snapshot, season, period, exempt)
             components[f"{self.config.discount}_discount"] = -total * rate
         if medical_credit:
             components["medical_discount"] = -medical_credit
         return sum(components.values())
+
+    def _bundled_equivalent(
+        self,
+        snapshot: Any,
+        season: Season,
+        period: TouPeriod,
+        exempt: list[str],
+    ) -> float:
+        """Total volumetric charges as if the customer took bundled service.
+
+        The sheet's own words for a CCA or direct-access customer. Built from
+        the snapshot's bundled energy rate plus its adders, less whatever the
+        programme exempts -- the same construction D-MEDICAL uses two branches
+        down, which is why the two now agree.
+        """
+        bundled = dict(snapshot.raw["energy"][str(season)][str(period)])
+        bundled.update(snapshot.raw["adders"])
+        for name in exempt:
+            bundled.pop(name, None)
+        return sum(float(value) for value in bundled.values())
 
     def daily_fixed_charge(self, moment: datetime) -> float:
         """Base Services Charge in $/day.

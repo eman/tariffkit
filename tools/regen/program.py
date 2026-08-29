@@ -50,6 +50,25 @@ def extract(provider: Program, pages: list[Page]) -> tuple[date, str, dict[str, 
                 ],
             },
         )
+    if provider.key == "efera":
+        effective, advice = _effective(pages, "ELECTRIC SCHEDULE E-FERA Sheet 1")
+        return (
+            effective,
+            advice,
+            {
+                "discount": _percent(text, r"receive an\s+([0-9.]+)\s+percent discount"),
+                "eligible_schedules": ["E-1", "E-ELEC", "E-TOU-C", "E-TOU-D", "EV2-A"],
+                # E-FERA sheet 1: "after FERA customers are exempted from the
+                # Wildfire Hardening Charge, Recovery Bond Charge, and the
+                # Recovery Bond Credit." Three, not D-CARE's four -- FERA is
+                # NOT exempt from the Wildfire Fund Charge.
+                "exempt_components": [
+                    "wildfire_hardening",
+                    "recovery_bond_charge",
+                    "recovery_bond_credit",
+                ],
+            },
+        )
     if provider.key == "dmedical":
         effective, advice = _effective(pages, "ELECTRIC SCHEDULE D-MEDICAL Sheet 1")
         return (

@@ -56,6 +56,7 @@ BASE = "https://myaccount.pge.com"
 LOGIN_PATH = "/myaccount/s/login/"
 AURA_PATH = "/myaccount/s/sfsites/aura"
 
+
 def _default_cookie_path() -> Path:
     """Where a session is cached between runs.
 
