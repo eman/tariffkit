@@ -385,3 +385,30 @@ def test_vendored_cca_snapshot_is_complete_without_copied_surcharge() -> None:
     assert proposal.can_apply
     updated = proposal.apply(profile)
     assert updated.config_at(date(2026, 1, 1)).cca == config.cca
+
+
+def test_a_statement_source_is_not_resolved_against_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`Statement.source` holds a basename.
+
+    Resolving it relatively hashed whatever file of that name sat in the
+    caller's directory -- PG&E names downloads predictably -- binding one
+    statement's extracted facts to another document's digest.
+    """
+    from tariffkit.providers.pge.reconcile import _validated_digest
+
+    decoy = tmp_path / "bill.pdf"
+    decoy.write_bytes(b"%PDF-1.4 decoy")
+    monkeypatch.chdir(tmp_path)
+
+    from tariffkit.providers.pge.statements.model import Statement
+
+    statement = Statement(
+        statement_date=date(2026, 2, 5),
+        period=BillingPeriod(start=date(2025, 12, 30), end=date(2026, 1, 29)),
+        amount_due=100.0,
+        source="bill.pdf",
+    )
+    with pytest.raises(ReconciliationError, match="basename"):
+        _validated_digest(statement, pdf=None, pdf_sha256=None)

@@ -313,9 +313,7 @@ def test_every_annual_settlement_is_applied_not_only_the_last() -> None:
     # -- it can exceed the balance, and the tariff says so: the reversal "will
     # be charged against any Export Credit Balance available, otherwise it will
     # be charged against the NSC payment".
-    discarded = naive.total - correct.total
-    assert discarded > 0
-    assert discarded <= reversal + 0.01
+    assert naive.total - correct.total == pytest.approx(reversal, abs=0.01)
     assert len(state.true_ups) == len(events)
 
 

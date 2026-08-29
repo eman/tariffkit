@@ -334,8 +334,11 @@ run_ledger(bills, opening)  # fold a run of cycles, carrying the bank
 
 Credits are **not fungible**, and the statement states the rule: Energy Produced
 credits offset only Energy Produced charges, Energy Delivered credits only
-Energy Delivered charges, and the bonus credit offsets anything not
-non-bypassable. So a balance is three buckets, and scoped buckets are spent
+Energy Delivered charges, and the ACC Plus bonus credit offsets everything --
+including the non-bypassable charges, which Schedule NBT special condition 2.f
+makes the one exception to their non-bypassability: they "may not be reduced by
+any credits for exports to the grid, except for the ACC Plus credit". So a
+balance is three buckets, and scoped buckets are spent
 before the bonus — otherwise the flexible credit is burnt on charges a scoped one
 could have covered, stranding the scoped credit.
 

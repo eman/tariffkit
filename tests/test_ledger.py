@@ -20,7 +20,9 @@ from tariffkit.billing import (
     credits_earned,
     run_ledger,
 )
-from tariffkit.billing.ledger import CHARGE_OFFSETS, charges_by_bucket
+from tariffkit.billing.ledger import CHARGE_OFFSETS, LedgerEntry, charges_by_bucket
+from tariffkit.billing.models import Season, TouPeriod, UsageBucket
+from tariffkit.billing.trueup import average_export_rate
 
 PERIOD = BillingPeriod(date(2026, 6, 30), date(2026, 7, 28))
 
@@ -251,6 +253,7 @@ class TestThePublishedTermsReconcile:
         assert entry.cash_due == pytest.approx(0.0)
 
         payout = apply_credits(_payout_bill())
+        assert payout.non_offsettable < 0, "the clamp is not decoration"
         assert payout.cash_due == pytest.approx(max(0.0, payout.non_offsettable))
 
 
@@ -478,3 +481,89 @@ class TestInCycleOffsetsSurviveTheCycle:
         """Without this the reversal averaged 5.00 on a cycle that earned 5.50."""
         entry = apply_credits(self._bill())
         assert entry.in_cycle_offsets.generation == pytest.approx(0.5)
+
+
+class TestTheReversalRate:
+    """`average_export_rate` is what the annual cash-out claws back at.
+
+    MCE's Solar Billing Plan tariff: "the initial export credit will be
+    reversed at the average Energy Export Credit (including Solar Bonus Credit)
+    rate". The bracket is the whole point, and it is the one figure a bill
+    cannot show, so it is pinned here directly rather than through a settlement.
+    """
+
+    def _entry(self, gen_charge: float, eec: float, bonus: float) -> LedgerEntry:
+        return apply_credits(
+            Bill(
+                period=BillingPeriod(start=date(2026, 7, 1), end=date(2026, 7, 31)),
+                import_components={"cca_generation": gen_charge},
+                export_components={"cca_generation": -eec, "cca_solar_bonus": -bonus},
+                buckets=(UsageBucket(season=Season.SUMMER, period=TouPeriod.PEAK, exported=100.0),),
+            )
+        )
+
+    @pytest.mark.parametrize(
+        ("gen_charge", "label"),
+        [(5.0, "bonus fully spent"), (1.0, "bonus overruns the charges"), (0.0, "no charges")],
+    )
+    def test_the_solar_bonus_is_in_the_rate(self, gen_charge: float, label: str) -> None:
+        """$6.00 of export credit plus a $2.00 bonus over 100 kWh is $0.08."""
+        entry = self._entry(gen_charge, eec=6.0, bonus=2.0)
+        rate = average_export_rate([entry], CreditBucket.GENERATION)
+        assert rate == pytest.approx(0.08), label
+
+    def test_it_is_not_double_counted_when_the_bonus_overruns(self) -> None:
+        """The part an offset cannot cover is already banked into `earned`.
+
+        Adding the gross offset on top counted that excess twice -- and it
+        overruns precisely in the heavy-export months that produce a surplus
+        true-up, so the customer was clawed back more than the tariff allows.
+        """
+        entry = self._entry(gen_charge=1.0, eec=6.0, bonus=2.0)
+        assert entry.earned.generation == pytest.approx(7.0)
+        assert entry.in_cycle_offsets.generation == pytest.approx(1.0)
+        assert average_export_rate([entry], CreditBucket.GENERATION) == pytest.approx(0.08)
+
+    def test_an_export_with_no_bonus_is_unaffected(self) -> None:
+        entry = self._entry(gen_charge=5.0, eec=6.0, bonus=0.0)
+        assert average_export_rate([entry], CreditBucket.GENERATION) == pytest.approx(0.06)
+
+
+class TestTheBucketMapIsLoadBearing:
+    """Each of these mappings survived a deliberate defect with a green suite."""
+
+    def _bill(self, **components: float) -> Bill:
+        return Bill(
+            period=BillingPeriod(start=date(2026, 7, 1), end=date(2026, 7, 31)),
+            import_components=dict(components),
+        )
+
+    def test_the_conservation_incentive_adjustment_is_delivery(self) -> None:
+        """It is the distribution line the baseline credit is implemented with.
+
+        Absent from the map it fell to the non-offsettable default, putting a
+        distribution charge where no credit could reach it.
+        """
+        offsettable, non_offsettable, _ = charges_by_bucket(
+            self._bill(conservation_incentive_adjustment=5.0)
+        )
+        assert offsettable[CreditBucket.DELIVERY] == pytest.approx(5.0)
+        assert non_offsettable == pytest.approx(0.0)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "public_purpose_programs",
+            "wildfire_fund_charge",
+            "competition_transition_charges",
+            "nuclear_decommissioning",
+        ],
+    )
+    def test_each_non_bypassable_charge_is_reachable_only_by_the_bonus(self, name: str) -> None:
+        """Schedule NBT SC 2.f names exactly these four, "except for the ACC
+        Plus credit" -- so each belongs to the bonus bucket and to no other."""
+        offsettable, non_offsettable, _ = charges_by_bucket(self._bill(**{name: 3.0}))
+        assert offsettable[CreditBucket.BONUS] == pytest.approx(3.0), name
+        assert offsettable[CreditBucket.DELIVERY] == pytest.approx(0.0), name
+        assert offsettable[CreditBucket.GENERATION] == pytest.approx(0.0), name
+        assert non_offsettable == pytest.approx(0.0), name

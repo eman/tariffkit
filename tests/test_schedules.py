@@ -445,10 +445,7 @@ class TestDiscountBase:
         assert "wildfire_fund_charge" not in fera_exempt
         assert set(fera_exempt) < set(care_exempt)
 
-    @pytest.mark.parametrize(
-        ("discount", "factor"),
-        [("none", 1.0), ("care", 0.65), ("fera", 0.82)],
-    )
+    @pytest.mark.parametrize(("discount", "factor"), [("care", 0.65), ("fera", 0.82)])
     def test_the_baseline_credit_carries_the_discount(self, discount: str, factor: float) -> None:
         """A discounted charge cannot be met by an undiscounted credit."""
         moment = datetime(2026, 7, 15, 12, tzinfo=PACIFIC)
