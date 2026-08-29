@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-29
+
 ### Added
 - The Amount Due entities and the backfill response publish the terms their
   breakdown rests on. `gross_charges` is the ledger's own charge total,
@@ -552,7 +554,8 @@ Initial release.
 - Holiday calendars are extracted per vintage from the source data rather than
   recomputed, because the vintage files disagree in far-future years.
 
-[Unreleased]: https://github.com/eman/tariffkit/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/eman/tariffkit/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/eman/tariffkit/releases/tag/v0.5.0
 [0.4.1]: https://github.com/eman/tariffkit/releases/tag/v0.4.1
 [0.4.0]: https://github.com/eman/tariffkit/releases/tag/v0.4.0
 [0.3.0]: https://github.com/eman/tariffkit/releases/tag/v0.3.0

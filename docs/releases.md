@@ -95,7 +95,7 @@ Start from an up-to-date branch based on `main`. Curate `Unreleased`, choose the
 next version, and run:
 
 ```bash
-VERSION=0.4.1
+VERSION=0.5.0
 uv run python -m tools.release prepare "$VERSION"
 git diff
 ```
@@ -109,7 +109,7 @@ local check is required.
 Review every change, then open a release PR. The PR must pass normal CI, HACS
 validation, and hassfest. Merge it without creating a tag.
 
-For a release candidate, use a version such as `0.4.1rc1` and follow the same
+For a release candidate, use a version such as `0.5.0rc1` and follow the same
 process. A later candidate or stable release gets a new version; published
 candidate files are never replaced.
 
@@ -118,7 +118,7 @@ candidate files are never replaced.
 Push the release tag at the merged commit on `main`:
 
 ```bash
-VERSION=0.4.1
+VERSION=0.5.0
 git checkout main
 git pull
 git tag "v$VERSION"
@@ -152,7 +152,7 @@ artifacts on TestPyPI**, then install the staged command in an isolated uv
 environment, using TestPyPI for TariffKit and PyPI for its dependencies:
 
 ```bash
-VERSION=0.4.1
+VERSION=0.5.0
 uvx --from "tariffkit==$VERSION" \
   --index https://test.pypi.org/simple \
   --default-index https://pypi.org/simple \
@@ -171,7 +171,7 @@ Resolve any failure in a new PR. Do not bypass a release check.
 Install from PyPI without using the checkout:
 
 ```bash
-VERSION=0.4.1
+VERSION=0.5.0
 uvx --refresh --from "tariffkit==$VERSION" tariffkit --version
 uvx --refresh --from "tariffkit[all]==$VERSION" tariffkit info
 gh release download "v$VERSION" --repo eman/tariffkit --dir release-assets
