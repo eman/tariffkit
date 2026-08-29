@@ -559,8 +559,19 @@ def _profile_without_epoch(profile: AccountProfile, effective: date) -> AccountP
     )
 
 
+async def _async_validate(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, str]:
+    """Surface library-level config errors in the form rather than at runtime.
+
+    Runs in the executor because a CCA config reads its rate card from disk.
+    `load_rate_card` scandirs the vendored provider directory and parses TOML,
+    which Home Assistant flags as a blocking call and asks the user to report,
+    once per submission of a CCA step.
+    """
+    return await hass.async_add_executor_job(_validate, data)
+
+
 def _validate(data: dict[str, Any]) -> dict[str, str]:
-    """Surface library-level config errors in the form rather than at runtime."""
+    """Validate a config payload. Blocking: call it through `_async_validate`."""
     try:
         config = config_from_entry(data)
         if config.supplier is Supplier.CCA and config.cca and config.cca.rate_card:
@@ -674,7 +685,7 @@ class TariffKitConfigFlow(ConfigFlow, domain=DOMAIN):
             if identity.get(CONF_SUPPLIER) == "cca":
                 return await self.async_step_manual_cca()
             data = _manual_config_data(identity, self._manual_delivery)
-            errors = _validate(data)
+            errors = await _async_validate(self.hass, data)
             if errors:
                 return self.async_show_form(
                     step_id="manual_delivery",
@@ -717,7 +728,7 @@ class TariffKitConfigFlow(ConfigFlow, domain=DOMAIN):
         delivery = getattr(self, "_manual_delivery", {})
         if user_input is not None:
             data = _manual_config_data(identity, delivery, dict(user_input))
-            errors = _validate(data)
+            errors = await _async_validate(self.hass, data)
             if errors:
                 return self.async_show_form(
                     step_id="manual_cca",
@@ -993,7 +1004,7 @@ class TariffKitOptionsFlow(OptionsFlow):
         if user_input is not None:
             try:
                 data = _normalize(user_input)
-                errors = _validate(data)
+                errors = await _async_validate(self.hass, data)
                 if not errors:
                     profile = _profile_with_config(
                         profile,
@@ -1040,7 +1051,7 @@ class TariffKitOptionsFlow(OptionsFlow):
         defaults = config_defaults(epoch.config)
         if user_input is not None:
             data = _normalize(user_input)
-            errors = _validate(data)
+            errors = await _async_validate(self.hass, data)
             if not errors:
                 try:
                     return self._save_profile(

@@ -5,6 +5,15 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+- Setting up a CCA account no longer reads its rate card on the event loop.
+  Choosing a CCA validates the pick against the vendored card, which scandirs
+  the provider's directory and parses TOML -- on the event loop, so Home
+  Assistant's blocking-call detector logged three warnings for every submission
+  of the step, each one telling the owner to open a bug report against
+  TariffKit. The flow itself was correct and the account it produced was
+  correct; only the thread was wrong. The read moves to the executor.
+
 ## [0.5.0] - 2026-08-29
 
 ### Added

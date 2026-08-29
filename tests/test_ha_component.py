@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -955,3 +956,60 @@ class TestPermissionToOperateSensors:
         lock = hass.states.get(_entity_id(hass, entry, "lock_end"))
         assert pto is not None and pto.state == "unknown"
         assert lock is not None and lock.state == "unknown"
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_cca_validation_loads_the_rate_card_off_the_event_loop(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CCA step must not read its rate card on the event loop.
+
+    `load_rate_card` scandirs the vendored provider directory and parses TOML.
+    Called directly from the flow it tripped Home Assistant's blocking-call
+    detector -- three warnings per submission, each telling the owner to open a
+    bug report -- while every functional assertion still passed, so only a real
+    Home Assistant run caught it. Thread identity is the check because that is
+    the property that broke: the same call, off the loop, is fine.
+    """
+    from custom_components.tariffkit import config_flow
+
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+    real = config_flow.load_rate_card
+
+    def recording(*args: object, **kwargs: object) -> object:
+        seen.append(threading.get_ident())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(config_flow, "load_rate_card", recording)
+
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    flow_id = result["flow_id"]
+    await hass.config_entries.flow.async_configure(flow_id, {"next_step_id": "manual"})
+    await hass.config_entries.flow.async_configure(
+        flow_id,
+        {
+            "profile_name": "off-loop-cca",
+            "supplier": "cca",
+            "tariff": "E-ELEC",
+            "export_enabled": False,
+        },
+    )
+    result = await hass.config_entries.flow.async_configure(
+        flow_id,
+        {"base_services_charge_tier": 3},
+    )
+    assert result["step_id"] == "manual_cca"
+    result = await hass.config_entries.flow.async_configure(
+        flow_id,
+        {
+            "cca_rate_card": "MCE",
+            "cca_option": "light_green",
+            "cca_pcia_vintage": 2026,
+        },
+    )
+
+    assert result["type"] == "create_entry"
+    assert seen, "the CCA step never loaded a rate card"
+    assert loop_thread not in seen, "the rate card was loaded on the event loop"
