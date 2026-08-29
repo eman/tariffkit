@@ -22,6 +22,19 @@ All notable changes to this project are documented here. This project follows
   reason; its three siblings had not.
 
 ### Fixed
+- MCE's Deep Green premium is priced at the rate the card published. It moved
+  from $0.01 to $0.0125/kWh and only the 2023 and 2026 cards were vendored, so
+  a Deep Green account was credited the older premium until 2026-04-01. Light
+  Green generation was never affected: MCE did not reprice residential
+  generation between those cards, which its own March 2025 board packet states
+  and the intervening cards confirm rate for rate.
+- The rate-card reader no longer drops a schedule whose card shares a header
+  row. From MCE's December 2023 print onward the row reads "ETOUC, EMTOUC -
+  Default Residential Time-of-Use", and a pattern anchored on one code before
+  the dash matched nothing -- so E-TOU-C was dropped from the card, and because
+  an unmatched line is not a schedule it was not reported as skipped either.
+  Any regeneration from a current MCE card would have written a clean-looking
+  file with a whole schedule missing.
 - A CARE or FERA baseline credit is discounted like the charges it offsets. It
   was read straight from the rate sheet and applied at full value while every
   charge around it was scaled, so a discounted bill was met by an undiscounted

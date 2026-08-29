@@ -1,3 +1,18 @@
+# DEEP GREEN PREMIUM ONLY. MCE did not reprice residential generation between
+# 2023-01-01 and 2026-04-01 -- its March 2025 board packet states "MCE last
+# increased rates effective January 1, 2023" -- and every generation rate here
+# is the one the 2023 card published, re-read off this card to confirm it. What
+# moved is the Deep Green premium, $0.01 -> $0.0125/kWh, which the card prints
+# as "Deep Green Premium All Usage* as above plus $0.0125/kWh".
+#
+# The effective date is the card's own label ("as of 10/1/25"); MCE publishes no
+# filing that dates the change. It is bounded below by a 2025-04-18 capture
+# still showing $0.01, so a Deep Green account between those dates is still
+# credited the older premium. The card's header line was never updated and
+# still reads "Rates effective 1.1.23", so regenerating this file from the card
+# would target 2023-01-01.toml and overwrite the good 2023 vintage -- date any
+# future MCE vintage by hand.
+#
 # Marin Clean Energy (MCE) residential generation rates.
 #
 # Source: https://mcecleanenergy.org/wp-content/uploads/2025/09/MCE-website-rate-table_RES_as-of-4.1.26.pdf
@@ -18,19 +33,19 @@ provider = "MCE"
 name = "Marin Clean Energy"
 utility = "pacific_gas_and_electric"
 schedules = ["E-ELEC", "E-TOU-C", "EV2-A"]
-effective = "2023-01-01"
+effective = "2025-10-01"
 currency = "USD/kWh"
-source_url = "https://mcecleanenergy.org/wp-content/uploads/2023/05/MCE-Residential-Rates-05052023.pdf"
+source_url = "https://mcecleanenergy.org/wp-content/uploads/2024/06/MCE-website-rate-table_RES_as-of-100125.pdf"
 
 # Checksum of the document these values were read from. A scheduled check
 # compares it so a republished card is noticed even when it cannot be
 # parsed -- detection does not need a text layer, only bytes.
-source_sha256 = "db92362d02205c24ccaed4c42e5508d5f4fd7077226b88cea3900acec9c55270"
-source_read_on = "2026-08-12"
+source_sha256 = "c71f2289a89d4d704e36dd910c5815cab65e3bdedd1d0b97b17e5a2faf4d63e8"
+source_read_on = "2026-08-29"
 
 [options]
 light_green = 0.0
-deep_green = 0.01
+deep_green = 0.0125
 
 [generation.eelec.summer]
 peak = 0.301
