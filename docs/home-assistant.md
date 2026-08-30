@@ -641,21 +641,41 @@ attributes say where the difference went:
 |---|---|
 | `credit_applied` | Credit actually spent against this period's charges |
 | `bank_change` | How much the bank moved: earned less applied. **Negative** for any period that spends more than it earns, which is the normal winter case |
-| `gross_charges` | The ledger's own charge total, before credits. Already **net** of anything the statement spends inside the cycle rather than banking, which is why the charge components below do not sum to it |
+| `gross_charges` | The ledger's own charge total, before credits. Already **net** of anything the statement spends inside the cycle rather than banking, which is why the charge components do not sum to it on their own |
+| `in_cycle_offsets` | The part of `export_credits` the statement spent on this period's charges directly instead of banking — MCE's Solar Bonus Credit is the one vendored. **A share of `export_credits`, not a term beside it**: adding the two counts it twice. The single term between the charge components and `gross_charges`. Zero on an account that has none. Only the part actually spent: an offset larger than the charges its bucket holds reduces them to zero and **banks** the rest, which shows up in `bank_change` instead |
 | `non_offsettable` | The part of `gross_charges` no credit may reach. `max(0, non_offsettable)` is the floor under a cycle's state. It can itself go negative where a baseline credit outweighs the charges beside it |
 | `not_paid_out` | Credit that would have made the amount owed negative, had it been spent. A statement charges nothing rather than refunding, and this is that clamp |
 
-The three of them exist so the breakdown can be added up. The charge components
-alone cannot reach the state, and the shortfall is not a rounding error:
+They exist so the breakdown can be added up. The charge components alone cannot
+reach the state, and the shortfall is not a rounding error:
 
 ```
-gross_charges − credit_applied + not_paid_out == state
+energy_charges + taxes + fixed_charges − in_cycle_offsets == gross_charges
+gross_charges − credit_applied + not_paid_out             == state
 ```
 
-exactly, on **today** and on the **cycle**. `energy_charges + taxes +
-fixed_charges` reaches `gross_charges` only on an account with nothing spent
-in-cycle — a CCA that credits a solar bonus reduces that cycle's generation
-charges with it rather than banking it, so it appears in no other attribute.
+exactly, on **today** and on the **cycle**. `in_cycle_offsets` is zero on most
+accounts, and the first line collapses to the obvious sum. It is not zero on a
+CCA that credits a solar bonus, and there it needs care in two directions.
+
+`export_credits` is the gross total the exports earned, and the bonus is
+**inside** it — every export component is. What the bonus does differently is
+skip the bank: it reduces the cycle's generation charges directly, so it reaches
+neither `credit_applied` nor `bank_change`, and the split between what banked
+and what was spent on the spot was published nowhere. That is the term, and it
+is a share of `export_credits` rather than a figure to add to it:
+
+```
+export_credits == (what entered the bank) + in_cycle_offsets
+```
+
+Both addends are post-cap, which is the only way the line holds. Where an offset
+overruns the charges its bucket holds, the excess **banks** — so it is already
+inside the first term, and pairing that term with the offset the cycle earned
+rather than the one it spent would count the excess twice.
+
+So use `in_cycle_offsets` to close the charge side, and do **not** add it to
+`export_credits` on the credit side — the result double counts the bonus.
 
 Reach for the floored form on a cycle (`max(0, gross_charges − credit_applied)`)
 only if you are not carrying `not_paid_out`; it does **not** work for a day,
@@ -681,8 +701,9 @@ bundled account only the second reading is exact.
 
 Every money entity carries its own decomposition as attributes —
 `energy_charges`, `taxes`, `export_credits`, `fixed_charges`, `credit_applied`,
-`bank_change`, `gross_charges`, `non_offsettable`, `not_paid_out`,
-`imported_kwh`, `exported_kwh`, the time-of-use `buckets`, `quality`, and any
+`bank_change`, `gross_charges`, `in_cycle_offsets`, `non_offsettable`,
+`not_paid_out`, `imported_kwh`, `exported_kwh`, the time-of-use `buckets`,
+`quality`, and any
 pricing `warnings` — so a surprising figure is auditable from the entity:
 
 ```yaml
@@ -986,15 +1007,16 @@ export_credit: 731.05
 # credit they could not spend carried into the bank rather than refunded.
 amount_due: 154.98
 residual: 0.0
-# Each cycle carries `gross_charges` and `non_offsettable` beside `cash_due`,
-# so the block reconciles: cash_due == max(0, gross_charges - credit_applied),
-# to the cent each term is rounded to.
+# Each cycle carries `gross_charges`, `in_cycle_offsets` and `non_offsettable`
+# beside `cash_due`, so the block reconciles at both ends -- the same terms the
+# entity attributes carry, to the cent each is rounded to.
 cycles:
   - start: "2026-06-03"
     end: "2026-06-29"
     total: -119.60        # the bill's own sum, every credit subtracted
     cash_due: 25.27       # what the statement charged
     gross_charges: 34.31  # charges before credit; cash_due is this less applied
+    in_cycle_offsets: 0.0 # credit spent on these charges instead of banking
     non_offsettable: 6.12 # the part of it no credit may reach
     credit_applied: 9.04  # what the charges could absorb
     bank_closing: 144.87  # the balance standing after this cycle
