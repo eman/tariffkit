@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-08-30
+
 ### Fixed
 - The Amount Due breakdown adds up. `energy_charges + taxes + fixed_charges`
   overshot `gross_charges` by whatever the statement spent inside the cycle
@@ -744,7 +746,8 @@ Initial release.
 - Holiday calendars are extracted per vintage from the source data rather than
   recomputed, because the vintage files disagree in far-future years.
 
-[Unreleased]: https://github.com/eman/tariffkit/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/eman/tariffkit/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/eman/tariffkit/releases/tag/v0.6.1
 [0.6.0]: https://github.com/eman/tariffkit/releases/tag/v0.6.0
 [0.5.0]: https://github.com/eman/tariffkit/releases/tag/v0.5.0
 [0.4.1]: https://github.com/eman/tariffkit/releases/tag/v0.4.1
