@@ -48,7 +48,7 @@ Restart Home Assistant, then **Settings → Devices & Services → Add Integrati
 
 ### The dependency
 
-`manifest.json` declares an exact-pinned `tariffkit==0.5.0` requirement, which
+`manifest.json` declares an exact-pinned `tariffkit==0.6.0` requirement, which
 Home Assistant installs from PyPI on first setup. The requirement stays an
 exact version rather than a range so a HACS update to the integration and a
 package upgrade cannot drift apart: every GitHub integration release has one
