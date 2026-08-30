@@ -105,6 +105,27 @@ class CcaRateCard:
         """
         return bool(self.raw.get("export", {}).get("credits_acc_plus", False))
 
+    def care_fera_bonus(self, on: date) -> float:
+        """Low-income export bonus this provider pays, $/kWh, zero once expired.
+
+        MCE's Solar Billing Plan tariff (effective 2023-12-01): "CARE and FERA
+        customers will receive a $0.05/kWh generation export bonus credit on
+        all exports until December 31, 2028. This credit is additional to any
+        PG&E delivery-based export bonus credits for eligible customers."
+
+        The values were vendored and then read by nothing, so a CARE or FERA
+        account on such a provider was short the bonus on every exported kWh --
+        a larger per-kWh effect than the ACC Plus adder that is applied.
+        """
+        export = self.raw.get("export", {})
+        rate = float(export.get("care_fera_bonus_rate", 0.0))
+        if not rate:
+            return 0.0
+        through = export.get("care_fera_bonus_through")
+        if through is not None and on > date.fromisoformat(str(through)):
+            return 0.0
+        return rate
+
 
 @lru_cache(maxsize=8)
 def load_rate_card(provider: str, on: date) -> CcaRateCard:

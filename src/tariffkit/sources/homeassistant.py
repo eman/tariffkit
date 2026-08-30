@@ -30,7 +30,7 @@ import json
 import logging
 import os
 import tomllib
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -93,7 +93,9 @@ class HaSettings:
     """Where to reach Home Assistant, and which entities carry grid exchange."""
 
     host: str
-    token: str
+    #: Never printed. `repr=False` keeps it out of tracebacks, which render
+    #: dataclass frames -- the same reason PgeSettings marks its own.
+    token: str = field(repr=False)
     import_entity: str = DEFAULT_IMPORT_ENTITY
     export_entity: str = DEFAULT_EXPORT_ENTITY
 

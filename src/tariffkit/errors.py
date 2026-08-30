@@ -17,3 +17,11 @@ class DataError(TariffKitError):
 
 class OutOfRangeError(DataError):
     """The requested timestamp falls outside the vendored data's coverage."""
+
+
+class PublishError(TariffKitError):
+    """A message could not be handed to the broker.
+
+    Everything published is retained, so a dropped message leaves the previous
+    value being served as though it were current.
+    """

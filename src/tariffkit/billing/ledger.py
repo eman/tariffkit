@@ -82,6 +82,12 @@ CREDIT_BUCKETS: dict[str, CreditBucket] = {
     "cca_generation": CreditBucket.GENERATION,
     "acc_plus": CreditBucket.BONUS,
     "cca_acc_plus": CreditBucket.CCA_BONUS,
+    # The CCA's low-income export bonus. Banked with its other bonus credit
+    # rather than its export credit: the tariff calls it a "bonus credit" and
+    # pays it on top of the export credit, which is how the ACC Plus half
+    # behaves too. No statement has reconciled it, so if one shows it spent on
+    # a different calendar this is the line to revisit.
+    "cca_care_fera_bonus": CreditBucket.CCA_BONUS,
 }
 
 #: Export-side components a statement spends inside the cycle instead of banking.
@@ -96,6 +102,24 @@ CREDIT_BUCKETS: dict[str, CreditBucket] = {
 CHARGE_OFFSETS: dict[str, CreditBucket] = {
     "cca_solar_bonus": CreditBucket.GENERATION,
 }
+
+#: The non-bypassable charges, exactly as Schedule NBT names them.
+#:
+#: Special Condition 2.f, sheet 17 (57359-E): "The following NBCs may not be
+#: reduced by any credits for exports to the grid, except for the ACC Plus
+#: credit: Public Purpose Program, Nuclear Decommissioning Charge, Competition
+#: Transition Charge, and Wildfire Fund Charge."
+#:
+#: Four, not five. ``energy_cost_recovery`` was in this set and is not one of
+#: them; the tariff never calls it non-bypassable.
+NON_BYPASSABLE = frozenset(
+    {
+        "public_purpose_programs",
+        "wildfire_fund_charge",
+        "competition_transition_charges",
+        "nuclear_decommissioning",
+    }
+)
 
 #: Charge component -> the bucket whose credits may offset it.
 #:
@@ -117,26 +141,47 @@ CHARGE_BUCKETS: dict[str, CreditBucket] = {
     "recovery_bond_credit": CreditBucket.DELIVERY,
     "new_system_generation": CreditBucket.DELIVERY,
     "bundled_pcia": CreditBucket.DELIVERY,
+    # The Conservation Incentive Adjustment is a distribution line -- it is the
+    # rate the tariff implements the baseline credit with, and plain
+    # `distribution` is already DELIVERY. Absent from this map it fell to the
+    # non-offsettable default, putting a distribution charge where no credit
+    # could reach it.
+    "conservation_incentive_adjustment": CreditBucket.DELIVERY,
+    # Reachable by the ACC Plus bonus and by nothing else. See NON_BYPASSABLE.
+    **dict.fromkeys(NON_BYPASSABLE, CreditBucket.BONUS),
+    # Not non-bypassable in the tariff's sense, and SC 2.d puts every other
+    # charge within reach of the bonus adder.
+    "energy_cost_recovery": CreditBucket.BONUS,
+    "pcia": CreditBucket.BONUS,
+    "franchise_fee_surcharge": CreditBucket.BONUS,
 }
 
-#: Charges no export credit may offset, so they are payable in cash.
+#: Charges no export credit may offset at all, so they are payable in cash.
 #:
-#: The five non-bypassable charges are non-bypassable in the tariff's own sense
-#: -- that is what the term means -- so not even a bonus credit reaches them.
-#: PCIA, the franchise fee surcharge and the Base Services Charge are listed
-#: here as the conservative reading; see ``SCOPING_VERIFIED``.
-NON_OFFSETTABLE = frozenset(
-    {
-        "public_purpose_programs",
-        "wildfire_fund_charge",
-        "competition_transition_charges",
-        "nuclear_decommissioning",
-        "energy_cost_recovery",
-        "pcia",
-        "franchise_fee_surcharge",
-        "baseline_credit",
-    }
-)
+#: ``baseline_credit`` only. It is a credit rather than a charge, and being
+#: negative it *deflates* this floor instead of raising it, which lets a
+#: scoped export credit reach charges it should not. Bucketing it with the
+#: distribution charges it reduces is the obvious repair and is wrong in a
+#: different way: it is an import-side credit, so the bucket clamp banks the
+#: excess as though the customer had exported it. Settling it needs a statement
+#: whose baseline credit exceeds its distribution charges -- the same evidence
+#: ``SCOPING_VERIFIED`` is waiting on -- so it stays put and stays documented.
+#:
+#: Every other named charge now has a bucket: the
+#: non-bypassable four are reachable by the ACC Plus bonus and nothing else,
+#: which is what the tariff says three separate times --
+#:
+#:   SC 2.c, sheet 17: "Export credits associated with the ACC Plus adder will
+#:   apply to all charges (including NBC charges)."
+#:   SC 2.d, sheet 17: "However, export credits associated with the ACC plus
+#:   adder may be used to offset any charges incurred by the customer."
+#:   SC 2, sheet 19: "The ACC Plus credit can offset all charges including the
+#:   NBC charges."
+#:
+#: A component with no bucket still lands outside every bank, so an unrecognised
+#: charge is payable in cash rather than silently creditable. That default is
+#: the safety property this set used to provide.
+NON_OFFSETTABLE = frozenset({"baseline_credit"})
 
 #: False while the classification above is only partly reconciled.
 #:
@@ -239,6 +284,12 @@ class LedgerEntry:
     #: imported energy over the period.
     imported_kwh: float = 0.0
     exported_kwh: float = 0.0
+    #: Export credits the statement spent inside this cycle instead of banking,
+    #: by the bucket whose charges they reduced. MCE's Solar Bonus Credit is the
+    #: one vendored. They never enter ``earned`` -- that is what makes them
+    #: in-cycle -- but the annual true-up reverses at a rate that includes them,
+    #: so the figure has to survive the cycle to be averaged later.
+    in_cycle_offsets: CreditBalances = field(default_factory=CreditBalances)
     #: False while the charge classification is only partly reconciled against a
     #: statement; see ``SCOPING_VERIFIED``.
     complete: bool = SCOPING_VERIFIED
@@ -257,6 +308,39 @@ class LedgerEntry:
             "exported_kwh": round(self.exported_kwh, 3),
             "complete": self.complete,
         }
+
+
+def _spent_offsets(bill: Bill, unspent: dict[CreditBucket, float]) -> CreditBalances:
+    """In-cycle offsets less the part that overran its bucket and banked."""
+    gross = in_cycle_offsets(bill)
+    return CreditBalances(
+        generation=max(0.0, gross.generation - unspent[CreditBucket.GENERATION]),
+        delivery=max(0.0, gross.delivery - unspent[CreditBucket.DELIVERY]),
+        bonus=max(0.0, gross.bonus - unspent[CreditBucket.BONUS]),
+        cca_bonus=max(0.0, gross.cca_bonus - unspent[CreditBucket.CCA_BONUS]),
+    )
+
+
+def in_cycle_offsets(bill: Bill) -> CreditBalances:
+    """Export credits the statement spends this cycle rather than banking.
+
+    The mirror of :func:`credits_earned` over ``CHARGE_OFFSETS``. These reduce
+    their bucket's charges directly and never reach a balance, so nothing that
+    reads ``earned`` can see them -- which is why the annual true-up, whose
+    reversal rate is defined to include the Solar Bonus Credit, was averaging
+    without it.
+    """
+    totals: dict[CreditBucket, float] = dict.fromkeys(CreditBucket, 0.0)
+    for name, value in bill.export_components.items():
+        bucket = CHARGE_OFFSETS.get(name)
+        if bucket is not None:
+            totals[bucket] += abs(value)
+    return CreditBalances(
+        generation=totals[CreditBucket.GENERATION],
+        delivery=totals[CreditBucket.DELIVERY],
+        bonus=totals[CreditBucket.BONUS],
+        cca_bonus=totals[CreditBucket.CCA_BONUS],
+    )
 
 
 def credits_earned(bill: Bill) -> CreditBalances:
@@ -406,6 +490,12 @@ def apply_credits(bill: Bill, opening: CreditBalances | None = None) -> LedgerEn
         non_offsettable=non_offsettable,
         imported_kwh=sum(b.imported for b in bill.buckets),
         exported_kwh=sum(b.exported for b in bill.buckets),
+        # Only the part actually spent against this cycle's charges. Whatever
+        # an offset could not cover has already been banked into `earned` by
+        # the clamp above, so carrying the gross figure here would let the
+        # annual reversal count that excess twice -- and it exceeds the charges
+        # precisely in the heavy-export months that produce a surplus true-up.
+        in_cycle_offsets=_spent_offsets(bill, unspent),
     )
 
 

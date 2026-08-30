@@ -5,7 +5,145 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+- The ACC Plus bonus credit now offsets the non-bypassable charges, which is
+  what Schedule NBT says three separate times -- Special Condition 2.f names
+  the four NBCs and adds "except for the ACC Plus credit", and 2.d and sheet 19
+  say the same in their own words. They were modelled as reachable by nothing,
+  so a bonus bank left them standing as cash owed. Ordinary export credits
+  still cannot reach them. `energy_cost_recovery` is no longer counted among
+  them; the tariff names four and it is not one. Accounts whose bonus bank
+  exceeded their other charges will see a lower amount due; every reconciled
+  statement is unaffected, because on those the bonus was smaller than the
+  charges it could already reach.
+
 ### Fixed
+- A CARE or FERA account on MCE is credited the low-income export bonus from
+  the date its tariff starts paying it. The terms were vendored only on the
+  April 2026 rate card, so exports between the Solar Billing Plan tariff's
+  2023-12-01 effective date and 2026-03-31 still received nothing. They are
+  dated by that tariff rather than by the rate card, and are vendored from it.
+- Six weekday evenings in 2044 and 2045 are priced at peak again. Every export
+  vintage covering those years duplicates Memorial Day, Independence Day and
+  Labor Day onto the following day, and because no two of them disagreed the
+  intersection that removes the artifact everywhere else preserved it -- so
+  both years carried eleven holidays instead of eight, and E-TOU-D, whose peak
+  applies on weekdays only, priced those evenings as off-peak.
+- MQTT publishes at QoS 1 and reports a refusal. Everything is retained, so a
+  dropped message is not a gap: the broker keeps serving the previous hour's
+  price and the last will does not fire on a clean disconnect, so subscribers
+  saw a stale price presented as current. A one-shot run could also publish
+  before the broker acknowledged the connection, dropping every message and
+  exiting successfully; it waits for the acknowledgement now.
+- A bill history that cannot be parsed is reported as a failure rather than as
+  an account with no bills. Three decode paths returned an empty list, and the
+  CLI printed "received 0 statement update(s)" and exited successfully, so a
+  portal change looked like a completed sync.
+- A statement's recorded source no longer resolves against the working
+  directory. It holds a basename, so hashing it picked up whatever file of that
+  name was in the caller's directory -- binding one statement's facts to
+  another document's digest, which either blocks a legitimate import as a
+  conflict or records provenance for a file nobody read.
+- Changing supplier or schedule through the options flow is validated. Only the
+  setup flow checked the choice against the CCA's rate card, so a schedule the
+  card does not cover was accepted through Configure, written to the entry, and
+  left the reload failing -- every entity unavailable, with a log line as the
+  only explanation. Both option branches now surface the same in-form error
+  setup does.
+- The annual cash-out reverses at the rate MCE's tariff names. Its Solar
+  Billing Plan tariff says "the initial export credit will be reversed at the
+  average Energy Export Credit (including Solar Bonus Credit) rate", and the
+  function's own docstring quoted that line while asserting the bonus was
+  already inside the figure it averaged. It was not -- the Solar Bonus Credit
+  is spent against the cycle's charges rather than banked, so nothing reading
+  earned credits could see it, and a cycle earning $5.50 averaged as $5.00.
+  The reversal came out too small and paid out surplus the tariff treats as
+  already covered.
+- A run crossing two settlements that end on the same cycle reports both. They
+  were de-duplicated by date alone, and because the sort puts the CCA cash-out
+  first it was always the utility's event that disappeared from the reported
+  settlements. No money moved either way; the attribute simply under-reported.
+- A CARE or FERA account on a CCA that pays a low-income export bonus is
+  credited it. MCE's Solar Billing Plan tariff pays "$0.05/kWh generation
+  export bonus credit on all exports until December 31, 2028" -- more per kWh
+  than the ACC Plus adder -- and the rate was vendored but read by nothing, so
+  it reached no bill and the export price still reported itself complete.
+- The Conservation Incentive Adjustment is offsettable by delivery credits. It
+  is the distribution line the tariff implements the baseline credit with, and
+  plain distribution was already treated that way, but it was absent from the
+  bucket map and so fell to the non-offsettable default.
+- An interconnection year inside NBT's locked window whose vintage is not
+  vendored is refused rather than floating. Schedule NBT grants a nine-year
+  lock for applications "no later than December 31, 2027", so answering 2027
+  with the floating vintage priced it against the wrong values while still
+  resolving that year's ACC Plus row. A year outside the window floats at
+  either end, which is the tariff's own rule: "customers enrolling on NBT after
+  its initial five years of availability ... will instead be compensated at the
+  average hourly avoided cost values".
+- An interconnection after the ACC Plus table ends earns no adder rather than
+  raising. Schedule NBT makes the adder available to customers interconnecting
+  "during the first five years of the tariff", decreasing "until the adder
+  reaches zero"; the adopted table runs 2023 to 2027, so 2028 onward is zero.
+- A CCA profile carrying both `rate_card` and `export_generation_rate` prices
+  from the card. The explicit rate used to win, and that branch emits neither
+  the card's solar bonus nor its ACC Plus adder -- a 22% under-credit into the
+  CCA's bank, with the export price still reporting itself complete.
+- MCE's Deep Green premium is priced at the rate the card published. It moved
+  from $0.01 to $0.0125/kWh and only the 2023 and 2026 cards were vendored, so
+  a Deep Green account was credited the older premium until 2026-04-01. Light
+  Green generation was never affected: MCE did not reprice residential
+  generation between those cards, which its own March 2025 board packet states
+  and the intervening cards confirm rate for rate.
+- The rate-card reader no longer drops a schedule whose card shares a header
+  row. From MCE's December 2023 print onward the row reads "ETOUC, EMTOUC -
+  Default Residential Time-of-Use", and a pattern anchored on one code before
+  the dash matched nothing -- so E-TOU-C was dropped from the card, and because
+  an unmatched line is not a schedule it was not reported as skipped either.
+  Any regeneration from a current MCE card would have written a clean-looking
+  file with a whole schedule missing.
+- A CARE or FERA baseline credit is discounted like the charges it offsets. It
+  was read straight from the rate sheet and applied at full value while every
+  charge around it was scaled, so a discounted bill was met by an undiscounted
+  credit: a 250 kWh within-baseline E-TOU-C January came to $46.29 where the
+  same figures reconcile at $54.66, 18% of the bill.
+- A CCA account's CARE or FERA discount is calculated on bundled-equivalent
+  charges. Both sheets say so in identical words -- "the discount will be
+  calculated for direct access and community choice aggregation customers based
+  on the total charges as if they were subject to bundled service rates" -- and
+  the CCA stack was being discounted instead, making the base several cents per
+  kWh too high and the credit correspondingly too large. D-MEDICAL already
+  rebuilt the bundled base; the two agree now.
+- FERA is priced from Schedule E-FERA rather than a hardcoded 18% with no
+  exemptions. The sheet exempts the Wildfire Hardening Charge, Recovery Bond
+  Charge and Recovery Bond Credit before the discount is applied -- three
+  components, where D-CARE exempts those and the Wildfire Fund Charge -- so a
+  FERA discount was taken over a base that wrongly included all three, and was
+  too large on every FERA bill. The rate and the exemptions are now vendored
+  and regenerated like D-CARE's. A FERA bill dated before the sheet's
+  2026-03-01 effective date now refuses rather than guessing at an earlier
+  exemption list, which is how the schedules with one vintage already behave.
+- Re-running a backfill no longer inflates the published history permanently.
+  Every day in the window is written, including the ones that could not be
+  priced, but the running total was anchored at the first day that *was*
+  priced. When a rerun refused a day that a previous run had published -- a
+  counter's catch-up across an outage is enough -- the base already held that
+  day's old figure, and it was added again beneath a row reading zero. The day
+  went on charging what it used to, and every later day carried it. External
+  statistics are never deleted, so no rerun over the same window undid it. The
+  total is now anchored at the first row actually written.
+- A 29 February interconnection no longer breaks export pricing outright. The
+  nine-year rate lock is measured to the PTO anniversary, which does not exist
+  in the common year nine years after a leap year, so `lock_end` raised -- and
+  `is_locked` runs on every export price, so such an account could not price a
+  single exported kWh, fold a bank, or populate its rate-lock sensor. It falls
+  back to the 28th, which is what the annual true-up already did.
+- A CARE or FERA account is billed the Base Services Charge tier its programme
+  is assigned, rather than the undiscounted one. D-CARE assigns CARE customers
+  to tier 1 and E-FERA assigns FERA customers to tier 2, but the tier defaulted
+  to 3 and nothing connected the two settings -- so a CARE account that simply
+  never mentioned a tier paid $0.79343/day on E-ELEC instead of $0.19713, about
+  $18 a month. The tier is now derived from the discount unless set explicitly,
+  and an explicit tier that contradicts the programme is refused.
 - Setting up a CCA account no longer reads its rate card on the event loop.
   Choosing a CCA validates the pick against the vendored card, which scandirs
   the provider's directory and parses TOML -- on the event loop, so Home
@@ -13,6 +151,22 @@ All notable changes to this project are documented here. This project follows
   of the step, each one telling the owner to open a bug report against
   TariffKit. The flow itself was correct and the account it produced was
   correct; only the thread was wrong. The read moves to the executor.
+
+### Security
+- The cached PG&E session cookie keeps its 0600 permissions, and no longer
+  lands wherever the shell happened to be. `os.open`'s mode argument applies
+  only when it creates the file, so an existing 0644 -- from an older version,
+  a restore, another tool -- was rewritten world-readable despite the comment
+  promising otherwise; `fchmod` now enforces it, as the profile repository
+  already did. The default path was `.cache/pge/cookies.json`, relative to the
+  working directory and described as "already gitignored", which held for this
+  repository and nowhere else. It resolves under `XDG_CACHE_HOME` now, in a
+  0700 directory.
+- Home Assistant, InfluxDB and MQTT credentials are kept out of tracebacks.
+  Their settings objects rendered a long-lived token or password in the default
+  dataclass `repr`, which any frame-rendering traceback prints -- pytest, rich,
+  a pasted issue report. `PgeSettings` had marked its own `repr=False` for this
+  reason; its three siblings had not.
 
 ## [0.5.0] - 2026-08-29
 

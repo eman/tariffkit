@@ -105,6 +105,16 @@ class NbtExportRates:
             raise ConfigError(f"unknown acc_plus_segment {segment!r}")
         value = table.get(str(year))
         if value is None:
+            # Schedule NBT RATES section D, sheet 11 (57255-E): the adder "is
+            # available to residential NBT customers who interconnect during
+            # the first five years of the tariff", and "will decrease by 20
+            # percent annually ... until the adder reaches zero". The adopted
+            # table runs 2023-2027 and 20% of the first-year rate is exactly
+            # one fifth, so it reaches zero in 2028. A later interconnection
+            # earns no adder -- which is a rate of zero, not a missing table.
+            latest = max((int(key) for key in table), default=0)
+            if year > latest:
+                return 0.0
             raise ConfigError(
                 f"no ACC Plus rate vendored for {segment} {year}; available years: {sorted(table)}"
             )
@@ -174,9 +184,14 @@ class NbtExportRates:
             # which this package does not ship rates for.
             cca = self.config.cca
             assert cca is not None
-            if cca.export_generation_rate is not None:
-                components["cca_generation"] = cca.export_generation_rate
-            elif cca.rate_card is not None:
+            # The card comes first when both are set. An explicit export rate
+            # used to win, and that branch emits no solar bonus and no CCA ACC
+            # Plus adder -- a 22% under-credit into the CCA's bank on MCE, with
+            # the price still reporting itself complete. Preferring the card
+            # keeps those components; refusing the pair outright was tried and
+            # withdrawn, because a stored profile carrying both then could not
+            # be loaded at all.
+            if cca.rate_card is not None:
                 # The CCA pays the generation half. Their tariffs tend to say
                 # only that exports earn "the applicable Energy Export Credit
                 # Value", so whether that equals the ACC generation component
@@ -200,8 +215,20 @@ class NbtExportRates:
                     # prints both, $1.71 applied on PG&E's page and $1.70 added
                     # to MCE's EEBC balance in the same cycle.
                     components["cca_acc_plus"] = self._acc_plus
+                if self.config.discount != "none":
+                    # MCE's SBP tariff: "CARE and FERA customers will receive a
+                    # $0.05/kWh generation export bonus credit on all exports
+                    # until December 31, 2028. This credit is additional to any
+                    # PG&E delivery-based export bonus credits." Larger per kWh
+                    # than the ACC Plus adder, and read by nothing until now.
+                    care_fera = card.care_fera_bonus(on)
+                    if care_fera:
+                        components["cca_care_fera_bonus"] = care_fera
                 complete = card.export_credit_verified
+            elif cca.export_generation_rate is not None:
+                components["cca_generation"] = cca.export_generation_rate
             else:
+                # Delivery-only price. Flagged rather than silently understated.
                 complete = False
 
         if self._acc_plus:

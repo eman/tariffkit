@@ -417,6 +417,24 @@ class TestCcaRateCard:
         )
         assert "ETOUB" not in skipped
 
+    def test_a_schedule_sharing_its_header_row_is_still_read(self) -> None:
+        """MCE writes "ETOUC, EMTOUC - ..." from the December 2023 card on.
+
+        A pattern anchored on one code before the dash matched nothing there,
+        so E-TOU-C vanished from the card -- and because a line that matches
+        nothing is not a schedule, it was not reported as skipped either. The
+        file looked clean and was missing a whole schedule.
+        """
+        shared = MCE_CARD.replace(
+            "ETOUC - Default Residential Time-of-Use",
+            "ETOUC, EMTOUC - Default Residential Time-of-Use",
+            1,
+        )
+        generation, skipped = cca.extract_generation([sheet(shared)], ALIASES)
+        assert "etouc" in generation, skipped
+        assert generation["etouc"]["winter"] == {"peak": 0.149, "off_peak": 0.135}
+        assert generation["etouc"] == self.extract()[0]["etouc"]
+
     def test_an_implausible_rate_is_an_error(self) -> None:
         broken = MCE_CARD.replace("Peak $0.195/kWh", "Peak $19.5/kWh")
         with pytest.raises(ExtractionError, match="plausible"):

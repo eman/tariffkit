@@ -57,6 +57,10 @@ def config_defaults(config: Config) -> dict[str, Any]:
     cca = values.pop("cca", None)
     result: dict[str, Any] = dict(values)
     result["supplier"] = config.supplier.value
+    # Show the tier actually billed, not the stored None that means
+    # "derive it" -- the form field is a number selector and a profile
+    # that never mentioned a tier would otherwise fail validation.
+    result["base_services_charge_tier"] = config.resolved_bsc_tier
     if result.get("interconnection_year") is not None:
         result["interconnection_year"] = str(result["interconnection_year"])
     else:

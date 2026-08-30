@@ -207,6 +207,12 @@ MEDICAL_BASELINE = Program(
     data_slug="pge",
     source=Source("https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_RULES_19.pdf"),
 )
+E_FERA = Program(
+    key="efera",
+    utility="pacific_gas_and_electric",
+    data_slug="pge",
+    source=Source("https://www.pge.com/tariffs/assets/pdf/tariffbook/ELEC_SCHEDS_E-FERA.pdf"),
+)
 E_RSMART = Program(
     key="ersmart",
     utility="pacific_gas_and_electric",
@@ -266,7 +272,7 @@ UTILITIES: dict[str, Utility] = {PACIFIC_GAS_AND_ELECTRIC.key: PACIFIC_GAS_AND_E
 TAXES: dict[str, Tax] = {CA_ENERGY_RESOURCES.key: CA_ENERGY_RESOURCES}
 CCAS: dict[str, Cca] = {MCE.key: MCE}
 PROGRAMS: dict[str, Program] = {
-    program.key: program for program in (D_CARE, D_MEDICAL, MEDICAL_BASELINE, E_RSMART)
+    program.key: program for program in (D_CARE, D_MEDICAL, E_FERA, MEDICAL_BASELINE, E_RSMART)
 }
 
 

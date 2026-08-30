@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import tomllib
 from datetime import date
 from pathlib import Path
 
@@ -53,10 +54,19 @@ PERIOD_KEYS = {
     "offpeak": "off_peak",
 }
 
-#: A schedule header: a bare code, a dash, then prose. The dash is written as an
-#: escape because cards use both the hyphen and the en dash, and the two are
-#: indistinguishable on screen.
-SCHEDULE_HEADER = re.compile("^([A-Z][A-Z0-9\\-]{1,12})\\s*[-\u2013]\\s*[A-Za-z]")
+#: A schedule header: the code, optionally more codes sharing the row, a dash,
+#: then prose. The dash is written as an escape because cards use both the
+#: hyphen and the en dash, and the two are indistinguishable on screen.
+#:
+#: The trailing code list is not decoration. From the December 2023 print
+#: onward MCE writes "ETOUC, EMTOUC - Default Residential Time-of-Use", which
+#: a pattern anchored on a single code ahead of the dash does not match -- so
+#: E-TOU-C was dropped from the card entirely, and because a line that matches
+#: nothing is not a schedule it was not recorded in `skipped` either. The
+#: result was a clean-looking 12-rate file with a whole schedule missing.
+SCHEDULE_HEADER = re.compile(
+    "^([A-Z][A-Z0-9\\-]{1,12})(?:\\s*,\\s*[A-Z][A-Z0-9\\-]{1,12})*\\s*[-\u2013]\\s*[A-Za-z]"
+)
 #: A period line: the period name, then the rate, then when it applies.
 PERIOD_LINE = re.compile(r"^(Peak|Part[-\s]?Peak|Off[-\s]?Peak)\b(.*)$", re.I)
 #: A flat schedule with no periods at all, e.g. "E1, EM, ES - Basic $0.149/kWh".
@@ -204,12 +214,13 @@ def render(
     previous: dict[str, object],
     names: dict[str, str],
     digest: str = "",
+    source_url: str = "",
     options: dict[str, float] | None = None,
 ) -> str:
     lines = [
         f"# {provider.name} ({provider.key.upper()}) residential generation rates.",
         "#",
-        f"# Source: {provider.rate_card.url}",
+        f"# Source: {source_url or provider.rate_card.url}",
     ]
     if provider.tariff_url:
         lines.append(f"# Solar Billing Plan tariff: {provider.tariff_url}")
@@ -232,7 +243,11 @@ def render(
         f"schedules = {fmt([names[s] for s in sorted(generation)])}",
         f'effective = "{effective.isoformat()}"',
         f'currency = "{previous.get("currency", "USD/kWh")}"',
-        f'source_url = "{provider.rate_card.url}"',
+        # The URL the vendored digest actually came from, not whichever card
+        # the provider points at today. Hardcoding the current URL stamped
+        # every historical vintage regenerated from a local --pdf with a
+        # provenance line that does not hash to its own source_sha256.
+        f'source_url = "{source_url or provider.rate_card.url}"',
         "",
         "# Checksum of the document these values were read from. A scheduled check",
         "# compares it so a republished card is noticed even when it cannot be",
@@ -268,8 +283,7 @@ def render(
     return "\n".join(lines) + "\n"
 
 
-def regenerate(provider: Cca, pdf: Path, *, check: bool) -> Result:
-    import tomllib
+def regenerate(provider: Cca, pdf: Path, *, check: bool, source_url: str = "") -> Result:
 
     directory = DATA_DIR / "cca" / provider.key
     existing = sorted(directory.glob("*.toml")) if directory.is_dir() else []
@@ -316,18 +330,28 @@ def regenerate(provider: Cca, pdf: Path, *, check: bool) -> Result:
 
     from .providers import utility as get_utility
 
+    # Provenance follows the document this actually read, not the card the
+    # provider points at today. A historical `--pdf` has no URL of its own, so
+    # the vintage it rewrites keeps the one already recorded against that same
+    # digest; only a genuinely new document falls back to the live URL.
+    target = directory / f"{effective.isoformat()}.toml"
+    if not source_url and target.exists():
+        recorded = tomllib.loads(target.read_text(encoding="utf-8"))
+        if str(recorded.get("source_sha256", "")) == digest:
+            source_url = str(recorded.get("source_url", ""))
+
     body = render(
         provider,
         generation,
         effective,
         previous,
         get_utility(provider.utility).schedule_names,
-        digest,
-        extract_options(pages),
+        digest=digest,
+        source_url=source_url,
+        options=extract_options(pages),
     )
     # Dated from the card's own statement of when it took force, so a historical
     # card lands beside the current one rather than overwriting it.
-    target = directory / f"{effective.isoformat()}.toml"
     return write_or_check(
         f"{provider.key} {effective}", target, body, check=check, messages=messages
     )

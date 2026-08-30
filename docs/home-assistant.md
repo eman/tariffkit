@@ -632,8 +632,10 @@ whole cycle does, because the later days earn credit against it.
 Amount Due is deliberately not `energy_cost − export_credit + fixed_charges`.
 Under Net Billing a cycle that earns more credit than it owes does not produce a
 refund — the excess **banks** and is spent on a later cycle — and a credit may
-only offset charges the tariff lets it reach, so Non-Bypassable Charges stay due
-however large the bank. Two attributes say where the difference went:
+only offset charges the tariff lets it reach. A scoped credit cannot reach the
+Non-Bypassable Charges; the ACC Plus bonus credit can, which Schedule NBT names
+as their one exception, so a large enough bonus bank does clear them. Two
+attributes say where the difference went:
 
 | Attribute | Means |
 |---|---|

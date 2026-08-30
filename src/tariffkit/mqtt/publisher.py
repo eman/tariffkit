@@ -9,9 +9,10 @@ import os
 import signal
 import threading
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from time import monotonic
 from types import FrameType
 from typing import Any
 
@@ -24,7 +25,7 @@ from ..account import (
 from ..components import EXPORT_GROUPS, IMPORT_GROUPS, split_components
 from ..config import default_config_path
 from ..engine import RateEngine
-from ..errors import ConfigError
+from ..errors import ConfigError, PublishError
 from ..interop import forecast_lists, predbat_payload
 from ..models import PricePoint
 from ..secrets import get_secret
@@ -35,6 +36,10 @@ from .discovery import discovery_payloads
 log = logging.getLogger(__name__)
 
 ONLINE = "online"
+#: How long to wait for the broker's CONNACK before giving up.
+CONNECT_TIMEOUT = 10.0  # seconds; overridden in tests via monkeypatch
+#: How long to wait for the broker to acknowledge everything published.
+PUBLISH_TIMEOUT = 10.0
 OFFLINE = "offline"
 
 
@@ -43,7 +48,9 @@ class MqttSettings:
     broker: str
     port: int = 1883
     username: str | None = None
-    password: str | None = None
+    #: Never printed. `repr=False` keeps it out of tracebacks, which render
+    #: dataclass frames -- the same reason PgeSettings marks its own.
+    password: str | None = field(repr=False, default=None)
     topic_prefix: str = "tariffkit"
     discovery: bool = True
     discovery_prefix: str = "homeassistant"
@@ -188,6 +195,8 @@ class MqttPublisher:
             self.engine = engine
         self.settings = settings
         self._stop = threading.Event()
+        self._connected = threading.Event()
+        self._pending: list[Any] = []
         self._client = self._configure(client if client is not None else self._build_client())
 
     def _build_client(self) -> Any:
@@ -212,18 +221,69 @@ class MqttPublisher:
             client.tls_set()
         # Last will, so subscribers see the sensors go unavailable if we die.
         client.will_set(self._topic("status"), OFFLINE, retain=True)
+
+        def _on_connect(_client: Any, _data: Any, _flags: Any, reason: Any, *_: Any) -> None:
+            # `connect` returns once CONNECT is written, not once the broker
+            # answers. Publishing before this fires goes into a socket that is
+            # not up yet and is discarded.
+            if getattr(reason, "is_failure", False):
+                return
+            self._connected.set()
+
+        def _on_disconnect(*_: Any) -> None:
+            self._connected.clear()
+
+        client.on_connect = _on_connect
+        client.on_disconnect = _on_disconnect
         return client
+
+    def _wait_connected(self) -> bool:
+        return self._connected.wait(CONNECT_TIMEOUT)
 
     def _topic(self, suffix: str) -> str:
         return f"{self.settings.topic_prefix}/{suffix}"
 
     def _publish(self, suffix: str, payload: Any) -> None:
         body = payload if isinstance(payload, str) else json.dumps(payload, default=str)
-        self._client.publish(self._topic(suffix), body, retain=True)
+        self._publish_to(self._topic(suffix), body)
+
+    def _publish_to(self, topic: str, body: str) -> None:
+        """Publish at QoS 1, and fail loudly rather than dropping the message.
+
+        Everything here is retained, so a dropped publish is not a gap -- the
+        broker keeps serving the previous hour's price, and because the last
+        will only fires on an unclean disconnect the sensors still read
+        available. A stale price presented as current is worse than no price.
+
+        At QoS 0 paho writes the message once and discards it if the socket is
+        not up, recording that only in the return code, which nothing read. At
+        QoS 1 it is queued and redelivered after a reconnect instead.
+        """
+        info = self._client.publish(topic, body, qos=1, retain=True)
+        rc = getattr(info, "rc", 0)
+        if rc != 0:
+            raise PublishError(
+                f"MQTT publish to {topic} failed with rc={rc}. "
+                "The broker is still serving the previously retained value."
+            )
+        # `rc` says only that paho accepted the message into its own queue. At
+        # QoS 1 delivery is complete at PUBACK, so a run that publishes and then
+        # stops its loop can still drop everything it queued -- which is what a
+        # one-shot run does. Held for `drain` to wait on before disconnecting.
+        self._pending.append(info)
 
     def connect(self) -> None:
         self._client.connect(self.settings.broker, self.settings.port, keepalive=60)
         self._client.loop_start()
+        # Wait for CONNACK before publishing. `connect` returns as soon as the
+        # CONNECT packet is written, so a one-shot run published into a socket
+        # that was not up yet, dropped every message, and exited zero while the
+        # broker went on serving the previous run's retained prices.
+        if not self._wait_connected():
+            raise PublishError(
+                f"MQTT broker {self.settings.broker}:{self.settings.port} did not "
+                f"acknowledge the connection within {CONNECT_TIMEOUT:g}s"
+            )
         self._publish("status", ONLINE)
         if self.settings.discovery:
             self.publish_discovery()
@@ -234,7 +294,7 @@ class MqttPublisher:
             topic_prefix=self.settings.topic_prefix,
             discovery_prefix=self.settings.discovery_prefix,
         ):
-            self._client.publish(topic, json.dumps(payload), retain=True)
+            self._publish_to(topic, json.dumps(payload))
         log.info("published Home Assistant discovery config")
 
     def _publish_components(self, point: PricePoint) -> None:
@@ -345,6 +405,11 @@ class MqttPublisher:
         try:
             while not self._stop.is_set():
                 self.publish_now()
+                # Drained  cycle so the acknowledgement list cannot grow for
+                # the life of the process: an hourly publisher accumulates
+                # thousands of MQTTMessageInfo objects a year otherwise, each
+                # holding a threading.Condition.
+                self.drain()
                 delay = (next_hour(now_pacific()) - now_pacific()).total_seconds()
                 # Sleep until the boundary rather than polling; wakes early on stop.
                 self._stop.wait(max(delay, 1.0))
@@ -365,9 +430,39 @@ class MqttPublisher:
     def stop(self) -> None:
         self._stop.set()
 
+    def drain(self, timeout: float = PUBLISH_TIMEOUT) -> None:
+        """Block until the broker has acknowledged everything published.
+
+        Without this a one-shot run queues its retained values, stops the loop
+        and disconnects, and paho discards whatever had not gone out -- leaving
+        the broker serving the previous run's prices while the command exits
+        successfully.
+        """
+        deadline = monotonic() + timeout
+        pending, self._pending = self._pending, []
+        for info in pending:
+            wait_for = getattr(info, "wait_for_publish", None)
+            if wait_for is None:  # a client that does not model acknowledgement
+                continue
+            remaining = deadline - monotonic()
+            if remaining > 0:
+                wait_for(remaining)
+            # paho's wait_for_publish returns silently when it times out -- it
+            # only re-raises once the message's own rc is non-zero, which stays
+            # zero here -- so the acknowledgement has to be read afterwards.
+            # Trusting the call to raise accepted an unacknowledged message as
+            # delivered.
+            published = getattr(info, "is_published", None)
+            if published is not None and not published():
+                raise PublishError(
+                    f"the broker did not acknowledge every published message within "
+                    f"{timeout:g}s; some retained values may be stale"
+                )
+
     def close(self) -> None:
         try:
             self._publish("status", OFFLINE)
+            self.drain()
         finally:
             self._client.loop_stop()
             self._client.disconnect()

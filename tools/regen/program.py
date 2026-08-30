@@ -42,8 +42,33 @@ def extract(provider: Program, pages: list[Page]) -> tuple[date, str, dict[str, 
             {
                 "discount": _percent(text, r"D-CARE Discount:\s+([0-9.]+)\s+%"),
                 "eligible_schedules": ["E-1", "E-ELEC", "E-TOU-C", "E-TOU-D", "EV2-A"],
+                # Four of the five D-CARE sheet 1 names. The fifth, added by
+                # advice 7846-E -- "the CARE surcharge portion of the public
+                # purpose program charge used to fund the CARE discount" -- has
+                # no separately published rate to subtract, only the whole PPP
+                # charge, so it cannot be modelled from the sheet. Listed here
+                # so the omission is deliberate rather than overlooked.
                 "exempt_components": [
                     "wildfire_fund_charge",
+                    "wildfire_hardening",
+                    "recovery_bond_charge",
+                    "recovery_bond_credit",
+                ],
+            },
+        )
+    if provider.key == "efera":
+        effective, advice = _effective(pages, "ELECTRIC SCHEDULE E-FERA Sheet 1")
+        return (
+            effective,
+            advice,
+            {
+                "discount": _percent(text, r"receive an\s+([0-9.]+)\s+percent discount"),
+                "eligible_schedules": ["E-1", "E-ELEC", "E-TOU-C", "E-TOU-D", "EV2-A"],
+                # E-FERA sheet 1: "after FERA customers are exempted from the
+                # Wildfire Hardening Charge, Recovery Bond Charge, and the
+                # Recovery Bond Credit." Three, not D-CARE's four -- FERA is
+                # NOT exempt from the Wildfire Fund Charge.
+                "exempt_components": [
                     "wildfire_hardening",
                     "recovery_bond_charge",
                     "recovery_bond_credit",

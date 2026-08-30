@@ -1013,3 +1013,108 @@ async def test_cca_validation_loads_the_rate_card_off_the_event_loop(
     assert result["type"] == "create_entry"
     assert seen, "the CCA step never loaded a rate card"
     assert loop_thread not in seen, "the rate card was loaded on the event loop"
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_options_reject_a_schedule_the_cca_card_does_not_cover(
+    hass: HomeAssistant,
+) -> None:
+    """The options flow used to accept this and leave the entry unloadable.
+
+    Only the config flow validated the pick against the rate card, so the same
+    submission was rejected in-form during setup and written to the entry
+    through Configure -- where the reload then failed and every TariffKit
+    entity went unavailable with nothing but a log line to say why.
+    """
+    entry = _entry(profile=_profile_data("E-ELEC"), version=CONFIG_VERSION)
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "settings"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {"supplier": "cca", "tariff": "E-1", "export_enabled": False},
+    )
+    assert result["step_id"] == "settings_delivery"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "base_services_charge_tier": 3,
+            "baseline_code": "basic",
+            "baseline_territory": "",
+        },
+    )
+    assert result["step_id"] == "settings_cca"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {"cca_rate_card": "MCE", "cca_option": "light_green", "cca_pcia_vintage": 2026},
+    )
+
+    assert result["type"] == "form"
+    assert result["errors"] == {"base": "invalid_config"}
+    assert "E-1" in result["description_placeholders"]["detail"]
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_a_care_setup_completes_without_touching_the_tier(
+    hass: HomeAssistant,
+) -> None:
+    """The tier is chosen in the same form as the discount.
+
+    So its default cannot follow from the discount picked in that submission,
+    and taking the untouched 3 literally rejected every new CARE setup against
+    the tariff's own CARE-is-tier-1 rule.
+    """
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    flow_id = result["flow_id"]
+    await hass.config_entries.flow.async_configure(flow_id, {"next_step_id": "manual"})
+    result = await hass.config_entries.flow.async_configure(
+        flow_id,
+        {
+            "profile_name": "care-account",
+            "supplier": "bundled",
+            "tariff": "E-ELEC",
+            "export_enabled": True,
+        },
+    )
+    result = await hass.config_entries.flow.async_configure(
+        flow_id,
+        {
+            "interconnection_year": "2026",
+            "acc_plus_segment": "residential_low_income",
+            "discount": "care",
+            "base_services_charge_tier": 3,
+            "medical_baseline": False,
+        },
+    )
+
+    assert result["type"] == "create_entry", result.get("errors")
+    stored = Config.from_dict(result["data"][CONF_PROFILE]["epochs"][0]["config"])
+    assert stored.resolved_bsc_tier == 1
+
+
+def test_an_existing_care_entry_takes_its_programme_tier_after_upgrade() -> None:
+    """The coordinator does not build its Config through `Config.from_dict`.
+
+    So the healing that reads a pre-existing serialized tier of 3 as "unset"
+    has to reach this path too. Without it every CARE entry stored before the
+    tier followed the discount stayed on tier 3 -- the undiscounted daily
+    charge, which is the overcharge the change exists to end.
+    """
+    from custom_components.tariffkit.coordinator import config_from_entry
+
+    stored = {
+        "tariff": "E-ELEC",
+        "discount": "care",
+        "acc_plus_segment": "residential_low_income",
+        "base_services_charge_tier": 3,
+        "interconnection_year": 2026,
+        "pto_date": "2026-06-03",
+    }
+    assert config_from_entry(stored).resolved_bsc_tier == 1
+    assert config_from_entry({**stored, "discount": "fera"}).resolved_bsc_tier == 2
+    # A tier the owner actually chose is still theirs.
+    deliberate = {**stored, "discount": "none", "acc_plus_segment": "residential"}
+    assert config_from_entry({**deliberate, "base_services_charge_tier": 2}).resolved_bsc_tier == 2

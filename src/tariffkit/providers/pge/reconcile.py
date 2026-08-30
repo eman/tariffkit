@@ -134,11 +134,20 @@ def _validated_digest(
     if pdf is not None:
         return hash_pdf(pdf)
     if statement.source:
+        # Deliberately not resolved against the working directory. `source` is
+        # a basename -- `parse_statement(pages, source=source.name)` -- so
+        # `Path(statement.source)` picked up whatever file of that name sat in
+        # the caller's cwd. PG&E names downloads predictably, so that quietly
+        # bound one statement's extracted facts to another document's digest,
+        # which either blocks a legitimate import as a CONFLICT or records
+        # provenance for a file nobody read.
         candidate = Path(statement.source)
-        if candidate.is_file():
+        if candidate.is_absolute() and candidate.is_file():
             return hash_pdf(candidate)
     raise ReconciliationError(
-        "a PDF SHA-256 is required; pass pdf=, pdf_sha256=, or a statement source path"
+        "a PDF SHA-256 is required; pass pdf= or pdf_sha256=. A statement's "
+        "`source` is a basename and is not resolved against the working "
+        "directory, because the wrong file of that name would hash silently."
     )
 
 

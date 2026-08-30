@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -66,7 +66,9 @@ class InfluxSettings:
 
     host: str
     database: str
-    token: str
+    #: Never printed. `repr=False` keeps it out of tracebacks, which render
+    #: dataclass frames -- the same reason PgeSettings marks its own.
+    token: str = field(repr=False)
     import_entity: str = DEFAULT_IMPORT_ENTITY
     export_entity: str = DEFAULT_EXPORT_ENTITY
     table: str = DEFAULT_TABLE
@@ -169,6 +171,18 @@ def monotonic(samples: list[tuple[datetime, float]]) -> list[tuple[datetime, flo
     This is the same rule the Home Assistant template filter applies, reproduced
     here so the unfiltered series -- which reaches back nine months further --
     can be used directly.
+
+    KNOWN LIMITATION, deliberately not papered over: a counter that *restarts*
+    at a lower base -- a meter swap, a firmware reset, a 32-bit wrap -- leaves
+    every later sample below the old maximum, so this discards the remainder of
+    the window and the bill comes out short and plausible. Detecting it here
+    was tried and withdrawn: a rule strong enough to catch a noisy restart also
+    fired on a single spuriously *high* sample, which poisons the maximum and
+    makes every subsequent normal reading look like a restart. Turning that
+    into a hard error broke legitimate reads, which on the Home Assistant side
+    means every entity goes unavailable. Separating the two cases needs
+    upward-outlier rejection this does not have, so the artefact rule stands
+    and the gap is recorded rather than half-closed.
     """
     kept: list[tuple[datetime, float]] = []
     highest: float | None = None

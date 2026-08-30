@@ -398,3 +398,86 @@ def test_season_boundaries_are_shared() -> None:
         assert engine.season(datetime(2026, 6, 1, 12, tzinfo=PACIFIC)) is Season.SUMMER
         assert engine.season(datetime(2026, 9, 30, 12, tzinfo=PACIFIC)) is Season.SUMMER
         assert engine.season(datetime(2026, 10, 1, 12, tzinfo=PACIFIC)) is Season.WINTER
+
+
+class TestDiscountBase:
+    """What each discount programme is calculated on."""
+
+    MOMENT = datetime(2026, 7, 15, 17, tzinfo=PACIFIC)
+
+    def _cca(self, discount: str) -> Config:
+        return Config(
+            tariff="E-ELEC",
+            supplier=Supplier.CCA,
+            cca=CcaConfig(name="MCE", rate_card="mce", pcia_vintage=2021),
+            discount=discount,
+            acc_plus_segment="residential_low_income",
+        )
+
+    def _bundled(self, discount: str) -> Config:
+        return Config(
+            tariff="E-ELEC",
+            discount=discount,
+            acc_plus_segment="residential_low_income",
+        )
+
+    @pytest.mark.parametrize("discount", ["care", "fera"])
+    def test_a_cca_account_is_discounted_as_if_bundled(self, discount: str) -> None:
+        """D-CARE and E-FERA both say so in identical words.
+
+        Discounting the CCA stack instead made the base several cents per kWh
+        too high, so the credit came out too large on every CCA CARE account.
+        """
+        key = f"{discount}_discount"
+        cca = RetailTariff(self._cca(discount)).price_at(self.MOMENT).components[key]
+        bundled = RetailTariff(self._bundled(discount)).price_at(self.MOMENT).components[key]
+        assert cca == pytest.approx(bundled)
+
+    def test_fera_is_not_exempt_from_the_wildfire_fund_charge(self) -> None:
+        """E-FERA exempts three components; D-CARE exempts that set plus one."""
+        from tariffkit.tariff.retail import discount_terms
+
+        care_rate, care_exempt = discount_terms("care", date(2026, 7, 15))
+        fera_rate, fera_exempt = discount_terms("fera", date(2026, 7, 15))
+
+        assert (care_rate, fera_rate) == (0.35, 0.18)
+        assert "wildfire_fund_charge" in care_exempt
+        assert "wildfire_fund_charge" not in fera_exempt
+        assert set(fera_exempt) < set(care_exempt)
+
+    @pytest.mark.parametrize(("discount", "factor"), [("care", 0.65), ("fera", 0.82)])
+    def test_the_baseline_credit_carries_the_discount(self, discount: str, factor: float) -> None:
+        """A discounted charge cannot be met by an undiscounted credit."""
+        moment = datetime(2026, 7, 15, 12, tzinfo=PACIFIC)
+        kwargs: dict[str, object] = {
+            "tariff": "E-TOU-C",
+            "baseline_territory": "X",
+            "baseline_code": "basic",
+            "discount": discount,
+        }
+        if discount != "none":
+            kwargs["acc_plus_segment"] = "residential_low_income"
+        credit = RetailTariff(Config(**kwargs)).price_at(moment).baseline_credit
+        undiscounted = (
+            RetailTariff(Config(tariff="E-TOU-C", baseline_territory="X", baseline_code="basic"))
+            .price_at(moment)
+            .baseline_credit
+        )
+        assert credit == pytest.approx(undiscounted * factor)
+
+
+def test_no_year_carries_two_consecutive_holidays() -> None:
+    """PG&E's observed-date rules never produce adjacent dates.
+
+    2044 and 2045 carried eleven holidays each -- Memorial Day, Independence
+    Day and Labor Day duplicated onto the following day by every vintage
+    covering them, so the intersection could not remove it. E-TOU-D prices its
+    5-8pm peak as off-peak on a holiday, so six weekday evenings were wrong.
+    """
+    from tariffkit.timeutil import holidays
+
+    for year in range(2024, 2046):
+        days = set(holidays(year))
+        adjacent = sorted(d for d in days if d - timedelta(days=1) in days)
+        assert not adjacent, f"{year} has consecutive holidays: {adjacent}"
+        assert 7 <= len(days) <= 9, f"{year} has {len(days)} holidays"

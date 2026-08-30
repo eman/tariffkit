@@ -56,8 +56,23 @@ BASE = "https://myaccount.pge.com"
 LOGIN_PATH = "/myaccount/s/login/"
 AURA_PATH = "/myaccount/s/sfsites/aura"
 
-#: Where a session is cached between runs. Under .cache/, already gitignored.
-DEFAULT_COOKIE_PATH = Path(".cache/pge/cookies.json")
+
+def _default_cookie_path() -> Path:
+    """Where a session is cached between runs.
+
+    Anchored to XDG_CACHE_HOME rather than the working directory. The old
+    relative path was described as "already gitignored", which was true of this
+    repository and of nowhere else -- run the CLI from any other directory and
+    a live bearer credential was written wherever the shell happened to be.
+    `account.cli` has resolved its own cache this way all along.
+    """
+    root = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+    return root / "tariffkit" / "pge" / "cookies.json"
+
+
+#: Session cache location. Call `_default_cookie_path()` for the resolved path;
+#: this module-level value is kept for callers that referenced it.
+DEFAULT_COOKIE_PATH = _default_cookie_path()
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -311,6 +326,39 @@ class InvalidSessionError(PortalError):
         self.new_token = new_token
 
 
+class BillHistoryError(PortalError):
+    """The bill history could not be parsed.
+
+    Distinct from an account with no bills, which is a legitimate empty list.
+    """
+
+
+#: Names the portal gives the bill-list container. Matched only to tell an
+#: account with no bills from a reply this could not parse; a non-empty list is
+#: still recognised by the shape of its rows rather than by any key name.
+_BILL_LIST_KEY = re.compile(r"bill|invoice|statement", re.I)
+
+
+def _has_empty_bill_list(node: Any, depth: int = 0) -> bool:
+    """Whether the payload holds a bill container that is present and empty."""
+    if depth > 10:
+        return False
+    if isinstance(node, str) and node[:1] in "{[":
+        try:
+            return _has_empty_bill_list(json.loads(node), depth + 1)
+        except ValueError:
+            return False
+    if isinstance(node, Mapping):
+        for key, value in node.items():
+            if isinstance(value, list) and not value and _BILL_LIST_KEY.search(key):
+                return True
+            if _has_empty_bill_list(value, depth + 1):
+                return True
+    elif isinstance(node, list):
+        return any(_has_empty_bill_list(value, depth + 1) for value in node)
+    return False
+
+
 def _bill_rows(payload: Any) -> list[dict[str, Any]]:
     """Pull the statement rows out of an Integration Procedure's reply.
 
@@ -325,13 +373,13 @@ def _bill_rows(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, Mapping) and isinstance(payload.get("returnValue"), str):
         try:
             payload = json.loads(payload["returnValue"])
-        except ValueError:
-            return []
+        except ValueError as exc:
+            raise BillHistoryError("the portal's bill history did not decode as JSON") from exc
     elif isinstance(payload, str):
         try:
             payload = json.loads(payload)
-        except ValueError:
-            return []
+        except ValueError as exc:
+            raise BillHistoryError("the portal's bill history did not decode as JSON") from exc
 
     def walk(node: Any, depth: int = 0) -> list[dict[str, Any]] | None:
         if depth > 10:
@@ -362,7 +410,30 @@ def _bill_rows(payload: Any) -> list[dict[str, Any]]:
                     return found
         return None
 
-    return walk(payload) or []
+    rows = walk(payload)
+    if rows is None and _has_empty_bill_list(payload):
+        # An account that genuinely has no bills answers with the container
+        # present and empty. `walk` recognises a bill list by the keys of its
+        # first row, so an empty one is invisible to it, and reporting that as
+        # a parse failure would tell a new customer the portal had changed.
+        #
+        # Only after `walk` has searched the whole payload: checked earlier, an
+        # unrelated empty list -- billMessages beside a populated billHistory --
+        # won the race and hid real statements, which is the very failure this
+        # function exists to stop.
+        return []
+    if rows is None:
+        # An empty list here is indistinguishable from "this account has no
+        # bills", and that is how the CLI reported it: "received 0 statement
+        # update(s)", exit 0, while a PG&E release had quietly moved the rows.
+        # The comment above already names this failure for the inner decode;
+        # the outer one gets the same treatment.
+        raise BillHistoryError(
+            "no statement rows were found in the portal's bill history. The reply "
+            "decoded but held nothing shaped like a bill list, which usually means "
+            "the portal changed. See audit/pge/PORTAL.md for how to re-capture it."
+        )
+    return rows
 
 
 def _frontdoor(answer: Any) -> str:
@@ -480,7 +551,17 @@ class PgeSession:
         if self._client is None:
             return
         path = self.settings.cookie_path
-        path.parent.mkdir(parents=True, exist_ok=True)
+        # 0700 on the directory as well as 0600 on the file, but only on the
+        # directory this package owns. `cookie_path` is configurable, and
+        # chmodding its parent unconditionally would reach whatever the caller
+        # pointed at -- `/tmp/cookies.json` would take `/tmp` to 0700 and break
+        # the machine. A custom parent this creates still gets the mode from
+        # mkdir; one that already exists is left exactly as the caller has it.
+        parent = path.parent
+        existed = parent.is_dir()
+        parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if existed and parent == _default_cookie_path().parent:
+            parent.chmod(0o700)
         # Keyed by name *and* domain and path, not name alone: the portal sets
         # several cookies that share a name across domains (renderCtx among
         # them), and collapsing them to a dict raises rather than silently
@@ -493,8 +574,13 @@ class PgeSession:
         )
         # 0600 via os.open: a session cookie is a bearer credential, and
         # Path.write_text would leave it world-readable under a lax umask.
+        # The mode argument only applies when os.open creates the file, so an
+        # existing 0644 -- left by an older version, a restore, another tool --
+        # was rewritten world-readable. fchmod makes the guarantee hold either
+        # way, which is what NamedProfileRepository.save already does.
         handle = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
         with os.fdopen(handle, "w", encoding="utf-8") as out:
+            os.fchmod(out.fileno(), 0o600)
             out.write(payload)
 
     def refresh_token(self) -> str:

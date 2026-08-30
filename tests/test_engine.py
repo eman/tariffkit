@@ -9,6 +9,8 @@ import pytest
 from tariffkit import Config, RateEngine, Supplier, Utility
 from tariffkit.config import CcaConfig
 from tariffkit.errors import ConfigError, DataError, OutOfRangeError
+from tariffkit.export.nbt import NbtExportRates
+from tariffkit.tariff.retail import RetailTariff
 from tariffkit.timeutil import (
     PACIFIC,
     DayType,
@@ -192,10 +194,38 @@ class TestLockWindow:
 class TestVintageResolution:
     @pytest.mark.parametrize(
         ("year", "expected"),
-        [(2023, "NBT23"), (2024, "NBT24"), (2025, "NBT25"), (2026, "NBT26"), (2030, "NBT00")],
+        [(2023, "NBT23"), (2024, "NBT24"), (2025, "NBT25"), (2026, "NBT26"), (2022, "NBT00")],
     )
     def test_from_interconnection_year(self, year: int, expected: str) -> None:
         assert Config(interconnection_year=year, pto_date=None).resolved_vintage == expected
+
+    def test_a_year_past_the_locked_window_floats(self) -> None:
+        """Schedule NBT sheet 10 prescribes it.
+
+        "Customers enrolling on NBT after its initial five years of
+        availability will not receive a locked-in nine-year schedule ... and
+        will instead be compensated at the average hourly avoided cost values."
+        Floating is the answer for 2028 onward, not an error -- and the adder,
+        whose table ends at 2027, is zero for them.
+        """
+        config = Config(interconnection_year=2030, pto_date=date(2030, 6, 3))
+        assert config.resolved_vintage == "NBT00"
+        assert config.lock_end is None
+        assert NbtExportRates(config).acc_plus == pytest.approx(0.0)
+
+    def test_an_unvendored_year_inside_the_locked_window_is_refused(self) -> None:
+        """2027 is promised a lock the vendored data cannot supply.
+
+        Answering with the floating vintage would price it against the wrong
+        values while still resolving that year's ACC Plus row -- locked for the
+        adder, floating for the energy, with `lock_end` reporting nothing.
+        """
+        config = Config(interconnection_year=2027, pto_date=None)
+        with pytest.raises(ConfigError, match="inside NBT's locked window"):
+            _ = config.resolved_vintage
+
+    def test_an_explicit_vintage_still_overrides(self) -> None:
+        assert Config(interconnection_year=2030, vintage="NBT26").resolved_vintage == "NBT26"
 
     def test_explicit_vintage_wins(self) -> None:
         assert Config(interconnection_year=2026, vintage="NBT23").resolved_vintage == "NBT23"
@@ -400,3 +430,61 @@ def test_a_string_supplier_becomes_the_enum() -> None:
 def test_an_unknown_supplier_is_rejected() -> None:
     with pytest.raises(ValueError, match="not a valid Supplier"):
         Config(supplier="nonsense")  # type: ignore[arg-type]
+
+
+class TestLeapDayInterconnection:
+    """A 29 February PTO has no anniversary in the common year nine years on."""
+
+    def test_lock_end_falls_back_to_the_28th(self) -> None:
+        config = Config(interconnection_year=2024, pto_date=date(2024, 2, 29))
+        assert config.lock_end == date(2033, 2, 27)
+
+    def test_an_exported_kwh_still_prices(self) -> None:
+        """`is_locked` runs on every `price_at`, so this used to raise."""
+        config = Config(interconnection_year=2024, pto_date=date(2024, 2, 29))
+        rates = NbtExportRates(config)
+        assert rates.price_at(pt(2026, 7, 15, 13)).total > 0
+
+
+class TestBaseServicesChargeTier:
+    """D-CARE assigns tier 1, E-FERA tier 2. Nothing used to tie them."""
+
+    def test_tier_follows_the_discount_when_unset(self) -> None:
+        care = Config(discount="care", acc_plus_segment="residential_low_income")
+        fera = Config(discount="fera", acc_plus_segment="residential_low_income")
+        assert (care.resolved_bsc_tier, fera.resolved_bsc_tier, Config().resolved_bsc_tier) == (
+            1,
+            2,
+            3,
+        )
+
+    def test_a_care_account_is_billed_the_tier_1_daily_charge(self) -> None:
+        config = Config(discount="care", acc_plus_segment="residential_low_income")
+        charge = RetailTariff(config).daily_fixed_charge(pt(2026, 7, 15, 12))
+        assert charge == pytest.approx(0.19713)
+
+    def test_an_explicit_tier_is_honoured_as_an_override(self) -> None:
+        """Refusing a mismatch was tried and withdrawn.
+
+        The old Home Assistant form let any account pick any tier, so a stored
+        profile can legitimately carry one the programme does not imply -- and
+        refusing it stopped those profiles loading at all, which in Home
+        Assistant means the integration never sets up and the options flow
+        cannot open to correct it.
+        """
+        config = Config(
+            discount="care",
+            acc_plus_segment="residential_low_income",
+            base_services_charge_tier=2,
+        )
+        assert config.resolved_bsc_tier == 2
+
+    def test_the_serialized_legacy_default_is_read_as_unset(self) -> None:
+        """Every profile written before the two fields were connected has 3."""
+        stored = {
+            "discount": "care",
+            "acc_plus_segment": "residential_low_income",
+            "base_services_charge_tier": 3,
+        }
+        assert Config.from_dict(stored).resolved_bsc_tier == 1
+        assert Config.from_dict({"base_services_charge_tier": 2}).resolved_bsc_tier == 2

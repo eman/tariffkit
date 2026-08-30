@@ -271,13 +271,26 @@ def average_export_rate(entries: Sequence[LedgerEntry], bucket: CreditBucket) ->
 
     This is the rate MCE reverses at: "the initial export credit will be
     reversed at the average Energy Export Credit (including Solar Bonus Credit)
-    rate". The solar bonus is inside ``earned`` for the generation bucket, so it
-    is included here without special handling.
+    rate" (MCE Solar Billing Plan tariff, section 2.a.ii, effective 2023-12-01).
+
+    The bracket is the whole point, and this used to claim the bonus was
+    "inside ``earned`` for the generation bucket, so it is included here
+    without special handling". It is not: ``cca_solar_bonus`` is a charge
+    offset, spent against the cycle's generation charges rather than banked, so
+    ``credits_earned`` skips it and ``earned.generation`` came back 5.00 on a
+    cycle that earned 5.50. Averaging without it made the reversal too small
+    and so paid out surplus the tariff says is already covered.
+
+    PG&E's own reversal works the other way and is handled separately: Schedule
+    NBT SC 5.d excludes its adder -- "the ACC Plus paid to the customer on Net
+    Surplus Electricity will not be debited from the customer" -- but that is
+    about a bundled account's ACC Plus, not a CCA's Solar Bonus Credit.
     """
     exported = sum(e.exported_kwh for e in entries)
     if exported <= 0.0:
         return 0.0
-    return sum(e.earned[bucket] for e in entries) / exported
+    earned = sum(e.earned[bucket] + e.in_cycle_offsets[bucket] for e in entries)
+    return earned / exported
 
 
 def mce_cash_out(
@@ -587,21 +600,27 @@ def run_lifetime(
     remaining = list(ordered)
     settled: list[LedgerEntry] = []
     events: list[TrueUp] = []
-    seen: set[date] = set()
+    # Keyed on the event's kind as well as its date. The two calendars are
+    # unrelated -- PG&E settles on the PTO anniversary, the CCA on its own
+    # cash-out year -- so with a spring PTO both can land in the same cycle. On
+    # a date alone the second was filtered out as already seen, and since the
+    # sort puts the cash-out first it was always the utility's event that
+    # vanished from the reported settlements.
+    seen: set[tuple[str, date]] = set()
 
     while remaining:
         entries = run_ledger(remaining, opening=balance).entries
         found = [
             event
             for event in run_true_ups(entries, pto_date=pto_date, is_cca=is_cca, nsc_rate=nsc_rate)
-            if event.period.end not in seen
+            if (event.kind, event.period.end) not in seen
         ]
         if not found:
             settled.extend(entries)
             closing = entries[-1].closing if entries else _balance(balance)
             return LifetimeLedger(tuple(settled), tuple(events), closing)
         first = found[0]
-        seen.add(first.period.end)
+        seen.add((first.kind, first.period.end))
         events.append(first)
         if not first.settles:
             continue

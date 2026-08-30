@@ -26,7 +26,7 @@ import json
 import sys
 import zipfile
 from collections import defaultdict
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -269,11 +269,26 @@ def vintage_slug(rate_name: str) -> str:
     return rate_name.lower()
 
 
+_ONE_DAY = timedelta(days=1)
+
+
 def intersect_holidays(by_vintage: dict[str, set[date]]) -> dict[int, list[date]]:
     """Per-year intersection across the vintages that cover that year.
 
     Every vintage agrees on the canonical eight holidays through 2036. Later
-    years pick up per-file artifacts, and intersecting removes them.
+    years pick up per-file artifacts, and intersecting removes them -- but only
+    where two vintages actually disagree. 2044 is covered by NBT00/25/26 and
+    2045 by NBT26 alone, and each of them duplicates Memorial Day, Independence
+    Day and Labor Day onto the following day, so the intersection preserved the
+    duplicate and both years came out with eleven holidays instead of eight.
+    E-TOU-D prices its 5-8pm peak as off-peak on a holiday, so those six
+    weekday evenings were mispriced.
+
+    A holiday immediately following another is that artifact: PG&E's observed
+    rules move a holiday to the preceding Friday or the following Monday, and
+    never produce two consecutive dates. Where a year legitimately carries a
+    ninth entry -- 2027 and 2032 each observe both Christmas Eve and New
+    Year's Eve -- the dates are far apart and survive.
     """
     years: set[int] = {d.year for dates in by_vintage.values() for d in dates}
     result: dict[int, list[date]] = {}
@@ -284,6 +299,7 @@ def intersect_holidays(by_vintage: dict[str, set[date]]) -> dict[int, list[date]
             if any(d.year == year for d in dates)
         ]
         common = set.intersection(*covering) if covering else set()
+        common -= {day for day in common if day - _ONE_DAY in common}
         if common:
             result[year] = sorted(common)
     return result
@@ -296,12 +312,18 @@ def write_holidays(holidays: dict[int, list[date]], check: bool) -> bool:
         "# Extracted from the DayStart==8 rows of PG&E's NBT export-rate files, so",
         "# the observed-date rules (Saturday -> preceding Friday, Sunday -> following",
         "# Monday) come from the source rather than being reimplemented here.",
-        "# These eight holidays affect the EXPORT day type only; E-ELEC import",
-        "# pricing makes no weekday/weekend/holiday distinction at all.",
+        "# These holidays set the EXPORT day type, and also E-TOU-D's peak, which",
+        "# applies on weekdays only and prices a holiday as off-peak. E-ELEC,",
+        "# E-TOU-C and EV2-A make no weekday/weekend/holiday distinction.",
         "#",
-        "# This is the INTERSECTION across the vintage files covering each year.",
-        "# They agree through 2036; beyond that NBT25/26/00 duplicate some holidays",
-        "# onto the following day, and intersecting drops those artifacts. Export",
+        "# This is the INTERSECTION across the vintage files covering each year,",
+        "# less any date that immediately follows another. They agree through 2036;",
+        "# beyond that NBT25/26/00 duplicate some holidays onto the following day.",
+        "# Intersecting drops those wherever two vintages disagree, but 2044 is",
+        "# covered by three files and 2045 by one, all carrying the duplicate, so",
+        "# both years survived it at eleven holidays until the adjacency rule was",
+        "# added. PG&E's observed-date rules never produce consecutive dates.",
+        "# Export",
         "# lookups use the per-vintage calendar embedded in each matrix instead.",
         "",
         "[holidays]",

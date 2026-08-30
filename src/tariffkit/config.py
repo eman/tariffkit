@@ -8,7 +8,7 @@ import tomllib
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from .errors import ConfigError
 from .models import Supplier, Utility
@@ -27,8 +27,46 @@ VINTAGE_BY_YEAR = {
     2026: "NBT26",
 }
 FLOATING_VINTAGE = "NBT00"
+#: The interconnection-application years NBT grants a nine-year lock, from
+#: sheet 10: "on or after April 15, 2023 and no later than December 31, 2027".
+#: Applications outside it float, at either end.
+LOCK_WINDOW = (2023, 2027)
 
 LOCK_YEARS = 9
+#: Which Base Services Charge tier each discount programme is billed on.
+#: D-CARE assigns CARE customers to tier 1; FERA takes the middle tier, and an
+#: undiscounted account the standard one. Pinned here because nothing in the
+#: rate data ties the two fields together and the default is tier 3.
+BSC_TIER_BY_DISCOUNT: dict[str, int] = {"none": 3, "care": 1, "fera": 2}
+#: The tier every profile serialized before the two fields were connected.
+_LEGACY_BSC_TIER = 3
+
+
+def stored_bsc_tier(tier: object, discount: object) -> Literal[1, 2, 3] | None:
+    """Read a stored Base Services Charge tier, healing the legacy default.
+
+    Every profile written before the tier followed the discount carries 3,
+    because `to_dict` wrote the field unconditionally -- so a CARE account that
+    was never asked about a tier would go on being billed the undiscounted
+    daily charge, which is the defect. Read as unset, it takes the tier its
+    programme implies.
+
+    Shared because there are two deserialisation paths and only one of them is
+    `from_dict`: the Home Assistant coordinator builds a Config straight from
+    the entry's stored dict, so a rule living in `from_dict` alone left every
+    existing CARE entry on tier 3.
+    """
+    if tier is None:
+        return None
+    implied = BSC_TIER_BY_DISCOUNT.get(str(discount), _LEGACY_BSC_TIER)
+    if tier == _LEGACY_BSC_TIER and implied != _LEGACY_BSC_TIER:
+        return None
+    resolved = int(tier)  # type: ignore[call-overload]
+    if resolved not in (1, 2, 3):
+        raise ConfigError(f"base_services_charge_tier must be 1, 2 or 3; got {tier!r}")
+    return cast("Literal[1, 2, 3]", resolved)
+
+
 _ONE_DAY = timedelta(days=1)
 
 
@@ -103,7 +141,9 @@ class Config:
 
     acc_plus_segment: AccPlusSegment = "residential"
     discount: Discount = "none"
-    base_services_charge_tier: Literal[1, 2, 3] = 3
+    #: Leave unset to take the tier the discount programme implies, which is
+    #: what the tariff assigns. Set it only to override that.
+    base_services_charge_tier: Literal[1, 2, 3] | None = None
 
     #: Baseline territory letter, printed on the bill as e.g. "Baseline
     #: Territory X". Only schedules with a baseline allowance use it -- E-TOU-C
@@ -178,22 +218,79 @@ class Config:
             )
 
     @property
+    def resolved_bsc_tier(self) -> int:
+        """Base Services Charge tier actually billed.
+
+        Derived from the discount unless overridden, because the tariff ties
+        the two together and nothing else did: the field used to default to
+        tier 3, so a CARE account that simply did not mention it was billed
+        $0.79343/day on E-ELEC instead of $0.19713 -- about $18 a month.
+
+        An explicit value is honoured, because the field is documented as an
+        override and a stored profile may legitimately carry one -- the old
+        Home Assistant form let any account pick any tier. Refusing a mismatch
+        was tried and withdrawn: it stopped those profiles loading at all, and
+        in Home Assistant that means the integration never sets up and the
+        options flow cannot open to correct it. Deriving when unset is what
+        fixes the defect; `from_dict` additionally reads the pre-existing
+        serialized default as unset, which covers every profile written before
+        the two fields were connected.
+        """
+        if self.base_services_charge_tier is not None:
+            return self.base_services_charge_tier
+        return BSC_TIER_BY_DISCOUNT[self.discount]
+
+    @property
     def resolved_vintage(self) -> str:
-        """The NBT vintage whose matrix applies to this customer."""
+        """The NBT vintage whose matrix applies to this customer.
+
+        Floating either side of the locked window, which is the tariff's own
+        rule at both ends. Schedule NBT sheet 10: the nine-year lock is for
+        applications "on or after April 15, 2023 and no later than December 31,
+        2027", and "customers enrolling on NBT after its initial five years of
+        availability will not receive a locked-in nine-year schedule ... and
+        will instead be compensated at the average hourly avoided cost values".
+        A 2028 interconnection is therefore a floating customer, not an error.
+
+        Inside the window is the case worth refusing. Such an applicant is
+        promised a locked schedule, so answering with the floating vintage
+        would price them against the wrong values while `lock_end` reported
+        nothing -- locked for the ACC Plus adder, floating for the energy.
+        """
         if self.vintage is not None:
             return self.vintage
         assert self.interconnection_year is not None
-        return VINTAGE_BY_YEAR.get(self.interconnection_year, FLOATING_VINTAGE)
+        year = self.interconnection_year
+        if year in VINTAGE_BY_YEAR:
+            return VINTAGE_BY_YEAR[year]
+        if LOCK_WINDOW[0] <= year <= LOCK_WINDOW[1]:
+            raise ConfigError(
+                f"interconnection year {year} is inside NBT's locked window "
+                f"({LOCK_WINDOW[0]}-{LOCK_WINDOW[1]}) but its vintage is not vendored; "
+                f"vendored years are {sorted(VINTAGE_BY_YEAR)}. Set vintage= to override."
+            )
+        return FLOATING_VINTAGE
 
     @property
     def lock_end(self) -> date | None:
         """Last date covered by the nine-year rate lock, inclusive.
 
         ``None`` for a floating (NBT00) customer, who has no lock at all.
+
+        A 29 February PTO has no anniversary in a common year, and 9 years on
+        from a leap year always lands in one. It falls back to the 28th, which
+        is what `trueup.relevant_period_end` does for the same reason -- and
+        without it `is_locked` raises on every `price_at`, so such an account
+        cannot price a single exported kWh.
         """
         if self.pto_date is None or self.resolved_vintage == FLOATING_VINTAGE:
             return None
-        return self.pto_date.replace(year=self.pto_date.year + LOCK_YEARS) - _ONE_DAY
+        anniversary_year = self.pto_date.year + LOCK_YEARS
+        try:
+            anniversary = self.pto_date.replace(year=anniversary_year)
+        except ValueError:  # 29 February in a common year
+            anniversary = self.pto_date.replace(year=anniversary_year, day=28)
+        return anniversary - _ONE_DAY
 
     def with_(self, **changes: Any) -> Config:
         return replace(self, **changes)
@@ -201,6 +298,15 @@ class Config:
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> Config:
         data = dict(raw)
+        # Heal a profile stored before the tier followed the discount. Every
+        # such profile carries the old default of 3, because `to_dict` wrote
+        # the field unconditionally, so a CARE or FERA account that was never
+        # asked about a tier would now fail to load outright. Only the legacy
+        # default is forgiven: an explicitly chosen tier that contradicts the
+        # programme is still a configuration error worth hearing about.
+        data["base_services_charge_tier"] = stored_bsc_tier(
+            data.get("base_services_charge_tier"), data.get("discount", "none")
+        )
         unknown = set(data) - {f.name for f in cls.__dataclass_fields__.values()}
         if unknown:
             raise ConfigError(f"unknown config keys: {sorted(unknown)}")

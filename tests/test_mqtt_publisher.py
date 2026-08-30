@@ -12,9 +12,29 @@ import pytest
 from tariffkit import CcaConfig, Config, RateEngine, Supplier
 from tariffkit.account import AccountEpoch, AccountProfile, NamedProfileRepository
 from tariffkit.components import EXPORT_GROUPS, IMPORT_GROUPS
-from tariffkit.errors import ConfigError
+from tariffkit.errors import ConfigError, PublishError
 from tariffkit.mqtt.publisher import OFFLINE, ONLINE, MqttPublisher, MqttSettings
 from tariffkit.timeutil import PACIFIC
+
+
+class _FakeReason:
+    is_failure = False
+
+
+class _FakeInfo:
+    """Models paho's MQTTMessageInfo, acknowledgement and all."""
+
+    rc = 0
+
+    def __init__(self) -> None:
+        self.waited = False
+        self.acknowledged = True
+
+    def wait_for_publish(self, timeout: float | None = None) -> None:
+        self.waited = True
+
+    def is_published(self) -> bool:
+        return self.acknowledged
 
 
 class FakeClient:
@@ -28,6 +48,10 @@ class FakeClient:
         self.tls = False
         self.loop_running = False
         self.disconnected = False
+        self.qos_used: list[int] = []
+        self.infos: list[_FakeInfo] = []
+        self.on_connect: Any | None = None
+        self.on_disconnect: Any | None = None
 
     def username_pw_set(self, username: str, password: str | None = None) -> None:
         self.auth = (username, password)
@@ -40,6 +64,11 @@ class FakeClient:
 
     def connect(self, host: str, port: int, keepalive: int = 60) -> None:
         self.connected = (host, port)
+        # Real brokers answer with CONNACK, which is what the publisher waits
+        # for before sending anything; without it every publish would be
+        # written into a socket that is not up yet.
+        if self.on_connect is not None:
+            self.on_connect(self, None, None, _FakeReason())
 
     def loop_start(self) -> None:
         self.loop_running = True
@@ -50,8 +79,12 @@ class FakeClient:
     def disconnect(self) -> None:
         self.disconnected = True
 
-    def publish(self, topic: str, payload: str, retain: bool = False) -> None:
+    def publish(self, topic: str, payload: str, qos: int = 0, retain: bool = False) -> _FakeInfo:
         self.published.append((topic, payload, retain))
+        self.qos_used.append(qos)
+        info = _FakeInfo()
+        self.infos.append(info)
+        return info
 
     def topics(self) -> dict[str, str]:
         return {topic: payload for topic, payload, _ in self.published}
@@ -382,3 +415,92 @@ def test_mqtt_settings_collapses_matching_profile_aliases() -> None:
     )
 
     assert settings.profile == "home"
+
+
+def test_prices_are_published_at_qos_1() -> None:
+    """Everything here is retained, so a dropped publish is not a gap.
+
+    The broker goes on serving last hour's price, and because the last will
+    only fires on an unclean disconnect the sensors still read available. At
+    QoS 0 paho writes once and discards the message if the socket is down,
+    recording that only in a return code nothing read.
+    """
+    publisher = make_publisher()
+    publisher.connect()
+    client = client_of(publisher)
+    assert client.qos_used, "nothing was published"
+    assert set(client.qos_used) == {1}
+
+
+def test_a_refused_publish_is_not_silent() -> None:
+    publisher = make_publisher()
+    client = client_of(publisher)
+
+    class Refused:
+        rc = 4
+
+    client.publish = lambda *a, **k: Refused()  # type: ignore[method-assign]
+    with pytest.raises(PublishError, match="still serving the previously retained"):
+        publisher.connect()
+
+
+def test_publishing_waits_for_the_broker_to_acknowledge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`connect` returns once CONNECT is written, not once the broker answers."""
+    monkeypatch.setattr("tariffkit.mqtt.publisher.CONNECT_TIMEOUT", 0.05)
+    publisher = make_publisher()
+    client = client_of(publisher)
+    client.on_connect = None  # a broker that never answers
+    with pytest.raises(PublishError, match="did not acknowledge"):
+        publisher.connect()
+
+
+def test_closing_waits_for_the_broker_to_acknowledge_everything() -> None:
+    """`rc` says only that paho queued the message.
+
+    At QoS 1 delivery completes at PUBACK, so a one-shot run that publishes and
+    immediately stops its loop drops whatever had not gone out -- and exits
+    successfully while the broker serves the previous run's prices.
+    """
+    publisher = make_publisher()
+    publisher.connect()
+    publisher.publish_now()
+    client = client_of(publisher)
+    assert client.infos, "nothing was published"
+    publisher.close()
+    assert all(info.waited for info in client.infos)
+
+
+def test_a_broker_that_never_acknowledges_is_reported() -> None:
+    publisher = make_publisher()
+    publisher.connect()
+    client = client_of(publisher)
+    for info in client.infos:
+        info.acknowledged = False
+    with pytest.raises(PublishError, match="did not acknowledge every published"):
+        publisher.drain(timeout=0.01)
+
+
+def test_a_single_unacknowledged_message_is_not_accepted_as_delivered() -> None:
+    """paho's wait_for_publish returns silently on timeout.
+
+    It re-raises only once the message's own rc is non-zero, which never
+    happens here, so trusting the call to raise accepted an undelivered
+    message -- leaving the broker serving a stale retained value.
+    """
+    publisher = make_publisher()
+    publisher.connect()
+    client = client_of(publisher)
+    client.infos[0].acknowledged = False
+    with pytest.raises(PublishError, match="did not acknowledge"):
+        publisher.drain()
+
+
+def test_a_long_run_does_not_accumulate_acknowledgements() -> None:
+    publisher = make_publisher()
+    publisher.connect()
+    for _ in range(50):
+        publisher.publish_now()
+        publisher.drain()
+    assert publisher._pending == []
