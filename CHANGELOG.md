@@ -5,6 +5,17 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+- MCE's low-income export bonus is charted in the credits band rather than
+  "other". `cca_care_fera_bonus` was added to the ledger's bucket map when the
+  bonus started reaching bills, but not to the component-to-group table, so
+  every CARE or FERA account on a CCA card drew $0.05/kWh in the export chart's
+  safety-valve band. The price itself was right -- an ungrouped component
+  still counts toward the total -- so only the breakdown was wrong. The
+  invariant that nothing real lands in `other` was already tested, but over a
+  matrix holding a bundled CARE account and an undiscounted CCA one and not
+  the pairing that emits the component; it now holds that case too.
+
 ## [0.6.0] - 2026-08-30
 
 ### Changed

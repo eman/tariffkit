@@ -63,6 +63,20 @@ def configs() -> list[ParameterSet]:
             ),
         ),
         (
+            # The only shape that emits ``cca_care_fera_bonus``: the bonus is
+            # a CCA rate-card term, so neither the bundled ``care`` case nor
+            # the undiscounted ``cca`` one produces it. Without the pair the
+            # component reached ``OTHER`` and no test noticed.
+            "cca-care",
+            Config(
+                tariff="E-ELEC",
+                supplier=Supplier.CCA,
+                cca=CcaConfig(name="MCE", rate_card="mce", pcia_vintage=2021),
+                discount="care",
+                acc_plus_segment="residential_low_income",
+            ),
+        ),
+        (
             "smartrate",
             Config(
                 tariff="E-ELEC",

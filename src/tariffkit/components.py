@@ -140,6 +140,16 @@ COMPONENT_GROUPS: dict[str, ComponentGroup] = {
     "medical_discount": ComponentGroup.CREDITS,
     "acc_plus": ComponentGroup.CREDITS,
     "cca_acc_plus": ComponentGroup.CREDITS,
+    # Deliberately not with ``cca_solar_bonus`` in GENERATION, though the
+    # tariff calls it a "generation export bonus credit". That one is 10% of
+    # the base export credit -- a scaling of generation, so it moves with the
+    # supply decision. This is a flat $0.05/kWh paid because the account is
+    # income-qualified, which is the same thing the ACC Plus adder beside it
+    # is: an incentive that follows the discount, not the supply. Grouping is
+    # presentation rather than a billing rule, and the band a dashboard wants
+    # this in is the one holding the rest of what the account earns for who it
+    # is.
+    "cca_care_fera_bonus": ComponentGroup.CREDITS,
     # Bill-level components. A marginal price never carries these -- a baseline
     # credit depends on cumulative usage, and a tax on a whole cycle's charges
     # -- but ``group_of`` is public, so a caller grouping a ``Bill``'s
