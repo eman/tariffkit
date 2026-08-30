@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-30
+
 ### Changed
 - The ACC Plus bonus credit now offsets the non-bypassable charges, which is
   what Schedule NBT says three separate times -- Special Condition 2.f names
@@ -717,7 +719,8 @@ Initial release.
 - Holiday calendars are extracted per vintage from the source data rather than
   recomputed, because the vintage files disagree in far-future years.
 
-[Unreleased]: https://github.com/eman/tariffkit/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/eman/tariffkit/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/eman/tariffkit/releases/tag/v0.6.0
 [0.5.0]: https://github.com/eman/tariffkit/releases/tag/v0.5.0
 [0.4.1]: https://github.com/eman/tariffkit/releases/tag/v0.4.1
 [0.4.0]: https://github.com/eman/tariffkit/releases/tag/v0.4.0

@@ -17,7 +17,7 @@ image with the current TariffKit distribution installed, then bind mounts:
 | `custom_components/` | `/config/custom_components` | Live custom-component source |
 | `src/` | `/workspace/src` | Live TariffKit library and vendored rate data |
 
-The image installation supplies the `tariffkit==0.5.0` distribution metadata
+The image installation supplies the `tariffkit==0.6.0` distribution metadata
 required by the integration manifest. `PYTHONPATH=/workspace/src` makes Python
 load the bind-mounted source, so edits under either `custom_components/` or
 `src/` are tested without rebuilding the image.
@@ -73,7 +73,7 @@ The proposed service layout is:
 ```yaml
 services:
   api:
-    image: ghcr.io/eman/tariffkit:0.5.0
+    image: ghcr.io/eman/tariffkit:0.6.0
     command: ["tariffkit", "serve", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "127.0.0.1:8000:8000"
@@ -95,7 +95,7 @@ services:
       retries: 3
 
   mqtt:
-    image: ghcr.io/eman/tariffkit:0.5.0
+    image: ghcr.io/eman/tariffkit:0.6.0
     command: ["tariffkit", "mqtt", "--port", "8883", "--tls"]
     environment:
       XDG_CONFIG_HOME: /config
