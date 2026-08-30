@@ -666,8 +666,13 @@ and what was spent on the spot was published nowhere. That is the term, and it
 is a share of `export_credits` rather than a figure to add to it:
 
 ```
-export_credits == (what banked) + (the in-cycle offset, before the cap below)
+export_credits == (what entered the bank) + in_cycle_offsets
 ```
+
+Both addends are post-cap, which is the only way the line holds. Where an offset
+overruns the charges its bucket holds, the excess **banks** — so it is already
+inside the first term, and pairing that term with the offset the cycle earned
+rather than the one it spent would count the excess twice.
 
 So use `in_cycle_offsets` to close the charge side, and do **not** add it to
 `export_credits` on the credit side — the result double counts the bonus.
