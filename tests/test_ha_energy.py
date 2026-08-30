@@ -1104,3 +1104,47 @@ def test_the_charge_components_reach_gross_charges_through_the_offset() -> None:
     assert offset == pytest.approx(1.0)
     assert in_cycle_offsets(overrun).total == pytest.approx(3.396), "the gross figure overshoots"
     assert energy + taxes + fixed - offset == pytest.approx(gross)
+
+
+def test_the_offset_is_a_share_of_export_credits_not_a_term_beside_it() -> None:
+    """`in_cycle_offsets` must not be added to `export_credits`.
+
+    `_earned` publishes `-Bill.export_credits`, which sums *every* export
+    component, the solar bonus included. So the bonus was never missing from
+    the attributes -- what was missing is how that total splits between what
+    banked and what went straight onto this cycle's charges. A consumer who
+    reads the new term as a separate credit and adds the two counts the bonus
+    twice, which is the one way this attribute can make a breakdown worse.
+
+    What the bonus really is absent from is the bank: `credits_earned` skips
+    `CHARGE_OFFSETS` members, so it reaches neither `credit_applied` nor
+    `bank_change`.
+    """
+    from custom_components.tariffkit.sensor import _earned, _in_cycle_offsets
+
+    from tariffkit.billing import apply_credits
+    from tariffkit.billing.ledger import credits_earned, in_cycle_offsets
+
+    one = Bill(
+        period=BillingPeriod(date(2026, 8, 1), date(2026, 8, 31)),
+        import_components={"cca_generation": 8.0, "distribution": 12.0},
+        export_components={
+            "delivery": -5.0,
+            "cca_generation": -33.96,
+            "cca_solar_bonus": -3.396,
+        },
+        fixed_components={"base_services_charge": 25.3898},
+    )
+    entry = apply_credits(one)
+
+    earned = _earned(one, entry)
+    offset = _in_cycle_offsets(one, entry)
+    assert offset > 0, "otherwise this proves nothing"
+    assert earned > offset, "the offset is inside the published total, not beside it"
+    assert earned == pytest.approx(credits_earned(one).total + in_cycle_offsets(one).total)
+
+    # The bonus is in `export_credits` and in no bank figure. Stated as the
+    # difference the bank would show if it were banked, which is what a reader
+    # tempted to add the two terms is really assuming.
+    assert credits_earned(one).total == pytest.approx(earned - 3.396)
+    assert entry.applied.total + entry.closing.total == pytest.approx(credits_earned(one).total)

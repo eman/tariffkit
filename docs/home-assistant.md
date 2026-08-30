@@ -642,7 +642,7 @@ attributes say where the difference went:
 | `credit_applied` | Credit actually spent against this period's charges |
 | `bank_change` | How much the bank moved: earned less applied. **Negative** for any period that spends more than it earns, which is the normal winter case |
 | `gross_charges` | The ledger's own charge total, before credits. Already **net** of anything the statement spends inside the cycle rather than banking, which is why the charge components do not sum to it on their own |
-| `in_cycle_offsets` | Export credit the statement spent on this period's charges directly rather than banking — MCE's Solar Bonus Credit is the one vendored. The single term between the charge components and `gross_charges`. Zero on an account that has none. Only the part actually spent: an offset larger than the charges its bucket holds reduces them to zero and **banks** the rest, which shows up in `bank_change` instead |
+| `in_cycle_offsets` | The part of `export_credits` the statement spent on this period's charges directly instead of banking — MCE's Solar Bonus Credit is the one vendored. **A share of `export_credits`, not a term beside it**: adding the two counts it twice. The single term between the charge components and `gross_charges`. Zero on an account that has none. Only the part actually spent: an offset larger than the charges its bucket holds reduces them to zero and **banks** the rest, which shows up in `bank_change` instead |
 | `non_offsettable` | The part of `gross_charges` no credit may reach. `max(0, non_offsettable)` is the floor under a cycle's state. It can itself go negative where a baseline credit outweighs the charges beside it |
 | `not_paid_out` | Credit that would have made the amount owed negative, had it been spent. A statement charges nothing rather than refunding, and this is that clamp |
 
@@ -656,10 +656,21 @@ gross_charges − credit_applied + not_paid_out             == state
 
 exactly, on **today** and on the **cycle**. `in_cycle_offsets` is zero on most
 accounts, and the first line collapses to the obvious sum. It is not zero on a
-CCA that credits a solar bonus: that credit reduces the cycle's generation
-charges rather than banking, so it is neither an export credit in
-`export_credits`' sense nor credit applied, and a breakdown that ignored it
-landed over by exactly its value.
+CCA that credits a solar bonus, and there it needs care in two directions.
+
+`export_credits` is the gross total the exports earned, and the bonus is
+**inside** it — every export component is. What the bonus does differently is
+skip the bank: it reduces the cycle's generation charges directly, so it reaches
+neither `credit_applied` nor `bank_change`, and the split between what banked
+and what was spent on the spot was published nowhere. That is the term, and it
+is a share of `export_credits` rather than a figure to add to it:
+
+```
+export_credits == (what banked) + (the in-cycle offset, before the cap below)
+```
+
+So use `in_cycle_offsets` to close the charge side, and do **not** add it to
+`export_credits` on the credit side — the result double counts the bonus.
 
 Reach for the floored form on a cycle (`max(0, gross_charges − credit_applied)`)
 only if you are not carrying `not_paid_out`; it does **not** work for a day,

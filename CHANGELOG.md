@@ -9,14 +9,17 @@ All notable changes to this project are documented here. This project follows
 - The Amount Due breakdown adds up. `energy_charges + taxes + fixed_charges`
   overshot `gross_charges` by whatever the statement spent inside the cycle
   instead of banking -- a CCA's Solar Bonus Credit reduces that cycle's
-  generation charges directly, so it is neither an export credit nor credit
-  applied and appeared in no attribute. A consumer rendering the statement
-  could show the components or show a total that reconciles, but not both, and
-  could not tell the shortfall from a rounding error. The term is published as
-  `in_cycle_offsets`, on the `amount_due_*` entities and in the backfill
-  summary's cycles. It is the part actually spent: an offset larger than the
-  charges its bucket holds takes them to zero and banks the rest, which
-  `bank_change` already reported.
+  generation charges directly rather than entering the bank, so it reached
+  neither `credit_applied` nor `bank_change`. `export_credits` did carry it,
+  as it carries every export component, but nothing published how that total
+  split between what banked and what was spent on the spot. So a consumer
+  rendering the statement could show the components or show a total that
+  reconciles, but not both, and could not tell the shortfall from a rounding
+  error. The split is published as `in_cycle_offsets`, on the `amount_due_*`
+  entities and in the backfill summary's cycles. It is a share of
+  `export_credits` rather than a figure to add to it, and it is the part
+  actually spent: an offset larger than the charges its bucket holds takes them
+  to zero and banks the rest, which `bank_change` already reported.
 - MCE's low-income export bonus is charted in the credits band rather than
   "other". `cca_care_fera_bonus` was added to the ledger's bucket map when the
   bonus started reaching bills, but not to the component-to-group table, so

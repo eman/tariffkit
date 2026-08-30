@@ -475,10 +475,11 @@ def _gross(bill: Bill, entry: LedgerEntry) -> float:
     Not simply ``energy_charges + taxes + fixed_charges``. A component the
     statement spends inside the cycle rather than banking -- MCE's Solar Bonus
     Credit is the one vendored, see ``CHARGE_OFFSETS`` -- is already subtracted
-    here: it is not an export credit and it is not credit applied. Without this
-    figure the published terms cannot be made to reach the state, and a consumer
-    cannot tell the shortfall from a rounding error. ``in_cycle_offsets`` beside
-    it is that subtraction, so the charge components close on this too.
+    here, and it never reaches the bank, so it is in neither ``credit_applied``
+    nor ``bank_change``. Without this figure the published terms cannot be made
+    to reach the state, and a consumer cannot tell the shortfall from a rounding
+    error. ``in_cycle_offsets`` beside it is that subtraction, so the charge
+    components close on this too.
     """
     del bill
     return entry.gross_charges
@@ -488,9 +489,18 @@ def _in_cycle_offsets(bill: Bill, entry: LedgerEntry) -> float:
     """Export credit the statement spent on this period's charges directly.
 
     The one term standing between the charge components and ``gross_charges``.
-    It is not an export credit in the banking sense and not credit applied, so
-    it appeared in no attribute and a consumer adding up the breakdown landed
-    over by exactly this much, with no way to tell it from a rounding error.
+    What was unpublished is not the credit but the *split*: ``export_credits``
+    is every export component, this one included, and nothing said how much of
+    that total went straight onto this cycle's charges rather than into the
+    bank. So a consumer adding the charge components landed over
+    ``gross_charges`` by exactly this much, with no way to tell it from a
+    rounding error.
+
+    A part of ``export_credits`` rather than a term beside it. Adding the two
+    counts it twice, which is the mistake this figure makes possible and has to
+    warn about in the same breath. What it is absent from is the bank:
+    ``credits_earned`` skips it, so it reaches neither ``credit_applied`` nor
+    ``bank_change``.
 
     ``LedgerEntry.in_cycle_offsets`` rather than ``ledger.in_cycle_offsets``
     over the bill: an offset larger than the charges its bucket holds only
