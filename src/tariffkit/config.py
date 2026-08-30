@@ -8,7 +8,7 @@ import tomllib
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from .errors import ConfigError
 from .models import Supplier, Utility
@@ -40,6 +40,33 @@ LOCK_YEARS = 9
 BSC_TIER_BY_DISCOUNT: dict[str, int] = {"none": 3, "care": 1, "fera": 2}
 #: The tier every profile serialized before the two fields were connected.
 _LEGACY_BSC_TIER = 3
+
+
+def stored_bsc_tier(tier: object, discount: object) -> Literal[1, 2, 3] | None:
+    """Read a stored Base Services Charge tier, healing the legacy default.
+
+    Every profile written before the tier followed the discount carries 3,
+    because `to_dict` wrote the field unconditionally -- so a CARE account that
+    was never asked about a tier would go on being billed the undiscounted
+    daily charge, which is the defect. Read as unset, it takes the tier its
+    programme implies.
+
+    Shared because there are two deserialisation paths and only one of them is
+    `from_dict`: the Home Assistant coordinator builds a Config straight from
+    the entry's stored dict, so a rule living in `from_dict` alone left every
+    existing CARE entry on tier 3.
+    """
+    if tier is None:
+        return None
+    implied = BSC_TIER_BY_DISCOUNT.get(str(discount), _LEGACY_BSC_TIER)
+    if tier == _LEGACY_BSC_TIER and implied != _LEGACY_BSC_TIER:
+        return None
+    resolved = int(tier)  # type: ignore[call-overload]
+    if resolved not in (1, 2, 3):
+        raise ConfigError(f"base_services_charge_tier must be 1, 2 or 3; got {tier!r}")
+    return cast("Literal[1, 2, 3]", resolved)
+
+
 _ONE_DAY = timedelta(days=1)
 
 
@@ -277,12 +304,9 @@ class Config:
         # asked about a tier would now fail to load outright. Only the legacy
         # default is forgiven: an explicitly chosen tier that contradicts the
         # programme is still a configuration error worth hearing about.
-        if (
-            data.get("base_services_charge_tier") == _LEGACY_BSC_TIER
-            and BSC_TIER_BY_DISCOUNT.get(str(data.get("discount", "none")), _LEGACY_BSC_TIER)
-            != _LEGACY_BSC_TIER
-        ):
-            data["base_services_charge_tier"] = None
+        data["base_services_charge_tier"] = stored_bsc_tier(
+            data.get("base_services_charge_tier"), data.get("discount", "none")
+        )
         unknown = set(data) - {f.name for f in cls.__dataclass_fields__.values()}
         if unknown:
             raise ConfigError(f"unknown config keys: {sorted(unknown)}")

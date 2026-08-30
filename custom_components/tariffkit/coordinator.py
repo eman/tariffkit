@@ -17,7 +17,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from tariffkit.account import AccountError, AccountProfile, AccountRateEngine
 from tariffkit.billing import Bill, BillingPeriod, CreditBalances, IntervalReading
 from tariffkit.components import ComponentGroup
-from tariffkit.config import CcaConfig, Config
+from tariffkit.config import CcaConfig, Config, stored_bsc_tier
 from tariffkit.errors import TariffKitError
 from tariffkit.interop import predbat_payload
 from tariffkit.interop.predbat import PredbatPayload
@@ -353,10 +353,15 @@ def config_from_entry(data: dict[str, Any]) -> Config:
         vintage=data.get(CONF_VINTAGE) or None,
         acc_plus_segment=data.get(CONF_ACC_PLUS_SEGMENT, "residential"),
         discount=data.get(CONF_DISCOUNT, "none"),
-        # No default: absent means "take the tier the discount implies", which
-        # is the tariff's own rule. Defaulting to 3 here billed a CARE account
-        # the undiscounted daily charge.
-        base_services_charge_tier=data.get(CONF_BSC_TIER),
+        # Through the shared reader, not straight from the entry. This path
+        # does not go via `Config.from_dict`, so the healing that lets a
+        # profile stored before the tier followed the discount take its
+        # programme's tier has to be applied here too -- without it every
+        # existing CARE entry stayed on the tier 3 it was serialized with,
+        # which is the overcharge this was meant to end.
+        base_services_charge_tier=stored_bsc_tier(
+            data.get(CONF_BSC_TIER), data.get(CONF_DISCOUNT, "none")
+        ),
         baseline_territory=data.get(CONF_BASELINE_TERRITORY) or None,
         baseline_code=data.get(CONF_BASELINE_CODE, "basic"),
         medical_baseline=bool(data.get(CONF_MEDICAL_BASELINE, False)),

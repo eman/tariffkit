@@ -1093,3 +1093,28 @@ async def test_a_care_setup_completes_without_touching_the_tier(
     assert result["type"] == "create_entry", result.get("errors")
     stored = Config.from_dict(result["data"][CONF_PROFILE]["epochs"][0]["config"])
     assert stored.resolved_bsc_tier == 1
+
+
+def test_an_existing_care_entry_takes_its_programme_tier_after_upgrade() -> None:
+    """The coordinator does not build its Config through `Config.from_dict`.
+
+    So the healing that reads a pre-existing serialized tier of 3 as "unset"
+    has to reach this path too. Without it every CARE entry stored before the
+    tier followed the discount stayed on tier 3 -- the undiscounted daily
+    charge, which is the overcharge the change exists to end.
+    """
+    from custom_components.tariffkit.coordinator import config_from_entry
+
+    stored = {
+        "tariff": "E-ELEC",
+        "discount": "care",
+        "acc_plus_segment": "residential_low_income",
+        "base_services_charge_tier": 3,
+        "interconnection_year": 2026,
+        "pto_date": "2026-06-03",
+    }
+    assert config_from_entry(stored).resolved_bsc_tier == 1
+    assert config_from_entry({**stored, "discount": "fera"}).resolved_bsc_tier == 2
+    # A tier the owner actually chose is still theirs.
+    deliberate = {**stored, "discount": "none", "acc_plus_segment": "residential"}
+    assert config_from_entry({**deliberate, "base_services_charge_tier": 2}).resolved_bsc_tier == 2
