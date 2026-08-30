@@ -214,14 +214,17 @@ class BackfillResult:
                     # `bank_change` is that, and they are different numbers.
                     "cash_due": round(entry.cash_due, 2),
                     # `cash_due` is `max(0, gross_charges - credit_applied)`,
-                    # and the components above do not sum to `gross_charges`:
-                    # anything the statement spends in-cycle instead of banking
-                    # is already out of it. The clamp is load-bearing --
-                    # `gross_charges` goes negative wherever a baseline credit
-                    # outweighs the charges, while `cash_due` stays at zero,
-                    # because a statement charges nothing rather than paying
-                    # out. Published so the block reconciles.
+                    # and the components above reach `gross_charges` only once
+                    # `in_cycle_offsets` is taken off them: anything the
+                    # statement spends in-cycle instead of banking is already
+                    # out of it. The clamp is load-bearing -- `gross_charges`
+                    # goes negative wherever a baseline credit outweighs the
+                    # charges, while `cash_due` stays at zero, because a
+                    # statement charges nothing rather than paying out.
+                    # Published so the block reconciles at both ends, the same
+                    # terms the entity attributes carry.
                     "gross_charges": round(entry.gross_charges, 2),
+                    "in_cycle_offsets": round(entry.in_cycle_offsets.total, 2),
                     "non_offsettable": round(entry.non_offsettable, 2),
                     "credit_applied": round(entry.applied.total, 2),
                     "bank_closing": round(entry.closing.total, 2),

@@ -475,13 +475,31 @@ def _gross(bill: Bill, entry: LedgerEntry) -> float:
     Not simply ``energy_charges + taxes + fixed_charges``. A component the
     statement spends inside the cycle rather than banking -- MCE's Solar Bonus
     Credit is the one vendored, see ``CHARGE_OFFSETS`` -- is already subtracted
-    here, and it appears in no other attribute: it is not an export credit and
-    it is not credit applied. Without this figure the published terms cannot be
-    made to reach the state, and a consumer cannot tell the shortfall from a
-    rounding error.
+    here: it is not an export credit and it is not credit applied. Without this
+    figure the published terms cannot be made to reach the state, and a consumer
+    cannot tell the shortfall from a rounding error. ``in_cycle_offsets`` beside
+    it is that subtraction, so the charge components close on this too.
     """
     del bill
     return entry.gross_charges
+
+
+def _in_cycle_offsets(bill: Bill, entry: LedgerEntry) -> float:
+    """Export credit the statement spent on this period's charges directly.
+
+    The one term standing between the charge components and ``gross_charges``.
+    It is not an export credit in the banking sense and not credit applied, so
+    it appeared in no attribute and a consumer adding up the breakdown landed
+    over by exactly this much, with no way to tell it from a rounding error.
+
+    ``LedgerEntry.in_cycle_offsets`` rather than ``ledger.in_cycle_offsets``
+    over the bill: an offset larger than the charges its bucket holds only
+    reduces them to zero and banks the rest, and it is the part actually spent
+    that ``gross_charges`` is net of. The gross figure overshoots precisely in
+    the heavy-export months, which is where a breakdown is looked at hardest.
+    """
+    del bill
+    return entry.in_cycle_offsets.total
 
 
 def _non_offsettable(bill: Bill, entry: LedgerEntry) -> float:
@@ -674,9 +692,13 @@ def _money_attrs(span: str, description: str) -> Callable[[TariffKitData], dict[
             # instead of banked, and `not_paid_out` is the zero floor a
             # statement applies rather than refunding. Together:
             #     gross_charges - credit_applied + not_paid_out == state
-            # exactly, for both spans. The three components above do not reach
-            # it and were never meant to be summed on their own.
+            # exactly, for both spans. `in_cycle_offsets` is the one term
+            # between the charge components and `gross_charges`, so the
+            # breakdown closes at both ends:
+            #     energy_charges + taxes + fixed_charges
+            #         - in_cycle_offsets == gross_charges
             "gross_charges": figure(_gross),
+            "in_cycle_offsets": figure(_in_cycle_offsets),
             "non_offsettable": figure(_non_offsettable),
             "not_paid_out": figure(_not_paid_out),
             # The two halves of why the state is not simply charges minus

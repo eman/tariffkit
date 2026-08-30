@@ -960,7 +960,16 @@ def test_the_summary_cycles_carry_the_terms_that_reconcile_them() -> None:
             next(b.period for b in result.bills if b.period.start.isoformat() == cycle["start"])
         ]
         assert cycle["gross_charges"] == pytest.approx(round(entry.gross_charges, 2))
+        assert cycle["in_cycle_offsets"] == pytest.approx(round(entry.in_cycle_offsets.total, 2))
         assert cycle["non_offsettable"] == pytest.approx(round(entry.non_offsettable, 2))
+        # The charge components close on `gross_charges` through the offset,
+        # the same identity the entity attributes carry.
+        assert (
+            cycle["energy_charges"]
+            + cycle["taxes"]
+            + cycle["fixed_charges"]
+            - cycle["in_cycle_offsets"]
+        ) == pytest.approx(cycle["gross_charges"], abs=0.02)
         # Each term is rounded to cents independently, so the identity over the
         # payload cannot hold tighter than the three roundings it carries.
         assert cycle["cash_due"] == pytest.approx(

@@ -172,15 +172,30 @@ async def test_no_meters_configured_creates_no_usage_entities(hass: HomeAssistan
 
 
 def _assert_reconciles(hass: HomeAssistant, entry: MockConfigEntry, span: str) -> None:
-    """`gross_charges - credit_applied + not_paid_out` is the state, exactly.
+    """The published contract for the Amount Due breakdown, at both ends.
 
-    The published contract for the Amount Due breakdown. Written once because
-    the point of it is that it holds for every span and every account, and a
-    copy per test invites one of them to drift back into the unfloored version
-    that only looks right until a cycle earns more credit than it owes.
+    ```
+    energy_charges + taxes + fixed_charges - in_cycle_offsets == gross_charges
+    gross_charges - credit_applied + not_paid_out             == state
+    ```
+
+    Written once because the point of it is that it holds for every span and
+    every account, and a copy per test invites one of them to drift back into
+    the unfloored version that only looks right until a cycle earns more credit
+    than it owes. The first line is the newer half: the charge components
+    overshoot `gross_charges` by whatever the statement spends in-cycle instead
+    of banking, and a consumer could not tell that from a rounding error until
+    the term was published.
     """
     state = _state(hass, entry, f"amount_due_{span}")
     figures = state.attributes
+    charges = (
+        figures["energy_charges"]
+        + figures["taxes"]
+        + figures["fixed_charges"]
+        - figures["in_cycle_offsets"]
+    )
+    assert charges == pytest.approx(figures["gross_charges"], abs=1e-4), span
     reached = figures["gross_charges"] - figures["credit_applied"] + figures["not_paid_out"]
     assert float(state.state) == pytest.approx(reached, abs=1e-4), span
 
@@ -1034,3 +1049,58 @@ def test_a_day_reconciles_when_either_cycle_hits_the_floor() -> None:
         "the unfloored identity the review caught"
     )
     assert day(_gross) - day(_applied) + day(_not_paid_out) == pytest.approx(day(_cash_due))
+
+
+def test_the_charge_components_reach_gross_charges_through_the_offset() -> None:
+    """The other end of the breakdown, on the account that actually has one.
+
+    A CCA solar bonus reduces the cycle's generation charges instead of
+    banking, so `energy_charges + taxes + fixed_charges` overshoots
+    `gross_charges` by exactly it -- issue #47, reported as four published
+    numbers that visibly fail to add up on a dashboard.
+
+    The second case is why the attribute is `LedgerEntry.in_cycle_offsets` and
+    not `ledger.in_cycle_offsets` over the bill. An offset larger than the
+    charges its bucket holds only takes them to zero and banks the rest, so the
+    gross figure overshoots -- and it overshoots in the heavy-export months,
+    where a breakdown is looked at hardest.
+    """
+    from custom_components.tariffkit.sensor import (
+        _energy_charges,
+        _fixed,
+        _gross,
+        _in_cycle_offsets,
+        _taxes,
+    )
+
+    from tariffkit.billing import apply_credits
+    from tariffkit.billing.ledger import in_cycle_offsets
+
+    def bill(generation: float) -> Bill:
+        return Bill(
+            period=BillingPeriod(date(2026, 8, 1), date(2026, 8, 31)),
+            import_components={"cca_generation": generation, "distribution": 12.0},
+            export_components={"cca_generation": -33.96, "cca_solar_bonus": -3.396},
+            fixed_components={"base_services_charge": 25.3898},
+        )
+
+    def figures(one: Bill) -> tuple[float, ...]:
+        entry = apply_credits(one)
+        return tuple(
+            read(one, entry)
+            for read in (_energy_charges, _taxes, _fixed, _in_cycle_offsets, _gross)
+        )
+
+    absorbed = bill(8.0)
+    energy, taxes, fixed, offset, gross = figures(absorbed)
+    assert offset == pytest.approx(3.396), "the whole bonus fits inside the charges"
+    assert energy + taxes + fixed - offset == pytest.approx(gross)
+    assert energy + taxes + fixed != pytest.approx(gross), "otherwise this proves nothing"
+
+    # Generation charges of $1 cannot absorb a $3.396 bonus: $1 is spent and
+    # the remaining $2.396 banks, where `bank_change` reports it.
+    overrun = bill(1.0)
+    energy, taxes, fixed, offset, gross = figures(overrun)
+    assert offset == pytest.approx(1.0)
+    assert in_cycle_offsets(overrun).total == pytest.approx(3.396), "the gross figure overshoots"
+    assert energy + taxes + fixed - offset == pytest.approx(gross)
