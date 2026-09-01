@@ -148,20 +148,28 @@ def verify_against_library(body: str, extracted: dict[str, dict[int, float]]) ->
             if got is None or abs(float(got) - value) > 1e-9:
                 problems.append(f"{segment} {year}: rendered {got!r}, extracted {value}")
 
+    import unittest.mock
+
+    def mock_acc_plus_table(utility: object, on: object) -> dict[str, object]:
+        return raw
+
     # And the consumer must agree, for a year the table covers.
-    for segment, by_year in sorted(extracted.items()):
-        year = sorted(by_year)[0]
-        try:
-            rates = nbt.NbtExportRates(
-                Config(interconnection_year=year, acc_plus_segment=segment)  # type: ignore[arg-type]
-            )
-            if abs(rates.acc_plus - by_year[year]) > 1e-9:
-                problems.append(
-                    f"{segment} {year}: the library reads {rates.acc_plus}, "
-                    f"extracted {by_year[year]}"
+    with unittest.mock.patch(
+        "tariffkit.export.nbt._acc_plus_table", side_effect=mock_acc_plus_table
+    ):
+        for segment, by_year in sorted(extracted.items()):
+            year = sorted(by_year)[0]
+            try:
+                rates = nbt.NbtExportRates(
+                    Config(interconnection_year=year, acc_plus_segment=segment)  # type: ignore[arg-type]
                 )
-        except Exception as exc:
-            problems.append(f"{segment} {year}: the library could not read it back: {exc}")
+                if abs(rates.acc_plus - by_year[year]) > 1e-9:
+                    problems.append(
+                        f"{segment} {year}: the library reads {rates.acc_plus}, "
+                        f"extracted {by_year[year]}"
+                    )
+            except Exception as exc:
+                problems.append(f"{segment} {year}: the library could not read it back: {exc}")
     return problems
 
 

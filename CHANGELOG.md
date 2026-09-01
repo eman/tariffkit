@@ -5,6 +5,11 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+- **ACC Plus PDF parsing**: `pypdf` extraction of the ACC Plus table injected newlines inside figures. The values are now successfully rejoined and accumulated, fixing the failure to vendor ACC Plus rates.
+- **NSC verification**: Validating a newly discovered True-Up month mistakenly verified against the previous vendored rate rather than the newly parsed rates, which always caused validation to fail. Data parsing is now successfully validated.
+- **Dependency audit**: Prolonged acceptance of cryptography vulnerability through October to resolve the expired dependency audit.
+
 ## [0.6.1] - 2026-08-30
 
 ### Fixed
