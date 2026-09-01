@@ -6,16 +6,19 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Added
-- **Generation / non-generation curves for Home Assistant**: the price sensors
-  publish `raw_today_generation` and `raw_today_non_generation` next to the
-  existing `raw_today` (and the matching `raw_tomorrow_*` pair), so a dashboard
-  can chart the two-day forecast as stacked bands instead of a single line. The
-  bands re-sum to the plain series slot for slot, and Predbat ignores them.
-  `_non_generation` is everything the generation band leaves over, which is
-  wider than the `delivery` group reported under `groups` -- hence the name.
-  The MQTT bridge omits them on purpose: its discovery-created sensors cannot
-  mark an attribute unrecorded, and the extra lists would push the attribute
-  payload past Home Assistant's 16 KiB recorder ceiling.
+- **A two-day forecast curve on every component-group entity**: each band --
+  `import_generation`, `import_distribution`, `export_delivery`, and the rest --
+  now carries its own `raw_today` / `raw_tomorrow` list, in the same shape and
+  the same 30-minute Pacific-day slots as the price entities' Predbat
+  attributes. Stacking a direction's bands reproduces its price curve, so a
+  dashboard can draw whichever split it means -- generation against the rest,
+  PG&E's Delivery line (`distribution + transmission + surcharges`) against
+  generation, or every band at once -- without the payload having named one for
+  it. Published on the matching MQTT topics too, one band per topic, which keeps
+  each payload inside Home Assistant's 16 KiB recorder ceiling; an
+  MQTT-discovered sensor cannot mark an attribute unrecorded. Unlike the Predbat
+  attributes these are not gated on Predbat mode, since charting what a price is
+  made of has nothing to do with Predbat.
 
 ### Fixed
 - **ACC Plus PDF parsing**: `pypdf` extraction of the ACC Plus table injected newlines inside figures. The values are now successfully rejoined and accumulated, fixing the failure to vendor ACC Plus rates.
