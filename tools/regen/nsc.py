@@ -86,6 +86,7 @@ def extract(pages: list[Page]) -> dict[str, float]:
 def verify_against_library(body: str, extracted: dict[str, float]) -> list[str]:
     """Every month written must be readable by the code that consumes it."""
     import tomllib
+    import unittest.mock
 
     from tariffkit.billing import trueup
 
@@ -93,15 +94,23 @@ def verify_against_library(body: str, extracted: dict[str, float]) -> list[str]:
     problems: list[str] = []
     if set(raw.get("rates", {})) != set(extracted):
         problems.append("the rendered [rates] table does not match what was extracted")
-    for key, value in sorted(extracted.items()):
-        year, month = (int(p) for p in key.split("-"))
-        try:
-            got = trueup.published_nsc_rate(date(year, month, 15))
-        except Exception as exc:
-            problems.append(f"{key}: the library could not read it back: {exc}")
-            break
-        if abs(got - value) > 1e-9:
-            problems.append(f"{key}: library reads {got}, extracted {value}")
+        
+    def mock_read_data_text(relative: str) -> str:
+        if relative == trueup.NSC_RATE_FILE:
+            return body
+        from tariffkit.data import read_data_text
+        return read_data_text(relative)
+
+    with unittest.mock.patch("tariffkit.billing.trueup.read_data_text", side_effect=mock_read_data_text):
+        for key, value in sorted(extracted.items()):
+            year, month = (int(p) for p in key.split("-"))
+            try:
+                got = trueup.published_nsc_rate(date(year, month, 15))
+            except Exception as exc:
+                problems.append(f"{key}: the library could not read it back: {exc}")
+                break
+            if abs(got - value) > 1e-9:
+                problems.append(f"{key}: library reads {got}, extracted {value}")
     return problems
 
 
