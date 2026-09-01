@@ -5,6 +5,18 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+- **Generation / non-generation curves for Home Assistant**: the price sensors
+  publish `raw_today_generation` and `raw_today_non_generation` next to the
+  existing `raw_today` (and the matching `raw_tomorrow_*` pair), so a dashboard
+  can chart the two-day forecast as stacked bands instead of a single line. The
+  bands re-sum to the plain series slot for slot, and Predbat ignores them.
+  `_non_generation` is everything the generation band leaves over, which is
+  wider than the `delivery` group reported under `groups` -- hence the name.
+  The MQTT bridge omits them on purpose: its discovery-created sensors cannot
+  mark an attribute unrecorded, and the extra lists would push the attribute
+  payload past Home Assistant's 16 KiB recorder ceiling.
+
 ### Fixed
 - **ACC Plus PDF parsing**: `pypdf` extraction of the ACC Plus table injected newlines inside figures. The values are now successfully rejoined and accumulated, fixing the failure to vendor ACC Plus rates.
 - **NSC verification**: Validating a newly discovered True-Up month mistakenly verified against the previous vendored rate rather than the newly parsed rates, which always caused validation to fail. Data parsing is now successfully validated.

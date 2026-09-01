@@ -97,6 +97,26 @@ raw_tomorrow:
   # ... 48 entries
 ```
 
+Alongside those, the custom component publishes the same two days split into a
+`_generation` and a `_non_generation` band -- `raw_today_generation`,
+`raw_today_non_generation`, and the `raw_tomorrow_*` pair -- so a dashboard can
+chart what the price is made of. Predbat reads only `raw_today` and
+`raw_tomorrow` and ignores the rest, so they cost it nothing.
+
+The two bands add back to the plain series slot for slot. `_non_generation` is
+everything the generation band leaves over: on import that is distribution,
+transmission, surcharges and credits; on export it is the delivery component
+*plus* the ACC Plus and CARE/FERA credits. That is wider than the `delivery`
+entry under the `groups` attribute, which is the narrower export-side band --
+the two are different numbers, which is why this one is not called `delivery`.
+
+The MQTT bridge deliberately omits the split bands. Its sensors come from MQTT
+discovery, which has no way to mark an attribute unrecorded, and the four extra
+lists would take the attribute payload past the recorder's 16 KiB ceiling --
+the same `exceed maximum size` warning described under Troubleshooting, only
+self-inflicted. Use the custom component for the split bands; the MQTT path
+still publishes each component group's current value on its own sensor.
+
 What to check:
 
 - **Both lists are present and non-empty.** If they are missing entirely, step 2

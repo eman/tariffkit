@@ -68,10 +68,14 @@ ATTR_PROVENANCE = "provenance"
 #: metric_octopus_import / metric_octopus_export at.
 ATTR_RAW_TODAY = "raw_today"
 ATTR_RAW_TOMORROW = "raw_tomorrow"
+#: The same two days split into two stacked bands. Predbat ignores them; they
+#: exist so a dashboard can draw what the price is made of. "non_generation" is
+#: everything the generation band leaves over, which is wider than the
+#: ComponentGroup.DELIVERY band reported under `groups` -- hence not "delivery".
 ATTR_RAW_TODAY_GENERATION = "raw_today_generation"
 ATTR_RAW_TOMORROW_GENERATION = "raw_tomorrow_generation"
-ATTR_RAW_TODAY_DELIVERY = "raw_today_delivery"
-ATTR_RAW_TOMORROW_DELIVERY = "raw_tomorrow_delivery"
+ATTR_RAW_TODAY_NON_GENERATION = "raw_today_non_generation"
+ATTR_RAW_TOMORROW_NON_GENERATION = "raw_tomorrow_non_generation"
 #: EMHASS runtime parameters, ready to drop into a rest_command body. Bare
 #: lists, positional against EMHASS's timeline, so the horizon travels with them.
 ATTR_LOAD_COST = "load_cost_forecast"

@@ -353,7 +353,12 @@ class MqttPublisher:
         # can land at any minute, and EMHASS's positional lists must start at the
         # 30-minute slot it is actually in.
         emhass = forecast_lists(curve, since=now)
-        predbat = predbat_payload(self.engine, now)
+        # split=False: an MQTT-discovered sensor has no _unrecorded_attributes
+        # escape, so everything here is recorded. The four extra curves push this
+        # payload from ~9.6 KiB to ~25.8 KiB, past the recorder's 16 KiB cap, and
+        # HA would drop the attributes wholesale every publish. The custom
+        # component carries the split instead, where it is exempted.
+        predbat = predbat_payload(self.engine, now, split=False)
         self._publish(
             "import_price/attributes",
             {

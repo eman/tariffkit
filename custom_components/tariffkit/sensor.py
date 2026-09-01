@@ -48,11 +48,11 @@ from .const import (
     ATTR_QUALITY,
     ATTR_RATES,
     ATTR_RAW_TODAY,
-    ATTR_RAW_TODAY_DELIVERY,
     ATTR_RAW_TODAY_GENERATION,
+    ATTR_RAW_TODAY_NON_GENERATION,
     ATTR_RAW_TOMORROW,
-    ATTR_RAW_TOMORROW_DELIVERY,
     ATTR_RAW_TOMORROW_GENERATION,
+    ATTR_RAW_TOMORROW_NON_GENERATION,
     DOMAIN,
 )
 from .coordinator import (
@@ -1052,8 +1052,8 @@ class TariffKitSensor(CoordinatorEntity[TariffKitCoordinator], SensorEntity):
             ATTR_RAW_TOMORROW,
             ATTR_RAW_TODAY_GENERATION,
             ATTR_RAW_TOMORROW_GENERATION,
-            ATTR_RAW_TODAY_DELIVERY,
-            ATTR_RAW_TOMORROW_DELIVERY,
+            ATTR_RAW_TODAY_NON_GENERATION,
+            ATTR_RAW_TOMORROW_NON_GENERATION,
             ATTR_LOAD_COST,
             ATTR_PROD_PRICE,
             # The running totals' time-of-use breakdown, for the same reason as

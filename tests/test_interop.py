@@ -13,6 +13,7 @@ from itertools import pairwise
 import pytest
 
 from tariffkit import PriceCurve, RateEngine
+from tariffkit.components import ComponentGroup
 from tariffkit.interop import (
     forecast_lists,
     forecast_payload,
@@ -21,7 +22,7 @@ from tariffkit.interop import (
     raw_attributes,
     resample,
 )
-from tariffkit.interop.predbat import CENTS_PER_DOLLAR
+from tariffkit.interop.predbat import CENTS_PER_DOLLAR, Direction
 from tariffkit.timeutil import PACIFIC
 
 
@@ -116,10 +117,65 @@ class TestPredbat:
     def test_publishes_both_attributes(self, curve: PriceCurve) -> None:
         attrs = raw_attributes(curve, direction="import", today=date(2026, 7, 15))
         assert set(attrs) == {
-            "raw_today", "raw_tomorrow",
-            "raw_today_generation", "raw_tomorrow_generation",
-            "raw_today_delivery", "raw_tomorrow_delivery",
+            "raw_today",
+            "raw_tomorrow",
+            "raw_today_generation",
+            "raw_tomorrow_generation",
+            "raw_today_non_generation",
+            "raw_tomorrow_non_generation",
         }
+
+    def test_split_off_publishes_only_predbat_own_attributes(self, curve: PriceCurve) -> None:
+        attrs = raw_attributes(curve, direction="import", today=date(2026, 7, 15), split=False)
+        assert set(attrs) == {"raw_today", "raw_tomorrow"}
+
+    @pytest.mark.parametrize("direction", ["import", "export"])
+    def test_split_bands_re_sum_to_the_plain_series(
+        self, curve: PriceCurve, direction: Direction
+    ) -> None:
+        """The two bands are drawn stacked, so they must add back to the price."""
+        attrs = raw_attributes(curve, direction=direction, today=date(2026, 7, 15))
+        for day in ("raw_today", "raw_tomorrow"):
+            total, gen, non_gen = (
+                attrs[day],
+                attrs[f"{day}_generation"],
+                attrs[f"{day}_non_generation"],
+            )
+            assert len(gen) == len(non_gen) == len(total)
+            for t, g, n in zip(total, gen, non_gen, strict=True):
+                assert (t["from"], t["to"]) == (g["from"], g["to"]) == (n["from"], n["to"])
+                # Exact at the precision actually published: the non-generation
+                # band is the difference of the two *rounded* values, so the pair
+                # never misses the total by a digit the dashboard can render.
+                assert round(g["rate"] + n["rate"], 5) == t["rate"]
+
+    @pytest.mark.parametrize("direction", ["import", "export"])
+    def test_generation_band_is_a_real_slice_of_the_price(
+        self, curve: PriceCurve, direction: Direction
+    ) -> None:
+        """Guards a grouping regression that would send every component to OTHER."""
+        attrs = raw_attributes(curve, direction=direction, today=date(2026, 7, 15))
+        generation = [entry["rate"] for entry in attrs["raw_today_generation"]]
+        assert generation
+        assert all(rate > 0 for rate in generation)
+        totals = [entry["rate"] for entry in attrs["raw_today"]]
+        assert any(g != t for g, t in zip(generation, totals, strict=True))
+
+    def test_non_generation_is_wider_than_the_delivery_group(self, curve: PriceCurve) -> None:
+        """On export, ``_non_generation`` is delivery *plus* credits.
+
+        The two must not be confused: ``groups.delivery`` travels in the same
+        attribute payload, which is why the series is not called ``_delivery``.
+        """
+        attrs = raw_attributes(curve, direction="export", today=date(2026, 7, 15))
+        first = attrs["raw_today_non_generation"][0]["rate"]
+        price = curve[0].export_price
+        delivery = price.grouped()[ComponentGroup.DELIVERY] * CENTS_PER_DOLLAR
+        assert first > delivery
+        assert first == pytest.approx(
+            (price.total - price.grouped()[ComponentGroup.GENERATION]) * CENTS_PER_DOLLAR,
+            abs=1e-5,
+        )
 
     def test_entry_shape_is_from_to_rate(self, curve: PriceCurve) -> None:
         entry = raw_attributes(curve, direction="import", today=date(2026, 7, 15))["raw_today"][0]

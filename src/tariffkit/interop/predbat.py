@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Literal, Protocol, TypedDict
 
-from ..components import ComponentGroup, group_of
+from ..components import ComponentGroup
 from ..models import PriceCurve
 from ..timeutil import now_pacific, to_pacific
 from .slots import local_day_window, resample
@@ -48,6 +48,7 @@ def raw_attributes(
     minutes: int = 30,
     scale: float = CENTS_PER_DOLLAR,
     today: date | None = None,
+    split: bool = True,
 ) -> PredbatAttributes:
     """Build the ``raw_today`` / ``raw_tomorrow`` pair for one direction.
 
@@ -56,18 +57,30 @@ def raw_attributes(
     short to reach tomorrow leaves ``raw_tomorrow`` empty, which is how Predbat
     already represents "tomorrow's rates are not published yet".
 
-    Includes "_generation" and "_delivery" suffixes for Home Assistant dashboards.
+    ``split`` additionally emits a ``_generation`` and a ``_non_generation`` series
+    per day, so a Home Assistant dashboard can draw the price as two stacked bands.
+    The pair is exact rather than approximate: the non-generation rate is the
+    difference of the two *rounded* values, so the bands always re-sum to the plain
+    series slot for slot. Predbat itself reads only ``raw_today`` / ``raw_tomorrow``
+    and ignores the rest, so the extra series cost it nothing.
+
+    The second band is deliberately not called ``delivery``. It is everything that
+    is not generation -- on import that is distribution, transmission, surcharges
+    and credits; on export it is the delivery component *plus* the ACC Plus and
+    CARE/FERA credits -- whereas :class:`~tariffkit.components.ComponentGroup`
+    already uses ``delivery`` for the narrower export-side band published under
+    ``groups``. Two different numbers under one name in one payload is a trap.
     """
     anchor = today if today is not None else now_pacific().date()
     tomorrow = anchor + timedelta(days=1)
-    buckets: dict[str, list[PredbatRate]] = {
-        "raw_today": [],
-        "raw_tomorrow": [],
-        "raw_today_generation": [],
-        "raw_tomorrow_generation": [],
-        "raw_today_delivery": [],
-        "raw_tomorrow_delivery": [],
-    }
+    buckets: dict[str, list[PredbatRate]] = {"raw_today": [], "raw_tomorrow": []}
+    if split:
+        buckets |= {
+            "raw_today_generation": [],
+            "raw_tomorrow_generation": [],
+            "raw_today_non_generation": [],
+            "raw_tomorrow_non_generation": [],
+        }
 
     for slot in resample(curve, minutes):
         day = slot.start.date()
@@ -79,22 +92,20 @@ def raw_attributes(
             continue
         price = slot.import_price if direction == "import" else slot.export_price
 
-        gen_val = sum(
-            v for k, v in price.components.items() if group_of(k) is ComponentGroup.GENERATION
-        )
-        del_val = price.total - gen_val
-
         start_iso = slot.start.isoformat()
         end_iso = slot.end.isoformat()
+        rate = round(price.total * scale, 5)
+        buckets[key].append({"from": start_iso, "to": end_iso, "rate": rate})
+        if not split:
+            continue
 
-        buckets[key].append(
-            {"from": start_iso, "to": end_iso, "rate": round(price.total * scale, 5)}
-        )
-        buckets[f"{key}_generation"].append(
-            {"from": start_iso, "to": end_iso, "rate": round(gen_val * scale, 5)}
-        )
-        buckets[f"{key}_delivery"].append(
-            {"from": start_iso, "to": end_iso, "rate": round(del_val * scale, 5)}
+        # grouped() is the one definition of what counts as generation, and it
+        # already folds an unrecognized component into OTHER rather than dropping
+        # it, so the groups sum back to the total.
+        generation = round(price.grouped()[ComponentGroup.GENERATION] * scale, 5)
+        buckets[f"{key}_generation"].append({"from": start_iso, "to": end_iso, "rate": generation})
+        buckets[f"{key}_non_generation"].append(
+            {"from": start_iso, "to": end_iso, "rate": round(rate - generation, 5)}
         )
 
     return buckets
@@ -106,6 +117,7 @@ def payload(
     *,
     minutes: int = 30,
     scale: float = CENTS_PER_DOLLAR,
+    split: bool = True,
 ) -> PredbatPayload:
     """Both directions, anchored to local midnight.
 
@@ -115,16 +127,21 @@ def payload(
     -- plausible for a flat-ish agile tariff, wrong for an export curve this
     day-shaped. Anchoring to midnight makes both days complete by construction.
 
+    ``split`` is passed through to :func:`raw_attributes`. Turn it off for a
+    consumer that cannot afford the extra series -- see the MQTT publisher, whose
+    attribute topics have no way to opt out of Home Assistant's recorder.
+
     Cheap to call: every lookup is an O(1) index into vendored tables, no I/O.
     """
     anchor = to_pacific(moment) if moment else now_pacific()
     start, hours = local_day_window(anchor, days=2)
     curve = engine.forecast(hours, start=start)
+    today = anchor.date()
     return {
         "import": raw_attributes(
-            curve, direction="import", minutes=minutes, scale=scale, today=anchor.date()
+            curve, direction="import", minutes=minutes, scale=scale, today=today, split=split
         ),
         "export": raw_attributes(
-            curve, direction="export", minutes=minutes, scale=scale, today=anchor.date()
+            curve, direction="export", minutes=minutes, scale=scale, today=today, split=split
         ),
     }

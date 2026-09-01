@@ -245,6 +245,31 @@ def test_attributes_carry_the_predbat_rate_lists(publisher: MqttPublisher) -> No
     assert payload["raw_today"][0]["from"].endswith("T00:00:00-07:00")
 
 
+def test_attributes_omit_the_split_curves(publisher: MqttPublisher) -> None:
+    """The split bands are a custom-component feature -- see the size guard below."""
+    publisher.publish_now(datetime(2026, 9, 15, 19, tzinfo=PACIFIC))
+    topics = client_of(publisher).topics()
+
+    for direction in ("import", "export"):
+        payload = json.loads(topics[f"tariffkit/{direction}_price/attributes"])
+        assert payload["raw_today"]
+        assert not [key for key in payload if key.endswith(("_generation", "_non_generation"))]
+
+
+@pytest.mark.parametrize("direction", ["import", "export"])
+def test_attributes_stay_under_the_recorder_limit(publisher: MqttPublisher, direction: str) -> None:
+    """An MQTT-discovered sensor has no ``_unrecorded_attributes`` escape.
+
+    Home Assistant's recorder drops a state's attributes wholesale once they pass
+    ``MAX_STATE_ATTRS_BYTES``, so anything added to these payloads has to fit.
+    """
+    max_state_attrs_bytes = 16384
+    publisher.publish_now(datetime(2026, 9, 15, 19, tzinfo=PACIFIC))
+    raw = client_of(publisher).topics()[f"tariffkit/{direction}_price/attributes"]
+
+    assert len(raw.encode()) < max_state_attrs_bytes
+
+
 def test_predbat_values_are_cents(publisher: MqttPublisher) -> None:
     """Predbat assumes pence, so dollars would be off by 100x against its defaults."""
     publisher.publish_now(datetime(2026, 9, 15, 19, tzinfo=PACIFIC))
