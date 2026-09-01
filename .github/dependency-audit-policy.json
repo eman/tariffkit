@@ -1,5 +1,5 @@
 {
-  "expires": "2026-09-01",
+  "expires": "2026-10-01",
   "package": {
     "name": "cryptography",
     "version": "48.0.1"
