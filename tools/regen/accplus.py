@@ -50,7 +50,7 @@ def extract(pages: list[Page]) -> dict[str, dict[int, float]]:
     """``{segment: {year: adder}}`` from the tariff's ACC Plus table."""
     page = find_page(pages, TABLE_HEADING)
     body = page.text[page.text.find(TABLE_HEADING) :]
-    
+
     # Fix numbers broken by newlines (e.g. "0.0220\n0" -> "0.02200")
     body = re.sub(r"(\d)\n(\d)", r"\1\2", body)
 
@@ -68,7 +68,7 @@ def extract(pages: list[Page]) -> dict[str, dict[int, float]]:
     pending: list[str] = []
     current_key: str | None = None
     current_values: list[float] = []
-    
+
     for raw in body.splitlines():
         line = raw.strip()
         if not line:
@@ -81,7 +81,7 @@ def extract(pages: list[Page]) -> dict[str, dict[int, float]]:
                 break  # past the table, into the explanatory prose
             pending = [*pending, label_part][-3:]
             continue
-            
+
         label = re.sub(r"[^a-z]", "", ("".join(pending) + label_part).lower())
         # Longest first: "residential" is a substring of "residentiallowincome",
         # so matching in declaration order files the low-income row under
@@ -94,8 +94,14 @@ def extract(pages: list[Page]) -> dict[str, dict[int, float]]:
             if current_key and len(current_values) >= MIN_YEARS:
                 for value in current_values:
                     if not PLAUSIBLE[0] <= value <= PLAUSIBLE[1]:
-                        raise ExtractionError(f"{current_key}: adder {value} is outside the plausible range {PLAUSIBLE}")
-                found.setdefault(current_key, dict(zip(years[: len(current_values)], current_values, strict=False)))
+                        raise ExtractionError(
+                            f"{current_key}: adder {value} is outside the "
+                            f"plausible range {PLAUSIBLE}"
+                        )
+                found.setdefault(
+                    current_key,
+                    dict(zip(years[: len(current_values)], current_values, strict=False)),
+                )
             current_key = key
             current_values = values
             pending = []
@@ -107,8 +113,12 @@ def extract(pages: list[Page]) -> dict[str, dict[int, float]]:
     if current_key and len(current_values) >= MIN_YEARS:
         for value in current_values:
             if not PLAUSIBLE[0] <= value <= PLAUSIBLE[1]:
-                raise ExtractionError(f"{current_key}: adder {value} is outside the plausible range {PLAUSIBLE}")
-        found.setdefault(current_key, dict(zip(years[: len(current_values)], current_values, strict=False)))
+                raise ExtractionError(
+                    f"{current_key}: adder {value} is outside the plausible range {PLAUSIBLE}"
+                )
+        found.setdefault(
+            current_key, dict(zip(years[: len(current_values)], current_values, strict=False))
+        )
 
     missing = set(SEGMENTS.values()) - set(found)
     if missing:

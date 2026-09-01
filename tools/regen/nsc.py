@@ -94,14 +94,17 @@ def verify_against_library(body: str, extracted: dict[str, float]) -> list[str]:
     problems: list[str] = []
     if set(raw.get("rates", {})) != set(extracted):
         problems.append("the rendered [rates] table does not match what was extracted")
-        
+
     def mock_read_data_text(relative: str) -> str:
         if relative == trueup.NSC_RATE_FILE:
             return body
         from tariffkit.data import read_data_text
+
         return read_data_text(relative)
 
-    with unittest.mock.patch("tariffkit.billing.trueup.read_data_text", side_effect=mock_read_data_text):
+    with unittest.mock.patch(
+        "tariffkit.billing.trueup.read_data_text", side_effect=mock_read_data_text
+    ):
         for key, value in sorted(extracted.items()):
             year, month = (int(p) for p in key.split("-"))
             try:
