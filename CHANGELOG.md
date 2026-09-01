@@ -5,6 +5,21 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+- **A two-day forecast curve on every component-group entity**: each band --
+  `import_generation`, `import_distribution`, `export_delivery`, and the rest --
+  now carries its own `raw_today` / `raw_tomorrow` list, in the same shape and
+  the same 30-minute Pacific-day slots as the price entities' Predbat
+  attributes. Stacking a direction's bands reproduces its price curve, so a
+  dashboard can draw whichever split it means -- generation against the rest,
+  PG&E's Delivery line (`distribution + transmission + surcharges`) against
+  generation, or every band at once -- without the payload having named one for
+  it. Published on the matching MQTT topics too, one band per topic, which keeps
+  each payload inside Home Assistant's 16 KiB recorder ceiling; an
+  MQTT-discovered sensor cannot mark an attribute unrecorded. Unlike the Predbat
+  attributes these are not gated on Predbat mode, since charting what a price is
+  made of has nothing to do with Predbat.
+
 ### Fixed
 - **ACC Plus PDF parsing**: `pypdf` extraction of the ACC Plus table injected newlines inside figures. The values are now successfully rejoined and accumulated, fixing the failure to vendor ACC Plus rates.
 - **NSC verification**: Validating a newly discovered True-Up month mistakenly verified against the previous vendored rate rather than the newly parsed rates, which always caused validation to fail. Data parsing is now successfully validated.

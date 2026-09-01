@@ -26,7 +26,8 @@ from ..components import EXPORT_GROUPS, IMPORT_GROUPS, split_components
 from ..config import default_config_path
 from ..engine import RateEngine
 from ..errors import ConfigError, PublishError
-from ..interop import forecast_lists, predbat_payload
+from ..interop import forecast_lists, predbat_group_payload, predbat_payload
+from ..interop.predbat import GroupPayload
 from ..models import PricePoint
 from ..secrets import get_secret
 from ..sources.homeassistant import load_dotenv
@@ -297,7 +298,7 @@ class MqttPublisher:
             self._publish_to(topic, json.dumps(payload))
         log.info("published Home Assistant discovery config")
 
-    def _publish_components(self, point: PricePoint) -> None:
+    def _publish_components(self, point: PricePoint, curves: GroupPayload | None = None) -> None:
         """One retained topic per direction and component group, plus its lines.
 
         The groups of a direction sum to that direction's price, so a dashboard
@@ -329,10 +330,17 @@ class MqttPublisher:
             for group in groups:
                 suffix = f"components/{direction}/{group}"
                 self._publish(suffix, f"{totals[group]:.5f}")
-                self._publish(
-                    f"{suffix}/attributes",
-                    {"components": dict(lines_by_group[group]), **flags},
-                )
+                attributes: dict[str, Any] = {
+                    "components": dict(lines_by_group[group]),
+                    **flags,
+                }
+                # This band's own two-day curve. One band per topic is what keeps
+                # each payload well under the recorder's 16 KiB ceiling -- an
+                # MQTT-discovered sensor has no unrecorded-attribute escape, so
+                # every one of these is stored on every publish.
+                if curves is not None:
+                    attributes |= curves[direction][group]
+                self._publish(f"{suffix}/attributes", attributes)
 
     def publish_now(self, moment: datetime | None = None) -> PricePoint:
         now = moment or now_pacific()
@@ -344,7 +352,7 @@ class MqttPublisher:
         self._publish("spread", f"{point.spread:.5f}")
         self._publish("tou_period", str(point.import_price.period))
         self._publish("daily_fixed_charge", f"{self.engine.daily_fixed_charge(point.start):.5f}")
-        self._publish_components(point)
+        self._publish_components(point, predbat_group_payload(self.engine, now))
 
         # Component breakdown plus the payloads other energy systems read, so the
         # broker path is as interoperable as the custom component. raw_today and

@@ -97,6 +97,9 @@ raw_tomorrow:
   # ... 48 entries
 ```
 
+Predbat ignores any other attribute, so the price entities also carry what a
+dashboard needs without disturbing it -- see [Charting the bands](#charting-the-bands).
+
 What to check:
 
 - **Both lists are present and non-empty.** If they are missing entirely, step 2
@@ -311,3 +314,29 @@ one of each pair mask the other.
   unconditionally rather than behind an opt-in
 - [Library](library.md) — `predbat_payload()` for building the same structure in
   your own Python
+
+
+## Charting the bands
+
+Each component-group entity -- `sensor.tariffkit_home_import_generation`,
+`..._import_distribution`, `..._export_delivery`, and the rest -- carries its own
+`raw_today` / `raw_tomorrow` curve in the same shape and the same 30-minute
+Pacific-day slots as the price entity's. Stack the bands you want and they land
+on the price curve.
+
+There is deliberately no `raw_today_delivery` on the price entity. Which two-way
+split a dashboard means is the dashboard's business: on import, PG&E's Delivery
+line is `distribution + transmission + surcharges`, so sum those three bands; on
+export, `delivery` is a band the tariff actually publishes, and everything else
+is generation and the ACC Plus credit. Naming one band in the payload would pick
+for the reader, and the leftover would mean different things in each direction.
+
+The same curves ride each band's MQTT topic
+(`tariffkit/components/import/distribution/attributes`), one band per topic,
+which is what keeps every payload inside Home Assistant's 16 KiB recorder
+ceiling -- an MQTT-discovered sensor has no way to mark an attribute unrecorded.
+
+For an hourly breakdown over the full forecast horizon rather than these two
+calendar days, the **Rates Available Through** entity's `rates` attribute already
+carries `import_components` / `export_components` per point; see
+[A stacked chart](home-assistant.md#a-stacked-chart).
