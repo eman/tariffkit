@@ -51,6 +51,9 @@ def extract(pages: list[Page]) -> dict[str, dict[int, float]]:
     page = find_page(pages, TABLE_HEADING)
     body = page.text[page.text.find(TABLE_HEADING) :]
 
+    # Fix numbers broken by newlines (e.g. "0.0220\n0" -> "0.02200")
+    body = re.sub(r"(\d)\n(\d)", r"\1\2", body)
+
     # The year header is split one cell per line: "2023 \n $/kWh \n 2024 ...".
     years = [int(y) for y in re.findall(r"\b(20\d{2})\s*\n?\s*\$/kWh", body)]
     if not years:
@@ -63,6 +66,9 @@ def extract(pages: list[Page]) -> dict[str, dict[int, float]]:
 
     found: dict[str, dict[int, float]] = {}
     pending: list[str] = []
+    current_key: str | None = None
+    current_values: list[float] = []
+
     for raw in body.splitlines():
         line = raw.strip()
         if not line:
@@ -75,6 +81,7 @@ def extract(pages: list[Page]) -> dict[str, dict[int, float]]:
                 break  # past the table, into the explanatory prose
             pending = [*pending, label_part][-3:]
             continue
+
         label = re.sub(r"[^a-z]", "", ("".join(pending) + label_part).lower())
         # Longest first: "residential" is a substring of "residentiallowincome",
         # so matching in declaration order files the low-income row under
@@ -83,15 +90,35 @@ def extract(pages: list[Page]) -> dict[str, dict[int, float]]:
             (v for k, v in sorted(SEGMENTS.items(), key=lambda kv: -len(kv[0])) if k in label),
             None,
         )
-        pending = []
-        if key is None or len(values) < MIN_YEARS:
-            continue
-        for value in values:
+        if key is not None:
+            if current_key and len(current_values) >= MIN_YEARS:
+                for value in current_values:
+                    if not PLAUSIBLE[0] <= value <= PLAUSIBLE[1]:
+                        raise ExtractionError(
+                            f"{current_key}: adder {value} is outside the "
+                            f"plausible range {PLAUSIBLE}"
+                        )
+                found.setdefault(
+                    current_key,
+                    dict(zip(years[: len(current_values)], current_values, strict=False)),
+                )
+            current_key = key
+            current_values = values
+            pending = []
+        else:
+            if current_key is not None:
+                current_values.extend(values)
+            pending = []
+
+    if current_key and len(current_values) >= MIN_YEARS:
+        for value in current_values:
             if not PLAUSIBLE[0] <= value <= PLAUSIBLE[1]:
                 raise ExtractionError(
-                    f"{key}: adder {value} is outside the plausible range {PLAUSIBLE}"
+                    f"{current_key}: adder {value} is outside the plausible range {PLAUSIBLE}"
                 )
-        found.setdefault(key, dict(zip(years[: len(values)], values, strict=False)))
+        found.setdefault(
+            current_key, dict(zip(years[: len(current_values)], current_values, strict=False))
+        )
 
     missing = set(SEGMENTS.values()) - set(found)
     if missing:
@@ -121,20 +148,28 @@ def verify_against_library(body: str, extracted: dict[str, dict[int, float]]) ->
             if got is None or abs(float(got) - value) > 1e-9:
                 problems.append(f"{segment} {year}: rendered {got!r}, extracted {value}")
 
+    import unittest.mock
+
+    def mock_acc_plus_table(utility: object, on: object) -> dict[str, object]:
+        return raw
+
     # And the consumer must agree, for a year the table covers.
-    for segment, by_year in sorted(extracted.items()):
-        year = sorted(by_year)[0]
-        try:
-            rates = nbt.NbtExportRates(
-                Config(interconnection_year=year, acc_plus_segment=segment)  # type: ignore[arg-type]
-            )
-            if abs(rates.acc_plus - by_year[year]) > 1e-9:
-                problems.append(
-                    f"{segment} {year}: the library reads {rates.acc_plus}, "
-                    f"extracted {by_year[year]}"
+    with unittest.mock.patch(
+        "tariffkit.export.nbt._acc_plus_table", side_effect=mock_acc_plus_table
+    ):
+        for segment, by_year in sorted(extracted.items()):
+            year = sorted(by_year)[0]
+            try:
+                rates = nbt.NbtExportRates(
+                    Config(interconnection_year=year, acc_plus_segment=segment)  # type: ignore[arg-type]
                 )
-        except Exception as exc:
-            problems.append(f"{segment} {year}: the library could not read it back: {exc}")
+                if abs(rates.acc_plus - by_year[year]) > 1e-9:
+                    problems.append(
+                        f"{segment} {year}: the library reads {rates.acc_plus}, "
+                        f"extracted {by_year[year]}"
+                    )
+            except Exception as exc:
+                problems.append(f"{segment} {year}: the library could not read it back: {exc}")
     return problems
 
 

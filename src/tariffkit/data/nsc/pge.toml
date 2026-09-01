@@ -23,7 +23,7 @@
 # statement exists. Anything computed from it for a CCA account is an
 # estimate and is flagged as one.
 #
-# A row is added each month; the series here ends at 2026-08. A true-up
+# A row is added each month; the series here ends at 2026-09. A true-up
 # month later than that has no published rate yet, which is the normal
 # case rather than an edge one.
 
@@ -55,3 +55,4 @@ decision = "D.11-06-016"
 "2026-06" = 0.02862
 "2026-07" = 0.03089
 "2026-08" = 0.02684
+"2026-09" = 0.02751

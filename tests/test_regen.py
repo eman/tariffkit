@@ -508,6 +508,40 @@ class TestAccPlus:
         with pytest.raises(ExtractionError, match="residential_low_income"):
             accplus.extract([sheet(half)])
 
+    def test_newline_split_figures_are_rejoined(self) -> None:
+        broken = ACC_PLUS_TABLE.replace("0.02200", "0.0220\n0")
+        got = accplus.extract([sheet(broken)])
+        assert got["residential"] == {
+            2023: 0.02200,
+            2024: 0.01760,
+            2025: 0.01320,
+            2026: 0.00880,
+            2027: 0.00440,
+        }
+
+    def test_validation_succeeds_with_unvendored_values(self) -> None:
+        from tools.regen import providers
+        from tools.regen.accplus import render, verify_against_library
+
+        extracted = {
+            "residential": {
+                2023: 0.99999,
+                2024: 0.01760,
+                2025: 0.01320,
+                2026: 0.00880,
+                2027: 0.00440,
+            },
+            "residential_low_income": {
+                2023: 0.09000,
+                2024: 0.07200,
+                2025: 0.05400,
+                2026: 0.03600,
+                2027: 0.01800,
+            },
+        }
+        body = render(providers.PACIFIC_GAS_AND_ELECTRIC, extracted, "https://example.com/test.pdf")
+        assert verify_against_library(body, extracted) == []
+
 
 class TestRefusesToGuess:
     def test_a_rider_that_differs_by_period_is_an_error(self) -> None:
@@ -644,6 +678,17 @@ class TestNscSeries:
     def test_a_document_without_the_table_is_an_error(self) -> None:
         with pytest.raises(ExtractionError, match="Net Surplus"):
             nsc.extract([sheet("Jan. 2025 0.03396")])
+
+    def test_validation_succeeds_with_unvendored_month(self) -> None:
+        # Create a rendered body with a future month (e.g. 2030-12) and assert
+        # verify_against_library allows it by correctly intercepting the read.
+        from tools.regen import providers
+
+        extracted = {"2030-12": 0.05}
+        body = nsc.render(
+            providers.PACIFIC_GAS_AND_ELECTRIC, extracted, "https://example.com/test.pdf"
+        )
+        assert nsc.verify_against_library(body, extracted) == []
 
 
 class TestUnparseableCardIsStillWatched:
