@@ -115,7 +115,11 @@ class TestPredbat:
 
     def test_publishes_both_attributes(self, curve: PriceCurve) -> None:
         attrs = raw_attributes(curve, direction="import", today=date(2026, 7, 15))
-        assert set(attrs) == {"raw_today", "raw_tomorrow"}
+        assert set(attrs) == {
+            "raw_today", "raw_tomorrow",
+            "raw_today_generation", "raw_tomorrow_generation",
+            "raw_today_delivery", "raw_tomorrow_delivery",
+        }
 
     def test_entry_shape_is_from_to_rate(self, curve: PriceCurve) -> None:
         entry = raw_attributes(curve, direction="import", today=date(2026, 7, 15))["raw_today"][0]

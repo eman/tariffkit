@@ -19,6 +19,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Literal, Protocol, TypedDict
 
+from ..components import ComponentGroup, group_of
 from ..models import PriceCurve
 from ..timeutil import now_pacific, to_pacific
 from .slots import local_day_window, resample
@@ -54,10 +55,19 @@ def raw_attributes(
     what Predbat means by "today". Slots beyond tomorrow are dropped. A horizon too
     short to reach tomorrow leaves ``raw_tomorrow`` empty, which is how Predbat
     already represents "tomorrow's rates are not published yet".
+
+    Includes "_generation" and "_delivery" suffixes for Home Assistant dashboards.
     """
     anchor = today if today is not None else now_pacific().date()
     tomorrow = anchor + timedelta(days=1)
-    buckets: dict[str, list[PredbatRate]] = {"raw_today": [], "raw_tomorrow": []}
+    buckets: dict[str, list[PredbatRate]] = {
+        "raw_today": [],
+        "raw_tomorrow": [],
+        "raw_today_generation": [],
+        "raw_tomorrow_generation": [],
+        "raw_today_delivery": [],
+        "raw_tomorrow_delivery": [],
+    }
 
     for slot in resample(curve, minutes):
         day = slot.start.date()
@@ -68,13 +78,25 @@ def raw_attributes(
         else:
             continue
         price = slot.import_price if direction == "import" else slot.export_price
-        buckets[key].append(
-            {
-                "from": slot.start.isoformat(),
-                "to": slot.end.isoformat(),
-                "rate": round(price.total * scale, 5),
-            }
+
+        gen_val = sum(
+            v for k, v in price.components.items() if group_of(k) is ComponentGroup.GENERATION
         )
+        del_val = price.total - gen_val
+
+        start_iso = slot.start.isoformat()
+        end_iso = slot.end.isoformat()
+
+        buckets[key].append(
+            {"from": start_iso, "to": end_iso, "rate": round(price.total * scale, 5)}
+        )
+        buckets[f"{key}_generation"].append(
+            {"from": start_iso, "to": end_iso, "rate": round(gen_val * scale, 5)}
+        )
+        buckets[f"{key}_delivery"].append(
+            {"from": start_iso, "to": end_iso, "rate": round(del_val * scale, 5)}
+        )
+
     return buckets
 
 
