@@ -97,8 +97,10 @@ raw_tomorrow:
   # ... 48 entries
 ```
 
-Predbat ignores any other attribute, so the price entities also carry what a
-dashboard needs without disturbing it -- see [Charting the bands](#charting-the-bands).
+Predbat ignores any other attribute. The dashboard band curves live on the
+component-group entities (`sensor.tariffkit_home_import_generation` and its
+siblings), not on the price entities -- see
+[Charting the bands](#charting-the-bands).
 
 What to check:
 
