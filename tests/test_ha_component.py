@@ -41,6 +41,7 @@ from tariffkit import Config
 from tariffkit.account import AccountEpoch, AccountProfile
 from tariffkit.components import EXPORT_GROUPS, IMPORT_GROUPS
 from tariffkit.config import CcaConfig
+from tariffkit.interop import predbat_payload
 from tariffkit.models import ExportPrice, ImportPrice, PricePoint, Supplier
 from tariffkit.timeutil import PACIFIC
 
@@ -339,6 +340,44 @@ async def test_component_entities_stack_to_the_price(
     assert generation is not None
     # The tariff's own lines stay visible behind the roll-up.
     assert "generation" in generation.attributes["components"]
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_component_entities_carry_curves_that_stack_to_the_price(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """Each band publishes a full two-day curve, and the bands stack slot for slot.
+
+    Predbat mode is off here on purpose: charting what a price is made of has
+    nothing to do with Predbat, so the band curves must not be gated on it even
+    though the price entities' identical attributes are.
+    """
+    await _setup_entry(hass, entry)
+
+    coordinator = entry.runtime_data
+    price_curves = predbat_payload(coordinator.engine, coordinator.current_hour)
+
+    for direction, groups in (("import", IMPORT_GROUPS), ("export", EXPORT_GROUPS)):
+        price = hass.states.get(_entity_id(hass, entry, f"{direction}_price"))
+        assert price is not None
+        # The price entity stays Predbat-gated; the bands do not.
+        assert ATTR_RAW_TODAY not in price.attributes
+
+        for day in (ATTR_RAW_TODAY, ATTR_RAW_TOMORROW):
+            expected = price_curves[direction][day]
+            assert expected
+            stack = [0.0] * len(expected)
+            for group in groups:
+                state = hass.states.get(_entity_id(hass, entry, f"{direction}_{group}"))
+                assert state is not None, f"missing {direction} {group} entity"
+                slots = state.attributes[day]
+                assert len(slots) == len(expected), f"{direction} {group} {day} is short"
+                for index, (slot, reference) in enumerate(zip(slots, expected, strict=True)):
+                    assert slot["from"] == reference["from"]
+                    assert slot["to"] == reference["to"]
+                    stack[index] += slot["rate"]
+            for total, reference in zip(stack, expected, strict=True):
+                assert total == pytest.approx(reference["rate"])
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")

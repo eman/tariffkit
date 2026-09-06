@@ -216,13 +216,20 @@ def _component_sensor(direction: str, group: ComponentGroup) -> TariffKitSensorD
             if isinstance(price, ImportPrice)
             else TariffKitQuality(complete=price.complete, exact=price.exact, locked=price.locked)
         )
-        return {
+        attributes: dict[str, Any] = {
             # The tariff's own lines behind this band, so the roll-up is
             # auditable from the entity rather than only from the source.
             "components": dict(split_components(price.components, groups)[group]),
             "direction": direction,
             ATTR_QUALITY: _quality_attributes(quality),
         }
+        # This band's own two-day curve, in the same shape and slot alignment as
+        # the price sensor's, so a chart can stack any subset of the bands
+        # against the price without the integration having to guess which subset
+        # a given dashboard means by "delivery".
+        if data.curves is not None:
+            attributes |= data.curves[direction][group]
+        return attributes
 
     return TariffKitSensorDescription(
         key=f"{direction}_{group}",

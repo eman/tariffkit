@@ -13,15 +13,18 @@ from itertools import pairwise
 import pytest
 
 from tariffkit import PriceCurve, RateEngine
+from tariffkit.components import EXPORT_GROUPS, IMPORT_GROUPS, ComponentGroup
 from tariffkit.interop import (
     forecast_lists,
     forecast_payload,
+    group_attributes,
     local_day_window,
+    predbat_group_payload,
     predbat_payload,
     raw_attributes,
     resample,
 )
-from tariffkit.interop.predbat import CENTS_PER_DOLLAR
+from tariffkit.interop.predbat import CENTS_PER_DOLLAR, Direction
 from tariffkit.timeutil import PACIFIC
 
 
@@ -116,6 +119,71 @@ class TestPredbat:
     def test_publishes_both_attributes(self, curve: PriceCurve) -> None:
         attrs = raw_attributes(curve, direction="import", today=date(2026, 7, 15))
         assert set(attrs) == {"raw_today", "raw_tomorrow"}
+
+    @pytest.mark.parametrize(
+        ("direction", "groups"), [("import", IMPORT_GROUPS), ("export", EXPORT_GROUPS)]
+    )
+    def test_group_curves_stack_to_the_price_curve(
+        self, curve: PriceCurve, direction: Direction, groups: tuple[ComponentGroup, ...]
+    ) -> None:
+        """The bands are drawn stacked, so together they must reproduce the price.
+
+        This is the property that lets a dashboard pick its own split -- generation
+        against the rest, the bill's Delivery line against generation, or every
+        band at once -- without the payload having named one for it.
+        """
+        total = raw_attributes(curve, direction=direction, today=date(2026, 7, 15))
+        bands = [
+            group_attributes(curve, direction=direction, group=group, today=date(2026, 7, 15))
+            for group in groups
+        ]
+        for day in ("raw_today", "raw_tomorrow"):
+            assert total[day]
+            for index, entry in enumerate(total[day]):
+                slot = [band[day][index] for band in bands]
+                assert all((e["from"], e["to"]) == (entry["from"], entry["to"]) for e in slot)
+                assert sum(e["rate"] for e in slot) == pytest.approx(entry["rate"], abs=5e-5)
+
+    def test_every_group_gets_a_curve_even_when_the_band_is_empty(self, curve: PriceCurve) -> None:
+        """A chart config should not break when an account stops paying a charge."""
+        attrs = group_attributes(
+            curve, direction="import", group=ComponentGroup.OTHER, today=date(2026, 7, 15)
+        )
+        assert len(attrs["raw_today"]) == 48
+        assert {entry["rate"] for entry in attrs["raw_today"]} == {0.0}
+
+    def test_delivery_band_is_its_own_curve_not_a_residual(self, curve: PriceCurve) -> None:
+        """Export delivery is a real published band, distinct from "not generation"."""
+        delivery = group_attributes(
+            curve, direction="export", group=ComponentGroup.DELIVERY, today=date(2026, 7, 15)
+        )
+        generation = group_attributes(
+            curve, direction="export", group=ComponentGroup.GENERATION, today=date(2026, 7, 15)
+        )
+        total = raw_attributes(curve, direction="export", today=date(2026, 7, 15))
+
+        first_delivery = delivery["raw_today"][0]["rate"]
+        residual = total["raw_today"][0]["rate"] - generation["raw_today"][0]["rate"]
+        assert first_delivery > 0
+        # The residual also carries the ACC Plus credit, which is why naming it
+        # "delivery" would have published two different numbers under one word.
+        assert first_delivery < residual
+
+    def test_group_curves_align_with_the_price_curve_slot_for_slot(self, curve: PriceCurve) -> None:
+        total = raw_attributes(curve, direction="import", today=date(2026, 7, 15))
+        band = group_attributes(
+            curve, direction="import", group=ComponentGroup.GENERATION, today=date(2026, 7, 15)
+        )
+        assert [(e["from"], e["to"]) for e in band["raw_today"]] == [
+            (e["from"], e["to"]) for e in total["raw_today"]
+        ]
+
+    def test_group_payload_covers_every_band_of_both_directions(self, engine: RateEngine) -> None:
+        payload = predbat_group_payload(engine, pt(2026, 7, 15, 19))
+        assert set(payload) == {"import", "export"}
+        assert set(payload["import"]) == set(IMPORT_GROUPS)
+        assert set(payload["export"]) == set(EXPORT_GROUPS)
+        assert len(payload["import"][ComponentGroup.GENERATION]["raw_today"]) == 48
 
     def test_entry_shape_is_from_to_rate(self, curve: PriceCurve) -> None:
         entry = raw_attributes(curve, direction="import", today=date(2026, 7, 15))["raw_today"][0]

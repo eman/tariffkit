@@ -19,8 +19,8 @@ from tariffkit.billing import Bill, BillingPeriod, CreditBalances, IntervalReadi
 from tariffkit.components import ComponentGroup
 from tariffkit.config import CcaConfig, Config, stored_bsc_tier
 from tariffkit.errors import TariffKitError
-from tariffkit.interop import predbat_payload
-from tariffkit.interop.predbat import PredbatPayload
+from tariffkit.interop import predbat_group_payload, predbat_payload
+from tariffkit.interop.predbat import GroupPayload, PredbatPayload
 from tariffkit.models import PricePoint, Supplier
 from tariffkit.timeutil import hour_floor, now_pacific
 
@@ -249,6 +249,10 @@ class TariffKitData:
     generated_at: datetime = field(compare=False)
     predbat: PredbatPayload | None = None
     predbat_warning: str | None = None
+    #: Two-day forecast curve per direction and component group, for stacked
+    #: dashboard charts. Unlike ``predbat`` this is not gated on Predbat mode --
+    #: charting what the price is made of has nothing to do with Predbat.
+    curves: GroupPayload | None = None
     #: None whenever no meter entities are configured, which is the default.
     usage: TariffKitUsage | None = None
     #: Why ``usage`` is absent despite meters being configured. Empty when
@@ -444,6 +448,8 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         self._bank_note: str | None = None
         self._predbat_key: tuple[date, date] | None = None
         self._predbat: PredbatPayload | None = None
+        self._curves_key: tuple[date, date] | None = None
+        self._curves: GroupPayload | None = None
         self._predbat_warning: str | None = None
         if self.predbat_enabled and hass.config.time_zone != "America/Los_Angeles":
             self._predbat_warning = (
@@ -663,17 +669,30 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
             registry.async_update_device(device.id, model=model)
         self._device_model = model
 
-    def _predbat_for(self, moment: datetime) -> PredbatPayload | None:
-        if not self.predbat_enabled:
-            return None
+    def _day_key(self, moment: datetime) -> tuple[date, date]:
+        """Day plus the rate vintage in force, so a mid-day change still rebuilds."""
         active_effective = max(
             effective for effective in self.profile.effective_dates if effective <= moment.date()
         )
-        key = (moment.date(), active_effective)
+        return (moment.date(), active_effective)
+
+    def _predbat_for(self, moment: datetime) -> PredbatPayload | None:
+        if not self.predbat_enabled:
+            return None
+        key = self._day_key(moment)
         if key != self._predbat_key:
             self._predbat = predbat_payload(self.engine, moment)
             self._predbat_key = key
         return self._predbat
+
+    def _curves_for(self, moment: datetime) -> GroupPayload:
+        """Rebuilt once a day rather than every tick -- the curve only moves at midnight."""
+        key = self._day_key(moment)
+        curves = self._curves
+        if curves is None or key != self._curves_key:
+            curves = predbat_group_payload(self.engine, moment)
+            self._curves, self._curves_key = curves, key
+        return curves
 
     def _compute(
         self,
@@ -717,6 +736,7 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
             generated_at=now_pacific(),
             predbat=self._predbat_for(point.start),
             predbat_warning=self._predbat_warning,
+            curves=self._curves_for(point.start),
             usage=self._usage_for(metered),
             usage_note=self._usage_note,
             bank=bank,

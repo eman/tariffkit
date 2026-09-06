@@ -207,7 +207,7 @@ def test_component_topics_stack_to_the_price(publisher: MqttPublisher) -> None:
     imported = json.loads(topics["tariffkit/components/import/generation/attributes"])
     # A retail schedule is published, not vintaged, so the import side has only
     # the one flag -- the same set its own price topic carries.
-    assert set(imported) == {"components", "complete"}
+    assert set(imported) == {"components", "complete", "raw_today", "raw_tomorrow"}
 
 
 def test_component_topics_carry_an_incomplete_flag() -> None:
@@ -243,6 +243,44 @@ def test_attributes_carry_the_predbat_rate_lists(publisher: MqttPublisher) -> No
     assert len(payload["raw_tomorrow"]) == 48
     assert set(payload["raw_today"][0]) == {"from", "to", "rate"}
     assert payload["raw_today"][0]["from"].endswith("T00:00:00-07:00")
+
+
+def test_price_attributes_do_not_name_a_two_way_split(publisher: MqttPublisher) -> None:
+    """Which bands make up "delivery" is the dashboard's call, not the payload's."""
+    publisher.publish_now(datetime(2026, 9, 15, 19, tzinfo=PACIFIC))
+    topics = client_of(publisher).topics()
+
+    for direction in ("import", "export"):
+        payload = json.loads(topics[f"tariffkit/{direction}_price/attributes"])
+        assert payload["raw_today"]
+        assert not [key for key in payload if key.startswith("raw_today_")]
+
+
+def test_every_attributes_topic_stays_under_the_recorder_limit(
+    publisher: MqttPublisher,
+) -> None:
+    """An MQTT-discovered sensor has no ``_unrecorded_attributes`` escape.
+
+    Home Assistant's recorder drops a state's attributes wholesale once they pass
+    ``MAX_STATE_ATTRS_BYTES``, so every one of these payloads has to fit -- which
+    is the reason the per-band curves ride one topic each rather than riding the
+    price topic together.
+    """
+    max_state_attrs_bytes = 16384
+    publisher.publish_now(datetime(2026, 9, 15, 19, tzinfo=PACIFIC))
+    attribute_topics = {
+        topic: raw
+        for topic, raw in client_of(publisher).topics().items()
+        if topic.endswith("/attributes")
+    }
+
+    assert len(attribute_topics) > 10  # the two prices, the spread, and every band
+    oversized = {
+        topic: len(raw.encode())
+        for topic, raw in attribute_topics.items()
+        if len(raw.encode()) >= max_state_attrs_bytes
+    }
+    assert not oversized
 
 
 def test_predbat_values_are_cents(publisher: MqttPublisher) -> None:
