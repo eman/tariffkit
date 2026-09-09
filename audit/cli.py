@@ -73,13 +73,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="also download the utility's own interval export and compare the two meters",
     )
     check.add_argument(
-        "--meter",
-        choices=("influx", "ha"),
+        "--readings",
+        choices=("influx", "statistics"),
         default="influx",
-        help="which meter reading prices the bill: InfluxDB counter samples (default) "
-        "or Home Assistant hourly statistics. Measured on four statements, InfluxDB "
-        "reconciles two and Home Assistant none -- this is for comparing the two "
-        "meters, not for replacing the default",
+        help="which derivation of the meter prices the bill: InfluxDB counter samples "
+        "from eagle_100_total_energy_delivered/_received (default), or Home Assistant "
+        "hourly statistics from sensor.eagle_100_energy_delivered/_received. Both are "
+        "the same physical meter through different pipelines, so agreement between "
+        "them says nothing about whether the meter is right -- for that, use "
+        "--green-button, which fetches an independent record from the utility",
     )
 
     run = sub.add_parser("run", help="download every statement the portal lists and reconcile it")
@@ -100,13 +102,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="also download the utility's own interval export and compare the two meters",
     )
     run.add_argument(
-        "--meter",
-        choices=("influx", "ha"),
+        "--readings",
+        choices=("influx", "statistics"),
         default="influx",
-        help="which meter reading prices the bill: InfluxDB counter samples (default) "
-        "or Home Assistant hourly statistics. Measured on four statements, InfluxDB "
-        "reconciles two and Home Assistant none -- this is for comparing the two "
-        "meters, not for replacing the default",
+        help="which derivation of the meter prices the bill: InfluxDB counter samples "
+        "from eagle_100_total_energy_delivered/_received (default), or Home Assistant "
+        "hourly statistics from sensor.eagle_100_energy_delivered/_received. Both are "
+        "the same physical meter through different pipelines, so agreement between "
+        "them says nothing about whether the meter is right -- for that, use "
+        "--green-button, which fetches an independent record from the utility",
     )
     run.add_argument(
         "--keep-statements",
@@ -155,7 +159,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 verbose=args.verbose,
                 as_json=args.json,
                 green_button=args.green_button,
-                meter=args.meter,
+                readings_from=args.readings,
             )
         if args.command == "run":
             return _run(
@@ -166,7 +170,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 verbose=args.verbose,
                 as_json=args.json,
                 green_button=args.green_button,
-                meter=args.meter,
+                readings_from=args.readings,
                 keep=args.keep_statements,
             )
         if args.command == "doctor":
@@ -188,7 +192,7 @@ def _run(
     verbose: bool,
     as_json: bool,
     green_button: bool,
-    meter: str = "influx",
+    readings_from: str = "influx",
     keep: bool,
 ) -> int:
     """Ask the portal what statements exist, then reconcile each of them."""
@@ -233,7 +237,7 @@ def _run(
                 verbose=verbose,
                 as_json=as_json,
                 green_button=green_button,
-                meter=meter,
+                readings_from=readings_from,
             )
 
 
@@ -283,7 +287,7 @@ def _reconcile(
     verbose: bool,
     as_json: bool,
     green_button: bool = False,
-    meter: str = "influx",
+    readings_from: str = "influx",
 ) -> int:
     from tariffkit.account import NamedProfileRepository, configured_profile_name
     from tariffkit.billing.engine import compute_segments, price_segments
@@ -352,16 +356,30 @@ def _reconcile(
             continue
 
         start, end = window(statement.period, read_hour=read_hour)
-        sources = {"influx": read_counters(settings, start, end)}
+        # Keyed by the entity each reading came from, not by the store it came
+        # out of. "influx" and "ha" name pipelines, and both pipelines carry
+        # several entities -- the unfiltered Eagle counters and the filtered
+        # pair -- so a delta line reading "statement vs influx" left the one
+        # thing a reader needs unstated: which sensor disagreed.
+        influx_key = f"influx:{settings.export_entity}"
+        sources = {influx_key: read_counters(settings, start, end)}
+        primary = influx_key
 
-        # Home Assistant's hourly statistics as a second meter, when asked for.
-        # A cross-check, not an upgrade.
+        # Home Assistant's hourly statistics, when asked for.
         #
-        # The two read the same meter and agree on a cycle's totals to the
-        # kilowatt-hour, then disagree about which hours it arrived in -- 19.9
-        # kWh of export over one 720-hour cycle, 189 hours apart by more than
-        # 0.01. That is what `compare_sources` exists to surface, and it is real
-        # money, because peak delivery costs more than off-peak.
+        # Not a second meter. It is the same Eagle-100 through a second
+        # pipeline: Home Assistant's recorder aggregates the entity's states
+        # into hourly buckets, while its InfluxDB integration writes the same
+        # states as rows that `read_counters` differences. Agreement between
+        # them corroborates nothing about the meter, and `--green-button` is
+        # the option that fetches a genuinely independent record.
+        #
+        # What it is good for is finding a derivation bug. The two agree on a
+        # cycle's totals to the kilowatt-hour and then disagree about which
+        # hours the energy arrived in -- 19.9 kWh of export over one 720-hour
+        # cycle, 189 hours apart by more than 0.01. Since neither path measures
+        # anything, one of the two derivations is misplacing it, and that is
+        # real money because peak delivery costs more than off-peak.
         #
         # `influx` stays the default on measurement: across four statements it
         # reconciles two where Home Assistant reconciles none. Not because
@@ -376,15 +394,13 @@ def _reconcile(
         # 0.497 / 0.665 / 38.740. Where they part company is the export side,
         # which no printed figure settles. So the default rests on the
         # reconciliation result and not on a claim about which meter is better.
-        if meter == "ha":
+        if readings_from == "statistics":
             from tariffkit.sources.homeassistant import HaSettings, read_statistics
 
-            sources["home_assistant"] = read_statistics(
-                HaSettings.load(profile_source=profile.meter_sources.home_assistant),
-                start,
-                end,
-            )
-        readings = sources["home_assistant" if meter == "ha" else "influx"]
+            ha = HaSettings.load(profile_source=profile.meter_sources.home_assistant)
+            primary = f"statistics:{ha.export_entity}"
+            sources[primary] = read_statistics(ha, start, end)
+        readings = sources[primary]
 
         if green_button:
             # The utility's own record of the same period. Worth the extra
@@ -407,7 +423,7 @@ def _reconcile(
                 source_deltas=compare_sources(
                     sources,
                     statement,
-                    primary="home_assistant" if meter == "ha" else "influx",
+                    primary=primary,
                     classify=RateEngine(config).tariff.period,
                 ),
                 segment_bills=parts,

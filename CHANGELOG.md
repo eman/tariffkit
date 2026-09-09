@@ -114,16 +114,23 @@ All notable changes to this project are documented here. This project follows
   pre-PTO month without filtering a warning string to do it.
 
 ### Added
-- **`audit reconcile --meter {influx,ha}`**, so the two meter readings of one
-  cycle can be compared rather than assumed equal. They agree on a cycle's
-  totals to the kilowatt-hour and disagree about which hours it arrived in --
-  19.9 kWh of export over one 720-hour cycle, 189 hours apart by more than 0.01
-  -- which is real money, because peak delivery costs more than off-peak.
-  InfluxDB remains the default because it reconciles two of four statements
-  where Home Assistant reconciles none -- but not because either meter is
-  inaccurate. Scored against the time-of-use kilowatt-hours the statement prints
-  itself, both reproduce the import split to within 0.03 kWh. The two part
-  company on the export side, which no printed figure arbitrates.
+- **`audit reconcile --readings {influx,statistics}`**, so the two derivations
+  of one meter can be compared rather than assumed equal. Both are the same
+  Eagle-100 through different Home Assistant pipelines -- the recorder
+  aggregating an entity's states into hourly buckets, against its InfluxDB
+  integration writing those states as rows that get differenced -- so agreement
+  between them corroborates nothing about the meter; `--green-button` is the
+  option that fetches an independent record. What it is good for is finding a
+  derivation bug: the two agree on a cycle's totals to the kilowatt-hour and
+  disagree about which hours the energy arrived in, 19.9 kWh of export over one
+  720-hour cycle across 189 hours. InfluxDB stays the default because it
+  reconciles two statements of four where the statistics reconcile none, though
+  scored against the time-of-use kilowatt-hours the statement prints itself both
+  reproduce the import split to within 0.03 kWh.
+- **Meter comparisons name the entity they read.** A delta line saying
+  "statement vs influx" left the one thing a reader needs unstated -- both
+  pipelines carry the unfiltered Eagle counters and the filtered pair, so it now
+  reads "statement vs influx:eagle_100_total_energy_received".
 - **The ceiling that caps `credit_applied`, published** (#58). Export credits
   are scoped, so what a cycle can spend is capped bucket by bucket rather than
   by the charge total -- a cycle holding $34.78 of charges and $19.94 of credit
