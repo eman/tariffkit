@@ -72,6 +72,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also download the utility's own interval export and compare the two meters",
     )
+    check.add_argument(
+        "--meter",
+        choices=("influx", "ha"),
+        default="influx",
+        help="which meter reading prices the bill: InfluxDB counter samples (default) "
+        "or Home Assistant hourly statistics. Measured on four statements, InfluxDB "
+        "reconciles two and Home Assistant none -- this is for comparing the two "
+        "meters, not for replacing the default",
+    )
 
     run = sub.add_parser("run", help="download every statement the portal lists and reconcile it")
     run.add_argument(
@@ -89,6 +98,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--green-button",
         action="store_true",
         help="also download the utility's own interval export and compare the two meters",
+    )
+    run.add_argument(
+        "--meter",
+        choices=("influx", "ha"),
+        default="influx",
+        help="which meter reading prices the bill: InfluxDB counter samples (default) "
+        "or Home Assistant hourly statistics. Measured on four statements, InfluxDB "
+        "reconciles two and Home Assistant none -- this is for comparing the two "
+        "meters, not for replacing the default",
     )
     run.add_argument(
         "--keep-statements",
@@ -137,6 +155,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 verbose=args.verbose,
                 as_json=args.json,
                 green_button=args.green_button,
+                meter=args.meter,
             )
         if args.command == "run":
             return _run(
@@ -147,6 +166,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 verbose=args.verbose,
                 as_json=args.json,
                 green_button=args.green_button,
+                meter=args.meter,
                 keep=args.keep_statements,
             )
         if args.command == "doctor":
@@ -168,6 +188,7 @@ def _run(
     verbose: bool,
     as_json: bool,
     green_button: bool,
+    meter: str = "influx",
     keep: bool,
 ) -> int:
     """Ask the portal what statements exist, then reconcile each of them."""
@@ -212,6 +233,7 @@ def _run(
                 verbose=verbose,
                 as_json=as_json,
                 green_button=green_button,
+                meter=meter,
             )
 
 
@@ -261,6 +283,7 @@ def _reconcile(
     verbose: bool,
     as_json: bool,
     green_button: bool = False,
+    meter: str = "influx",
 ) -> int:
     from tariffkit.account import NamedProfileRepository, configured_profile_name
     from tariffkit.billing.engine import compute_segments, price_segments
@@ -329,8 +352,25 @@ def _reconcile(
             continue
 
         start, end = window(statement.period, read_hour=read_hour)
-        readings = read_counters(settings, start, end)
-        sources = {"influx": readings}
+        sources = {"influx": read_counters(settings, start, end)}
+
+        # Home Assistant's hourly statistics, when asked for. They carry a real
+        # per-hour figure, where the InfluxDB reader differences raw counter
+        # samples and reconstructs any hour it has no sample inside -- 448 hours
+        # of one 720-hour cycle, and 19.9 kWh of export attributed to the wrong
+        # hours against the same meter read hourly. The totals agree to the
+        # kilowatt-hour either way; it is the time-of-use split that moves, and
+        # peak delivery costs more than off-peak, so it is real money on a bill
+        # that otherwise reconciles.
+        if meter == "ha":
+            from tariffkit.sources.homeassistant import HaSettings, read_statistics
+
+            sources["home_assistant"] = read_statistics(
+                HaSettings.load(profile_source=profile.meter_sources.home_assistant),
+                start,
+                end,
+            )
+        readings = sources["home_assistant" if meter == "ha" else "influx"]
 
         if green_button:
             # The utility's own record of the same period. Worth the extra
@@ -351,7 +391,10 @@ def _reconcile(
                 bill,
                 config,
                 source_deltas=compare_sources(
-                    sources, statement, classify=RateEngine(config).tariff.period
+                    sources,
+                    statement,
+                    primary="home_assistant" if meter == "ha" else "influx",
+                    classify=RateEngine(config).tariff.period,
                 ),
                 segment_bills=parts,
             )

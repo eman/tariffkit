@@ -114,6 +114,14 @@ All notable changes to this project are documented here. This project follows
   pre-PTO month without filtering a warning string to do it.
 
 ### Added
+- **`audit reconcile --meter {influx,ha}`**, so the two meter readings of one
+  cycle can be compared rather than assumed equal. They agree on a cycle's
+  totals to the kilowatt-hour and disagree about which hours it arrived in --
+  19.9 kWh of export over one 720-hour cycle, 189 hours apart by more than 0.01
+  -- which is real money, because peak delivery costs more than off-peak.
+  InfluxDB remains the default and the measurement says it should: on four
+  statements it reconciles two where Home Assistant reconciles none, despite
+  marking 448 of those hours as reconstructed between counter samples.
 - **The ceiling that caps `credit_applied`, published** (#58). Export credits
   are scoped, so what a cycle can spend is capped bucket by bucket rather than
   by the charge total -- a cycle holding $34.78 of charges and $19.94 of credit
