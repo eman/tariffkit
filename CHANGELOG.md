@@ -47,6 +47,18 @@ All notable changes to this project are documented here. This project follows
   pre-PTO month without filtering a warning string to do it.
 
 ### Added
+- **The ceiling that caps `credit_applied`, published** (#58). Export credits
+  are scoped, so what a cycle can spend is capped bucket by bucket rather than
+  by the charge total -- a cycle holding $34.78 of charges and $19.94 of credit
+  can apply $8.24, because the credit is nearly all generation credit and the
+  generation charges ran out. Every term of that was published except the one
+  that explained it, leaving a dashboard to infer the cap from a ratio and get
+  the mechanism wrong. The `credit_buckets` attribute now gives, per bucket, the
+  charges it may reach, the credit it had, and what it spent, with
+  `sum(charges) + non_offsettable == gross_charges` and
+  `sum(applied) == credit_applied` on both the cycle and the day. The entity
+  description states the per-bucket ceiling too; it previously covered only the
+  annual-true-up carry.
 - **[Use cases](docs/use-cases.md)**: the four questions the calculator answers
   -- a cycle without solar, a cycle with a credit bank, realized solar payback,
   and comparing rate plans on historical data -- organized by how far back each
