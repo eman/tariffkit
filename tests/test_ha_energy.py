@@ -838,6 +838,64 @@ async def test_amount_due_is_what_a_statement_would_charge_not_the_bill_total(
 
 
 @pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_the_credit_split_explains_what_capped_credit_applied(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """The term that was missing, published so nobody has to infer it.
+
+    Export credits are scoped, so `credit_applied` is capped bucket by bucket
+    rather than by the charge total -- a cycle can hold $34.78 of charges and
+    $19.94 of credit and still apply $8.24, because the credit is nearly all
+    generation credit and generation charges ran out. Nothing published named
+    that ceiling, and a dashboard rendering the breakdown guessed at it from a
+    ratio: "8.2366 / 27.824 = 29.6%, a plausible generation share". Wrong
+    mechanism, right instinct, and it had no way to tell.
+
+    Both identities are asserted on both spans, because a day is the difference
+    of two cycle-to-date figures and a split that closed only for the cycle
+    would be worse than none.
+    """
+    freezer.move_to(NOW)
+    seed = datetime(2026, 8, 1, tzinfo=PACIFIC)
+    await _record(hass, IMPORT_ENTITY, [(seed, 1000.0), (NOW.replace(hour=13, minute=0), 1300.0)])
+    await _record(hass, EXPORT_ENTITY, [(seed, 500.0), (NOW.replace(hour=13, minute=0), 900.0)])
+    hass.states.async_set(
+        IMPORT_ENTITY, "1300.0", {"unit_of_measurement": "kWh", "device_class": "energy"}
+    )
+    hass.states.async_set(
+        EXPORT_ENTITY, "900.0", {"unit_of_measurement": "kWh", "device_class": "energy"}
+    )
+    await hass.async_block_till_done()
+
+    entry = _entry(_meter_options())
+    await _setup(hass, entry)
+
+    for span in ("cycle", "today"):
+        state = _state(hass, entry, f"amount_due_{span}")
+        attrs = state.attributes
+        split = attrs["credit_buckets"]
+        assert set(split) == {"generation", "delivery", "bonus", "cca_bonus"}
+
+        charges = sum(b["charges"] for b in split.values())
+        applied = sum(b["applied"] for b in split.values())
+        # Four places out of the published attributes, so the tolerance is
+        # rounding, not slack: a cent would hide a whole misattributed bucket.
+        assert charges + attrs["non_offsettable"] == pytest.approx(
+            attrs["gross_charges"], abs=1e-3
+        ), f"{span}: the charge buckets do not close on gross_charges"
+        assert applied == pytest.approx(attrs["credit_applied"], abs=1e-3), (
+            f"{span}: the applied buckets do not close on credit_applied"
+        )
+        for name, bucket in split.items():
+            assert bucket["applied"] <= bucket["charges"] + 1e-6, (
+                f"{span}/{name}: spent more than that bucket's charges"
+            )
+            assert bucket["applied"] <= bucket["credit"] + 1e-6, (
+                f"{span}/{name}: spent more than that bucket held"
+            )
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
 async def test_an_untrustworthy_bank_does_not_quietly_set_the_amount_due(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:

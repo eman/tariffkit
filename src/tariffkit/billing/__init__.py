@@ -13,6 +13,7 @@ from .ledger import (
     Ledger,
     LedgerEntry,
     apply_credits,
+    charges_by_bucket,
     credits_earned,
     run_ledger,
 )
@@ -48,6 +49,7 @@ __all__ = [
     "UsageBucket",
     "apply_credits",
     "cash_out_periods",
+    "charges_by_bucket",
     "check_coverage",
     "credits_earned",
     "find_gaps",
