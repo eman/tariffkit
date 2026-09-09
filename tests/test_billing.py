@@ -72,6 +72,37 @@ def statement_readings() -> list[IntervalReading]:
     ]
 
 
+def test_the_printed_total_is_what_a_statement_would_charge() -> None:
+    """`Bill.total` is not it, and printing it under that word misled a reader.
+
+    `Bill.total` subtracts every export credit from every charge, which the
+    tariff does not allow: credits are scoped, and credit beyond what its own
+    bucket can absorb banks rather than reducing the bill. On an exporting
+    account the two are nowhere near each other and only one of them appears on
+    a statement. A 2026-07-29..08-27 cycle printed -73.36 where the statement's
+    electric charges were 14.22 -- matching nothing on the page.
+
+    This pins the relationship the `bill` command prints instead, on a cycle
+    whose credit cannot all be spent.
+    """
+    from tariffkit.billing import apply_credits
+
+    bill = Bill(
+        period=BillingPeriod(date(2026, 7, 29), date(2026, 8, 27)),
+        import_components={"cca_generation": 8.88, "distribution": 11.75},
+        export_components={"cca_generation": -85.91, "delivery": -1.15},
+        fixed_components={"base_services_charge": 23.80},
+    )
+    entry = apply_credits(bill)
+
+    assert entry.gross_charges == pytest.approx(44.43)
+    assert entry.cash_due == pytest.approx(entry.gross_charges - entry.applied.total)
+    assert entry.cash_due > 0, "a cycle with charges left over owes something"
+    # The credit that could not reach them is banked, not subtracted.
+    assert entry.closing.total > 0
+    assert bill.total < 0, "which is why the naive total reads as a large credit"
+
+
 class TestReadings:
     def test_from_net_splits_by_sign(self) -> None:
         assert IntervalReading.from_net(pt(6, 2), 5.0).imported == 5.0

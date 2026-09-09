@@ -342,7 +342,31 @@ def _print_bill(bill: Any) -> None:
     for name, amount in bill.fixed_components.items():
         print(f"  {name:<34} {amount:>+9.2f}")
 
-    print(f"\n  {'TOTAL':<34} {bill.total:>+9.2f}")
+    # What a statement would charge, not `Bill.total`.
+    #
+    # `Bill.total` subtracts every export credit from every charge, and the
+    # tariff does not allow that: credits are scoped, and credit beyond what its
+    # own bucket can absorb banks rather than reducing the bill. On an exporting
+    # account the two are nowhere near each other and only one of them appears
+    # on a statement. Printing the wrong one under the word TOTAL invited the
+    # obvious reading -- a 2026-07-29..08-27 cycle printed -73.36 against a
+    # statement whose electric charges were 14.22, and the figure matched
+    # nothing on the page. The right one, on the same cycle, is 14.20.
+    #
+    # Shown as the statement lays it out, because the point of the three lines
+    # is that the third is not the first two subtracted: what the credit could
+    # not reach is banked, not owed.
+    from .billing import apply_credits
+
+    entry = apply_credits(bill)
+    print(f"\n  {'gross charges':<34} {entry.gross_charges:>+9.2f}")
+    print(f"  {'credit applied':<34} {-entry.applied.total:>+9.2f}")
+    print(f"  {'AMOUNT DUE':<34} {entry.cash_due:>+9.2f}")
+    if entry.closing.total:
+        # Named for what it is. This command prices one cycle in isolation, so
+        # there is no carried balance in it -- only what this cycle earned and
+        # could not spend.
+        print(f"  {'credit banked this cycle':<34} {entry.closing.total:>+9.2f}")
     if bill.effective_import_rate:
         print(f"  {'effective $/kWh imported':<34} {bill.effective_import_rate:>9.5f}")
     for warning in bill.warnings:
@@ -742,7 +766,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 note = f"  source: Home Assistant statistics ({describe_resolution(readings)})"
             elif args.source == "influx":
-                from .sources import InfluxSettings, read_counters
+                from .sources import InfluxSettings, describe_resolution, read_counters
 
                 if not (args.start and args.end):
                     raise ConfigError("--source influx requires --start and --end")
@@ -763,8 +787,12 @@ def main(argv: list[str] | None = None) -> int:
                     _midnight(args.end) + timedelta(days=1),
                     step,
                 )
+                # Described the same way the Home Assistant source describes
+                # itself. The two report the same interval in different words
+                # otherwise -- "744 x 60min" against "744 x hour" -- which reads
+                # as the sources disagreeing about something when they do not.
                 note = (
-                    f"  source: InfluxDB counters ({len(readings)} x {args.influx_resolution}min; "
+                    f"  source: InfluxDB counters ({describe_resolution(readings)}; "
                     f"totals are exact, distribution follows sample density)"
                 )
             elif args.csv is None:
