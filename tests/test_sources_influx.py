@@ -394,7 +394,26 @@ class TestSmearedGaps:
         samples = self._samples(timedelta(minutes=5), 25, rate=1.0)
         start = samples[0][0]
         _, smeared = _per_interval(samples, start, start + timedelta(hours=2), timedelta(hours=1))
-        assert smeared == set()
+        assert smeared == {}
+
+    def test_a_gap_that_carried_nothing_is_not_doubted(self) -> None:
+        """Most wide gaps are the counter standing still, and guess nothing.
+
+        Flagging on a gap having passed through rather than on the energy it
+        carried put 61% of a real cycle under this warning -- 453 intervals of
+        744 -- over 0.83 kWh whose largest single share was 0.083. A warning
+        that broad is one its reader learns to skip.
+        """
+        from tariffkit.sources.influx import _per_interval
+
+        start = datetime(2026, 3, 2, tzinfo=UTC)
+        # Four hours between samples and the counter never moved.
+        samples = [(start, 5.0), (start + timedelta(hours=4), 5.0)]
+        totals, smeared = _per_interval(
+            samples, start, start + timedelta(hours=4), timedelta(hours=1)
+        )
+        assert sum(totals.values()) == pytest.approx(0.0)
+        assert smeared == {}, "nothing was spread, so nothing is a guess"
 
     def test_a_multi_hour_gap_marks_every_interval_it_spans(self) -> None:
         from tariffkit.sources.influx import _per_interval
@@ -407,6 +426,10 @@ class TestSmearedGaps:
         # The energy is still all there -- only its distribution is a guess.
         assert sum(totals.values()) == pytest.approx(8.0)
         assert len(smeared) == 4
+        # And how much of each interval came out of the gap, not merely that one
+        # passed through: 8 kWh spread evenly over four hours is 2 apiece.
+        assert sum(smeared.values()) == pytest.approx(8.0)
+        assert all(share == pytest.approx(2.0) for share in smeared.values())
 
     def test_the_coverage_check_reports_it(self) -> None:
         from tariffkit.billing import BillingPeriod, IntervalReading

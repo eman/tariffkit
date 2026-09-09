@@ -25,6 +25,16 @@ All notable changes to this project are documented here. This project follows
   cycle and understating the credit the customer was given. Every cycle
   reconciled before this one had generation charges larger than the offset, so
   the case never arose.
+- **The smeared-gap warning reports what was actually spread.** It summed the
+  whole energy of every interval a wide sample gap merely *touched*, so a cycle
+  with 0.83 kWh genuinely spread across gaps was reported as having 144.6 kWh of
+  guessed time-of-use split -- 172 times over, on a figure whose only job is to
+  say how much to distrust. `IntervalReading.smeared` carries the magnitude, and
+  an interval is flagged on the energy it took from a gap rather than on a gap
+  having passed through it: most wide gaps here are the counter standing still
+  overnight, which guesses nothing. Below ten watt-hours nothing is flagged at
+  all, that being half a cent at the widest export rate spread on this tariff.
+  The same cycle now reports 15 intervals and 0.4 kWh.
 - **The two readers of Home Assistant statistics are one reader.** The
   integration reads them through the recorder in process and the library reads
   them through the WebSocket API, and the derivation had been written twice --

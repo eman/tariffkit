@@ -133,7 +133,10 @@ def check_coverage(
 
     guessed = [r for r in ordered if r.estimated]
     if guessed:
-        energy = sum(r.imported + r.exported for r in guessed)
+        # The energy actually spread where the source can say, and the whole
+        # interval where it cannot. Summing the whole interval regardless
+        # reported a cycle's 0.84 kWh of smearing as 144.6 kWh.
+        energy = sum(r.smeared or (r.imported + r.exported) for r in guessed)
         hours = sum((r.duration for r in guessed), timedelta()).total_seconds() / 3600
         yield (
             f"{len(guessed)} interval(s) covering {hours:.1f}h and {energy:.1f} kWh were "

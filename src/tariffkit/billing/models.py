@@ -34,6 +34,21 @@ class IntervalReading:
     #: the real day gives them nearly a third, which is a real dollar on a
     #: cycle whose total is exact to 0.05 kWh.
     estimated: bool = False
+    #: Energy in this interval, in kWh, that was spread from a sample gap wider
+    #: than the interval itself rather than measured inside it.
+    #:
+    #: The magnitude behind ``estimated``, for the sources that can say. A
+    #: boolean alone made the warning that reads it wildly wrong: it summed the
+    #: whole energy of every interval a wide gap merely *touched*, so a cycle
+    #: with 0.84 kWh actually spread across gaps was reported as having 144.6
+    #: kWh of guessed time-of-use split -- 172 times over, on a figure whose
+    #: whole job is to say how much to distrust.
+    #:
+    #: Zero where the producer cannot distinguish, in which case a reader falls
+    #: back to the interval's own energy: the Home Assistant backfill flags an
+    #: interval whose *entire* content was reconstructed, and there the two are
+    #: the same number.
+    smeared: float = 0.0
     #: Directions this interval could not measure -- ``"imported"``,
     #: ``"exported"``, or both. Their energy reads as ``0.0`` because a float
     #: has no way to say "unknown", and without this nothing could tell that
