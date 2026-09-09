@@ -186,6 +186,15 @@ PRINTED_TARIFFS: tuple[tuple[re.Pattern[str], str], ...] = (
     # single missing hyphen.
     (re.compile(r"Time-of-Use.*4\s*[-\u2013\u2014]?\s*9\s*p", re.I), "E-TOU-C"),
     (re.compile(r"Time-of-Use.*5\s*[-\u2013\u2014]?\s*8\s*p", re.I), "E-TOU-D"),
+    # Anchored on the words instead of on the "p.m.", for the readings that lose
+    # both. One statement came back as "(Peak Pricing 4 9    Every Day)" -- dash
+    # and meridiem alike swallowed by the gap they sit in -- and no tariff
+    # matched, so `_agreements` refused it as printing an unsupported one. The
+    # remaining "Peak Pricing 4 ... 9" is unambiguous enough on its own; these
+    # follow the two above so a statement that prints the meridiem and not the
+    # words is still read.
+    (re.compile(r"Peak\s+Pricing\s+4\s*[-\u2013\u2014]?\s*9\b", re.I), "E-TOU-C"),
+    (re.compile(r"Peak\s+Pricing\s+5\s*[-\u2013\u2014]?\s*8\b", re.I), "E-TOU-D"),
 )
 
 #: Rows that are structure rather than charges.
@@ -405,6 +414,27 @@ def _summary_amount(summary: StatementSection, label: str) -> float | None:
     """One named line out of the running balance, or None if absent."""
     matches = summary.find(label)
     return matches[0].amount if matches else None
+
+
+def _gas_adjustment(summary: StatementSection) -> float | None:
+    """The gas half of a summary adjustment, or None where there is none.
+
+    PG&E issues the California Climate Credit against gas and electricity
+    separately, in April and October, and prints both in the summary. The
+    electric half is read by name and the gas half was read by nothing, so a
+    combined April statement failed its own check by exactly that credit --
+    $67.03 on 2025-05-05, the whole difference between its parts and its total.
+
+    Matched on a label *beginning* "gas" rather than by an exact name, because
+    recognition truncates a label at any wide gap inside it and this one came
+    back as bare "Gas". The charges row is excluded by its own prefix: it prints
+    as "Current Gas Charges" and is already read from the gas section's total.
+    """
+    for line in summary.lines:
+        label = line.label.strip().lower()
+        if label.startswith("gas") and not label.startswith("current gas"):
+            return line.amount
+    return None
 
 
 def _agreement_spans(page: str) -> tuple[BillingPeriod, ...]:
@@ -641,6 +671,7 @@ def parse_statement(
         service_agreements=len(agreements) or max(1, _delivery_pages(pages)),
         agreements=agreements,
         gas_charges=_scalar(joined, GAS_TOTAL),
+        gas_adjustments=_gas_adjustment(summary),
         electric_adjustments=_summary_amount(summary, "Electric Adjustments"),
         sections=sections,
         rate_schedule=agreements[0].printed_schedule if agreements else "",

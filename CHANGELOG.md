@@ -64,6 +64,19 @@ All notable changes to this project are documented here. This project follows
   self-check for an unrelated reason. A reading that produced a whole statement
   and came up short by a row is the closer near-miss and its problems say what
   to look at, so that is what is reported.
+- **The gas half of a Climate Credit is read.** PG&E issues the California
+  Climate Credit against gas and electricity separately, in April and October,
+  and prints both in the summary. The electric half was read by name and the gas
+  half by nothing, so a combined April statement failed its own check by exactly
+  that credit -- 135.21 electric, -58.23 electric adjustments, 65.71 generation,
+  62.22 gas and -67.03 unread, against a printed 137.88 the five of them reach
+  precisely. `Statement.gas_adjustments` carries it, and `electric_charges` and
+  `self_check` both account for it.
+- **A tariff is recognised from the words when the meridiem is lost too.**
+  Recognition returned "(Peak Pricing 4 9    Every Day)" -- dash and "p.m."
+  alike swallowed by the gaps they sit in -- so no tariff matched and the
+  statement was refused as printing an unsupported one. "Peak Pricing 4 ... 9"
+  is anchor enough on its own.
 - **A dropped hyphen between the peak hours no longer costs a statement.**
   Recognition loses the mark -- it is small and it sits in a gap, the same
   reason `_implied_at` exists for the "@" -- so "Peak Pricing 4 - 9 p.m." came

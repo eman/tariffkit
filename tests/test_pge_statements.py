@@ -187,6 +187,59 @@ def test_spans_with_a_gap_between_them_stay_two_agreements() -> None:
     assert len(parse_module._agreement_spans(page)) == 2
 
 
+def test_the_gas_half_of_a_climate_credit_is_read() -> None:
+    """PG&E credits gas and electricity separately, in April and October.
+
+    Both halves print in the summary. The electric one was read by name and the
+    gas one by nothing, so a combined April statement failed its own check by
+    exactly that credit: 135.21 electric, -58.23 electric adjustments, 65.71
+    generation, 62.22 gas and -67.03 unread, against a printed 137.88 that the
+    five of them reach precisely.
+
+    The label is matched on its opening word because recognition truncates a
+    label at any wide gap inside it -- on the statement this came from it
+    arrived as bare "Gas".
+    """
+    pages = [
+        "\n".join(
+            [
+                "Statement Date: 05/05/2025",
+                "03/31/2025 to 04/28/2025 (29 billing days)",
+                "Your Account Summary",
+                "    Current PG&E Electric Monthly Charges         135.21",
+                "    Electric Adjustments                          -58.23",
+                "    MCE Electric Generation Charges                65.71",
+                "    Current Gas Charges                            62.22",
+                "    Gas    Adjustments                            -67.03",
+                "Total Amount Due                                  137.88",
+            ]
+        )
+    ]
+    statement = parse_statement(pages)
+    assert statement.gas_adjustments == pytest.approx(-67.03)
+    assert statement.amount_due == pytest.approx(137.88)
+
+
+def test_the_gas_charges_row_is_not_mistaken_for_the_adjustment() -> None:
+    """ "Current Gas Charges" is already read from the gas section's own total.
+
+    Matching any label starting "gas" would take it instead, and the identity
+    would then be wrong in the other direction.
+    """
+    pages = [
+        "\n".join(
+            [
+                "Statement Date: 05/05/2025",
+                "03/31/2025 to 04/28/2025 (29 billing days)",
+                "Your Account Summary",
+                "    Current Gas Charges                            62.22",
+                "Total Amount Due                                   62.22",
+            ]
+        )
+    ]
+    assert parse_statement(pages).gas_adjustments is None
+
+
 def test_a_credit_balance_statement_has_no_total_and_is_not_an_error() -> None:
     """An account in credit is issued a statement with no "Total Amount Due".
 
