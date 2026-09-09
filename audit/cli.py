@@ -354,14 +354,28 @@ def _reconcile(
         start, end = window(statement.period, read_hour=read_hour)
         sources = {"influx": read_counters(settings, start, end)}
 
-        # Home Assistant's hourly statistics, when asked for. They carry a real
-        # per-hour figure, where the InfluxDB reader differences raw counter
-        # samples and reconstructs any hour it has no sample inside -- 448 hours
-        # of one 720-hour cycle, and 19.9 kWh of export attributed to the wrong
-        # hours against the same meter read hourly. The totals agree to the
-        # kilowatt-hour either way; it is the time-of-use split that moves, and
-        # peak delivery costs more than off-peak, so it is real money on a bill
-        # that otherwise reconciles.
+        # Home Assistant's hourly statistics as a second meter, when asked for.
+        # A cross-check, not an upgrade.
+        #
+        # The two read the same meter and agree on a cycle's totals to the
+        # kilowatt-hour, then disagree about which hours it arrived in -- 19.9
+        # kWh of export over one 720-hour cycle, 189 hours apart by more than
+        # 0.01. That is what `compare_sources` exists to surface, and it is real
+        # money, because peak delivery costs more than off-peak.
+        #
+        # `influx` stays the default on measurement: across four statements it
+        # reconciles two where Home Assistant reconciles none. Not because
+        # either meter is inaccurate, though, and the tempting story about
+        # reconstructed hours does not survive contact with the evidence. The
+        # disagreement is spread evenly over hours InfluxDB reconstructed and
+        # hours it sampled (10.37 kWh against 9.55 kWh), and scored against the
+        # only arbiter there is -- the time-of-use kilowatt-hours the statement
+        # prints itself -- both reproduce the import split, Home Assistant
+        # marginally the closer: against a printed 0.488 / 0.677 / 38.741,
+        # InfluxDB reads 0.495 / 0.685 / 38.722 and Home Assistant
+        # 0.497 / 0.665 / 38.740. Where they part company is the export side,
+        # which no printed figure settles. So the default rests on the
+        # reconciliation result and not on a claim about which meter is better.
         if meter == "ha":
             from tariffkit.sources.homeassistant import HaSettings, read_statistics
 
