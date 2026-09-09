@@ -119,9 +119,11 @@ All notable changes to this project are documented here. This project follows
   totals to the kilowatt-hour and disagree about which hours it arrived in --
   19.9 kWh of export over one 720-hour cycle, 189 hours apart by more than 0.01
   -- which is real money, because peak delivery costs more than off-peak.
-  InfluxDB remains the default and the measurement says it should: on four
-  statements it reconciles two where Home Assistant reconciles none, despite
-  marking 448 of those hours as reconstructed between counter samples.
+  InfluxDB remains the default because it reconciles two of four statements
+  where Home Assistant reconciles none -- but not because either meter is
+  inaccurate. Scored against the time-of-use kilowatt-hours the statement prints
+  itself, both reproduce the import split to within 0.03 kWh. The two part
+  company on the export side, which no printed figure arbitrates.
 - **The ceiling that caps `credit_applied`, published** (#58). Export credits
   are scoped, so what a cycle can spend is capped bucket by bucket rather than
   by the charge total -- a cycle holding $34.78 of charges and $19.94 of credit
