@@ -301,7 +301,16 @@ class Statement:
                 f"{self.period.start}..{self.period.end} span {self.period.days}"
             )
 
-        seen: set[tuple[Section, str, tuple[date, date] | None, str, int]] = set()
+        # Keyed on the amount as well as the label. What this looks for is one
+        # row collected twice because two sections overlapped, and a row
+        # collected twice carries the same amount both times. Two rows that
+        # merely share a label are a different thing entirely -- recognition
+        # widens the gaps inside a label, and `_fields` splits on two spaces, so
+        # "Current PG&E Electric Monthly Charges" and "Current Gas Charges" both
+        # come back labelled "Current" on a combined statement. That is not an
+        # overlap, and refusing the statement for it cost two real statements
+        # out of twenty-one.
+        seen: set[tuple[Section, str, tuple[date, date] | None, str, int, float]] = set()
         for line in self.lines():
             key = (
                 line.section,
@@ -309,6 +318,7 @@ class Statement:
                 line.subperiod,
                 line.block,
                 line.agreement,
+                round(line.amount, 2),
             )
             if key in seen:
                 problems.append(

@@ -242,6 +242,33 @@ def normalize_tariff(printed: str) -> str | None:
     return None
 
 
+def _ocr_failure(
+    source: str,
+    unchecked: Sequence[Sequence[str]],
+    failures: Sequence[StatementError],
+) -> StatementError:
+    """Which reading's problem to report when none of them checked out.
+
+    The near-miss, whenever there is one. A reading that produced a whole
+    Statement and came up short by a row is closer to right than one that could
+    not read a word, and its problems name what to go and look at; the other
+    only says that some reading somewhere disagreed. Reporting the wrong one
+    sent two investigations to the wrong page -- a statement blamed "page 3
+    prints an unsupported tariff", from a reading whose "p.m." had vanished,
+    while the reading that named the tariff correctly had failed its self-check
+    for an unrelated reason.
+    """
+    if unchecked:
+        closest = min(unchecked, key=len)
+        return StatementError(
+            f"{source} OCR read the statement but it did not check out "
+            f"({len(closest)} problem(s)): {'; '.join(closest[:3])}"
+        )
+    if failures and all(isinstance(failure, StatementAmbiguityError) for failure in failures):
+        return failures[0]
+    return StatementError(f"{source} OCR did not produce a self-checking statement")
+
+
 def read_statement(path: str | Path) -> Statement:
     """Read a statement PDF.
 
@@ -289,20 +316,29 @@ def read_statement(path: str | Path) -> Statement:
         # become evidence merely because it produced a Statement object.
         scored: list[Statement] = []
         failures: list[StatementError] = []
+        # Readings that parsed and then failed their own arithmetic. Kept
+        # because they are the closer near-miss: a reading that produced a whole
+        # Statement and came up short by a row says far more about what is wrong
+        # than a different reading's complaint about a word it could not read.
+        # Dropping them silently made the error report the wrong reading -- one
+        # statement blamed "page 3 prints an unsupported tariff" from a reading
+        # whose "p.m." had vanished, while the reading that named the tariff
+        # correctly had failed its self-check for an unrelated reason. Two
+        # investigations went to the wrong page.
+        unchecked: list[list[str]] = []
         for pages in readings(source):
             try:
                 candidate = parse_statement(pages, source=source.name, recognised=True)
             except StatementError as exc:
                 failures.append(exc)
                 continue
-            if not candidate.self_check():
+            problems = candidate.self_check()
+            if not problems:
                 scored.append(candidate)
+            else:
+                unchecked.append(problems)
         if not scored:
-            if failures and all(
-                isinstance(failure, StatementAmbiguityError) for failure in failures
-            ):
-                raise failures[0]
-            raise StatementError(f"{source.name} OCR did not produce a self-checking statement")
+            raise _ocr_failure(source.name, unchecked, failures)
         return scored[0]
     statement = parse_statement(pages, source=source.name)
     problems = statement.self_check()

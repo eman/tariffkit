@@ -50,6 +50,63 @@ def test_normalize_tariff(printed: str, expected: str | None) -> None:
     assert normalize_tariff(printed) == expected
 
 
+def test_a_reading_that_parsed_is_reported_over_one_that_did_not() -> None:
+    """The near-miss says more than a different reading's complaint.
+
+    A reading that produced a whole Statement and came up short by a row is
+    closer to right than one that could not read a word, and its problems name
+    what to go and look at. Reporting the other one sent two investigations to
+    the wrong page: a statement blamed "page 3 prints an unsupported tariff",
+    from a reading whose "p.m." had vanished, while the reading that named the
+    tariff correctly had failed its self-check for an unrelated reason.
+    """
+    unchecked = [["delivery: rows sum to 51.67 but the section prints 21.07"]]
+    ambiguous = [StatementAmbiguityError("page 3 prints an unsupported tariff")]
+
+    reported = parse_module._ocr_failure("probe.pdf", unchecked, ambiguous)
+    assert "did not check out" in str(reported)
+    assert "rows sum to 51.67" in str(reported), "the near-miss names the row"
+
+    # With nothing that parsed, the ambiguity is still the best thing to say.
+    assert parse_module._ocr_failure("probe.pdf", [], ambiguous) is ambiguous[0]
+    # And with neither, the generic refusal stands.
+    assert "did not produce" in str(parse_module._ocr_failure("probe.pdf", [], []))
+
+
+def test_two_rows_sharing_a_truncated_label_are_not_an_overlap() -> None:
+    """Recognition widens the gaps inside a label, and `_fields` splits on two.
+
+    So "Current PG&E Electric Monthly Charges" and "Current Gas Charges" both
+    come back labelled "Current" on a combined statement. The duplicate check
+    keyed on the label alone and called that overlapping sections, refusing two
+    real statements out of twenty-one. What it looks for is one row collected
+    twice, and such a row carries the same amount both times.
+    """
+    pages = [
+        "\n".join(
+            [
+                "Statement Date: 02/05/2026",
+                "07/29/2026 to 08/27/2026 (30 billing days)",
+                "Your Account Summary",
+                "Current    PG&E Electric Monthly Charges          21.07",
+                "Current    Gas Charges                            62.22",
+                "Total Amount Due                                  83.29",
+            ]
+        )
+    ]
+    statement = parse_statement(pages)
+    overlaps = [p for p in statement.self_check() if "appears twice" in p]
+    assert overlaps == [], f"two different rows are not an overlap: {overlaps}"
+
+
+def test_the_closest_reading_is_the_one_reported() -> None:
+    """Fewest problems wins: that reading is nearest to being usable."""
+    unchecked = [["a", "b", "c"], ["only one thing wrong"], ["d", "e"]]
+    reported = str(parse_module._ocr_failure("probe.pdf", unchecked, []))
+    assert "only one thing wrong" in reported
+    assert "1 problem(s)" in reported
+
+
 def test_a_dropped_hyphen_between_the_peak_hours_still_names_the_tariff() -> None:
     """Recognition loses the mark, the way it loses the "@" on a metered row.
 

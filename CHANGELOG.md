@@ -35,6 +35,20 @@ All notable changes to this project are documented here. This project follows
   billed at $10.12 instead of $1.10, and one statement's delivery section summed
   to 51.67 against a printed 21.07. It now sums to 21.07 and every metered row
   carries its quantity and rate.
+- **Two rows sharing a truncated label are no longer read as overlapping
+  sections.** Recognition widens the gaps inside a label and `_fields` splits on
+  two spaces, so "Current PG&E Electric Monthly Charges" and "Current Gas
+  Charges" both come back labelled "Current" on a combined statement. The
+  duplicate check keyed on the label alone and refused the statement. What it
+  looks for is one row collected twice, and such a row carries the same amount
+  both times, so the amount is part of the key now.
+- **A failed recognition names the reading that came closest.** When no reading
+  checked out, the error reported whichever reading raised -- so a statement
+  blamed "page 3 prints an unsupported tariff", from a reading whose "p.m." had
+  vanished, while the reading that named the tariff correctly had failed its
+  self-check for an unrelated reason. A reading that produced a whole statement
+  and came up short by a row is the closer near-miss and its problems say what
+  to look at, so that is what is reported.
 - **A dropped hyphen between the peak hours no longer costs a statement.**
   Recognition loses the mark -- it is small and it sits in a gap, the same
   reason `_implied_at` exists for the "@" -- so "Peak Pricing 4 - 9 p.m." came
