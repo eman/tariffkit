@@ -331,18 +331,45 @@ def apply_observations(
     return working, proposals
 
 
+def _statement_reason(err: Exception) -> str:
+    """The parser's message without the source prefix it already carries.
+
+    ``read_statement`` prefixes its errors with the file it was handed, which
+    for a sync is a temporary name the caller never sees. The reason is the
+    part after it.
+    """
+    text = str(err)
+    _, separator, rest = text.partition(": ")
+    return rest.strip() if separator else text
+
+
 def import_statements(
     repository: NamedProfileRepository,
     name: str,
     paths: Sequence[Path],
     *,
     apply: bool,
-) -> tuple[AccountProfile, list[dict[str, object]]]:
-    """Parse local PDFs and reconcile only their sanitized observations."""
-    from ..providers.pge.reconcile import import_statement
+) -> tuple[AccountProfile, list[dict[str, object]], list[dict[str, str]]]:
+    """Parse local PDFs and reconcile only their sanitized observations.
 
-    observations = [import_statement(path) for path in paths]
-    return apply_observations(repository, name, observations, apply=apply)
+    Returns the statements that could not be read alongside the proposals, for
+    the same reason :func:`sync_profile` does: a directory of statements is
+    worth importing even when one of them is a document this parser has never
+    seen. Here the caller named the files, so each skip is reported by its own
+    path rather than by a date.
+    """
+    from ..providers.pge.reconcile import import_statement
+    from ..providers.pge.statements.errors import StatementError
+
+    observations = []
+    skipped: list[dict[str, str]] = []
+    for path in paths:
+        try:
+            observations.append(import_statement(path))
+        except StatementError as err:
+            skipped.append({"statement": str(path), "reason": _statement_reason(err)})
+    updated, proposals = apply_observations(repository, name, observations, apply=apply)
+    return updated, proposals, skipped
 
 
 def _cache_directory(name: str) -> Path:
@@ -420,14 +447,22 @@ def sync_profile(
     apply: bool,
     keep_statements: bool = False,
     config_path: str | Path | None = None,
-) -> tuple[AccountProfile, list[dict[str, object]]]:
-    """Download, parse, and reconcile portal statements through a private cache."""
+) -> tuple[AccountProfile, list[dict[str, object]], list[dict[str, str]]]:
+    """Download, parse, and reconcile portal statements through a private cache.
+
+    Returns the profile, the reconciliation proposals, and the statements that
+    could not be read. The third is not an error: the portal lists whatever it
+    lists, and one document the parser does not recognise must not cost the
+    caller the twenty-four beside it.
+    """
     from ..providers.pge.reconcile import import_statement
+    from ..providers.pge.statements.errors import StatementError
     from ..sources.pge import PgeSession
 
     profile = repository.load(name)
     cache = _cache_directory(name)
     observations: list[AccountObservation] = []
+    skipped: list[dict[str, str]] = []
     try:
         settings = _pge_settings(profile, config_path)
         with PgeSession(settings) as session:
@@ -457,20 +492,42 @@ def sync_profile(
                     continue
                 selected.append((identifier, issued.isoformat() if issued else None))
             if not selected:
-                return profile, []
-            for index, (identifier, _issued) in enumerate(selected):
+                return profile, [], []
+            for index, (identifier, issued_on) in enumerate(selected):
                 pdf_path = cache / f"statement-{index:04d}.pdf"
                 pdf_path.write_bytes(session.download_bill(identifier))
                 pdf_path.chmod(0o600)
                 try:
                     observations.append(import_statement(pdf_path))
+                except StatementError as err:
+                    # One statement the parser cannot read is a statement not
+                    # imported, not a failed sync. Letting it propagate threw
+                    # away every observation already collected and every
+                    # statement after it -- an account with 25 statements
+                    # imported none of them because the newest one would not
+                    # parse, and the command exited non-zero as though the
+                    # portal or the credentials were at fault.
+                    #
+                    # Named by the date the utility issued it, not by the
+                    # temporary file. `statement-0000.pdf` is a loop index
+                    # inside a cache directory this function deletes on the way
+                    # out, so the one identifier in the message named a file
+                    # that no longer existed and said nothing about which
+                    # statement to go and look at.
+                    skipped.append(
+                        {
+                            "statement": issued_on or f"#{index}",
+                            "reason": _statement_reason(err),
+                        }
+                    )
                 finally:
                     if not keep_statements:
                         pdf_path.unlink(missing_ok=True)
     finally:
         if not keep_statements:
             shutil.rmtree(cache, ignore_errors=False)
-    return apply_observations(repository, name, observations, apply=apply)
+    updated, proposals = apply_observations(repository, name, observations, apply=apply)
+    return updated, proposals, skipped
 
 
 def profile_summary(profile: AccountProfile) -> dict[str, Any]:

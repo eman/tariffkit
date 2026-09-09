@@ -8,6 +8,7 @@ import getpass
 import json
 import logging
 import sys
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -402,6 +403,18 @@ def _print_profile(profile: Any, *, json_output: bool) -> None:
     print(f"observations: {summary['observations']}")
 
 
+def _print_skipped(skipped: Sequence[Mapping[str, str]]) -> None:
+    """Name the statements that were not imported, without failing the run.
+
+    On stderr and prefixed "skipped", not "error": the command did its job for
+    everything else, and printing this as a failure is what sent an owner
+    looking for a broken portal session when one document out of twenty-five
+    was simply not a statement this parser recognises.
+    """
+    for entry in skipped:
+        print(f"skipped {entry['statement']}: {entry['reason']}", file=sys.stderr)
+
+
 def _run_account_command(args: Any) -> int:
     from .account.cli import (
         config_changes,
@@ -482,17 +495,28 @@ def _run_account_command(args: Any) -> int:
         return 0
 
     if command == "import-statement":
-        _updated, proposals = import_statements(
+        _updated, proposals, skipped = import_statements(
             repository,
             args.name,
             args.pdf,
             apply=args.apply,
         )
-        payload = {"profile": args.name, "applied": args.apply, "proposals": proposals}
+        payload = {
+            "profile": args.name,
+            "applied": args.apply,
+            "proposals": proposals,
+            "skipped": skipped,
+        }
         if args.json:
             print(json.dumps(payload, indent=2, default=str))
         else:
-            for path, proposal in zip(args.pdf, proposals, strict=True):
+            # Only the files that produced one. `strict=True` is the right
+            # setting and would now raise, because a skipped statement has no
+            # proposal to pair with.
+            refused = {entry["statement"] for entry in skipped}
+            imported = [path for path in args.pdf if str(path) not in refused]
+            _print_skipped(skipped)
+            for path, proposal in zip(imported, proposals, strict=True):
                 print(f"{path.name}:")
                 proposal_changes = cast(list[dict[str, Any]], proposal["changes"])
                 if proposal_changes:
@@ -507,7 +531,7 @@ def _run_account_command(args: Any) -> int:
         return 0
 
     if command == "sync":
-        _updated, proposals = sync_profile(
+        _updated, proposals, skipped = sync_profile(
             repository,
             args.name,
             since=args.since,
@@ -515,10 +539,16 @@ def _run_account_command(args: Any) -> int:
             keep_statements=args.keep_statements,
             config_path=args.config,
         )
-        payload = {"profile": args.name, "applied": args.apply, "proposals": proposals}
+        payload = {
+            "profile": args.name,
+            "applied": args.apply,
+            "proposals": proposals,
+            "skipped": skipped,
+        }
         if args.json:
             print(json.dumps(payload, indent=2, default=str))
         else:
+            _print_skipped(skipped)
             print(f"received {len(proposals)} statement update(s)")
             for proposal in proposals:
                 proposal_changes = cast(list[dict[str, Any]], proposal["changes"])

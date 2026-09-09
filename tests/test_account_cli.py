@@ -376,13 +376,78 @@ def test_account_sync_removes_private_cache_after_parsing(
     reconcile_module = importlib.import_module("tariffkit.providers.pge.reconcile")
     monkeypatch.setattr(reconcile_module, "import_statement", lambda _path: imported)
 
-    _profile, proposals = sync_profile(repository, "home", apply=False)
+    _profile, proposals, skipped = sync_profile(repository, "home", apply=False)
 
     assert len(proposals) == 1
+    assert skipped == []
     assert not tuple(cache.rglob("*.pdf"))
     # Without this the statement list comes back empty and the sync reports
     # "0 statement update(s)" against an account that has plenty.
     assert opened[0].signed_in, "sync must sign in before listing statements"
+
+
+def test_one_unreadable_statement_does_not_discard_the_rest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The portal lists what it lists; the parser does not have to like all of it.
+
+    A `StatementError` from one document used to propagate out of the whole
+    loop, so an account with statements going back years imported none of them
+    because the newest one would not parse -- and the command exited non-zero,
+    as though the portal or the credentials were at fault. Reported from a real
+    sync as `error: statement-0000.pdf: no total amount due found`, which named
+    a temporary file inside a cache directory the function deletes on its way
+    out: nothing the owner could open, and no clue which statement it meant.
+    """
+    from tariffkit.providers.pge.statements.errors import StatementError
+
+    repository = NamedProfileRepository(tmp_path)
+    repository.save("home", AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),)))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    class Session:
+        def __enter__(self) -> Session:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def login(self, *, force: bool = False) -> None:
+            return None
+
+        def bill_history(self) -> list[dict[str, str]]:
+            return [
+                {"billId": "newest", "billDate": "2026-09-04"},
+                {"billId": "older", "billDate": "2026-08-04"},
+            ]
+
+        def download_bill(self, bill_id: str) -> bytes:
+            return bill_id.encode()
+
+    import tariffkit.sources.pge as pge_module
+
+    monkeypatch.setattr(pge_module, "PgeSession", lambda _settings: Session())
+    monkeypatch.setattr(pge_module.PgeSettings, "load", lambda _path=None: object())
+
+    good = observation(tariff="EV2-A", digest="c" * 64)
+
+    def _import(path: Path) -> object:
+        if path.read_bytes() == b"newest":
+            raise StatementError(f"{path.name}: no total amount due found")
+        return good
+
+    reconcile_module = importlib.import_module("tariffkit.providers.pge.reconcile")
+    monkeypatch.setattr(reconcile_module, "import_statement", _import)
+
+    _profile, proposals, skipped = sync_profile(repository, "home", apply=False)
+
+    assert len(proposals) == 1, "the readable statement still imported"
+    assert len(skipped) == 1
+    # Named by the date the utility issued it, not by the temporary file the
+    # loop index produced -- that name is gone by the time anyone reads it.
+    assert skipped[0]["statement"] == "2026-09-04"
+    assert skipped[0]["reason"] == "no total amount due found"
+    assert "statement-0000" not in skipped[0]["reason"]
 
 
 def test_account_selection_rejects_config_and_accepts_profile(

@@ -6,6 +6,19 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Fixed
+- **One unreadable statement no longer discards a whole sync.** A
+  `StatementError` from any single PDF propagated out of the loop in
+  `account sync` and `account import-statement`, so an account with years of
+  statements imported none of them because the newest one would not parse --
+  and the command exited non-zero, as though the portal or the credentials were
+  at fault. Reported from a real sync as
+  `error: statement-0000.pdf: no total amount due found`, naming a temporary
+  file inside a cache directory the same function deletes on its way out:
+  nothing the owner could open, and no indication of which statement it meant.
+  Statements that cannot be read are now skipped, reported on stderr as
+  `skipped <date>: <reason>`, and returned in a `skipped` list beside the
+  proposals -- named by the date the utility issued the statement rather than
+  by the loop index.
 - **A bank the money entities would not spend, and would not say so.** The
   amount-due entities refuse an export credit bank they cannot vouch for, which
   is the safe direction, but the note explaining the refusal was gated behind
