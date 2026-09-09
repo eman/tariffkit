@@ -53,6 +53,63 @@ def test_parse_errors_are_public_statement_errors() -> None:
         parse_statement(["not a statement"])
 
 
+def test_a_credit_balance_statement_has_no_total_and_is_not_an_error() -> None:
+    """An account in credit is issued a statement with no "Total Amount Due".
+
+    Nothing is due, so the utility prints "CREDIT BALANCE - NO PAYMENT DUE" and
+    the negative balance instead. Refusing the statement for the absence of a
+    line it is correct not to have reported "no total amount due found" -- true,
+    and not an error -- and took the whole sync down with it.
+
+    Layout extraction splits the label around its own figure, which is why the
+    pattern spans lines: the amount lands between "NO PAYMENT" and "DUE".
+    """
+    pages = [
+        "\n".join(
+            [
+                "Statement Date: 09/04/2026",
+                "07/29/2026 to 08/27/2026 (30 billing days)",
+                "Your Account Summary",
+                "    Current PG&E Electric Monthly Charges          $21.07",
+                "    Electric Adjustments                          -36.18",
+                "    CREDIT BALANCE - NO PAYMENT",
+                "                                                 -$21.96",
+                "    DUE",
+            ]
+        )
+    ]
+    statement = parse_statement(pages)
+    assert statement.amount_due == pytest.approx(-21.96)
+
+
+def test_a_misread_date_is_a_statement_error_not_a_valueerror() -> None:
+    """Recognition can turn a digit into an impossible date, and must survive it.
+
+    The pre-November-2025 statements draw every character with a font whose
+    ToUnicode map calls most glyphs spaces, so they are read by recognition,
+    which can misread. `read_statement` knows that: its reading loop discards a
+    reading that raises `StatementError` and tries the next one.
+
+    A misread that produced `41/12/2026` escaped the loop entirely, because
+    `date()` raises `ValueError` and the guard catches `StatementError`. One
+    statement out of twenty-one in a real sync printed
+    `ValueError: month must be in 1..12, not 41` as a traceback from inside the
+    loop whose whole purpose is to survive exactly that.
+    """
+    pages = [
+        "\n".join(
+            [
+                "Statement Date: 02/05/2026",
+                "Your Account Summary",
+                "Total Amount Due                                      10.00",
+                "41/12/2026 to 12/31/2026 (30 billing days)",
+            ]
+        )
+    ]
+    with pytest.raises(StatementError, match="is not a date"):
+        parse_statement(pages)
+
+
 def minimal_statement(*delivery_pages: str) -> list[str]:
     return [
         "\n".join(

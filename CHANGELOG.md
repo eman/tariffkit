@@ -19,6 +19,19 @@ All notable changes to this project are documented here. This project follows
   `skipped <date>: <reason>`, and returned in a `skipped` list beside the
   proposals -- named by the date the utility issued the statement rather than
   by the loop index.
+- **A statement for an account in credit is read, not refused.** When the
+  balance is negative the utility prints "CREDIT BALANCE - NO PAYMENT DUE" and
+  the figure instead of a "Total Amount Due" line, so the parser refused the
+  statement with `no total amount due found` -- true, and not an error. The
+  credit balance is now the statement's `amount_due`, negative, which is what
+  `self_check` already expected: on 2026-09-04 the detail sections and summary
+  adjustments close on it to the cent (21.07 - 6.85 - 36.18 = -21.96).
+- **An impossible date from recognition no longer escapes as a `ValueError`.**
+  `read_statement` discards a reading that raises `StatementError` and tries the
+  next, which is how the recognised Type 3 statements are read at all -- but
+  `_parse_date` raised `ValueError`, so a misread digit (`41/12/2026`) escaped
+  that guard and ended the process with a traceback from inside the loop whose
+  purpose is to survive it.
 - **A bank the money entities would not spend, and would not say so.** The
   amount-due entities refuse an export credit bank they cannot vouch for, which
   is the safe direction, but the note explaining the refusal was gated behind

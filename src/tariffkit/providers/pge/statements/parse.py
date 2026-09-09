@@ -131,6 +131,23 @@ BLOCK_HEADING = re.compile(
 #: printed total to check its rows against.
 SBP_TOTAL = re.compile(r"^\s*Solar\s+Billing\s+Plan\s+Charges\s")
 
+#: What the summary prints instead of a total when the account is in credit.
+#:
+#: There is then no "Total Amount Due" line anywhere on the statement, because
+#: nothing is due: the utility prints "CREDIT BALANCE - NO PAYMENT DUE" and the
+#: negative balance beside it. Refusing the statement for the absence of a line
+#: it is correct not to have reported "no total amount due found" -- true, and
+#: not an error -- and aborted the sync that met it.
+#:
+#: Matched across lines because layout extraction splits the label around its
+#: own figure: "CREDIT BALANCE - NO PAYMENT", then the amount, then "DUE". The
+#: span is bounded so the pattern cannot reach past the summary into the first
+#: negative number of some later section.
+CREDIT_BALANCE = re.compile(
+    r"CREDIT\s+BALANCE\s*[-\u2013]\s*NO\s+PAYMENT.{0,400}?(-\$?[\d,]+\.\d{2})",
+    re.I | re.S,
+)
+
 #: Gas, on a combined statement. Taken from the gas section's own total rather
 #: than from the summary: the summary prints "Current Gas Charges" with the
 #: amount in a column that extraction drops entirely, so the only place the
@@ -187,8 +204,27 @@ def _fields(line: str) -> list[str]:
 
 
 def _parse_date(text: str) -> date:
-    month, day, year = (int(part) for part in text.split("/"))
-    return date(year, month, day)
+    """A printed MM/DD/YYYY field, or a refusal this module owns.
+
+    ``StatementError`` rather than the ``ValueError`` ``date()`` raises, because
+    of where this is reached from. Recognition reads the pre-November-2025
+    statements whose fonts call every glyph a space, and it can misread a digit
+    -- ``read_statement`` says so, and its reading loop is built to discard a
+    bad reading and try the next one. That guard catches ``StatementError``, so
+    a misread that produced an impossible date escaped it entirely and took the
+    process down: one statement out of twenty-one printed
+    ``month must be in 1..12, not 41`` as a traceback, from inside the loop
+    whose whole purpose is to survive exactly that.
+
+    Not a validity check on the utility's printing. It is a reading that cannot
+    be a date, and the layer that knows how to try again is the one that should
+    hear about it.
+    """
+    try:
+        month, day, year = (int(part) for part in text.split("/"))
+        return date(year, month, day)
+    except ValueError as exc:
+        raise StatementError(f"{text!r} is not a date") from exc
 
 
 def normalize_tariff(printed: str) -> str | None:
@@ -475,7 +511,19 @@ def parse_statement(
     sections = _sections(pages)
 
     summary = next((s for s in sections if s.name is Section.SUMMARY), None)
-    if summary is None or summary.printed_total is None:
+    if summary is None:
+        raise StatementError(f"{source or 'statement'}: no account summary found")
+    printed_total = summary.printed_total
+    if printed_total is None:
+        # A credit balance prints no total, and that is the statement being
+        # right rather than the parse being wrong. The figure is the balance
+        # itself, negative: `self_check` already expects exactly that, since it
+        # tests the detail sections plus the summary adjustments against this
+        # number -- 21.07 delivery, -6.85 generation, -36.18 adjustments, and
+        # -21.96 printed, which closes to the cent.
+        credit = CREDIT_BALANCE.search(joined)
+        printed_total = _money(credit.group(1)) if credit else None
+    if printed_total is None:
         raise StatementError(f"{source or 'statement'}: no total amount due found")
 
     # Summed over distinct blocks, not the first found. A statement covering
@@ -506,7 +554,7 @@ def parse_statement(
     return Statement(
         statement_date=_parse_date(stamp.group(1)),
         period=period,
-        amount_due=summary.printed_total,
+        amount_due=printed_total,
         account_masked=re.sub(r"\D", "", account.group(1))[-4:] if account else "",
         billed_days=billed_days,
         billed_kwh=(sum(kwh for kwh, _ in usage_blocks) or None if usage_blocks else None),
