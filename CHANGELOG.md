@@ -23,7 +23,18 @@ All notable changes to this project are documented here. This project follows
   unfiltered meter counter that resets its session several times a day, 56
   refused hours took 21.4 kWh of import with them and billed 74.5 kWh as 53.1.
   Each direction is now judged on its own, and only an interval with no usable
-  half is dropped.
+  half is dropped. A refused direction reads as `0.0`, because a float cannot
+  say "unknown", so the interval records it in `IntervalReading.unmetered` and
+  `check_coverage` reports it -- keeping the good half's energy *and* the hole,
+  where dropping the interval kept only the hole.
+- **Two tests that had stopped running.** `test_a_running_sum_restart_is_discarded`
+  -- the one guarding the plausibility ceiling on meter readings -- was
+  uncollectable: it used `caplog`, which `pytest_homeassistant_custom_component`
+  overrides by requesting, and pytest 9 reads a plugin fixture asking for its own
+  name as a recursive dependency. A `captured_logs` fixture replaces it, formats
+  each record through the logging machinery, and does not collide with the
+  plugin. A suite reporting an error beside its passes still looks green at a
+  glance, which is how this survived.
 
 ### Changed
 - **Uncompensated pre-PTO exports are reported as a figure, not a warning.**

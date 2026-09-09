@@ -189,16 +189,14 @@ def _readings_from(
     they are merged into one ``IntervalReading`` here -- but nothing about a
     restart on one meter says anything about the other.
 
-    The trade-off this makes, stated plainly: an interval kept for its good
-    direction reports the refused direction as ``0.0``, and ``IntervalReading``
-    has no way to say "this half is unknown", so coverage checking sees a whole
-    interval and no gap. That under-counts the refused direction instead of
-    losing both. Only when *both* directions are refused is the interval dropped
-    entirely, which is the case where leaving a hole still buys something. The
-    principled fix is per-direction coverage, as
-    ``custom_components.tariffkit.energy`` already keeps -- it tracks a
-    ``covered`` set per entity -- and that needs a model change this function
-    cannot make on its own.
+    A refused direction reads as ``0.0``, because a float cannot say "unknown" --
+    so the interval records which directions it could not measure in
+    ``IntervalReading.unmetered``, and :func:`check_coverage` reports them. That
+    keeps the good half's energy *and* the hole, where dropping the interval
+    kept only the hole and clamping to the ceiling would have kept neither.
+    Only when *both* directions are refused is the interval dropped entirely:
+    nothing is left to preserve, and a row of two zeros would read as a measured
+    hour of no energy.
     """
     imported = {p["start"]: p.get("change") or 0.0 for p in series.get(settings.import_entity, [])}
     exported = {p["start"]: p.get("change") or 0.0 for p in series.get(settings.export_entity, [])}
@@ -213,13 +211,15 @@ def _readings_from(
         out = max(exported.get(stamp, 0.0), 0.0)
         # Not clamped to the ceiling: the reading is not merely large, it is not
         # a reading at all, and a clamped 100 kWh would be billed as if measured.
-        refused = [name for name, value in (("in", into), ("out", out)) if value > ceiling]
+        refused = frozenset(
+            name for name, value in (("imported", into), ("exported", out)) if value > ceiling
+        )
         if refused:
             log.warning(
                 "discarding the %s half of the %s statistics point: %.3f kWh in / "
                 "%.3f kWh out over %s implies more than %.0f kW, so that entity's "
                 "running sum restarted here",
-                " and ".join(refused),
+                " and ".join(sorted(refused)),
                 start.isoformat(),
                 into,
                 out,
@@ -230,9 +230,10 @@ def _readings_from(
             continue
         readings[stamp] = IntervalReading(
             start=start,
-            imported=0.0 if into > ceiling else into,
-            exported=0.0 if out > ceiling else out,
+            imported=0.0 if "imported" in refused else into,
+            exported=0.0 if "exported" in refused else out,
             duration=duration,
+            unmetered=refused,
         )
     return readings
 

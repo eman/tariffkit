@@ -34,8 +34,27 @@ class IntervalReading:
     #: the real day gives them nearly a third, which is a real dollar on a
     #: cycle whose total is exact to 0.05 kWh.
     estimated: bool = False
+    #: Directions this interval could not measure -- ``"imported"``,
+    #: ``"exported"``, or both. Their energy reads as ``0.0`` because a float
+    #: has no way to say "unknown", and without this nothing could tell that
+    #: zero apart from a measured hour of no energy.
+    #:
+    #: Import and export are separate meters whose counters fail independently,
+    #: so one can be refused while the other is sound. Dropping the whole
+    #: interval to keep the hole visible was the older answer and it threw away
+    #: the good half: on a real account an export counter that reset its session
+    #: several times a day took 21.4 kWh of good import with it, billing 74.5
+    #: kWh as 53.1. Keeping the good half and naming the refused one keeps both
+    #: the energy and the hole. :func:`check_coverage` reports it.
+    unmetered: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
+        unknown = self.unmetered - {"imported", "exported"}
+        if unknown:
+            raise ValueError(
+                f"unmetered names directions, got {sorted(unknown)}; "
+                f"expected 'imported' and/or 'exported'"
+            )
         if self.imported < 0 or self.exported < 0:
             raise ValueError(
                 f"readings must be non-negative; got imported={self.imported}, "

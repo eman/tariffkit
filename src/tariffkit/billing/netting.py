@@ -90,6 +90,22 @@ def check_coverage(
             f"({shortfall.total_seconds() / 3600:.1f}h missing)"
         )
 
+    # A direction refused inside an interval the other direction still covers.
+    # `covered` above cannot see it -- the interval is present and its duration
+    # counts in full -- so without this the hole is indistinguishable from a
+    # measured hour of no energy, and the bill is quietly short by whatever the
+    # refused meter would have said.
+    for direction in ("imported", "exported"):
+        refused = [r for r in ordered if direction in r.unmetered]
+        if refused:
+            span = sum((r.duration for r in refused), timedelta())
+            yield (
+                f"{len(refused)} interval(s) covering "
+                f"{span.total_seconds() / 3600:.1f}h have no {direction} reading, so "
+                f"that direction's energy is missing from these totals while the other "
+                f"direction's is not"
+            )
+
     if through is not None:
         # A hole after the last reading, which `find_gaps` cannot see: a gap
         # needs a reading on each side of it, and the whole point of a series

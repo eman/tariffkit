@@ -2,12 +2,72 @@
 
 from __future__ import annotations
 
+import logging
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import suppress
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
+
+
+@dataclass
+class CapturedLogs:
+    """Records emitted onto one logger, with the message actually formatted.
+
+    Stands in for pytest's ``caplog``, which is unreachable in this suite:
+    ``pytest_homeassistant_custom_component`` overrides that fixture by
+    requesting it, and pytest 9 reads a plugin fixture that asks for its own
+    name as a recursive dependency and errors at collection. Every test
+    touching ``caplog`` was therefore uncollectable -- including, as it happens,
+    the one guarding the plausibility ceiling on meter readings.
+
+    Named for what it captures rather than shadowing ``caplog``, because
+    shadowing it hits the same recursion. Formats each record through the
+    logging machinery rather than storing ``record.msg``, so an assertion sees
+    the message a reader of the log would see, %-substitutions and all.
+    """
+
+    records: list[logging.LogRecord] = field(default_factory=list)
+
+    @property
+    def text(self) -> str:
+        return "\n".join(record.getMessage() for record in self.records)
+
+    def at(self, level: int) -> list[str]:
+        return [r.getMessage() for r in self.records if r.levelno == level]
+
+
+#: What the ``captured_logs`` fixture hands a test: call it with a logger (or a
+#: logger name) and get back the records emitted onto it for the rest of the test.
+type CaptureLogs = Callable[[logging.Logger | str], CapturedLogs]
+
+
+@pytest.fixture
+def captured_logs() -> Iterator[CaptureLogs]:
+    """Attach a capturing handler to a named logger for one test."""
+    attached: list[tuple[logging.Logger, logging.Handler, int, bool]] = []
+
+    def capture(logger: logging.Logger | str) -> CapturedLogs:
+        target = logging.getLogger(logger) if isinstance(logger, str) else logger
+        captured = CapturedLogs()
+
+        class _Handler(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                captured.records.append(record)
+
+        handler = _Handler()
+        attached.append((target, handler, target.level, target.propagate))
+        target.addHandler(handler)
+        target.setLevel(logging.DEBUG)
+        return captured
+
+    yield capture
+    for target, handler, level, propagate in attached:
+        target.removeHandler(handler)
+        target.setLevel(level)
+        target.propagate = propagate
 
 
 @pytest.fixture(autouse=True)

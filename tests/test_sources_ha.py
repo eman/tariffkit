@@ -15,11 +15,14 @@ from typing import Any
 
 import pytest
 
+from conftest import CaptureLogs
+
 # The source needs the 'ha' extra; skip rather than fail the whole module for a
 # contributor who installed without it.
 pytest.importorskip("websockets")
 
 from tariffkit.account import MeterSource
+from tariffkit.billing import BillingPeriod, check_coverage
 from tariffkit.errors import ConfigError, DataError
 from tariffkit.sources import homeassistant as ha
 from tariffkit.timeutil import PACIFIC
@@ -198,7 +201,7 @@ class TestReadings:
         assert next(iter(ha._readings_from(series, settings, step).values())).imported == 0.0
 
     def test_a_running_sum_restart_is_discarded(
-        self, settings: ha.HaSettings, caplog: pytest.LogCaptureFixture
+        self, settings: ha.HaSettings, captured_logs: CaptureLogs
     ) -> None:
         """The failure this filter exists for, taken from a real instance.
 
@@ -207,7 +210,13 @@ class TestReadings:
         ``change`` -- 543.663 kWh inside one five-minute slot, about 6,500 kW.
         Discarded rather than clamped: it is not a large reading, it is not a
         reading, and the hole it leaves is something coverage checking can report.
+
+        Uses ``captured_logs`` rather than ``caplog``: the Home Assistant test
+        plugin overrides that fixture by requesting it, which pytest 9 refuses
+        as a recursive dependency, and this test spent that whole window
+        uncollectable while looking like a passing suite.
         """
+        logs = captured_logs(ha.log)
         step = timedelta(minutes=5)
         start = datetime(2026, 8, 1, 4, 15, tzinfo=PACIFIC)
         series = {
@@ -217,7 +226,7 @@ class TestReadings:
         got = ha._readings_from(series, settings, step)
         assert len(got) == 1
         assert next(iter(got.values())).imported == 0.02
-        assert "running sum restarted" in caplog.text
+        assert "running sum restarted" in logs.text
 
     def test_one_meters_restart_does_not_discard_the_other_meters_energy(
         self, settings: ha.HaSettings
@@ -241,6 +250,12 @@ class TestReadings:
         reading = next(iter(got.values()))
         assert reading.imported == 1.872, "the import meter said nothing wrong"
         assert reading.exported == 0.0, "the export half is refused, not clamped"
+        # And the refusal is on the record, so the zero above cannot be mistaken
+        # for a measured hour of no export.
+        assert reading.unmetered == frozenset({"exported"})
+        problems = list(check_coverage([reading], BillingPeriod(start.date(), start.date())))
+        assert any("no exported reading" in p for p in problems)
+        assert not any("no imported reading" in p for p in problems)
 
     def test_both_meters_restarting_still_drops_the_interval(self, settings: ha.HaSettings) -> None:
         """Nothing is left to keep, so the hole is worth more than the row.
