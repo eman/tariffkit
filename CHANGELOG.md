@@ -6,6 +6,21 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Fixed
+- **A counter reset the recorder only believed in no longer costs the hour.**
+  A `total_increasing` sensor reading 0.0 is taken for a counter reset, so the
+  recorder reports the whole counter as the next hour's `change` -- 1455 kWh on
+  a meter that had moved 0.42. The Rainforest Eagle-100 does this several times
+  a day while it re-establishes its meter session. Refusing that figure was
+  right and dropping the hour with it was not: the counter itself is in `state`,
+  and differencing it against the previous hour brings the energy back. On the
+  account this came from, a cycle credited 54.206 kWh against the filtered
+  sensor's 67.016 and now reads 66.938 -- a fifth of its exports, recovered from
+  data the integration already had. The repair refuses where it would be
+  guessing: a spurious zero has nothing to difference, and a gap in the series
+  means the counter also advanced through unrecorded hours, so crediting that to
+  the hour the series resumes would price days of energy at one hour's
+  time-of-use rate. `tariffkit.sources.influx.monotonic` is the same rule one
+  layer down, on raw samples rather than hourly rows.
 - **One unreadable statement no longer discards a whole sync.** A
   `StatementError` from any single PDF propagated out of the loop in
   `account sync` and `account import-statement`, so an account with years of

@@ -837,6 +837,62 @@ async def test_amount_due_is_what_a_statement_would_charge_not_the_bill_total(
     assert cycle.attributes["export_credits"] == pytest.approx(credit, abs=1e-4)
 
 
+def test_a_counter_reset_the_recorder_believed_is_repaired_from_the_counter() -> None:
+    """The Eagle publishes 0.0 while re-establishing its meter session.
+
+    A `total_increasing` sensor reading zero is taken for a counter reset, so
+    the recorder reports the whole counter as the next hour's `change` -- 1455
+    kWh on a meter that moved 0.42. Refusing that figure is right; dropping the
+    hour with it is not, because the counter itself is in `state` and
+    differencing it against the previous hour brings the energy back.
+
+    Measured on the account this came from: 54.206 kWh credited against the
+    filtered sensor's 67.016, and 66.938 once repaired -- a fifth of a cycle's
+    exports, recovered from data the integration already had in hand.
+    """
+    from custom_components.tariffkit.energy import hour_energy
+
+    hour = 3600.0
+    previous = (0.0, 1460.58)
+    assert hour_energy(0.42, 1461.0, previous, hour) == pytest.approx(0.42)
+    # The recorder's figure is absurd and the counter is sound.
+    assert hour_energy(1455.109, 1461.0, previous, hour) == pytest.approx(0.42)
+    assert hour_energy(-3.0, 1461.0, previous, hour) == pytest.approx(0.42)
+
+
+def test_the_repair_refuses_where_it_would_be_guessing() -> None:
+    """Each refusal is a case where differencing would invent a figure.
+
+    The gap case is the one that matters most: a hole in the series means the
+    counter also advanced through hours nobody recorded, and crediting that
+    whole advance to the hour the series resumes would price a week of energy
+    at one hour's time-of-use rate. That is worse than the hole, and confident
+    about it.
+    """
+    from custom_components.tariffkit.energy import hour_energy
+
+    hour = 3600.0
+    previous = (0.0, 1460.58)
+    assert hour_energy(1455.1, 0.0, previous, hour) is None, "the zero is the artefact"
+    assert hour_energy(1455.1, 1461.0, None, hour) is None, "nothing to difference against"
+    assert hour_energy(1455.1, 1461.0, (-2 * hour, 1460.58), hour) is None, "a gap, not an hour"
+    assert hour_energy(1455.1, 1400.0, previous, hour) is None, "the counter went backwards"
+
+
+def test_a_spoiled_hour_does_not_poison_the_next_one() -> None:
+    """The previous *good* counter is what the next hour differences against.
+
+    Carrying the zero forward would make the following hour read the whole
+    counter as its energy -- the same defect one hour later.
+    """
+    from custom_components.tariffkit.energy import _carry
+
+    good = (0.0, 1460.58)
+    assert _carry(good, 3600.0, 0.0) == good, "a zero state is not a usable baseline"
+    assert _carry(good, 3600.0, None) == good
+    assert _carry(good, 3600.0, 1461.0) == (3600.0, 1461.0)
+
+
 @pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
 async def test_the_credit_split_explains_what_capped_credit_applied(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory

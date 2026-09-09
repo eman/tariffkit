@@ -62,6 +62,68 @@ KWH = UnitOfEnergy.KILO_WATT_HOUR
 MAX_INTERVAL_KW = 100.0
 
 
+#: One hour's energy from a statistics row, repairing what the recorder spoiled.
+#:
+#: ``change`` is what the recorder believes the counter advanced by, and it is
+#: wrong whenever the source dropped to zero: a ``total_increasing`` sensor
+#: reading 0.0 is taken for a counter reset, so the next hour's ``change``
+#: carries the whole counter -- 1455 kWh on a meter that had moved 0.003. The
+#: Rainforest Eagle-100 does this several times a day while it re-establishes
+#: its meter session.
+#:
+#: Refusing that row is right and dropping the hour with it is not. The true
+#: figure is still there in ``state``, which is the counter itself: difference
+#: it against the previous hour and the energy comes back. On a real account
+#: that recovered 14.1 kWh of a cycle's 68.3 -- a fifth of it -- across 56
+#: hours the integration had been discarding.
+#:
+#: ``tariffkit.sources.influx.monotonic`` is the same repair one layer down,
+#: applied to raw samples rather than to hourly rows, and its rule is the same:
+#: a reading that is zero or below one already seen is a device artefact and not
+#: energy.
+#:
+#: Only across *consecutive* hours. A gap in the series means the counter also
+#: advanced through hours nobody recorded, and crediting that whole advance to
+#: the hour the series resumes would price a week of energy at one hour's
+#: time-of-use rate -- worse than the hole, and confidently so.
+def _carry(
+    previous: tuple[float, float] | None, slot: float, state: float | None
+) -> tuple[float, float] | None:
+    """The last usable ``(slot, counter)`` pair, given this row.
+
+    A row whose ``state`` is zero or missing is the artefact itself, so it is
+    not what the next row should difference against -- the previous good
+    reading is, and keeping it is what lets a single spoiled hour be repaired
+    rather than propagating.
+    """
+    if state is None:
+        return previous
+    value = float(state)
+    return (slot, value) if value > 0 else previous
+
+
+def hour_energy(
+    change: float | None,
+    state: float | None,
+    previous: tuple[float, float] | None,
+    slot: float,
+    step: float = 3600.0,
+) -> float | None:
+    """The hour's energy, or None when nothing trustworthy can be recovered.
+
+    ``previous`` is the last usable ``(slot, state)`` pair seen for this entity.
+    """
+    if change is not None and 0 <= change <= MAX_INTERVAL_KW:
+        return change
+    if state is None or state <= 0 or previous is None:
+        return None
+    was_at, was = previous
+    if abs(slot - was_at - step) > 1.0:
+        return None
+    advance = state - was
+    return advance if 0 <= advance <= MAX_INTERVAL_KW else None
+
+
 @dataclass(frozen=True, slots=True)
 class MeterSettings:
     """Which entities carry grid exchange, and when the billing cycle opens."""
@@ -328,18 +390,23 @@ class UsageReader:
         ):
             if not entity:
                 continue
+            previous: tuple[float, float] | None = None
             for row in rows.get(entity) or []:
                 slot = float(row["start"])
                 if slot < opens_at.timestamp():
+                    previous = _carry(previous, slot, row.get("state"))
                     continue
                 recorded.setdefault(entity, set()).add(slot)
                 change = row.get("change")
-                if change is None:
-                    continue
-                if change < 0 or change > MAX_INTERVAL_KW:
-                    # Loudly, unlike a silent skip: this is a statistics series
-                    # catching up after a gap, so real energy is being dropped
-                    # and the totals below it will be short by that much.
+                energy = hour_energy(change, row.get("state"), previous, slot)
+                previous = _carry(previous, slot, row.get("state"))
+                if energy is None:
+                    if change is None:
+                        continue
+                    # Loudly, unlike a silent skip: the recorder's figure was
+                    # not usable and the counter could not be differenced
+                    # either, so real energy is being dropped and the totals
+                    # below it will be short by that much.
                     _LOGGER.warning(
                         "Backfill ignoring implausible change of %.1f kWh for %s at %s",
                         change,
@@ -351,7 +418,7 @@ class UsageReader:
                     # now, and the hours either side of it carry or lost the
                     # energy it held, which is what `_reconstructed` looks for.
                     continue
-                hours.setdefault(slot, [0.0, 0.0])[direction] += change
+                hours.setdefault(slot, [0.0, 0.0])[direction] += energy
                 covered.setdefault(entity, set()).add(slot)
         self.discarded = tuple(sorted(set(dropped)))
         self.absent = self._absent_series(covered, recorded, opens_at, closes_at)
@@ -498,26 +565,30 @@ class UsageReader:
         for entity in entities:
             series = rows.get(entity) or []
             hours: dict[float, float] = {}
+            previous: tuple[float, float] | None = None
             for row in series:
-                change = row.get("change")
-                if change is None:
-                    continue
                 slot = float(row["start"])
                 # A statistics series that restarted reports its whole
-                # accumulated total as one hour's change. Dropping it loses that
-                # hour's real energy; keeping it would charge for a year of it.
+                # accumulated total as one hour's change. Charging for that
+                # would bill a year inside an hour; dropping it loses the hour's
+                # real energy, which `hour_energy` recovers from the counter.
                 if slot < opens.timestamp():
+                    previous = _carry(previous, slot, row.get("state"))
                     continue
-                if change < 0 or change > MAX_INTERVAL_KW:
-                    _LOGGER.warning(
-                        "Ignoring implausible change of %.1f kWh for %s at %s",
-                        change,
-                        entity,
-                        datetime.fromtimestamp(slot, tz=PACIFIC).isoformat(),
-                    )
-                    dropped += 1
+                change = row.get("change")
+                energy = hour_energy(change, row.get("state"), previous, slot)
+                previous = _carry(previous, slot, row.get("state"))
+                if energy is None:
+                    if change is not None:
+                        _LOGGER.warning(
+                            "Ignoring implausible change of %.1f kWh for %s at %s",
+                            change,
+                            entity,
+                            datetime.fromtimestamp(slot, tz=PACIFIC).isoformat(),
+                        )
+                        dropped += 1
                     continue
-                hours[slot] = change
+                hours[slot] = energy
             self._hours[entity] = hours
             for row in reversed(series):
                 recorded = row.get("state")
