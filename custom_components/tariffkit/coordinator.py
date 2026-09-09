@@ -293,11 +293,21 @@ class TariffKitData:
 
     @property
     def opening_note(self) -> str:
-        """Why the figures were computed without a bank, or empty."""
-        if self.usage is None or self.bank_pending is None:
+        """Why the figures were computed without a bank, or empty.
+
+        A bank that exists is judged on its own. ``bank_pending`` explains an
+        *absent* bank and nothing else, and gating the untrustworthy case behind
+        it made that case unreachable in exactly the situation it exists for: a
+        fold that succeeds sets no pending reason (``_async_bank`` sets the note
+        only when it returns no bank), so a folded-but-warned-about balance was
+        dropped from every money entity in silence -- the outcome ``opening``
+        says must not happen. Measured on a real account: a $26.55 cycle stated
+        before a $7.73 delivery bank it never mentioned.
+        """
+        if self.usage is None:
             return ""
         if self.bank is None:
-            return self.bank_pending
+            return self.bank_pending or ""
         if not self.bank.trustworthy:
             return (
                 f"the export credit bank is not trustworthy ({'; '.join(self.bank.warnings)}), "

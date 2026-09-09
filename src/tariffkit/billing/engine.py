@@ -144,13 +144,6 @@ class BillEngine:
         if smart_rate_credit:
             import_components["smartrate_credit"] = smart_rate_credit
 
-        if uncompensated:
-            warnings.append(
-                f"{uncompensated:.1f} kWh exported before the Permission To Operate date "
-                f"({self.rates.config.pto_date}); Net Billing compensation starts at PTO, "
-                f"so it earns nothing and is not credited here"
-            )
-
         return Bill(
             period=period,
             buckets=tuple(
@@ -159,6 +152,7 @@ class BillEngine:
             import_components=import_components,
             export_components=export_components,
             fixed_components=fixed_components,
+            uncompensated_kwh=uncompensated,
             warnings=tuple(warnings),
             # Pricing confidence only. Coverage problems travel separately in
             # `warnings`: they say the meter data is patchy, not that the rates
@@ -490,6 +484,7 @@ def compute_segments(
     buckets: dict[tuple[Season, TouPeriod], UsageBucket] = {}
     warnings: list[str] = []
     complete = True
+    uncompensated = 0.0
 
     for segment, part in zip(ordered, price_segments(ordered, readings, check=check), strict=True):
         for target, source in (
@@ -519,6 +514,7 @@ def compute_segments(
             for warning in part.warnings
         )
         complete = complete and part.complete
+        uncompensated += part.uncompensated_kwh
 
     return Bill(
         period=whole,
@@ -526,6 +522,7 @@ def compute_segments(
         import_components=imports,
         export_components=exports,
         fixed_components=fixed,
+        uncompensated_kwh=uncompensated,
         warnings=tuple(warnings),
         complete=complete,
     )

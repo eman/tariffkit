@@ -210,6 +210,17 @@ class Bill:
     #: carry coverage warnings, or cover the period perfectly and still be priced
     #: from an unverified CCA export credit. Check both before trusting a total.
     complete: bool = True
+    #: Energy exported before Permission To Operate, in kWh. Metered but not
+    #: compensated: Net Billing begins at PTO, so these kilowatt-hours are in
+    #: neither ``buckets`` nor ``export_components``.
+    #:
+    #: A number rather than a warning. It used to be one, and ``warnings`` is
+    #: read as "something here may be wrong" -- ``BankState.trustworthy``
+    #: disqualifies a bank for any entry in it -- so the note that an
+    #: arrangement had a start date kept a real balance unspendable for its
+    #: whole first year. Nothing that reads this is asking whether the bill is
+    #: sound; it is asking what happened, which is what a figure answers.
+    uncompensated_kwh: float = 0.0
 
     @property
     def imported_kwh(self) -> float:
@@ -348,5 +359,6 @@ class Bill:
             "fixed_charges": round(self.fixed_charges, 2),
             "total": round(self.total, 2),
             "complete": self.complete,
+            "uncompensated_kwh": round(self.uncompensated_kwh, 3),
             "warnings": list(self.warnings),
         }

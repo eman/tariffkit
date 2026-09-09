@@ -178,6 +178,27 @@ def _readings_from(
     differencing ``sum`` between points. Both are available, but ``change`` is
     already aligned to its own period, so it needs no off-by-one correction and
     yields a value for the first point instead of discarding it.
+
+    **Each direction is judged on its own.** Import and export are separate
+    entities that restart their running ``sum`` independently, and refusing the
+    whole interval when either one did let a single bad series destroy the
+    other's good energy. Measured against an unfiltered Eagle-100 export
+    counter, whose session resets 5.5 times a day: the export series' 56 bad
+    hours took 21.4 kWh of perfectly good *import* with them, 74.5 kWh billed as
+    53.1. The two entities are the reason `check_coverage` sees one series --
+    they are merged into one ``IntervalReading`` here -- but nothing about a
+    restart on one meter says anything about the other.
+
+    The trade-off this makes, stated plainly: an interval kept for its good
+    direction reports the refused direction as ``0.0``, and ``IntervalReading``
+    has no way to say "this half is unknown", so coverage checking sees a whole
+    interval and no gap. That under-counts the refused direction instead of
+    losing both. Only when *both* directions are refused is the interval dropped
+    entirely, which is the case where leaving a hole still buys something. The
+    principled fix is per-direction coverage, as
+    ``custom_components.tariffkit.energy`` already keeps -- it tracks a
+    ``covered`` set per entity -- and that needs a model change this function
+    cannot make on its own.
     """
     imported = {p["start"]: p.get("change") or 0.0 for p in series.get(settings.import_entity, [])}
     exported = {p["start"]: p.get("change") or 0.0 for p in series.get(settings.export_entity, [])}
@@ -190,22 +211,28 @@ def _readings_from(
         # energy flowing the other way; clamp rather than raise on it.
         into = max(imported.get(stamp, 0.0), 0.0)
         out = max(exported.get(stamp, 0.0), 0.0)
-        if into > ceiling or out > ceiling:
-            # Dropped rather than clamped: the reading is not merely large, it is
-            # not a reading at all, and leaving a hole lets coverage checking
-            # report it instead of quietly inventing a plausible number.
+        # Not clamped to the ceiling: the reading is not merely large, it is not
+        # a reading at all, and a clamped 100 kWh would be billed as if measured.
+        refused = [name for name, value in (("in", into), ("out", out)) if value > ceiling]
+        if refused:
             log.warning(
-                "discarding %s statistics point: %.3f kWh in / %.3f kWh out over %s "
-                "implies more than %.0f kW, so the running sum restarted here",
+                "discarding the %s half of the %s statistics point: %.3f kWh in / "
+                "%.3f kWh out over %s implies more than %.0f kW, so that entity's "
+                "running sum restarted here",
+                " and ".join(refused),
                 start.isoformat(),
                 into,
                 out,
                 duration,
                 max_kw,
             )
+        if len(refused) == 2:
             continue
         readings[stamp] = IntervalReading(
-            start=start, imported=into, exported=out, duration=duration
+            start=start,
+            imported=0.0 if into > ceiling else into,
+            exported=0.0 if out > ceiling else out,
+            duration=duration,
         )
     return readings
 

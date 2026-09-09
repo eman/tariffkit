@@ -219,6 +219,46 @@ class TestReadings:
         assert next(iter(got.values())).imported == 0.02
         assert "running sum restarted" in caplog.text
 
+    def test_one_meters_restart_does_not_discard_the_other_meters_energy(
+        self, settings: ha.HaSettings
+    ) -> None:
+        """Import and export restart their sums independently.
+
+        Refusing the whole interval when either did let a bad series destroy the
+        good one beside it. Taken from a real account whose unfiltered Eagle-100
+        export counter resets its meter session 5.5 times a day: the export
+        series' 56 bad hours took 21.4 kWh of good import with them, and a
+        74.5 kWh cycle was billed as 53.1.
+        """
+        step = timedelta(hours=1)
+        start = datetime(2026, 8, 29, 16, tzinfo=PACIFIC)
+        series = {
+            IMPORT_ID: [point(start, 1.872, step)],
+            EXPORT_ID: [point(start, 1463.578, step)],
+        }
+        got = ha._readings_from(series, settings, step)
+        assert len(got) == 1, "the interval survives on its good half"
+        reading = next(iter(got.values()))
+        assert reading.imported == 1.872, "the import meter said nothing wrong"
+        assert reading.exported == 0.0, "the export half is refused, not clamped"
+
+    def test_both_meters_restarting_still_drops_the_interval(self, settings: ha.HaSettings) -> None:
+        """Nothing is left to keep, so the hole is worth more than the row.
+
+        The counterpart to the test above: judging directions separately must
+        not turn an interval with no usable half into a row of two zeros, which
+        coverage checking would accept as a measured hour of no energy.
+        """
+        step = timedelta(minutes=5)
+        start = datetime(2026, 8, 1, 4, 15, tzinfo=PACIFIC)
+        series = {
+            IMPORT_ID: [point(start, 543.663, step), point(start + step, 0.02, step)],
+            EXPORT_ID: [point(start, 796.079, step), point(start + step, 0.0, step)],
+        }
+        got = ha._readings_from(series, settings, step)
+        assert len(got) == 1
+        assert next(iter(got.values())).imported == 0.02
+
     def test_a_plausible_large_interval_survives(self, settings: ha.HaSettings) -> None:
         """The ceiling only ever catches the impossible, not a heavy hour."""
         step = timedelta(hours=1)

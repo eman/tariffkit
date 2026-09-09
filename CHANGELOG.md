@@ -5,6 +5,44 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+- **A bank the money entities would not spend, and would not say so.** The
+  amount-due entities refuse an export credit bank they cannot vouch for, which
+  is the safe direction, but the note explaining the refusal was gated behind
+  `bank_pending` -- a field only ever set when the fold produces *no* bank. A
+  fold that succeeded and warned was therefore dropped in silence: a $26.55
+  cycle stated before a $7.73 delivery balance, `warnings` empty and
+  `quality.complete` true, while the bank entity beside it printed nine
+  warnings. `bank_pending` now explains only an absent bank; a bank that exists
+  is judged on its own.
+- **One meter's counter restart no longer discards the other meter's energy.**
+  The Home Assistant statistics source built one reading from both directions
+  and refused the whole interval when either exceeded the plausibility ceiling.
+  Import and export are separate entities whose running sums restart
+  independently, so a bad export series destroyed good import data: against an
+  unfiltered meter counter that resets its session several times a day, 56
+  refused hours took 21.4 kWh of import with them and billed 74.5 kWh as 53.1.
+  Each direction is now judged on its own, and only an interval with no usable
+  half is dropped.
+
+### Changed
+- **Uncompensated pre-PTO exports are reported as a figure, not a warning.**
+  Net Billing begins at Permission To Operate, so the cycle containing it always
+  holds exports the tariff grants nothing for -- the arrangement starting, not a
+  defect. `Bill.warnings` means "something here may be wrong" and
+  `BankState.trustworthy` disqualifies a bank for any entry in it, so that one
+  note kept a real balance unspendable for its whole first year. The energy is
+  now `Bill.uncompensated_kwh`, and counterfactual rate comparisons can price a
+  pre-PTO month without filtering a warning string to do it.
+
+### Added
+- **[Use cases](docs/use-cases.md)**: the four questions the calculator answers
+  -- a cycle without solar, a cycle with a credit bank, realized solar payback,
+  and comparing rate plans on historical data -- organized by how far back each
+  has to remember, with a runnable recipe and the traps for each. Chief among
+  them: `Bill.total` is not what you owe, and ranking rate plans by it picks the
+  wrong plan.
+
 ## [0.7.0] - 2026-09-07
 
 ### Added

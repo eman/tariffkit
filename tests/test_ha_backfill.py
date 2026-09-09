@@ -759,8 +759,80 @@ def test_a_bank_folded_from_the_pto_cycle_opens_at_zero() -> None:
 
     ledger = run_ledger(result.bills)
     assert ledger.entries[0].opening.total == 0.0
-    # The pre-PTO days of that first cycle earn nothing, and the engine says so.
-    assert any("before the Permission To Operate date" in w for w in result.warnings)
+
+    # The pre-PTO days of that first cycle still earn nothing -- the property
+    # the warning used to stand in for. Same cycle, same rates, PTO the only
+    # variable, so the whole difference is the uncompensated exports.
+    early = AccountProfile(
+        (AccountEpoch(date(2026, 1, 1), Config(tariff="E-ELEC", pto_date=date(2026, 5, 1))),),
+        name="probe",
+    )
+    whole = backfill.build(early, readings, date(2026, 6, 1), date(2026, 7, 31), 1)
+    # 16 days from PTO to month end at 48 kWh a day, against the whole 30.
+    assert result.bills[0].exported_kwh == pytest.approx(768.0)
+    assert whole.bills[0].exported_kwh == pytest.approx(1440.0)
+    assert -result.bills[0].export_credits < -whole.bills[0].export_credits
+
+    # And it is not warned about. Compensation starting is the arrangement
+    # beginning, not a defect in the data, and the cycle containing PTO always
+    # has it. `BankState.trustworthy` disqualifies a bank for any warning at
+    # all, so this one note kept a real balance out of every cycle that could
+    # have spent it -- $9.59 of delivery credit on a live account.
+    assert not any("Permission To Operate" in w for w in result.warnings)
+    # 06-01..06-14 at 48 kWh a day, kept as a figure rather than a complaint.
+    assert result.bills[0].uncompensated_kwh == pytest.approx(672.0)
+
+
+def test_a_pre_pto_segment_of_a_straddling_cycle_is_not_warned_about() -> None:
+    """The shape a real account actually has, and the one that reopened this.
+
+    A mid-cycle schedule change splits the cycle into blocks the utility prices
+    separately, so the cycle containing Permission To Operate can contain a
+    *segment* lying wholly before it -- on the account this came from, EV2-A ran
+    to 2026-06-02 and E-ELEC with PTO began 2026-06-03. Judging that segment on
+    its own dates reintroduces the warning that judging the cycle suppresses,
+    and one warning is all it takes to disqualify the bank.
+    """
+    pto = date(2026, 6, 3)
+    profile = AccountProfile(
+        (
+            AccountEpoch(date(2026, 1, 30), Config(tariff="EV2-A", pto_date=pto)),
+            AccountEpoch(pto, Config(tariff="E-ELEC", pto_date=pto)),
+        ),
+        name="probe",
+    )
+    readings = _hours(date(2026, 6, 1), date(2026, 6, 30), imported=0.2, exported=2.0)
+    result = backfill.build(profile, readings, date(2026, 6, 1), date(2026, 6, 30), 1)
+
+    assert len(result.bills) == 1, "one cycle, however many segments price it"
+    assert not any("Permission To Operate" in w for w in result.warnings)
+    # 28 days from PTO to month end at 48 kWh a day; 2026-06-01..02 earn nothing.
+    assert result.bills[0].exported_kwh == pytest.approx(1344.0)
+
+
+def test_uncompensated_exports_are_reported_as_a_figure_not_a_warning() -> None:
+    """A period wholly before PTO is priced from outside the arrangement.
+
+    Nothing in it earns anything, and that is worth knowing -- a wrong PTO
+    year looks exactly like this. It is reported as kilowatt-hours rather than
+    as a warning, because every reader of ``warnings`` is asking whether the
+    bill is sound and this answers a different question. Counterfactual rate
+    comparisons price pre-PTO months on purpose; they should not have to filter
+    a warning string to do it.
+    """
+    profile = AccountProfile(
+        (AccountEpoch(date(2026, 1, 1), Config(tariff="E-ELEC", pto_date=date(2026, 9, 1))),),
+        name="probe",
+    )
+    readings = _hours(date(2026, 6, 1), date(2026, 6, 30), imported=0.2, exported=2.0)
+    result = backfill.build(profile, readings, date(2026, 6, 1), date(2026, 6, 30), 1)
+
+    bill = result.bills[0]
+    assert not any("Permission To Operate" in w for w in result.warnings)
+    assert bill.export_credits == 0.0, "nothing in the period earns anything"
+    # 30 days at 48 kWh a day, metered and uncompensated.
+    assert bill.uncompensated_kwh == pytest.approx(1440.0)
+    assert bill.exported_kwh == 0.0, "uncompensated energy is in neither bucket"
 
 
 def test_a_refused_day_is_reported_as_a_residual_not_left_to_be_discovered() -> None:

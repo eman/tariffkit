@@ -888,6 +888,62 @@ async def test_an_untrustworthy_bank_does_not_quietly_set_the_amount_due(
 
 
 @pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_an_untrustworthy_bank_is_declared_even_when_the_fold_succeeded(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """The shape a real account is actually in: a fold that worked, and warned.
+
+    ``_async_bank`` sets a pending reason only when it returns *no* bank, so a
+    successful fold leaves ``bank_pending`` None. The note then read the pending
+    reason first and returned early on None, which made the untrustworthy branch
+    unreachable in the one case it exists for -- and the money entities dropped
+    the balance with an empty ``warnings`` list. Found on a live account: a
+    $26.55 cycle stated before a $7.73 delivery bank it never mentioned, while
+    the bank entity beside it printed nine warnings.
+    """
+    from custom_components.tariffkit.bank import BankState
+
+    from tariffkit.billing import CreditBalances
+
+    freezer.move_to(NOW)
+    seed = datetime(2026, 8, 1, tzinfo=PACIFIC)
+    await _record(hass, IMPORT_ENTITY, [(seed, 1000.0), (NOW.replace(hour=13, minute=0), 1300.0)])
+    await _record(hass, EXPORT_ENTITY, [(seed, 500.0), (NOW.replace(hour=13, minute=0), 500.0)])
+    hass.states.async_set(
+        IMPORT_ENTITY, "1300.0", {"unit_of_measurement": "kWh", "device_class": "energy"}
+    )
+    hass.states.async_set(
+        EXPORT_ENTITY, "500.0", {"unit_of_measurement": "kWh", "device_class": "energy"}
+    )
+    await hass.async_block_till_done()
+
+    entry = _entry(_meter_options())
+    await _setup(hass, entry)
+    coordinator = entry.runtime_data
+    unbanked = float(_state(hass, entry, "amount_due_cycle").state)
+
+    doubtful = BankState(
+        CreditBalances(delivery=200.0, bonus=160.0),
+        (date(2026, 7, 1), date(2026, 7, 31)),
+        1,
+        warnings=("31 day(s) inside 2026-07-01..2026-07-31 could not be priced",),
+    )
+    assert not doubtful.trustworthy
+    # bank_pending None is the point: the fold produced a balance, so nothing
+    # was pending. Only the bank's own warnings can explain the refusal.
+    coordinator.data = replace(coordinator.data, bank=doubtful, bank_pending=None)
+    coordinator.async_update_listeners()
+    await hass.async_block_till_done()
+
+    cycle = _state(hass, entry, "amount_due_cycle")
+    assert float(cycle.state) == pytest.approx(unbanked), "the doubtful balance was not spent"
+    assert cycle.attributes["quality"]["complete"] is False
+    warnings = cycle.attributes["warnings"]
+    assert any("not trustworthy" in w for w in warnings)
+    assert any("could not be priced" in w for w in warnings), "the bank's own reason travels"
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
 async def test_a_bank_not_folded_yet_is_declared_rather_than_assumed_absent(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:

@@ -4,6 +4,10 @@ Prices a billing cycle from interval meter data. Pure and dependency-free:
 readings in, decomposed charges out. It does not know or care where the readings
 came from.
 
+For what to *do* with it -- the four questions this answers, how far back each
+one has to remember, and the trap that catches all of them -- see
+[Use cases](use-cases.md).
+
 Tiered E-1/E-TOU-C baseline allowances, Medical Baseline, D-MEDICAL, CARE/FERA,
 and SmartRate are applied as separate bill components. SmartRate requires an
 authoritative list of announced event dates; a missing future event is never
