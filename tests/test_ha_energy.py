@@ -1269,12 +1269,14 @@ def test_the_charge_components_reach_gross_charges_through_the_offset() -> None:
     assert energy + taxes + fixed - offset == pytest.approx(gross)
     assert energy + taxes + fixed != pytest.approx(gross), "otherwise this proves nothing"
 
-    # Generation charges of $1 cannot absorb a $3.396 bonus: $1 is spent and
-    # the remaining $2.396 banks, where `bank_change` reports it.
+    # Generation charges of $1 do not cap a $3.396 bonus. The supplier lets its
+    # own section go negative rather than stopping at nil -- the 2026-09-03
+    # statement prints "Total MCE Electric Generation Charges  -$6.85" -- so the
+    # whole bonus is spent and the identity still closes on it.
     overrun = bill(1.0)
     energy, taxes, fixed, offset, gross = figures(overrun)
-    assert offset == pytest.approx(1.0)
-    assert in_cycle_offsets(overrun).total == pytest.approx(3.396), "the gross figure overshoots"
+    assert offset == pytest.approx(3.396), "all of it is spent, none of it banks"
+    assert in_cycle_offsets(overrun).total == pytest.approx(3.396)
     assert energy + taxes + fixed - offset == pytest.approx(gross)
 
 
@@ -1309,12 +1311,12 @@ def test_the_offset_is_a_share_of_export_credits_not_a_term_beside_it() -> None:
             fixed_components={"base_services_charge": 25.3898},
         )
 
-    # Both addends post-cap, which is the only form that survives an overrun:
-    # the excess an offset could not spend banks, so it is already inside the
-    # first term, and pairing that with the offset the cycle *earned* rather
-    # than the one it spent counts the excess twice. The absorbed case cannot
-    # tell the two forms apart, which is why the overrun case is here.
-    for label, generation, spent in (("absorbed", 8.0, 3.396), ("overrun", 1.0, 1.0)):
+    # The offset is the whole of what the cycle earned either way, because it is
+    # spent whole: a supplier lets its own section go negative rather than
+    # stopping at nil. Both cases are kept because they used to differ -- the
+    # overrun banked its excess, which put the same dollars in two terms -- and
+    # a test that no longer distinguishes them still pins that they agree.
+    for label, generation, spent in (("absorbed", 8.0, 3.396), ("overrun", 1.0, 3.396)):
         one = bill(generation)
         entry = apply_credits(one)
         earned = _earned(one, entry)

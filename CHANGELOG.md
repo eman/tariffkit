@@ -6,6 +6,17 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Fixed
+- **An in-cycle offset larger than its charges is credited, not banked.** The
+  2026-09-03 statement settles a question `SCOPING_VERIFIED` has been open on:
+  MCE's Solar Bonus Credit of -8.33 against smaller generation charges printed
+  "Total MCE Electric Generation Charges  -$6.85", and that -6.85 goes straight
+  into the summary, helping print a -21.96 credit balance. MCE's own bank on the
+  same page shows where it did *not* go -- beginning 12.63, earned 86.16,
+  applied 0.00, remaining 98.79, closing exactly with no room for a remainder.
+  The overrun was being banked instead, overstating the bank by $7.13 on that
+  cycle and understating the credit the customer was given. Every cycle
+  reconciled before this one had generation charges larger than the offset, so
+  the case never arose.
 - **A counter reset the recorder only believed in no longer costs the hour.**
   A `total_increasing` sensor reading 0.0 is taken for a counter reset, so the
   recorder reports the whole counter as the next hour's `change` -- 1455 kWh on

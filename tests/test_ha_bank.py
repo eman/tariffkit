@@ -360,13 +360,17 @@ def test_every_annual_settlement_is_applied_not_only_the_last() -> None:
         .entries[-1]
         .closing
     )
-    # The discarded amount is the part of the reversal the bank could cover.
-    # It used to equal the reversal exactly; now that the reversal is computed
-    # at the rate MCE's tariff actually names -- "including Solar Bonus Credit"
-    # -- it can exceed the balance, and the tariff says so: the reversal "will
-    # be charged against any Export Credit Balance available, otherwise it will
-    # be charged against the NSC payment".
-    assert naive.total - correct.total == pytest.approx(reversal, abs=0.01)
+    # The discarded amount is the part of the reversal the bank could cover, and
+    # bounded by the reversal rather than equal to it. The tariff says why: the
+    # reversal "will be charged against any Export Credit Balance available,
+    # otherwise it will be charged against the NSC payment", so a reversal
+    # priced at the rate MCE names -- "including Solar Bonus Credit" -- can
+    # exceed the balance there is to take it from. Asserting equality pinned an
+    # accident of how much happened to be banked, and broke the day an in-cycle
+    # offset stopped banking its overrun.
+    discarded = naive.total - correct.total
+    assert discarded > 0, "the naive fold keeps credit a settlement already took back"
+    assert discarded <= reversal + 0.01, "and never more than the settlement took"
     assert len(state.true_ups) == len(events)
 
 

@@ -268,29 +268,59 @@ class TestInCycleOffsetOverrun:
             export_components={"cca_solar_bonus": -0.96},
         )
 
-    def test_it_cannot_reduce_non_bypassable_charges(self) -> None:
-        """The excess must not leak into charges nothing is allowed to reduce.
+    def test_it_takes_its_own_bucket_below_zero(self) -> None:
+        """The supplier lets its own section go negative rather than stopping at nil.
 
-        A generation-scoped offset reaching the non-bypassable charges would be
-        exactly backwards -- non-bypassable is what those charges are.
+        Settled by the 2026-09-03 statement: an MCE Solar Bonus Credit of -8.33
+        against smaller generation charges printed "Total MCE Electric
+        Generation Charges  -$6.85", not zero.
         """
         offsettable, _, _ = charges_by_bucket(self.bill())
-        # The non-bypassable charges sit in the bonus bucket now, out of reach
-        # of a generation-scoped offset, which is the property under test. An
-        # overrun banks instead of reaching them.
-        assert offsettable[CreditBucket.GENERATION] == pytest.approx(0.0)
+        assert offsettable[CreditBucket.GENERATION] == pytest.approx(-0.76)
         assert offsettable[CreditBucket.BONUS] >= 0.50
 
-    def test_the_excess_banks_rather_than_becoming_cash_owed(self) -> None:
-        """The statement's rule for any credit it cannot spend: saved for later."""
-        entry = apply_credits(self.bill())
-        assert entry.earned.generation == pytest.approx(0.76)  # 0.96 less the 0.20 it covered
-        assert entry.closing.generation == pytest.approx(0.76)
+    def test_the_excess_is_credited_on_the_bill_not_banked(self) -> None:
+        """It is a credit the customer was given, not a deposit they still hold.
 
-    def test_cash_due_is_the_non_bypassable_charge(self) -> None:
+        The same statement shows where it did *not* go. MCE's own bank on that
+        page reads beginning 12.63, earned 86.16, applied 0.00, remaining 98.79
+        -- which closes exactly and leaves no room for a banked remainder, while
+        the -6.85 goes straight into the summary and helps print a -21.96 credit
+        balance. Banking it overstated the bank by the overrun and understated
+        the credit given: $7.13 on that cycle.
+        """
         entry = apply_credits(self.bill())
-        assert entry.cash_due == pytest.approx(0.50)
-        assert entry.cash_due > 0
+        assert entry.earned.generation == pytest.approx(0.0), "nothing banked"
+        assert entry.closing.generation == pytest.approx(0.0)
+
+    def test_the_overrun_reduces_what_is_owed(self) -> None:
+        """0.50 of charges against a 0.76 overrun leaves nothing to pay.
+
+        `cash_due` floors at zero because a statement charges nothing rather
+        than paying out; the overrun beyond that is the credit balance, which
+        `not_paid_out` carries.
+        """
+        entry = apply_credits(self.bill())
+        assert entry.gross_charges == pytest.approx(-0.26)
+        assert entry.cash_due == pytest.approx(0.0)
+
+    def test_a_banked_credit_still_cannot_reach_a_non_bypassable_charge(self) -> None:
+        """The rule this class used to test, tested where it actually lives.
+
+        Special Condition 2.f bars *export credits* from the non-bypassable
+        charges, and that is the `applied` path -- generation credit is spent
+        against generation charges and reaches nothing else. A supplier's own
+        section printing negative is a different mechanism and not that rule.
+        """
+        bill = Bill(
+            period=PERIOD,
+            import_components={"public_purpose_programs": 0.50},
+            export_components={"cca_generation": -4.0},
+        )
+        entry = apply_credits(bill)
+        assert entry.applied.total == pytest.approx(0.0), "no generation charge to reach"
+        assert entry.closing.generation == pytest.approx(4.0), "it banks, as a credit does"
+        assert entry.cash_due == pytest.approx(0.50), "the non-bypassable charge stands"
 
 
 class TestScoping:
@@ -520,8 +550,11 @@ class TestTheReversalRate:
         true-up, so the customer was clawed back more than the tariff allows.
         """
         entry = self._entry(gen_charge=1.0, eec=6.0, bonus=2.0)
-        assert entry.earned.generation == pytest.approx(7.0)
-        assert entry.in_cycle_offsets.generation == pytest.approx(1.0)
+        # The whole bonus is spent -- it drives the section negative rather than
+        # stopping at nil -- so none of it banks and all of it is an in-cycle
+        # offset. The rate is what has to hold either way, and does.
+        assert entry.earned.generation == pytest.approx(6.0)
+        assert entry.in_cycle_offsets.generation == pytest.approx(2.0)
         assert average_export_rate([entry], CreditBucket.GENERATION) == pytest.approx(0.08)
 
     def test_an_export_with_no_bonus_is_unaffected(self) -> None:
