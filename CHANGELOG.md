@@ -35,6 +35,13 @@ All notable changes to this project are documented here. This project follows
   billed at $10.12 instead of $1.10, and one statement's delivery section summed
   to 51.67 against a printed 21.07. It now sums to 21.07 and every metered row
   carries its quantity and rate.
+- **A cycle split at a rate change is one agreement, not two.** The utility
+  splits a cycle where a rate change or the June 1 season boundary lands and
+  prints both blocks under one schedule -- 08/28-08/31 then 09/01-09/28, one
+  Time-of-Use agreement. `_agreements` read that as two agreements for one
+  schedule, called it ambiguous, and refused the statement whole. Spans that
+  continue one another now join; spans with a gap between them stay two, which
+  is the case the check exists for.
 - **One period printed twice is one agreement.** `_agreement_spans` deduplicated
   on the dates *and* the day count, so a span printed twice with two different
   counts came back as two agreements and `_agreements` refused the statement

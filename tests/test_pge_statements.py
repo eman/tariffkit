@@ -89,6 +89,33 @@ def test_one_period_printed_twice_is_one_agreement() -> None:
     assert (spans[0].start, spans[0].end) == (date(2025, 9, 29), date(2025, 10, 28))
 
 
+def test_a_cycle_split_at_a_rate_change_is_one_agreement() -> None:
+    """The utility splits a cycle where a rate change lands, under one schedule.
+
+    08/28-08/31 then 09/01-09/28, one Time-of-Use agreement, one meter. Read as
+    two spans that is two agreements for one schedule, which `_agreements` calls
+    ambiguous -- so a cycle crossing a rate change or the June 1 season boundary
+    was refused whole rather than priced in the two blocks the tariff charges.
+    Two real statements out of twenty-one were lost to this.
+    """
+    page = "08/28/2025 to 08/31/2025 (4 billing days)\n09/01/2025 to 09/28/2025 (28 billing days)\n"
+    spans = parse_module._agreement_spans(page)
+    assert len(spans) == 1, f"one agreement split at the change: {spans}"
+    assert (spans[0].start, spans[0].end) == (date(2025, 8, 28), date(2025, 9, 28))
+
+
+def test_spans_with_a_gap_between_them_stay_two_agreements() -> None:
+    """The counterpart: joining must not paper over the case the check exists for.
+
+    Two spans that do not continue one another are two agreements, and a page
+    printing both under one schedule is genuinely ambiguous evidence.
+    """
+    page = (
+        "08/01/2025 to 08/10/2025 (10 billing days)\n09/01/2025 to 09/28/2025 (28 billing days)\n"
+    )
+    assert len(parse_module._agreement_spans(page)) == 2
+
+
 def test_a_credit_balance_statement_has_no_total_and_is_not_an_error() -> None:
     """An account in credit is issued a statement with no "Total Amount Due".
 

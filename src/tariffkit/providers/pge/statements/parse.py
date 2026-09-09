@@ -381,12 +381,37 @@ def _agreement_spans(page: str) -> tuple[BillingPeriod, ...]:
     ]
     dated = [match for match in matches if match[2]]
     candidates = dated or matches
-    return tuple(
-        dict.fromkeys(
-            BillingPeriod(start, end)
-            for start, end, _ in sorted(candidates, key=lambda value: value[:2])
-        )
+    spans = dict.fromkeys(
+        BillingPeriod(start, end)
+        for start, end, _ in sorted(candidates, key=lambda value: value[:2])
     )
+    return _joined(tuple(spans))
+
+
+def _joined(spans: tuple[BillingPeriod, ...]) -> tuple[BillingPeriod, ...]:
+    """Fold spans that continue one another into the period they cover.
+
+    A rate change splits a cycle where it lands, and the utility prints the two
+    blocks under one schedule: 08/28-08/31 then 09/01-09/28, one Time-of-Use
+    agreement, one meter. Read as two spans that is two agreements for one
+    schedule, which ``_agreements`` calls ambiguous and refuses the statement
+    over -- so a cycle crossing a rate change or the June 1 season boundary was
+    thrown out whole rather than priced in the two blocks the tariff actually
+    charges. ``parse_statement`` already chains the cycle this way for the
+    statement's own period; this is the same rule, applied where the ambiguity
+    is judged.
+
+    Only *continuing* spans join, one starting the day after the last ended. Two
+    spans with a gap between them are two agreements, and saying so is the whole
+    point of the check.
+    """
+    joined: list[BillingPeriod] = []
+    for span in spans:
+        if joined and span.start == joined[-1].end + timedelta(days=1):
+            joined[-1] = BillingPeriod(joined[-1].start, span.end)
+        else:
+            joined.append(span)
+    return tuple(joined)
 
 
 def _agreements(pages: Sequence[str]) -> tuple[StatementAgreement, ...]:
