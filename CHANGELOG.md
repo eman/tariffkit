@@ -35,6 +35,12 @@ All notable changes to this project are documented here. This project follows
   billed at $10.12 instead of $1.10, and one statement's delivery section summed
   to 51.67 against a printed 21.07. It now sums to 21.07 and every metered row
   carries its quantity and rate.
+- **A dropped hyphen between the peak hours no longer costs a statement.**
+  Recognition loses the mark -- it is small and it sits in a gap, the same
+  reason `_implied_at` exists for the "@" -- so "Peak Pricing 4 - 9 p.m." came
+  back as "4 9 p.m.", matched no tariff, and `_agreements` refused the whole
+  statement as printing an unsupported one. The dash is optional now, made safe
+  by anchoring on the "p.m." after the hours.
 - **A cycle split at a rate change is one agreement, not two.** The utility
   splits a cycle where a rate change or the June 1 season boundary lands and
   prints both blocks under one schedule -- 08/28-08/31 then 09/01-09/28, one

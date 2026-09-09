@@ -50,6 +50,20 @@ def test_normalize_tariff(printed: str, expected: str | None) -> None:
     assert normalize_tariff(printed) == expected
 
 
+def test_a_dropped_hyphen_between_the_peak_hours_still_names_the_tariff() -> None:
+    """Recognition loses the mark, the way it loses the "@" on a metered row.
+
+    "Peak Pricing 4 - 9 p.m." comes back as "4 9 p.m.", no tariff is recognised,
+    and `_agreements` refuses the whole statement as printing an unsupported
+    one. Two statements in a run of twenty-one were lost to a single missing
+    hyphen. Anchoring on the "p.m." after the hours is what makes the dash safe
+    to drop -- a bare "49" is not a peak window.
+    """
+    assert normalize_tariff("Time-of-Use (Peak Pricing 4 9 p.m. Every Day)") == "E-TOU-C"
+    assert normalize_tariff("Time-of-Use (Peak Pricing 5 8 p.m. Every Day)") == "E-TOU-D"
+    assert normalize_tariff("G1 XB Residential Service") is None
+
+
 def test_parse_errors_are_public_statement_errors() -> None:
     with pytest.raises(StatementError, match="no statement date"):
         parse_statement(["not a statement"])

@@ -177,8 +177,15 @@ PRINTED_TARIFFS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"E-?ELEC|Electric\s+Home", re.I), "E-ELEC"),
     (re.compile(r"E-?TOU-?C|ETOUC", re.I), "E-TOU-C"),
     (re.compile(r"E-?TOU-?D|ETOUD", re.I), "E-TOU-D"),
-    (re.compile(r"Time-of-Use.*4\s*-\s*9", re.I), "E-TOU-C"),
-    (re.compile(r"Time-of-Use.*5\s*-\s*8", re.I), "E-TOU-D"),
+    # The dash between the hours is optional, and anchoring on the "p.m." after
+    # them is what makes that safe. Recognition drops the mark -- it is small and
+    # it sits in a gap, the same reason `_implied_at` exists for the "@" -- so
+    # "Peak Pricing 4 - 9 p.m." comes back as "4 9 p.m.", no tariff is
+    # recognised, and `_agreements` refuses the statement as printing an
+    # unsupported one. Two statements in a run of twenty-one were lost to a
+    # single missing hyphen.
+    (re.compile(r"Time-of-Use.*4\s*[-\u2013\u2014]?\s*9\s*p", re.I), "E-TOU-C"),
+    (re.compile(r"Time-of-Use.*5\s*[-\u2013\u2014]?\s*8\s*p", re.I), "E-TOU-D"),
 )
 
 #: Rows that are structure rather than charges.
