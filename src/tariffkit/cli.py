@@ -168,7 +168,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     bill = sub.add_parser("bill", help="compute a bill from interval meter data")
     bill.add_argument("--config", type=Path, default=argparse.SUPPRESS)
-    bill.add_argument("--account", default=argparse.SUPPRESS, help="named account profile to use")
+    bill.add_argument(
+        "--account",
+        default=argparse.SUPPRESS,
+        help="named account profile to price from. A profile is a dated history of the "
+        "agreement -- every tariff it has been on and when, who supplies generation, the "
+        "Permission To Operate date, and which meter entities to read -- where --config "
+        "and config.toml describe a single moment. Without one, a cycle crossing a rate "
+        "change is priced at one tariff throughout and a CCA account is priced as bundled, "
+        "which gives it one export credit bank where it has two. Defaults to the profile "
+        "named in config.toml, if any; `tariffkit account list` shows them",
+    )
     bill.add_argument(
         "csv",
         type=Path,
@@ -367,9 +377,36 @@ def _print_banks(entry: Any, config: Any) -> None:
         )
 
 
-def _print_bill(bill: Any, config: Any = None) -> None:
+def _priced_as(config: Any, profile_name: str | None) -> str:
+    """Which arrangement the bill was priced under.
+
+    Worth a line because the answer changes the shape of the output and there
+    was no way to read it off. A bundled account has one export credit bank and
+    a CCA account has two, so a customer of a CCA who priced without naming
+    their profile saw a single bank and no sign of why -- the arrangement lives
+    in the account profile, and a plain config.toml says "bundled" by default.
+    """
+    from .models import Supplier
+
+    tariff = getattr(config, "tariff", "?")
+    cca = getattr(config, "cca", None)
+    utility = getattr(getattr(config, "utility", None), "short_name", "the utility")
+    by = cca.name if getattr(config, "supplier", None) is Supplier.CCA and cca else utility
+    source = (
+        f'account profile "{profile_name}"'
+        if profile_name
+        else "config.toml -- no account profile selected, so --account may be missing"
+    )
+    return f"priced from {source}: {tariff}, generation by {by}"
+
+
+def _print_bill(bill: Any, config: Any = None, profile_name: str | None = None) -> None:
     p = bill.period
-    print(f"Billing period {p.start} to {p.end} ({p.days} days)\n")
+    print(f"Billing period {p.start} to {p.end} ({p.days} days)")
+    if config is not None:
+        print(f"{_priced_as(config, profile_name)}\n")
+    else:
+        print()
     print(f"{'':<11} {'imported':>10} {'$':>8}   {'exported':>10} {'$':>8}")
     print("-" * 54)
     for b in bill.buckets:
@@ -884,6 +921,7 @@ def main(argv: list[str] | None = None) -> int:
                     account_profile.config_at(period.start)
                     if account_profile is not None
                     else engine.config,
+                    profile_name,
                 )
                 if note:
                     print(note)
