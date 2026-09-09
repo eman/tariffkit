@@ -149,10 +149,23 @@ CHARGE_BUCKETS: dict[str, CreditBucket] = {
     "conservation_incentive_adjustment": CreditBucket.DELIVERY,
     # Reachable by the ACC Plus bonus and by nothing else. See NON_BYPASSABLE.
     **dict.fromkeys(NON_BYPASSABLE, CreditBucket.BONUS),
+    # The Power Charge Indifference Adjustment is an Energy Delivered charge,
+    # which is the boundary `SCOPING_VERIFIED` was waiting on a statement to
+    # draw. The 2026-09-03 cycle draws it: PG&E applied $2.94 of Energy Export
+    # Credit where the time-of-use delivery rows come to 0.31 + 0.08 + 2.15 =
+    # 2.54, and the only charge that closes the difference is the PCIA at 0.40.
+    # It had been in the bonus bucket -- reachable by the ACC Plus adder and by
+    # nothing else -- so delivery credit stopped 40 cents short every cycle and
+    # banked what it should have spent.
+    #
+    # Being here rather than in BONUS does not put it out of the bonus adder's
+    # reach: the bonus is spent against whatever remains across every bucket.
+    "pcia": CreditBucket.DELIVERY,
     # Not non-bypassable in the tariff's sense, and SC 2.d puts every other
-    # charge within reach of the bonus adder.
+    # charge within reach of the bonus adder. Neither is inside the delivery
+    # boundary: the same statement's $2.94 closes without them, and they are
+    # a cent each.
     "energy_cost_recovery": CreditBucket.BONUS,
-    "pcia": CreditBucket.BONUS,
     "franchise_fee_surcharge": CreditBucket.BONUS,
 }
 

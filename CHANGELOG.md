@@ -6,6 +6,14 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Fixed
+- **The PCIA is an Energy Delivered charge.** `SCOPING_VERIFIED` named the
+  evidence it needed -- a cycle whose credits exceed the charges they may offset
+  -- and the 2026-09-03 statement supplies it: PG&E applied $2.94 of Energy
+  Export Credit where the time-of-use delivery rows come to $2.54, and the only
+  charge that closes the difference is the PCIA at $0.40. It had been in the
+  bonus bucket, reachable by the ACC Plus adder and nothing else, so delivery
+  credit stopped forty cents short every cycle and banked what it should have
+  spent. Applied delivery credit now matches the printed $2.94 exactly.
 - **An in-cycle offset larger than its charges is credited, not banked.** The
   2026-09-03 statement settles a question `SCOPING_VERIFIED` has been open on:
   MCE's Solar Bonus Credit of -8.33 against smaller generation charges printed

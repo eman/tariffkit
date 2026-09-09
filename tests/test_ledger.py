@@ -323,6 +323,61 @@ class TestInCycleOffsetOverrun:
         assert entry.cash_due == pytest.approx(0.50), "the non-bypassable charge stands"
 
 
+class TestTheDeliveryBoundary:
+    """Where an "Energy Delivered charge" ends, drawn by a statement at last.
+
+    `SCOPING_VERIFIED` named the evidence needed: a cycle whose credits exceed
+    the charges they may offset, so the cap binds and the leftover is visible.
+    The 2026-09-03 cycle is it, and it puts the PCIA inside the boundary.
+    """
+
+    def bill(self) -> Bill:
+        # The delivery page of that statement: time-of-use rows of 0.31, 0.08
+        # and 2.15, a PCIA of 0.40, and far more export credit than either.
+        return Bill(
+            period=PERIOD,
+            import_components={
+                "distribution": 2.54,
+                "pcia": 0.40,
+                "energy_cost_recovery": 0.01,
+                "franchise_fee_surcharge": 0.01,
+            },
+            export_components={"delivery": -14.90},
+        )
+
+    def test_delivery_credit_reaches_the_pcia(self) -> None:
+        """PG&E applied $2.94 where the time-of-use rows come to $2.54.
+
+        The only charge that closes the difference is the PCIA at 0.40. It had
+        been in the bonus bucket -- reachable by the ACC Plus adder and nothing
+        else -- so delivery credit stopped 40 cents short every cycle.
+        """
+        entry = apply_credits(self.bill())
+        assert entry.applied.delivery == pytest.approx(2.94)
+
+    def test_the_cent_charges_stay_outside_it(self) -> None:
+        """That $2.94 closes without them, and they are a cent each."""
+        offsettable, _, _ = charges_by_bucket(self.bill())
+        assert offsettable[CreditBucket.DELIVERY] == pytest.approx(2.94)
+        assert offsettable[CreditBucket.BONUS] == pytest.approx(0.02)
+
+    def test_the_bonus_adder_can_still_reach_the_pcia(self) -> None:
+        """Moving it out of the bonus bucket does not put it out of that reach.
+
+        SC 2.d: the ACC Plus adder "may be used to offset any charges incurred
+        by the customer". The bonus is spent against whatever remains across
+        every bucket, so the PCIA is still within it.
+        """
+        bill = Bill(
+            period=PERIOD,
+            import_components={"pcia": 0.40},
+            export_components={"acc_plus": -1.00},
+        )
+        entry = apply_credits(bill)
+        assert entry.applied.bonus == pytest.approx(0.40)
+        assert entry.cash_due == pytest.approx(0.0)
+
+
 class TestScoping:
     def test_a_scoped_credit_cannot_reach_another_bucket(self) -> None:
         """Delivery credit against generation-only charges stays banked."""
