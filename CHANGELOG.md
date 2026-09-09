@@ -13,10 +13,17 @@ All notable changes to this project are documented here. This project follows
   the bill. On an exporting account the two are nowhere near each other and only
   one appears on a statement: a 2026-07-29..08-27 cycle printed -73.36 where the
   statement's electric charges were 14.22, and nothing on the page was -73.36.
-  The command now prints gross charges, credit applied, AMOUNT DUE and the
-  credit banked this cycle; that cycle reads 14.20. `docs/use-cases.md` had been
-  saying `Bill.total` was the wrong figure while the command printed it as the
-  headline.
+  The command now prints gross charges, credit applied and AMOUNT DUE; that
+  cycle reads 14.20. `docs/use-cases.md` had been saying `Bill.total` was the
+  wrong figure while the command printed it as the headline.
+- **`tariffkit bill` prints each export credit bank, and never their sum.** One
+  closing figure could say neither how the bank moved nor whose it was. It now
+  prints the four columns a statement prints -- opening, earned, applied,
+  remaining -- one row per supplier, because on a CCA account there are two
+  banks on unrelated settlement calendars and adding them gives a number no
+  statement shows. A cycle that announced a single "+94.43" now reads PG&E
+  17.74/5.83/11.92 against a printed 17.78/5.82/11.96, and MCE 86.42 earned and
+  0.00 applied against a printed 86.16 and 0.00.
 - **The PCIA is an Energy Delivered charge.** `SCOPING_VERIFIED` named the
   evidence it needed -- a cycle whose credits exceed the charges they may offset
   -- and the 2026-09-03 statement supplies it: PG&E applied $2.94 of Energy

@@ -316,7 +316,58 @@ def _print_table(curve: PriceCurve) -> None:
     print(f"\n* highest export credit in this window ({best:.5f} $/kWh)")
 
 
-def _print_bill(bill: Any) -> None:
+def _print_banks(entry: Any, config: Any) -> None:
+    """The export credit bank, laid out the way a statement lays it out.
+
+    Four columns, because one number cannot say what happened: a statement
+    prints Beginning Balance, Earned This Period, Applied This Period and
+    Remaining Balance, and the interesting thing about a heavy-export cycle is
+    that the second and the third are nothing like each other.
+
+    And one bank per supplier, never their sum. Where a Community Choice
+    Aggregator supplies generation there are two, on unrelated settlement
+    calendars -- PG&E's at the Permission To Operate anniversary, the CCA's on
+    its own cash-out year -- and adding them gives a figure no statement shows
+    and that never settles as a whole. ``CreditBalances.held_by`` exists to keep
+    them apart and printing ``closing.total`` ignored it, which on a real CCA
+    cycle announced a single "+94.43" where the statement prints $11.96 on one
+    page and $98.79 on another.
+
+    Opening is zero here and says so: this command prices one cycle on its own,
+    so nothing carries in. A bank that accumulates needs the run of cycles
+    before it, which is what ``run_ledger`` and the Home Assistant bank entity
+    are for.
+    """
+    from .models import Supplier
+
+    if not (entry.earned.total or entry.opening.total):
+        return
+    supplier = getattr(config, "supplier", None)
+    cca = getattr(config, "cca", None)
+    split = supplier is Supplier.CCA
+    utility = getattr(getattr(config, "utility", None), "short_name", "utility")
+    banks = (
+        [
+            (f"{utility} (delivery, bonus)", "utility"),
+            (f"{cca.name if cca else 'CCA'} (generation, bonus)", "generation"),
+        ]
+        if split
+        else [(f"{utility} (all buckets)", "utility")]
+    )
+
+    print("\nexport credit bank")
+    print(f"  {'':<30} {'opening':>9} {'earned':>9} {'applied':>9} {'remaining':>9}")
+    for label, party in banks:
+        print(
+            f"  {label:<30} "
+            f"{entry.opening.held_by(party, split=split):>9.2f} "
+            f"{entry.earned.held_by(party, split=split):>9.2f} "
+            f"{entry.applied.held_by(party, split=split):>9.2f} "
+            f"{entry.closing.held_by(party, split=split):>9.2f}"
+        )
+
+
+def _print_bill(bill: Any, config: Any = None) -> None:
     p = bill.period
     print(f"Billing period {p.start} to {p.end} ({p.days} days)\n")
     print(f"{'':<11} {'imported':>10} {'$':>8}   {'exported':>10} {'$':>8}")
@@ -362,11 +413,7 @@ def _print_bill(bill: Any) -> None:
     print(f"\n  {'gross charges':<34} {entry.gross_charges:>+9.2f}")
     print(f"  {'credit applied':<34} {-entry.applied.total:>+9.2f}")
     print(f"  {'AMOUNT DUE':<34} {entry.cash_due:>+9.2f}")
-    if entry.closing.total:
-        # Named for what it is. This command prices one cycle in isolation, so
-        # there is no carried balance in it -- only what this cycle earned and
-        # could not spend.
-        print(f"  {'credit banked this cycle':<34} {entry.closing.total:>+9.2f}")
+    _print_banks(entry, config)
     if bill.effective_import_rate:
         print(f"  {'effective $/kWh imported':<34} {bill.effective_import_rate:>9.5f}")
     for warning in bill.warnings:
@@ -829,7 +876,15 @@ def main(argv: list[str] | None = None) -> int:
             if args.json:
                 print(json.dumps(result.to_dict(), indent=2))
             else:
-                _print_bill(result)
+                # An account profile describes a changing agreement, so the
+                # config is the one in force over this cycle rather than a
+                # single attribute on the engine.
+                _print_bill(
+                    result,
+                    account_profile.config_at(period.start)
+                    if account_profile is not None
+                    else engine.config,
+                )
                 if note:
                     print(note)
             return 0

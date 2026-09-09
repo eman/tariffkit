@@ -323,6 +323,45 @@ class TestInCycleOffsetOverrun:
         assert entry.cash_due == pytest.approx(0.50), "the non-bypassable charge stands"
 
 
+class TestTheTwoBanksAreNeverSummed:
+    """A CCA account holds two, on unrelated settlement calendars.
+
+    PG&E's settles at the Permission To Operate anniversary and the CCA's on its
+    own cash-out year, and the statement prints them on separate pages. Adding
+    them gives a figure no statement shows and that never settles as a whole --
+    `held_by` exists to keep them apart, and a reporting path that reached for
+    `closing.total` instead announced a single "+94.43" where the statement
+    printed $11.96 on one page and $98.79 on another.
+    """
+
+    def bill(self) -> Bill:
+        return Bill(
+            period=PERIOD,
+            import_components={"distribution": 2.54, "pcia": 0.40, "cca_generation": 8.88},
+            export_components={
+                "delivery": -14.90,
+                "acc_plus": -2.88,
+                "cca_generation": -83.28,
+                "cca_acc_plus": -2.88,
+            },
+        )
+
+    def test_each_bank_holds_only_its_own_buckets(self) -> None:
+        closing = apply_credits(self.bill()).closing
+        utility = closing.held_by("utility", split=True)
+        generation = closing.held_by("generation", split=True)
+        assert utility == pytest.approx(closing.delivery + closing.bonus)
+        assert generation == pytest.approx(closing.generation + closing.cca_bonus)
+        assert utility + generation == pytest.approx(closing.total)
+        assert utility != pytest.approx(closing.total), "the sum is not either bank"
+
+    def test_a_bundled_account_holds_one(self) -> None:
+        """Without a CCA the utility supplies generation too, so either name is all of it."""
+        closing = apply_credits(self.bill()).closing
+        assert closing.held_by("utility", split=False) == pytest.approx(closing.total)
+        assert closing.held_by("generation", split=False) == pytest.approx(closing.total)
+
+
 class TestTheDeliveryBoundary:
     """Where an "Energy Delivered charge" ends, drawn by a statement at last.
 
