@@ -365,15 +365,27 @@ def _summary_amount(summary: StatementSection, label: str) -> float | None:
 
 
 def _agreement_spans(page: str) -> tuple[BillingPeriod, ...]:
-    """Return the agreement-level date spans printed on one page."""
+    """Return the agreement-level date spans printed on one page.
+
+    Distinct *periods*, deduplicated on the dates alone. The day count is
+    evidence about a span, not part of its identity, and folding it into the
+    key meant one period printed twice with two different day counts came back
+    as two agreements -- which is what ``_agreements`` reports as "prints 2 date
+    spans for one delivery schedule" and refuses the statement over. On the
+    recognised statements, where a digit can be misread, that is a difference of
+    one character between a statement that reconciles and one that is thrown out
+    whole.
+    """
     matches = [
         (_parse_date(start), _parse_date(end), days) for start, end, days in CYCLE.findall(page)
     ]
     dated = [match for match in matches if match[2]]
     candidates = dated or matches
     return tuple(
-        BillingPeriod(start, end)
-        for start, end, _ in sorted(set(candidates), key=lambda value: value[:2])
+        dict.fromkeys(
+            BillingPeriod(start, end)
+            for start, end, _ in sorted(candidates, key=lambda value: value[:2])
+        )
     )
 
 
@@ -731,6 +743,33 @@ def _implied_at(rest: list[str]) -> int | None:
     return None
 
 
+def _split_at(fields: list[str]) -> list[str]:
+    """Separate an "@" that came out glued to the rate beside it.
+
+    ``_fields`` splits on two or more spaces, so whether "@ $0.10867" arrives
+    as one field or two depends on how wide that gap printed -- and on the
+    2026-09-04 statement it printed as one space. Everything downstream looks
+    for "@" as a field of its own: it does not find one, ``_implied_at`` needs
+    two money-shaped fields after the unit and can only see the amount, and the
+    fallback scan then takes the first money-shaped field on the row. That is
+    the *quantity*, because ``MONEY`` allows up to six decimals and a metered
+    figure prints as "10.122000".
+
+    So an Off Peak row reading "10.122000 kWh @ $0.10867  1.10" was billed as
+    $10.12, and the section summed to 51.67 against a printed 21.07 -- kWh read
+    as dollars, three times over. Splitting the field here rather than widening
+    ``_fields`` keeps the two-space rule that separates every other column.
+    """
+    split: list[str] = []
+    for field in fields:
+        rest = field[1:].strip() if field.startswith("@") else ""
+        if rest:
+            split.extend(("@", rest))
+        else:
+            split.append(field)
+    return split
+
+
 def _line(line: str, section: Section, page: int, *, label: str = "") -> StatementLine | None:
     """One row, if it carries an amount.
 
@@ -740,7 +779,7 @@ def _line(line: str, section: Section, page: int, *, label: str = "") -> Stateme
     read as its amount, which is the shape of error that looks like a $22
     discrepancy.
     """
-    fields = _fields(line)
+    fields = _split_at(_fields(line))
     if len(fields) < 2:
         return None
 

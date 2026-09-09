@@ -12,6 +12,8 @@ from tariffkit.providers.pge.statements import (
     normalize_tariff,
     parse_statement,
 )
+from tariffkit.providers.pge.statements import parse as parse_module
+from tariffkit.providers.pge.statements.model import Section
 
 FIXTURE = Path(__file__).parent / "fixtures" / "statements" / "synthetic_cca_ratechange.txt"
 
@@ -51,6 +53,40 @@ def test_normalize_tariff(printed: str, expected: str | None) -> None:
 def test_parse_errors_are_public_statement_errors() -> None:
     with pytest.raises(StatementError, match="no statement date"):
         parse_statement(["not a statement"])
+
+
+def test_a_rate_glued_to_its_at_sign_does_not_bill_the_kwh_as_dollars() -> None:
+    """Whether "@ $0.10867" is one field or two depends on how wide the gap printed.
+
+    `_fields` splits on two or more spaces, and on the 2026-09-04 statement that
+    gap came out a single space. Everything downstream looks for "@" as a field
+    of its own, so the row fell through to the fallback scan -- which takes the
+    first money-shaped field, and `MONEY` allows six decimals, so the *quantity*
+    "10.122000" was read as a $10.12 charge. Three rows over, the delivery
+    section summed to 51.67 against a printed 21.07.
+    """
+    line = " Off Peak                10.122000     kWh    @ $0.10867                  1.10"
+    row = parse_module._line(line, Section.PGE_DELIVERY, page=0)
+    assert row is not None
+    assert row.amount == pytest.approx(1.10), "the charge, not the kilowatt-hours"
+    assert row.quantity == pytest.approx(10.122)
+    assert row.rate == pytest.approx(0.10867)
+
+
+def test_one_period_printed_twice_is_one_agreement() -> None:
+    """The day count is evidence about a span, not part of its identity.
+
+    Deduplicating on (start, end, days) meant a period printed twice with two
+    different day counts came back as two agreements, which `_agreements`
+    refuses the whole statement over. On the recognised statements a misread
+    digit is enough to produce exactly that.
+    """
+    page = (
+        "09/29/2025 to 10/28/2025 (30 billing days)\n09/29/2025 to 10/28/2025 (3O billing days)\n"
+    ).replace("3O", "31")
+    spans = parse_module._agreement_spans(page)
+    assert len(spans) == 1, f"one period, however many day counts: {spans}"
+    assert (spans[0].start, spans[0].end) == (date(2025, 9, 29), date(2025, 10, 28))
 
 
 def test_a_credit_balance_statement_has_no_total_and_is_not_an_error() -> None:

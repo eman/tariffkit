@@ -26,6 +26,20 @@ All notable changes to this project are documented here. This project follows
   credit balance is now the statement's `amount_due`, negative, which is what
   `self_check` already expected: on 2026-09-04 the detail sections and summary
   adjustments close on it to the cent (21.07 - 6.85 - 36.18 = -21.96).
+- **Kilowatt-hours were billed as dollars when a rate printed tight against its
+  "@".** `_fields` separates columns on two or more spaces, so whether
+  "@ $0.10867" arrives as one field or two depends on how wide that gap came
+  out. Where it came out as one, the row fell past every "@"-aware branch to the
+  fallback scan -- which takes the first money-shaped field, and a metered
+  quantity prints as "10.122000", which `MONEY` accepts. An Off Peak row was
+  billed at $10.12 instead of $1.10, and one statement's delivery section summed
+  to 51.67 against a printed 21.07. It now sums to 21.07 and every metered row
+  carries its quantity and rate.
+- **One period printed twice is one agreement.** `_agreement_spans` deduplicated
+  on the dates *and* the day count, so a span printed twice with two different
+  counts came back as two agreements and `_agreements` refused the statement
+  with "prints 2 date spans for one delivery schedule". The day count is
+  evidence about a span, not part of its identity.
 - **An impossible date from recognition no longer escapes as a `ValueError`.**
   `read_statement` discards a reading that raises `StatementError` and tries the
   next, which is how the recognised Type 3 statements are read at all -- but
