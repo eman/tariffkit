@@ -111,12 +111,12 @@ def _profile_name(account: str | None) -> str | None:
 
 
 def _load_profile(account: str | None) -> tuple[str, AccountProfile]:
-    from tariffkit.account import NamedProfileRepository
+    from tariffkit.account import AccountStore
 
     name = _profile_name(account)
     if name is None:
         raise ValueError("select a named account profile with --account or configuration")
-    return name, NamedProfileRepository().load(name)
+    return name, AccountStore().load(name)
 
 
 def _account(account: str | None) -> Check:

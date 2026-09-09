@@ -18,7 +18,7 @@ from .model import (
     mask_account_digits,
 )
 from .rates import AccountRateEngine
-from .repository import NamedProfileRepository, configured_profile_name, validate_profile_name
+from .repository import AccountStore
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -27,15 +27,13 @@ __all__ = [
     "AccountObservation",
     "AccountProfile",
     "AccountRateEngine",
+    "AccountStore",
     "MeterSource",
     "MeterSources",
-    "NamedProfileRepository",
     "ObservedAgreement",
     "ProfileConflictError",
     "ProfileNameError",
     "ProfileNotFoundError",
     "ProfileStorageError",
-    "configured_profile_name",
     "mask_account_digits",
-    "validate_profile_name",
 ]

@@ -21,10 +21,9 @@ from uuid import uuid4
 
 from ..config import Config
 from ..errors import ConfigError
-from ..secrets import get_named_secret
 from .errors import AccountError
 from .model import AccountEpoch, AccountObservation, AccountProfile, MeterSource, MeterSources
-from .repository import NamedProfileRepository, validate_profile_name
+from .repository import AccountStore
 
 
 def read_config_json(path: Path) -> Config:
@@ -44,7 +43,7 @@ def read_config_json(path: Path) -> Config:
         raise ConfigError(f"invalid config JSON: {exc}") from exc
 
 
-def _config_from_audit(path: Path, *, name: str, credential_set: str | None) -> AccountProfile:
+def _config_from_audit(path: Path) -> AccountProfile:
     """Convert the repository's legacy ``audit/account.toml`` representation."""
     import tomllib
 
@@ -92,76 +91,55 @@ def _config_from_audit(path: Path, *, name: str, credential_set: str | None) -> 
         raise AccountError("legacy account history has no epochs to migrate")
     return AccountProfile(
         tuple(sorted(epochs, key=lambda epoch: epoch.effective)),
-        name=name,
-        credential_set=credential_set,
     )
 
 
 def migrate_existing(
-    name: str,
     *,
     config_path: str | Path | None = None,
     audit_path: str | Path | None = None,
     effective: date | None = None,
-    credential_set: str | None = None,
 ) -> AccountProfile:
-    """Build a named profile from an explicit legacy file or the current Config.
+    """Build the account from an explicit legacy file or the current Config.
 
     An explicit config path wins over an explicit audit path. Requiring the
     legacy path avoids silently reading developer-only repository state.
     """
-    validate_profile_name(name)
     if config_path is None and audit_path is not None:
         candidate = Path(audit_path)
         if not candidate.is_file():
             raise ConfigError(f"legacy audit account file not found: {candidate}")
-        return _config_from_audit(candidate, name=name, credential_set=credential_set)
+        return _config_from_audit(candidate)
 
     config = Config.load(config_path)
-    return AccountProfile(
-        (
-            AccountEpoch(
-                effective or date.today(),
-                config,
-            ),
-        ),
-        name=name,
-        credential_set=credential_set,
-    )
+    return AccountProfile((AccountEpoch(effective or date.today(), config),))
 
 
 def init_profile(
-    repository: NamedProfileRepository,
-    name: str,
+    store: AccountStore,
     *,
     config_path: str | Path | None = None,
     config_json: Path | None = None,
     effective: date | None = None,
-    credential_set: str | None = None,
     audit_path: str | Path | None = None,
 ) -> AccountProfile:
-    """Create a profile from explicit inputs or the resolved public configuration."""
-    validate_profile_name(name)
-    if name in repository.names():
-        raise ConfigError(f"profile {name!r} already exists")
+    """Create the account from explicit inputs or the resolved public configuration."""
+    if store.exists():
+        raise ConfigError(
+            f"an account already exists at {store.path}; 'tariffkit account update' changes it"
+        )
     if config_json is not None and config_path is not None:
         raise ConfigError("choose either --config or --config-json")
     if config_json is not None:
         config = read_config_json(config_json)
-        profile = AccountProfile(
-            (AccountEpoch(effective or date.today(), config),),
-            name=name,
-            credential_set=credential_set,
-        )
+        profile = AccountProfile((AccountEpoch(effective or date.today(), config),))
     else:
         profile = migrate_existing(
-            name,
             config_path=config_path,
             audit_path=audit_path,
             effective=effective,
-            credential_set=credential_set,
         )
-    return repository.save(name, profile)
+    return store.save(profile)
 
 
 def config_changes(args: Any) -> dict[str, object]:
@@ -195,19 +173,17 @@ def config_changes(args: Any) -> dict[str, object]:
 
 
 def update_profile(
-    repository: NamedProfileRepository,
-    name: str,
+    store: AccountStore,
     *,
     effective: date,
     config_path: str | Path | None = None,
     config_json: Path | None = None,
     changes: Mapping[str, object] | None = None,
     note: str | None = None,
-    credential_set: str | None = None,
     apply: bool = False,
 ) -> AccountProfile:
     """Create or replace one complete effective-dated Config snapshot."""
-    profile = repository.load(name)
+    profile = store.load()
     if config_json is not None and config_path is not None:
         raise ConfigError("choose either --config or --config-json")
     if config_json is not None:
@@ -248,17 +224,14 @@ def update_profile(
     epochs.sort(key=lambda epoch: epoch.effective)
     updated = AccountProfile(
         tuple(epochs),
-        name=profile.name,
-        credential_set=credential_set if credential_set is not None else profile.credential_set,
         observations=profile.observations,
         meter_sources=profile.meter_sources,
     )
-    return repository.save(name, updated, expected_revision=profile.revision) if apply else updated
+    return store.save(updated, expected_revision=profile.revision) if apply else updated
 
 
 def set_meter_source(
-    repository: NamedProfileRepository,
-    name: str,
+    store: AccountStore,
     *,
     provider: str,
     grid_import_entity: str,
@@ -268,7 +241,7 @@ def set_meter_source(
     """Preview or persist one provider's profile-scoped meter mapping."""
     if provider not in ("ha", "influx"):
         raise ConfigError("meter source must be ha or influx")
-    profile = repository.load(name)
+    profile = store.load()
     source = MeterSource(
         grid_import_entity=grid_import_entity,
         grid_export_entity=grid_export_entity,
@@ -279,12 +252,10 @@ def set_meter_source(
         sources = MeterSources(ha=profile.meter_sources.ha, influx=source)
     updated = AccountProfile(
         epochs=profile.epochs,
-        name=profile.name,
-        credential_set=profile.credential_set,
         observations=profile.observations,
         meter_sources=sources,
     )
-    return repository.save(name, updated, expected_revision=profile.revision) if apply else updated
+    return store.save(updated, expected_revision=profile.revision) if apply else updated
 
 
 def meter_source_summary(profile: AccountProfile, provider: str) -> dict[str, object]:
@@ -293,7 +264,6 @@ def meter_source_summary(profile: AccountProfile, provider: str) -> dict[str, ob
         raise ConfigError("meter source must be ha or influx")
     source = profile.meter_sources.ha if provider == "ha" else profile.meter_sources.influx
     return {
-        "profile": profile.name,
         "source": provider,
         "configured": source is not None,
         "grid_import_entity": source.grid_import_entity if source is not None else None,
@@ -302,8 +272,7 @@ def meter_source_summary(profile: AccountProfile, provider: str) -> dict[str, ob
 
 
 def apply_observations(
-    repository: NamedProfileRepository,
-    name: str,
+    store: AccountStore,
     observations: Sequence[AccountObservation],
     *,
     apply: bool,
@@ -311,7 +280,7 @@ def apply_observations(
     """Reconcile evidence in order and optionally persist one atomic update."""
     from ..providers.pge.reconcile import reconcile
 
-    profile = repository.load(name)
+    profile = store.load()
     working = profile
     proposals: list[dict[str, object]] = []
     can_apply = True
@@ -327,7 +296,7 @@ def apply_observations(
         if not can_apply:
             raise ConfigError("account update contains conflicts or missing required values")
         if working != profile:
-            working = repository.save(name, working, expected_revision=profile.revision)
+            working = store.save(working, expected_revision=profile.revision)
     return working, proposals
 
 
@@ -344,8 +313,7 @@ def _statement_reason(err: Exception) -> str:
 
 
 def import_statements(
-    repository: NamedProfileRepository,
-    name: str,
+    store: AccountStore,
     paths: Sequence[Path],
     *,
     apply: bool,
@@ -368,16 +336,16 @@ def import_statements(
             observations.append(import_statement(path))
         except StatementError as err:
             skipped.append({"statement": str(path), "reason": _statement_reason(err)})
-    updated, proposals = apply_observations(repository, name, observations, apply=apply)
+    updated, proposals = apply_observations(store, observations, apply=apply)
     return updated, proposals, skipped
 
 
-def _cache_directory(name: str) -> Path:
+def _cache_directory() -> Path:
     root = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
     parent = root / "tariffkit" / "account-sync"
     parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     parent.chmod(0o700)
-    path = parent / f"{name}-{uuid4().hex}"
+    path = parent / uuid4().hex
     path.mkdir(mode=0o700)
     path.chmod(0o700)
     return path
@@ -411,37 +379,20 @@ def _row_date(row: Mapping[str, object]) -> date | None:
 
 
 def _pge_settings(profile: AccountProfile, config_path: str | Path | None = None) -> Any:
+    """The portal settings, from the one place credentials are kept.
+
+    There used to be a second place: a profile could name a keyring "credential
+    set" so several profiles shared one login. That was the landlord's case and
+    it went with the named profiles -- one account reads one set of credentials.
+    """
+    del profile
     from ..sources.pge import PgeSettings
 
-    if profile.credential_set is None:
-        return PgeSettings.load(config_path)
-    prefix = profile.credential_set
-    username = get_named_secret(prefix, "pge.username")
-    password = get_named_secret(prefix, "pge.password")
-    if not username or not password:
-        raise ConfigError(
-            f"credential set {prefix!r} does not contain both pge.username and pge.password"
-        )
-    settings = PgeSettings.load(config_path, username=username, password=password)
-    values = {
-        "browser_cookie": get_named_secret(prefix, "pge.browser_cookie"),
-        "validation_cookie": get_named_secret(prefix, "pge.validation_cookie"),
-        "account_urn": get_named_secret(prefix, "pge.account_urn"),
-    }
-    return type(settings)(
-        username=settings.username,
-        password=settings.password,
-        account_id=settings.account_id,
-        cookie_path=settings.cookie_path,
-        browser_cookie=values["browser_cookie"] or settings.browser_cookie,
-        validation_cookie=values["validation_cookie"] or settings.validation_cookie,
-        account_urn=values["account_urn"] or settings.account_urn,
-    )
+    return PgeSettings.load(config_path)
 
 
 def sync_profile(
-    repository: NamedProfileRepository,
-    name: str,
+    store: AccountStore,
     *,
     since: date | None = None,
     apply: bool,
@@ -459,8 +410,8 @@ def sync_profile(
     from ..providers.pge.statements.errors import StatementError
     from ..sources.pge import PgeSession
 
-    profile = repository.load(name)
-    cache = _cache_directory(name)
+    profile = store.load()
+    cache = _cache_directory()
     observations: list[AccountObservation] = []
     skipped: list[dict[str, str]] = []
     try:
@@ -526,7 +477,7 @@ def sync_profile(
     finally:
         if not keep_statements:
             shutil.rmtree(cache, ignore_errors=False)
-    updated, proposals = apply_observations(repository, name, observations, apply=apply)
+    updated, proposals = apply_observations(store, observations, apply=apply)
     return updated, proposals, skipped
 
 
@@ -534,7 +485,6 @@ def profile_summary(profile: AccountProfile) -> dict[str, Any]:
     """Return sanitized data suitable for human or JSON CLI output."""
     return {
         "name": profile.name,
-        "credential_set": profile.credential_set,
         "epochs": [
             {
                 "effective": epoch.effective.isoformat(),

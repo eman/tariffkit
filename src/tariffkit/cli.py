@@ -459,37 +459,28 @@ def _print_bill(bill: Any, config: Any = None, profile_name: str | None = None) 
         print("  note: some prices were incomplete or inexact; treat the total as an estimate")
 
 
-def _account_repository() -> Any:
-    from .account import NamedProfileRepository
+def _account_store() -> Any:
+    from .account import AccountStore
 
-    return NamedProfileRepository()
-
-
-def _selected_profile_name(args: Any) -> str | None:
-    explicit = cast(str | None, getattr(args, "account", None))
-    config_path = getattr(args, "config", None)
-    if explicit is not None and config_path is not None:
-        raise ConfigError("--account cannot be combined with --config")
-    if explicit is not None:
-        return explicit
-    if config_path is not None:
-        return None
-    from .account import configured_profile_name
-
-    return configured_profile_name()
+    return AccountStore()
 
 
-def _pricing_context(args: Any) -> tuple[Any, Config | None, str | None, Any | None]:
-    """Load either a stateless Config engine or a named profile engine."""
+def _pricing_context(args: Any) -> tuple[Any, Config | None, bool, Any | None]:
+    """Price from the account where there is one, and from a Config otherwise.
+
+    The account wins unless ``--config`` names a file explicitly, because a
+    bill has to price with the settings in force over its own days and only the
+    account carries that history. A stateless Config remains the answer for
+    someone who has not set an account up, and for anyone deliberately pricing a
+    hypothetical.
+    """
     from .account import AccountRateEngine
 
-    profile_name = _selected_profile_name(args)
-    if profile_name is not None:
-        repository = _account_repository()
-        profile = repository.load(profile_name)
-        return AccountRateEngine(profile), None, profile_name, repository
-    config = Config.load(args.config)
-    return RateEngine(config), config, None, None
+    store = _account_store()
+    if getattr(args, "config", None) is None and store.exists():
+        return AccountRateEngine(store.load()), None, True, store
+    config = Config.load(getattr(args, "config", None))
+    return RateEngine(config), config, False, None
 
 
 def _print_profile(profile: Any, *, json_output: bool) -> None:
@@ -499,9 +490,6 @@ def _print_profile(profile: Any, *, json_output: bool) -> None:
         print(json.dumps(profile.to_dict(), indent=2, default=str))
         return
     summary = profile_summary(profile)
-    print(f"name: {summary['name']}")
-    if summary["credential_set"]:
-        print(f"credential set: {summary['credential_set']}")
     print("epochs")
     for epoch in summary["epochs"]:
         print(
@@ -532,31 +520,20 @@ def _run_account_command(args: Any) -> int:
         update_profile,
     )
 
-    repository = _account_repository()
+    store = _account_store()
     command = args.account_command
-    if command == "list":
-        names = repository.names()
-        if args.json:
-            print(json.dumps(list(names), indent=2))
-        else:
-            for name in names:
-                print(name)
-        return 0
-
     if command == "init":
         profile = init_profile(
-            repository,
-            args.name,
+            store,
             config_path=args.config,
             config_json=args.config_json,
             effective=args.effective,
-            credential_set=args.credential_set,
             audit_path=args.audit_file,
         )
         _print_profile(profile, json_output=args.json)
         return 0
 
-    profile = repository.load(args.name)
+    profile = store.load()
     if command == "show":
         _print_profile(profile, json_output=args.json)
         return 0
@@ -578,14 +555,12 @@ def _run_account_command(args: Any) -> int:
     if command == "update":
         changes = config_changes(args)
         updated = update_profile(
-            repository,
-            args.name,
+            store,
             effective=args.effective,
             config_path=args.config,
             config_json=args.config_json,
             changes=changes,
             note=args.note,
-            credential_set=args.credential_set,
             apply=args.apply,
         )
         if args.json:
@@ -604,8 +579,7 @@ def _run_account_command(args: Any) -> int:
 
     if command == "import-statement":
         _updated, proposals, skipped = import_statements(
-            repository,
-            args.name,
+            store,
             args.pdf,
             apply=args.apply,
         )
@@ -640,8 +614,7 @@ def _run_account_command(args: Any) -> int:
 
     if command == "sync":
         _updated, proposals, skipped = sync_profile(
-            repository,
-            args.name,
+            store,
             since=args.since,
             apply=args.apply,
             keep_statements=args.keep_statements,
@@ -695,8 +668,7 @@ def _run_account_command(args: Any) -> int:
             return 0
 
         updated = set_meter_source(
-            repository,
-            args.name,
+            store,
             provider=args.provider,
             grid_import_entity=args.grid_import_entity,
             grid_export_entity=args.grid_export_entity,
@@ -790,7 +762,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "account":
             return _run_account_command(args)
 
-        engine, config, profile_name, profile_repository = _pricing_context(args)
+        engine, config, from_account, profile_store = _pricing_context(args)
 
         if args.command == "now":
             point = engine.price_now()
@@ -820,33 +792,8 @@ def main(argv: list[str] | None = None) -> int:
             from .billing import BillEngine, BillingPeriod
             from .sources import read_green_button
 
-            # A bill is historical, so the arrangement in force on its own days
-            # is the one that prices it -- and that history lives in an account
-            # profile, not in a config describing today. Falling back to the
-            # config when profiles exist priced a CCA account as bundled without
-            # a word, which gives it one export credit bank where it has two and
-            # prices a cycle that crossed a rate change at a single tariff.
-            #
-            # `now` and `forecast` keep the fallback: "what is the price this
-            # hour" is a question about today, which is what a config describes.
-            if profile_name is None and args.config is None:
-                from .account import NamedProfileRepository
-
-                known = NamedProfileRepository().names()
-                if len(known) == 1:
-                    engine, config, profile_name, profile_repository = _pricing_context(
-                        argparse.Namespace(**{**vars(args), "account": known[0]})
-                    )
-                elif known:
-                    raise ConfigError(
-                        f"{len(known)} account profiles exist ({', '.join(known)}) and none is "
-                        f"selected, so this bill would be priced from config.toml instead of "
-                        f"from the agreement's own history. Pass --account NAME, set "
-                        f'account = "NAME" in config.toml, or export TARIFFKIT_ACCOUNT'
-                    )
-
             account_profile = None
-            if profile_name is not None:
+            if from_account:
                 from .account import AccountRateEngine
 
                 if not isinstance(engine, AccountRateEngine):
@@ -917,7 +864,7 @@ def main(argv: list[str] | None = None) -> int:
                 if args.start and args.end
                 else BillingPeriod.from_readings(readings)
             )
-            if profile_name is not None:
+            if from_account:
                 from .billing.engine import compute_segments
 
                 assert account_profile is not None
@@ -946,7 +893,7 @@ def main(argv: list[str] | None = None) -> int:
                     account_profile.config_at(period.start)
                     if account_profile is not None
                     else engine.config,
-                    profile_name,
+                    from_account,
                 )
                 if note:
                     print(note)
@@ -955,7 +902,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "mqtt":
             from .mqtt import MqttPublisher
 
-            settings = _mqtt_settings(args, config=config, profile_name=profile_name)
+            settings = _mqtt_settings(args, config=config, from_account=from_account)
             publisher = MqttPublisher(engine, settings)
             if args.once:
                 publisher.connect()
@@ -975,8 +922,8 @@ def main(argv: list[str] | None = None) -> int:
             uvicorn.run(
                 create_app(
                     config,
-                    profile_name=profile_name,
-                    profile_repository=profile_repository,
+                    from_account=from_account,
+                    profile_repository=profile_store,
                     config_path=args.config,
                 ),
                 host=args.host,

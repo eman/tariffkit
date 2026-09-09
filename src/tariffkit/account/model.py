@@ -465,7 +465,6 @@ class AccountProfile:
 
     epochs: tuple[AccountEpoch, ...]
     name: str = ""
-    credential_set: str | None = None
     observations: tuple[AccountObservation, ...] = ()
     _revision: str | None = field(default=None, repr=False, compare=False)
     meter_sources: MeterSources = field(default_factory=MeterSources)
@@ -484,8 +483,6 @@ class AccountProfile:
         object.__setattr__(self, "epochs", epochs)
         if self.name:
             self._validate_slug(self.name)
-        if self.credential_set is not None:
-            self._validate_credential_set(self.credential_set)
         observations = tuple(self.observations)
         if any(not isinstance(observation, AccountObservation) for observation in observations):
             raise AccountError("profile observations must be AccountObservation values")
@@ -531,14 +528,6 @@ class AccountProfile:
         ):
             raise AccountError("profile name must be a lowercase slug")
 
-    @staticmethod
-    def _validate_credential_set(value: str) -> None:
-        if (
-            not isinstance(value, str)
-            or len(value) > 64
-            or re.fullmatch(r"[a-z0-9](?:[a-z0-9_.-]{0,62}[a-z0-9])?", value) is None
-        ):
-            raise AccountError("credential_set must be a safe name")
 
     @property
     def effective_dates(self) -> tuple[date, ...]:
@@ -612,7 +601,6 @@ class AccountProfile:
         return type(self)(
             epochs=self.epochs,
             name=self.name,
-            credential_set=self.credential_set,
             observations=(*self.observations, observation),
             _revision=self._revision,
             meter_sources=self.meter_sources,
@@ -623,7 +611,6 @@ class AccountProfile:
         return {
             "schema_version": _SCHEMA_VERSION,
             "name": self.name or None,
-            "credential_set": self.credential_set,
             "epochs": [epoch.to_dict() for epoch in self.epochs],
             "observations": [observation.to_dict() for observation in self.observations],
             "meter_sources": self.meter_sources.to_dict(),
@@ -640,6 +627,9 @@ class AccountProfile:
             {
                 "schema_version",
                 "name",
+                # Accepted and ignored: an account written before the named
+                # profiles went away carries it, and refusing the key would make
+                # that file unreadable for a field nothing reads.
                 "credential_set",
                 "epochs",
                 "observations",
@@ -669,9 +659,6 @@ class AccountProfile:
         if len(observations) != len(observations_value):
             raise AccountError("profile observations must contain objects")
         name = raw.get("name") or ""
-        credential_set = raw.get("credential_set")
-        if credential_set is not None and not isinstance(credential_set, str):
-            raise AccountError("credential_set must be a string")
         if "meter_sources" not in raw:
             meter_sources = MeterSources()
         elif isinstance(meter_sources_value := raw["meter_sources"], Mapping):
@@ -681,7 +668,6 @@ class AccountProfile:
         return cls(
             epochs=epochs,
             name=_text(name, field_name="name", allow_empty=True),
-            credential_set=credential_set,
             observations=observations,
             meter_sources=meter_sources,
         )

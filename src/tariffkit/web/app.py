@@ -13,9 +13,9 @@ from typing import TYPE_CHECKING, Any
 from ..account import (
     AccountError,
     AccountRateEngine,
-    NamedProfileRepository,
+    AccountStore,
     ProfileNotFoundError,
-    configured_profile_name,
+    AccountStore,
 )
 from ..config import Config
 from ..engine import RateEngine
@@ -32,7 +32,7 @@ def create_app(
     config: Config | None = None,
     *,
     profile_name: str | None = None,
-    profile_repository: NamedProfileRepository | None = None,
+    profile_repository: AccountStore | None = None,
     config_path: str | Path | None = None,
 ) -> FastAPI:
     try:
@@ -43,7 +43,7 @@ def create_app(
         ) from exc
 
     def load_profile(name: str) -> AccountRateEngine:
-        repository = profile_repository or NamedProfileRepository()
+        repository = profile_repository or AccountStore()
         try:
             return AccountRateEngine(repository.load(name))
         except ProfileNotFoundError as exc:
@@ -55,7 +55,7 @@ def create_app(
 
     selected_profile = profile_name
     if selected_profile is None and config is None:
-        selected_profile = configured_profile_name(config_path)
+        selected_profile = AccountStore(config_path)
     engine: RateEngine | AccountRateEngine
     if selected_profile is not None:
         engine = load_profile(selected_profile)

@@ -289,7 +289,7 @@ def _reconcile(
     green_button: bool = False,
     readings_from: str = "influx",
 ) -> int:
-    from tariffkit.account import NamedProfileRepository, configured_profile_name
+    from tariffkit.account import AccountStore
     from tariffkit.billing.engine import compute_segments, price_segments
     from tariffkit.engine import RateEngine
     from tariffkit.providers.pge.statements import read_statement
