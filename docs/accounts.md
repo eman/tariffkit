@@ -608,6 +608,40 @@ told `account update` directly) and an observation that changes nothing
 (a statement that confirms a fact you already knew). Neither case is an
 error, and `account history` prints both so the distinction stays visible.
 
+### Why profiles are named, and why you probably want one
+
+A profile is one **service agreement**, not one person. PG&E bills a service
+agreement per premise, and a landlord or anyone with a second meter has several
+under one login — which is what `credential_set` is for, so `unit_a` and
+`unit_b` share a password without storing it twice. That is the whole reason the
+profiles are named.
+
+One household with one meter wants exactly one profile, and then it is simply
+yours: `tariffkit bill` uses it without being asked. You only have to name one
+if there is more than one to choose between, and in that case it refuses rather
+than guessing, because pricing a bill from the wrong agreement produces a
+plausible wrong number rather than an error.
+
+Two profiles for one agreement is duplication, not configuration. It happens
+easily — the Home Assistant integration keeps its own and the audit harness is
+set up separately — and the cure is to keep the one with the fuller history and
+delete the other.
+
+### Why the history cannot live in `config.toml`
+
+It is the same reason a bill is not priced at today's rates. `config.toml`
+describes one moment, and a bill from eighteen months ago has to price on the
+tariff that was in force over its own days. On a real account the June 2026
+cycle crossed EV2-A to E-ELEC on the Permission To Operate date, and the two
+answers are $25.47 and $24.21 — neither wrong for its own arrangement, and only
+one of them that cycle's bill.
+
+So `config.toml` keeps what is true now and has no history to carry: the
+forecast horizon, which integrations are on, which profile is yours. A complete
+pricing config there is still read, for someone who has no profile yet, and
+`--config` forces it — but where a profile exists it is the better answer and
+the bill command prefers it.
+
 ### Why an epoch is inferred only from evidence the statement actually shows
 
 `reconcile()` only ever proposes what a statement printed, dated to the exact

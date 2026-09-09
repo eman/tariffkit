@@ -820,6 +820,31 @@ def main(argv: list[str] | None = None) -> int:
             from .billing import BillEngine, BillingPeriod
             from .sources import read_green_button
 
+            # A bill is historical, so the arrangement in force on its own days
+            # is the one that prices it -- and that history lives in an account
+            # profile, not in a config describing today. Falling back to the
+            # config when profiles exist priced a CCA account as bundled without
+            # a word, which gives it one export credit bank where it has two and
+            # prices a cycle that crossed a rate change at a single tariff.
+            #
+            # `now` and `forecast` keep the fallback: "what is the price this
+            # hour" is a question about today, which is what a config describes.
+            if profile_name is None and args.config is None:
+                from .account import NamedProfileRepository
+
+                known = NamedProfileRepository().names()
+                if len(known) == 1:
+                    engine, config, profile_name, profile_repository = _pricing_context(
+                        argparse.Namespace(**{**vars(args), "account": known[0]})
+                    )
+                elif known:
+                    raise ConfigError(
+                        f"{len(known)} account profiles exist ({', '.join(known)}) and none is "
+                        f"selected, so this bill would be priced from config.toml instead of "
+                        f"from the agreement's own history. Pass --account NAME, set "
+                        f'account = "NAME" in config.toml, or export TARIFFKIT_ACCOUNT'
+                    )
+
             account_profile = None
             if profile_name is not None:
                 from .account import AccountRateEngine

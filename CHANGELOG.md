@@ -6,6 +6,14 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Fixed
+- **`tariffkit bill` uses your account profile without being asked.** With one
+  profile it is simply yours; with several it now refuses rather than falling
+  back to `config.toml`, because a bill priced from the wrong agreement is a
+  plausible wrong number and not an error. That fallback had priced a CCA
+  account as bundled without a word, giving it one export credit bank where it
+  has two and pricing a cycle that crossed a rate change at a single tariff.
+  `now` and `forecast` keep the fallback: what the price is this hour is a
+  question about today, which is what a config describes.
 - **`tariffkit bill` prints what a statement would charge.** It printed
   `Bill.total` under the word TOTAL, which subtracts every export credit from
   every charge -- something the tariff does not allow, since credits are scoped
