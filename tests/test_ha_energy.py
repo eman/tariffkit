@@ -850,14 +850,14 @@ def test_a_counter_reset_the_recorder_believed_is_repaired_from_the_counter() ->
     filtered sensor's 67.016, and 66.938 once repaired -- a fifth of a cycle's
     exports, recovered from data the integration already had in hand.
     """
-    from custom_components.tariffkit.energy import hour_energy
+    from tariffkit.sources.homeassistant import interval_energy
 
     hour = 3600.0
     previous = (0.0, 1460.58)
-    assert hour_energy(0.42, 1461.0, previous, hour) == pytest.approx(0.42)
+    assert interval_energy(0.42, 1461.0, previous, 3600.0, hour) == pytest.approx(0.42)
     # The recorder's figure is absurd and the counter is sound.
-    assert hour_energy(1455.109, 1461.0, previous, hour) == pytest.approx(0.42)
-    assert hour_energy(-3.0, 1461.0, previous, hour) == pytest.approx(0.42)
+    assert interval_energy(1455.109, 1461.0, previous, 3600.0, hour) == pytest.approx(0.42)
+    assert interval_energy(-3.0, 1461.0, previous, 3600.0, hour) == pytest.approx(0.42)
 
 
 def test_the_repair_refuses_where_it_would_be_guessing() -> None:
@@ -869,14 +869,14 @@ def test_the_repair_refuses_where_it_would_be_guessing() -> None:
     at one hour's time-of-use rate. That is worse than the hole, and confident
     about it.
     """
-    from custom_components.tariffkit.energy import hour_energy
+    from tariffkit.sources.homeassistant import interval_energy
 
     hour = 3600.0
     previous = (0.0, 1460.58)
-    assert hour_energy(1455.1, 0.0, previous, hour) is None, "the zero is the artefact"
-    assert hour_energy(1455.1, 1461.0, None, hour) is None, "nothing to difference against"
-    assert hour_energy(1455.1, 1461.0, (-2 * hour, 1460.58), hour) is None, "a gap, not an hour"
-    assert hour_energy(1455.1, 1400.0, previous, hour) is None, "the counter went backwards"
+    assert interval_energy(1455.1, 0.0, previous, 3600.0, hour) is None, "the zero is the artefact"
+    assert interval_energy(1455.1, 1461.0, None, 3600.0, hour) is None, "nothing to difference"
+    assert interval_energy(1455.1, 1461.0, (-2 * hour, 1460.58), 3600.0, hour) is None, "a gap"
+    assert interval_energy(1455.1, 1400.0, previous, 3600.0, hour) is None, "counter went back"
 
 
 def test_a_spoiled_hour_does_not_poison_the_next_one() -> None:
@@ -885,7 +885,7 @@ def test_a_spoiled_hour_does_not_poison_the_next_one() -> None:
     Carrying the zero forward would make the following hour read the whole
     counter as its energy -- the same defect one hour later.
     """
-    from custom_components.tariffkit.energy import _carry
+    from tariffkit.sources.homeassistant import carry as _carry
 
     good = (0.0, 1460.58)
     assert _carry(good, 3600.0, 0.0) == good, "a zero state is not a usable baseline"

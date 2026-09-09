@@ -25,6 +25,27 @@ All notable changes to this project are documented here. This project follows
   cycle and understating the credit the customer was given. Every cycle
   reconciled before this one had generation charges larger than the offset, so
   the case never arose.
+- **The two readers of Home Assistant statistics are one reader.** The
+  integration reads them through the recorder in process and the library reads
+  them through the WebSocket API, and the derivation had been written twice --
+  so the counter repair below existed in one and not the other, and
+  `tariffkit bill --source ha` kept dropping intervals the integration had
+  learned to recover. `interval_energy` and `carry` live in
+  `tariffkit.sources.homeassistant` now and both readers call them, and the
+  library asks the recorder for `state` alongside `change` so it can.
+- **An hour the fine series only partly covers no longer loses the rest of
+  itself.** `resolution="auto"` dropped the hourly row for any hour holding
+  *some* five-minute data, so an hour the fine series resumed inside left its
+  earlier part in neither series: on a real cycle the five-minute statistics
+  resumed at 04:20 after a restart and 04:00-04:20 went missing, reported as a
+  gap. An hour is now only replaced by fine readings that cover it in full.
+- **Meter data is declared as netted where it is read.** `BillEngine.compute`
+  and `compute_segments` take `netted`, and the CLI, the audit harness and the
+  integration all pass it: every source shipped here reads a meter's own import
+  and export registers, which legitimately carry both directions in one interval
+  once aggregated to an hour. Only the integration's own coverage check knew
+  that, so every bill priced anywhere else reported hundreds of intervals as
+  suspect on every solar cycle -- noise that never cleared.
 - **A counter reset the recorder only believed in no longer costs the hour.**
   A `total_increasing` sensor reading 0.0 is taken for a counter reset, so the
   recorder reports the whole counter as the next hour's `change` -- 1455 kWh on

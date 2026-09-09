@@ -61,19 +61,29 @@ class BillEngine:
         period: BillingPeriod | None = None,
         *,
         check: bool = True,
+        netted: bool = False,
     ) -> Bill:
         """Price ``readings`` over ``period``.
 
         ``period`` defaults to the span of the readings themselves. Readings
         outside it are ignored, so a year of data can be billed one cycle at a
         time without slicing it first.
+
+        ``netted`` says the caller knows these came from a meter's own import
+        and export registers, and passes straight through to
+        :func:`check_coverage`. Every source shipped here produces such data --
+        Green Button, Home Assistant statistics, InfluxDB counters -- and
+        without it every one of them reports intervals carrying both directions
+        on every solar cycle, which is what those registers do once aggregated
+        to an hour. The default stays False for a caller building readings by
+        hand, where both directions at once is a real error.
         """
         readings = list(readings)
         if period is None:
             period = BillingPeriod.from_readings(readings)
 
         in_period = [r for r in readings if period.contains(r.start)]
-        warnings = list(check_coverage(in_period, period)) if check else []
+        warnings = list(check_coverage(in_period, period, netted=netted)) if check else []
 
         buckets: dict[tuple[Season, TouPeriod], _Accumulator] = {}
         uncompensated = 0.0
@@ -438,6 +448,7 @@ def price_segments(
     readings: Iterable[IntervalReading],
     *,
     check: bool = True,
+    netted: bool = False,
 ) -> list[Bill]:
     """One bill per segment, unmerged.
 
@@ -453,7 +464,9 @@ def price_segments(
     ordered = _ordered_segments(segments)
     readings = list(readings)
     return [
-        BillEngine(RateEngine(segment.config)).compute(readings, segment.period, check=check)
+        BillEngine(RateEngine(segment.config)).compute(
+            readings, segment.period, check=check, netted=netted
+        )
         for segment in ordered
     ]
 
@@ -463,6 +476,7 @@ def compute_segments(
     readings: Iterable[IntervalReading],
     *,
     check: bool = True,
+    netted: bool = False,
 ) -> Bill:
     """Price one cycle that more than one configuration governs.
 
@@ -486,7 +500,8 @@ def compute_segments(
     complete = True
     uncompensated = 0.0
 
-    for segment, part in zip(ordered, price_segments(ordered, readings, check=check), strict=True):
+    priced = price_segments(ordered, readings, check=check, netted=netted)
+    for segment, part in zip(ordered, priced, strict=True):
         for target, source in (
             (imports, part.import_components),
             (exports, part.export_components),

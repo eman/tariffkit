@@ -414,7 +414,7 @@ def _reconcile(
             )
 
         parts = price_segments(segments, readings)
-        bill = compute_segments(segments, readings)
+        bill = compute_segments(segments, readings, netted=True)
         results.append(
             reconcile(
                 statement,

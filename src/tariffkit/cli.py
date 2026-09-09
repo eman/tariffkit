@@ -788,9 +788,16 @@ def main(argv: list[str] | None = None) -> int:
                     account_profile.segments_for(period),
                     readings,
                     check=args.check,
+                    # Every source this command reads is a meter's own import and
+                    # export registers -- Green Button, Home Assistant
+                    # statistics, InfluxDB counters. Both directions inside one
+                    # interval is what those registers do once aggregated to an
+                    # hour, and reporting it on every solar cycle is noise that
+                    # never clears.
+                    netted=True,
                 )
             else:
-                result = BillEngine(engine).compute(readings, period, check=args.check)
+                result = BillEngine(engine).compute(readings, period, check=args.check, netted=True)
             if args.json:
                 print(json.dumps(result.to_dict(), indent=2))
             else:

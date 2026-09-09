@@ -40,6 +40,9 @@ from tariffkit.account import AccountProfile
 from tariffkit.billing import Bill, BillingPeriod, IntervalReading, check_coverage
 from tariffkit.billing.engine import compute_segments
 from tariffkit.errors import TariffKitError
+from tariffkit.sources.homeassistant import MAX_INTERVAL_KW as _MAX_INTERVAL_KW
+from tariffkit.sources.homeassistant import carry as _carry
+from tariffkit.sources.homeassistant import interval_energy
 from tariffkit.timeutil import PACIFIC, hour_floor, now_pacific, to_pacific
 
 from .const import (
@@ -55,73 +58,17 @@ _LOGGER = logging.getLogger(__name__)
 #: rename upstream is a type error here rather than a silent mismatch.
 KWH = UnitOfEnergy.KILO_WATT_HOUR
 
-#: Ceiling on implied power for one hour, in kW. Mirrors
-#: ``tariffkit.sources.homeassistant.MAX_INTERVAL_KW``: a statistics series that
-#: restarts reports its whole accumulated total as one period's change, which is
-#: energy no residential service could have moved.
-MAX_INTERVAL_KW = 100.0
+#: Re-exported rather than restated. The repair that reads it lives in the
+#: library now: this module and ``tariffkit.sources.homeassistant`` read the
+#: same statistics through different transports -- the recorder in process, the
+#: WebSocket API out of it -- and two spellings of one derivation is how the two
+#: come to disagree about a bill. They did: this one repaired a spoiled interval
+#: from the counter and that one dropped it.
+MAX_INTERVAL_KW = _MAX_INTERVAL_KW
 
-
-#: One hour's energy from a statistics row, repairing what the recorder spoiled.
-#:
-#: ``change`` is what the recorder believes the counter advanced by, and it is
-#: wrong whenever the source dropped to zero: a ``total_increasing`` sensor
-#: reading 0.0 is taken for a counter reset, so the next hour's ``change``
-#: carries the whole counter -- 1455 kWh on a meter that had moved 0.003. The
-#: Rainforest Eagle-100 does this several times a day while it re-establishes
-#: its meter session.
-#:
-#: Refusing that row is right and dropping the hour with it is not. The true
-#: figure is still there in ``state``, which is the counter itself: difference
-#: it against the previous hour and the energy comes back. On a real account
-#: that recovered 14.1 kWh of a cycle's 68.3 -- a fifth of it -- across 56
-#: hours the integration had been discarding.
-#:
-#: ``tariffkit.sources.influx.monotonic`` is the same repair one layer down,
-#: applied to raw samples rather than to hourly rows, and its rule is the same:
-#: a reading that is zero or below one already seen is a device artefact and not
-#: energy.
-#:
-#: Only across *consecutive* hours. A gap in the series means the counter also
-#: advanced through hours nobody recorded, and crediting that whole advance to
-#: the hour the series resumes would price a week of energy at one hour's
-#: time-of-use rate -- worse than the hole, and confidently so.
-def _carry(
-    previous: tuple[float, float] | None, slot: float, state: float | None
-) -> tuple[float, float] | None:
-    """The last usable ``(slot, counter)`` pair, given this row.
-
-    A row whose ``state`` is zero or missing is the artefact itself, so it is
-    not what the next row should difference against -- the previous good
-    reading is, and keeping it is what lets a single spoiled hour be repaired
-    rather than propagating.
-    """
-    if state is None:
-        return previous
-    value = float(state)
-    return (slot, value) if value > 0 else previous
-
-
-def hour_energy(
-    change: float | None,
-    state: float | None,
-    previous: tuple[float, float] | None,
-    slot: float,
-    step: float = 3600.0,
-) -> float | None:
-    """The hour's energy, or None when nothing trustworthy can be recovered.
-
-    ``previous`` is the last usable ``(slot, state)`` pair seen for this entity.
-    """
-    if change is not None and 0 <= change <= MAX_INTERVAL_KW:
-        return change
-    if state is None or state <= 0 or previous is None:
-        return None
-    was_at, was = previous
-    if abs(slot - was_at - step) > 1.0:
-        return None
-    advance = state - was
-    return advance if 0 <= advance <= MAX_INTERVAL_KW else None
+#: One hour, in seconds. This module reads hourly statistics rows, so it is the
+#: step every repaired interval is measured against.
+HOUR = 3600.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,7 +345,7 @@ class UsageReader:
                     continue
                 recorded.setdefault(entity, set()).add(slot)
                 change = row.get("change")
-                energy = hour_energy(change, row.get("state"), previous, slot)
+                energy = interval_energy(change, row.get("state"), previous, slot, HOUR)
                 previous = _carry(previous, slot, row.get("state"))
                 if energy is None:
                     if change is None:
@@ -571,12 +518,12 @@ class UsageReader:
                 # A statistics series that restarted reports its whole
                 # accumulated total as one hour's change. Charging for that
                 # would bill a year inside an hour; dropping it loses the hour's
-                # real energy, which `hour_energy` recovers from the counter.
+                # real energy, which `interval_energy` recovers from the counter.
                 if slot < opens.timestamp():
                     previous = _carry(previous, slot, row.get("state"))
                     continue
                 change = row.get("change")
-                energy = hour_energy(change, row.get("state"), previous, slot)
+                energy = interval_energy(change, row.get("state"), previous, slot, HOUR)
                 previous = _carry(previous, slot, row.get("state"))
                 if energy is None:
                     if change is not None:
@@ -742,7 +689,12 @@ def price(
     unexplained ``unknown``, so the reason travels with the refusal.
     """
     try:
-        return compute_segments(profile.segments_for(period), readings, check=False), ""
+        # `check=False` because `coverage_warnings` runs the check itself, with
+        # the clock; `netted=True` for the same reason it passes it there.
+        return (
+            compute_segments(profile.segments_for(period), readings, check=False, netted=True),
+            "",
+        )
     except (TariffKitError, ValueError) as err:
         _LOGGER.debug("Cannot price %s to %s: %s", period.start, period.end, err)
         return None, f"cannot price {period.start} to {period.end}: {err}"

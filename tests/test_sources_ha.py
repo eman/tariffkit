@@ -226,7 +226,7 @@ class TestReadings:
         got = ha._readings_from(series, settings, step)
         assert len(got) == 1
         assert next(iter(got.values())).imported == 0.02
-        assert "running sum restarted" in logs.text
+        assert "could not be differenced either" in logs.text
 
     def test_one_meters_restart_does_not_discard_the_other_meters_energy(
         self, settings: ha.HaSettings
@@ -273,6 +273,52 @@ class TestReadings:
         got = ha._readings_from(series, settings, step)
         assert len(got) == 1
         assert next(iter(got.values())).imported == 0.02
+
+    def test_a_spoiled_interval_is_repaired_from_the_counter(self, settings: ha.HaSettings) -> None:
+        """The same repair the integration does, now in one place.
+
+        A `total_increasing` sensor reading 0.0 is taken for a counter reset, so
+        the recorder reports the whole counter as the next interval's `change`.
+        The counter is intact in `state`, and differencing it recovers the
+        interval. This reader used to drop it while the integration's reader
+        repaired it -- two readers of the same statistics, disagreeing.
+        """
+        step = timedelta(minutes=5)
+        start = datetime(2026, 8, 1, 4, 15, tzinfo=PACIFIC)
+        series = {
+            IMPORT_ID: [
+                {**point(start - step, 0.02, step), "state": 1460.58},
+                {**point(start, 1460.60, step), "state": 1461.0},
+            ],
+            EXPORT_ID: [],
+        }
+        got = ha._readings_from(series, settings, step)
+        assert len(got) == 2, "the spoiled interval survives"
+        assert list(got.values())[1].imported == pytest.approx(0.42)
+
+    def test_a_partly_covered_hour_falls_back_to_the_hourly_row(
+        self, settings: ha.HaSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An hour the fine series only half covers must not lose the other half.
+
+        Dropping the hourly row for any hour with *some* fine data left the
+        uncovered part in neither series. On a real cycle the five-minute
+        statistics resumed at 04:20 after a restart, deleting the 04:00 hourly
+        row and leaving 04:00-04:20 nowhere -- reported as a gap, and short by
+        whatever crossed the meter in those twenty minutes.
+        """
+        hour = datetime(2026, 8, 30, 4, tzinfo=PACIFIC)
+        step = timedelta(minutes=5)
+        fine = {
+            IMPORT_ID: [point(hour + timedelta(minutes=m), 0.01, step) for m in range(20, 60, 5)],
+            EXPORT_ID: [],
+        }
+        whole = {IMPORT_ID: [point(hour, 0.50, timedelta(hours=1))], EXPORT_ID: []}
+        patch_socket(monkeypatch, {"5minute": fine, "hour": whole})
+        got = ha.read_statistics(settings, hour, hour + timedelta(hours=1), resolution="auto")
+        assert len(got) == 1, "the hour, not the eight slots that half-cover it"
+        assert got[0].duration == timedelta(hours=1)
+        assert got[0].imported == pytest.approx(0.50)
 
     def test_a_plausible_large_interval_survives(self, settings: ha.HaSettings) -> None:
         """The ceiling only ever catches the impossible, not a heavy hour."""
