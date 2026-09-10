@@ -4,6 +4,7 @@ Pure and dependency-free: readings in, decomposed charges out. See
 ``tariffkit.billing.engine`` for what is deliberately out of scope.
 """
 
+from .cycles import STALE_EVIDENCE, Cycle, cycle_start, resolve_cycle, statement_periods
 from .engine import BillEngine, hourly
 from .ledger import (
     GENERATION_BUCKETS,
@@ -34,12 +35,14 @@ from .trueup import (
 
 __all__ = [
     "GENERATION_BUCKETS",
+    "STALE_EVIDENCE",
     "UTILITY_BUCKETS",
     "Bill",
     "BillEngine",
     "BillingPeriod",
     "CreditBalances",
     "CreditBucket",
+    "Cycle",
     "IntervalReading",
     "Ledger",
     "LedgerEntry",
@@ -52,6 +55,7 @@ __all__ = [
     "charges_by_bucket",
     "check_coverage",
     "credits_earned",
+    "cycle_start",
     "find_gaps",
     "find_overlaps",
     "hourly",
@@ -60,7 +64,9 @@ __all__ = [
     "pge_true_up",
     "published_nsc_rate",
     "relevant_period_end",
+    "resolve_cycle",
     "run_ledger",
     "run_lifetime",
     "run_true_ups",
+    "statement_periods",
 ]

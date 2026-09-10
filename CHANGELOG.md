@@ -171,6 +171,40 @@ per statement.
 New in `tariffkit.sources`: `cached_green_button`, `cached_exports`,
 `CachedExport`, and `read_green_button_export`.
 
+#### `tariffkit bill` defaults to the cycle you are in
+
+With no `--start`/`--end` it prices the billing cycle open right now, through
+today -- what you owe so far, which was the one question the command could not
+answer without first looking up when the cycle began. Passing one of the two
+without the other is refused rather than half-guessed.
+
+Where the boundary came from is printed, because it is not always known:
+
+```
+  cycle: 2026-08-28 to 2026-09-09, the boundary your statements print
+  cycle: 2026-09-01 to 2026-09-09, a calendar month, which is a guess -- run
+    'tariffkit account sync --apply' for real boundaries, or set [billing] cycle_start_day
+```
+
+Statements date it exactly, and cycles are contiguous, so the open one begins
+the day after the last statement ended -- no waiting to be billed. `[billing]
+cycle_start_day` in `config.toml` is the fallback meter-read day; with neither,
+the calendar month is used and labelled a guess. PG&E reads on business days,
+so a real account's cycles open on the 29th, the 30th, the 1st and the 3rd in
+consecutive months, which is why a fixed day is only ever close.
+
+The resolution itself is not new -- the Home Assistant integration has used it
+for its cycle-to-date entities all along. It has moved from
+`custom_components.tariffkit.energy` into `tariffkit.billing`
+(`resolve_cycle`, `cycle_start`, `statement_periods`, `Cycle`,
+`STALE_EVIDENCE`), where the CLI can reach it; the integration imports it from
+there now. `Cycle.source` no longer carries prose, only the basis
+(`statement`, `day_of_month`, `calendar_month`), leaving the wording to whoever
+prints it.
+
+The Green Button cache drops ranges a new download wholly contains, so billing
+an open cycle daily leaves one file rather than one a day.
+
 
 ### Fixed
 - **`tariffkit bill` uses your account profile without being asked.** With one

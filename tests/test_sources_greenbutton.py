@@ -339,6 +339,33 @@ class TestExportCache:
 
         assert chosen.covers == "2026-07-01..2026-08-31"
 
+    def test_a_new_file_drops_the_ranges_it_wholly_contains(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Billing an open cycle each day would otherwise leave one file a day."""
+        self._record(monkeypatch)
+        for last in (date(2026, 8, 30), date(2026, 8, 31), date(2026, 9, 1)):
+            cached_green_button(self._settings(), date(2026, 8, 28), last, directory=tmp_path)
+
+        assert [export.covers for export in cached_exports(tmp_path)] == ["2026-08-28..2026-09-01"]
+
+    def test_a_range_holding_a_day_of_its_own_survives(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Overlap is not containment: that file has a day the new one does not."""
+        self._record(monkeypatch)
+        cached_green_button(
+            self._settings(), date(2026, 7, 1), date(2026, 8, 29), directory=tmp_path
+        )
+        cached_green_button(
+            self._settings(), date(2026, 8, 28), date(2026, 9, 1), directory=tmp_path
+        )
+
+        assert [export.covers for export in cached_exports(tmp_path)] == [
+            "2026-07-01..2026-08-29",
+            "2026-08-28..2026-09-01",
+        ]
+
     def test_a_file_that_is_not_a_range_is_ignored(self, tmp_path: Path) -> None:
         """Anything else in the directory is not an export this wrote."""
         (tmp_path / "notes.csv").write_text("start,imported,exported\n", encoding="utf-8")

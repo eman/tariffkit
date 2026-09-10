@@ -553,6 +553,67 @@ def _flattened(config: Mapping[str, Any], prefix: str = "") -> list[tuple[str, s
     return rows
 
 
+def _billing_window(args: Any, profile: Any) -> tuple[Any, str]:
+    """The cycle to price, defaulting to the one open right now.
+
+    Asking for `--start` and `--end` on every run made the common question --
+    "what do I owe so far this cycle?" -- the one thing the command could not
+    answer without first looking up when the cycle began.
+
+    Where that boundary came from is returned with it, because it is not always
+    known: statements fix it exactly, a configured meter-read day approximates
+    it, and with neither the calendar month is a guess that will not match a
+    bill. Printing the basis is what keeps the third case from reading like
+    the first.
+    """
+    from ..billing import BillingPeriod, resolve_cycle, statement_periods
+
+    if args.start and args.end:
+        return BillingPeriod(args.start, args.end), ""
+    if args.start or args.end:
+        raise ConfigError("give both --start and --end, or neither for the current cycle")
+    if profile is None:
+        raise ConfigError(
+            "give --start and --end; without an account there is nothing to "
+            "say when the current billing cycle began"
+        )
+
+    today = datetime.now(PACIFIC).date()
+    cycle = resolve_cycle(today, _cycle_start_day(args), statement_periods(profile))
+    return BillingPeriod(
+        cycle.start, today
+    ), f"  cycle: {cycle.start} to {today}, {_BASIS[cycle.source]}"
+
+
+#: How each boundary was arrived at, said plainly. The two guesses name what
+#: would replace them, because an unbilled cycle is where someone first
+#: notices the period does not match their statement.
+_BASIS = {
+    "statement": "the boundary your statements print",
+    "day_of_month": "from [billing] cycle_start_day; statements would date it exactly",
+    "calendar_month": (
+        "a calendar month, which is a guess -- run 'tariffkit account sync --apply' "
+        "for real boundaries, or set [billing] cycle_start_day"
+    ),
+}
+
+
+def _cycle_start_day(args: Any) -> int:
+    """The meter-read day from ``[billing] cycle_start_day``, if one is set."""
+    import tomllib
+
+    from ..config import default_config_path
+
+    path = Path(args.config) if getattr(args, "config", None) else default_config_path()
+    if not path.is_file():
+        return 0
+    raw = tomllib.loads(path.read_text(encoding="utf-8")).get("billing", {})
+    day = raw.get("cycle_start_day", 0)
+    if not isinstance(day, int) or isinstance(day, bool) or not 0 <= day <= 31:
+        raise ConfigError("[billing] cycle_start_day must be a day of the month, 1 to 31")
+    return day
+
+
 def _short_path(path: Path) -> str:
     """A path with the home directory collapsed, for printing."""
     try:
@@ -866,15 +927,22 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "bill":
-            from ..billing import BillEngine, BillingPeriod
+            from ..billing import BillEngine
             from ..sources import read_green_button
 
+            # Resolved before any source is read, because every one of them is
+            # asked for a window and a CSV on stdin is the only case where the
+            # readings themselves can supply it.
+            period, cycle_note = (
+                (None, "")
+                if args.csv is not None and not (args.start or args.end)
+                else _billing_window(args, account_profile)
+            )
             note = ""
             if args.source == "ha":
                 from ..sources import HaSettings, describe_resolution, read_statistics
 
-                if not (args.start and args.end):
-                    raise ConfigError("--source ha requires --start and --end")
+                assert period is not None
                 ha_settings = HaSettings.load(
                     config_path=args.config,
                     profile_source=(
@@ -885,16 +953,15 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 readings = read_statistics(
                     ha_settings,
-                    _midnight(args.start),
-                    _midnight(args.end) + timedelta(days=1),
+                    _midnight(period.start),
+                    _midnight(period.end) + timedelta(days=1),
                     resolution=args.ha_resolution,
                 )
                 note = f"  source: Home Assistant statistics ({describe_resolution(readings)})"
             elif args.source == "influx":
                 from ..sources import InfluxSettings, describe_resolution, read_counters
 
-                if not (args.start and args.end):
-                    raise ConfigError("--source influx requires --start and --end")
+                assert period is not None
                 influx_settings = InfluxSettings.load(
                     config_path=args.config,
                     profile_source=(
@@ -908,8 +975,8 @@ def main(argv: list[str] | None = None) -> int:
                 step = timedelta(minutes=args.influx_resolution)
                 readings = read_counters(
                     influx_settings,
-                    _midnight(args.start),
-                    _midnight(args.end) + timedelta(days=1),
+                    _midnight(period.start),
+                    _midnight(period.end) + timedelta(days=1),
                     step,
                 )
                 # Described the same way the Home Assistant source describes
@@ -926,15 +993,11 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 from ..sources import PgeSettings, cached_green_button
 
-                if not (args.start and args.end):
-                    raise ConfigError(
-                        "--source green-button needs --start and --end to know what to "
-                        "download, or a Green Button CSV path you already have"
-                    )
+                assert period is not None
                 export = cached_green_button(
                     PgeSettings.load(config_path=args.config),
-                    args.start,
-                    args.end,
+                    period.start,
+                    period.end,
                     refresh=args.refresh,
                 )
                 readings = read_green_button(export.path)
@@ -944,11 +1007,10 @@ def main(argv: list[str] | None = None) -> int:
                     f"({len(readings)} intervals, {_short_path(export.path)})"
                 )
 
-            period = (
-                BillingPeriod(args.start, args.end)
-                if args.start and args.end
-                else BillingPeriod.from_readings(readings)
-            )
+            if period is None:
+                from ..billing import BillingPeriod
+
+                period = BillingPeriod.from_readings(readings)
             if from_account:
                 from ..billing.engine import compute_segments
 
@@ -982,6 +1044,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 if note:
                     print(note)
+                if cycle_note:
+                    print(cycle_note)
             return 0
 
         if args.command == "mqtt":

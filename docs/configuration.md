@@ -414,6 +414,21 @@ delivery-only prices flagged `complete = False` rather than a plausible-looking
 wrong total. Check that flag before acting on a price. Setting `pcia_vintage`
 satisfies the franchise fee half on its own.
 
+## Billing cycle
+
+`tariffkit bill` with no `--start`/`--end` prices the cycle open right now. It
+takes the boundary from your imported statements where there are any; where
+there are not, this is the meter-read day it falls back to:
+
+```toml
+[billing]
+cycle_start_day = 29    # 1-31; clamps in short months
+```
+
+Unset, the fallback is the calendar month, which will not match a bill and says
+so when it is used. See
+[The default window](billing.md#the-default-window).
+
 ## Reading your bill
 
 PG&E splits a CCA customer's charges across lines that individually look like

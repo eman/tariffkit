@@ -38,6 +38,7 @@ import json
 import os
 import re
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from pathlib import Path
@@ -1327,7 +1328,24 @@ def cached_green_button(
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         handle.write(text)
     path.chmod(0o600)
+    _drop_superseded(base, start, end)
     return CachedExport(path=path, start=start, end=end, downloaded=True)
+
+
+def _drop_superseded(base: Path, start: date, end: date) -> None:
+    """Delete cached ranges the new file wholly contains.
+
+    Billing an open cycle asks for ``cycle start .. today``, so a daily run
+    would leave one file per day, each a prefix of the next. Only ranges
+    strictly inside the new one go: a file holding a day this one does not is
+    not a duplicate, whatever else it overlaps.
+    """
+    for export in cached_exports(base):
+        if export.start == start and export.end == end:
+            continue
+        if start <= export.start and export.end <= end:
+            with suppress(OSError):
+                export.path.unlink()
 
 
 def read_green_button_export(settings: PgeSettings, start: date, end: date) -> str:

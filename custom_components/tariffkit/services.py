@@ -15,6 +15,7 @@ from homeassistant.helpers import selector, service
 from homeassistant.util.json import JsonObjectType, JsonValueType
 
 from tariffkit.account import AccountProfile
+from tariffkit.billing import resolve_cycle, statement_periods
 from tariffkit.errors import TariffKitError
 from tariffkit.interop import forecast_lists, resample
 from tariffkit.models import PriceCurve, PricePoint
@@ -35,7 +36,6 @@ from .const import (
     SUPPORTED_RESOLUTIONS,
 )
 from .coordinator import TariffKitCoordinator, TariffKitQuality
-from .energy import resolve_cycle, statement_periods
 
 MAX_HOURS = 168
 

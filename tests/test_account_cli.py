@@ -6,8 +6,10 @@ import importlib
 import json
 from datetime import date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from freezegun import freeze_time
 
 from tariffkit.account import (
     AccountEpoch,
@@ -114,6 +116,133 @@ def _init_account(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, effective:
         encoding="utf-8",
     )
     assert main(["--config", str(config), "account", "init", "--effective", effective]) == 0
+
+
+def _account_with_statement(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AccountProfile:
+    """An account whose last statement closed on 2026-08-27."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    store = AccountStore(tmp_path)
+    profile = AccountProfile(
+        (AccountEpoch(date(2025, 1, 1), Config()),),
+        observations=(
+            AccountObservation(
+                agreements=(
+                    ObservedAgreement(
+                        provider="pge",
+                        statement_date=date(2026, 9, 1),
+                        period=BillingPeriod(date(2026, 7, 29), date(2026, 8, 27)),
+                        tariff="E-ELEC",
+                    ),
+                ),
+            ),
+        ),
+    )
+    store.save(profile)
+    return profile
+
+
+@freeze_time("2026-09-09T12:00:00-07:00")
+def test_bill_without_dates_prices_the_open_cycle_from_statement_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ "What do I owe so far?" was the one question it could not answer alone."""
+    _account_with_statement(tmp_path, monkeypatch)
+    monkeypatch.setenv("PGE_USERNAME", "person@example.invalid")
+    monkeypatch.setenv("PGE_PASSWORD", "secret")
+    asked: dict[str, date] = {}
+
+    def fake(settings: object, start: date, end: date, **kwargs: object) -> object:
+        asked.update(start=start, end=end)
+        return SimpleNamespace(path=_export_csv(tmp_path), downloaded=False, covers="cached")
+
+    monkeypatch.setattr("tariffkit.sources.cached_green_button", fake)
+
+    assert main(["bill"]) == 0
+
+    # The cycle after the last statement: contiguous, so it opened on the 28th.
+    assert asked == {"start": date(2026, 8, 28), "end": date(2026, 9, 9)}
+    out = capsys.readouterr().out
+    assert "cycle: 2026-08-28 to 2026-09-09, the boundary your statements print" in out
+
+
+@freeze_time("2026-09-09T12:00:00-07:00")
+def test_bill_without_dates_says_when_the_boundary_is_a_guess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A calendar month will not match a bill, so it must not read as one."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    AccountStore(tmp_path).save(AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),)))
+    _stub_export(tmp_path, monkeypatch)
+
+    assert main(["bill"]) == 0
+
+    out = capsys.readouterr().out
+    assert "cycle: 2026-09-01 to 2026-09-09, a calendar month, which is a guess" in out
+    assert "tariffkit account sync --apply" in out
+
+
+@freeze_time("2026-09-09T12:00:00-07:00")
+def test_bill_without_dates_uses_a_configured_meter_read_day(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    (tmp_path / "tariffkit").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "tariffkit" / "config.toml").write_text(
+        "[billing]\ncycle_start_day = 29\n", encoding="utf-8"
+    )
+    AccountStore(tmp_path).save(AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),)))
+    _stub_export(tmp_path, monkeypatch)
+
+    assert main(["bill"]) == 0
+
+    assert "cycle: 2026-08-29 to 2026-09-09" in capsys.readouterr().out
+
+
+def test_bill_refuses_one_date_without_the_other(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Half a window is a typo, not a request to guess the other half."""
+    _account_with_statement(tmp_path, monkeypatch)
+
+    assert main(["bill", "--start", "2026-08-01"]) == 1
+
+    assert "give both --start and --end" in capsys.readouterr().err
+
+
+def test_bill_without_an_account_still_asks_for_dates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Nothing says when the cycle began, so it does not invent one."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+    assert main(["bill"]) == 1
+
+    assert "there is nothing to say when the current billing cycle began" in (
+        capsys.readouterr().err
+    )
+
+
+def _stub_export(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Credentials that satisfy `PgeSettings.load`, and an export to read."""
+    monkeypatch.setenv("PGE_USERNAME", "person@example.invalid")
+    monkeypatch.setenv("PGE_PASSWORD", "secret")
+    monkeypatch.setattr(
+        "tariffkit.sources.cached_green_button",
+        lambda *a, **k: SimpleNamespace(
+            path=_export_csv(tmp_path), downloaded=False, covers="cached"
+        ),
+    )
+
+
+def _export_csv(tmp_path: Path) -> Path:
+    path = tmp_path / "export.csv"
+    path.write_text(
+        "start,imported,exported\n"
+        "2026-09-01T02:00:00-07:00,1.5,0\n"
+        "2026-09-01T03:00:00-07:00,0,2.5\n",
+        encoding="utf-8",
+    )
+    return path
 
 
 def test_account_show_answers_what_is_in_force_not_what_history_answers(

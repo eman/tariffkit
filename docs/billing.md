@@ -25,6 +25,7 @@ nothing installed beyond the core package. Name a file you already have, or name
 none and let it fetch one:
 
 ```bash
+tariffkit bill                       # the cycle open right now, to today
 tariffkit bill --start 2026-07-29 --end 2026-08-27
 tariffkit bill pge_electric_usage_interval_data_....csv --start 2026-07-02 --end 2026-07-28
 tariffkit bill - --json < intervals.csv
@@ -157,6 +158,42 @@ Two smaller notes:
 - Entity ids are constrained to `[A-Za-z0-9_.]` rather than escaped, because they
   are interpolated into SQL. A `sensor.` prefix is stripped; InfluxDB stores the
   bare name.
+
+## The default window
+
+With no `--start`/`--end`, the period is **the billing cycle open right now,
+through today** — what you owe so far. Half a window is refused: `--start`
+without `--end` is a typo, not a request to guess the rest.
+
+Where that boundary came from is printed, because it is not always known:
+
+```console
+$ tariffkit bill --source influx
+...
+  cycle: 2026-08-28 to 2026-09-09, the boundary your statements print
+```
+
+| basis | when | how close |
+|---|---|---|
+| statements | the account has imported them | exact — cycles are contiguous, so the open one began the day after the last statement ended |
+| `[billing] cycle_start_day` | you set a meter-read day | approximate |
+| calendar month | neither | a guess, and it says so |
+
+PG&E reads on business days, so a real account's cycles open on the 29th, the
+30th, the 1st and the 3rd in consecutive months — which is why a fixed day is
+only ever close. `tariffkit account sync --apply` imports the statements that
+date it exactly; failing that:
+
+```toml
+# ~/.config/tariffkit/config.toml
+[billing]
+cycle_start_day = 29
+```
+
+Evidence older than about a cycle stops being used: a statement has been issued
+that the account never imported, so the next boundary is no longer derivable,
+and trusting the old one would report a 90-day "cycle" with a Base Services
+Charge for every day of it.
 
 ## Green Button input
 

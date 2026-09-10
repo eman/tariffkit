@@ -17,13 +17,7 @@ from custom_components.tariffkit.const import (
     CONF_PROFILE,
     DOMAIN,
 )
-from custom_components.tariffkit.energy import (
-    Cycle,
-    MeterSettings,
-    cycle_start,
-    resolve_cycle,
-    statement_periods,
-)
+from custom_components.tariffkit.energy import MeterSettings
 from custom_components.tariffkit.profile import profile_payload
 from custom_components.tariffkit.sensor import TariffKitSensor
 from freezegun.api import FrozenDateTimeFactory
@@ -41,10 +35,8 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
 from tariffkit import Config
 from tariffkit.account import AccountEpoch, AccountProfile
 from tariffkit.account.model import (
-    AccountObservation,
     MeterSource,
     MeterSources,
-    ObservedAgreement,
 )
 from tariffkit.billing import Bill, BillingPeriod
 from tariffkit.timeutil import PACIFIC
@@ -122,24 +114,6 @@ def _state(hass: HomeAssistant, entry: MockConfigEntry, key: str) -> State:
     state = hass.states.get(entity_id)
     assert state is not None
     return state
-
-
-@pytest.mark.parametrize(
-    ("day", "start_day", "expected"),
-    [
-        (date(2026, 8, 24), 0, date(2026, 8, 1)),
-        (date(2026, 8, 24), 12, date(2026, 8, 12)),
-        (date(2026, 8, 3), 12, date(2026, 7, 12)),
-        (date(2026, 8, 12), 12, date(2026, 8, 12)),
-        # A read day past the end of a short month clamps rather than skipping
-        # a cycle or raising.
-        (date(2026, 3, 15), 31, date(2026, 2, 28)),
-        (date(2026, 5, 3), 31, date(2026, 4, 30)),
-    ],
-)
-def test_cycle_start_clamps_to_the_month(day: date, start_day: int, expected: date) -> None:
-    """The fallback, used when no statement evidence exists."""
-    assert cycle_start(day, start_day) == expected
 
 
 def test_meter_settings_fall_back_to_an_imported_profile_mapping() -> None:
@@ -554,73 +528,6 @@ async def test_metered_energy_is_configured_only_after_setup(hass: HomeAssistant
     assert "meters" in result["menu_options"]
 
 
-def _period(start: tuple[int, int, int], end: tuple[int, int, int]) -> BillingPeriod:
-    return BillingPeriod(date(*start), date(*end))
-
-
-def test_statement_evidence_beats_a_guessed_meter_read_day() -> None:
-    """Real cycles do not open on a fixed day, so evidence wins where it exists.
-
-    PG&E reads on business days, so consecutive cycles on one real account
-    opened on the 29th, the 30th, the 1st and the 3rd. Any fixed day of the
-    month is therefore wrong for most of them.
-    """
-    periods = [_period((2026, 6, 1), (2026, 6, 29)), _period((2026, 6, 30), (2026, 7, 28))]
-
-    # Inside a billed cycle: that cycle's own start, exactly.
-    assert resolve_cycle(date(2026, 7, 10), 30, periods) == Cycle(date(2026, 6, 30), "statement")
-
-    # After the last statement: cycles are contiguous, so the open one began
-    # the day after it ended -- derivable without waiting to be billed.
-    assert resolve_cycle(date(2026, 8, 24), 30, periods) == Cycle(date(2026, 7, 29), "statement")
-
-    # The guess would have been a day out, and the calendar month three.
-    assert cycle_start(date(2026, 8, 24), 30) == date(2026, 7, 30)
-    assert cycle_start(date(2026, 8, 24), 0) == date(2026, 8, 1)
-
-
-def test_stale_evidence_falls_back_rather_than_inventing_a_long_cycle() -> None:
-    """Evidence older than a cycle cannot fix the current boundary.
-
-    A statement has been issued that the profile never imported, so the next
-    boundary is not derivable. Trusting the old one would report a 90-day
-    "cycle" and charge Base Services Charge for every day of it.
-    """
-    periods = [_period((2026, 6, 30), (2026, 7, 28))]
-    assert resolve_cycle(date(2026, 8, 24), 30, periods).source == "statement"
-    stale = resolve_cycle(date(2026, 10, 1), 30, periods)
-    assert stale.source == "day_of_month"
-    assert stale.start == date(2026, 9, 30)
-
-
-def test_statement_periods_follow_the_bill_not_the_agreement() -> None:
-    """A cycle split by interconnection is one billing period, not two."""
-    profile = AccountProfile(
-        (AccountEpoch(date(2026, 1, 1), Config(tariff="E-ELEC")),),
-        name="split",
-        observations=(
-            AccountObservation(
-                agreements=(
-                    ObservedAgreement(
-                        provider="pge",
-                        statement_date=date(2026, 7, 7),
-                        period=_period((2026, 6, 1), (2026, 6, 2)),
-                        tariff="EV2-A",
-                    ),
-                    ObservedAgreement(
-                        provider="pge",
-                        statement_date=date(2026, 7, 7),
-                        period=_period((2026, 6, 3), (2026, 6, 29)),
-                        tariff="E-ELEC",
-                    ),
-                ),
-            ),
-        ),
-    )
-    (period,) = statement_periods(profile)
-    assert (period.start, period.end) == (date(2026, 6, 1), date(2026, 6, 29))
-
-
 @pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
 async def test_the_cycle_entity_says_where_its_boundary_came_from(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
@@ -655,20 +562,6 @@ def test_the_fall_back_hour_is_two_distinct_slots() -> None:
     by_epoch = {pdt.timestamp(): 1.0, pst.timestamp(): 1.0}
     assert len(by_datetime) == 1, "datetime keys collide"
     assert len(by_epoch) == 2, "epoch keys must not"
-
-
-def test_evidence_never_implies_a_cycle_longer_than_a_real_one() -> None:
-    """A cycle runs 27-33 days; the staleness bound must refuse before 34."""
-    periods = [_period((2026, 6, 30), (2026, 7, 28))]
-    spans = {}
-    for day in (date(2026, 8, 29), date(2026, 8, 30), date(2026, 8, 31), date(2026, 9, 1)):
-        cycle = resolve_cycle(day, 30, periods)
-        spans[day] = ((day - cycle.start).days + 1, cycle.source)
-    assert spans[date(2026, 8, 29)] == (32, "statement")
-    assert spans[date(2026, 8, 30)] == (33, "statement")
-    # Beyond a real cycle, so the evidence is stale and it says so.
-    assert spans[date(2026, 8, 31)][1] == "day_of_month"
-    assert all(span <= 33 for span, source in spans.values() if source == "statement")
 
 
 def test_one_entity_cannot_be_both_directions() -> None:
