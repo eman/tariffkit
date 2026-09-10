@@ -35,18 +35,19 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import logging
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from time import sleep
 from typing import Any
 from uuid import uuid4
 
-from ..billing import IntervalReading
+from ..billing import BillingPeriod, IntervalReading
 from ..config import default_config_path
 from ..errors import ConfigError, DataError
 from ..secrets import get_secret
@@ -110,6 +111,8 @@ OPOWER_URN = re.compile(r"(urn:opower:v1:account:[a-z]+:uuid:[0-9a-f-]+)")
 
 #: How far back the platform will export. Its own answer, not our choice.
 MAX_HISTORY_DAYS = 1095
+
+log = logging.getLogger(__name__)
 #: The export is a job. Roughly two minutes at the default interval, which is
 #: far longer than the few seconds it has taken in practice.
 EXPORT_POLL_LIMIT = 60
@@ -126,6 +129,24 @@ EXPORT_JOB = (
     "  exportJob(jobUuid: $jobUuid) {\n"
     "    uuid\n    result\n    isRunning\n    isFailed\n    isFinished\n    __typename\n  }\n}"
 )
+#: The bill periods the account has been billed on, with their real boundaries.
+#:
+#: `bills` is a field on the *account*, not on Query, which is why the operation
+#: name is no guide to it. Captured from the export widget's own request; see
+#: audit/pge/PORTAL.md.
+BILL_PERIODS_QUERY = (
+    "query WUE_GetUsageExportBills($selectedAccount: ID, $timeInterval: TimeInterval, "
+    "$forceLegacyData: Boolean, $last: Int) {\n"
+    "  billingAccountByAuthContext(\n"
+    "    selectedAccount: $selectedAccount\n"
+    "    forceLegacyData: $forceLegacyData\n"
+    "  ) {\n"
+    "    bills(during: $timeInterval, last: $last, orderBy: ASCENDING) {\n"
+    "      timeInterval\n      __typename\n    }\n    __typename\n  }\n}"
+)
+#: How many cycles to ask for. Three years at one a month, plus the splits a
+#: mid-cycle agreement change adds.
+MAX_BILL_PERIODS = 48
 ACCOUNT_URN_QUERY = (
     "query WUE_GetMetadata($selectedAccount: ID) {\n"
     "  billingAccountByAuthContext(selectedAccount: $selectedAccount) {\n"
@@ -1353,3 +1374,150 @@ def read_green_button_export(settings: PgeSettings, start: date, end: date) -> s
     with PgeSession(settings) as session:
         session.login()
         return download_green_button(session, start, end)
+
+
+def _default_period_cache() -> Path:
+    """Where the utility's own cycle boundaries are kept between runs."""
+    return _default_export_cache().parent / "bill-periods.json"
+
+
+def _interval_to_period(interval: str) -> BillingPeriod:
+    """One ``start/end`` from the portal as an inclusive billing period.
+
+    The portal's intervals are half-open and mixed in spelling -- some carry a
+    Pacific offset, some arrive as UTC ``Z`` for the same boundary -- so both
+    ends are converted before the date is taken. The end is exclusive
+    (``2026-07-29T07:00:00Z/2026-08-28T07:00:00Z`` is the cycle the widget
+    labels "Jul 29, 2026 - Aug 27, 2026"), and a billing period here is
+    inclusive, so the last day is the one before it.
+    """
+    from ..timeutil import PACIFIC
+
+    first, _, last = interval.partition("/")
+    try:
+        opens = datetime.fromisoformat(first).astimezone(PACIFIC)
+        closes = datetime.fromisoformat(last).astimezone(PACIFIC)
+    except ValueError as exc:
+        raise PortalError(
+            f"a bill period was not an interval: {interval!r}", endpoint="bill_periods"
+        ) from exc
+    return BillingPeriod(opens.date(), closes.date() - timedelta(days=1))
+
+
+def read_bill_periods(settings: PgeSettings) -> list[BillingPeriod]:
+    """Every cycle the portal will list, oldest first, from the utility itself.
+
+    These are the boundaries PG&E bills on, not a guess from a meter-read day:
+    a real account's cycles open on the 29th, the 30th, the 1st and the 3rd in
+    consecutive months, because the utility reads on business days.
+
+    A cycle split by a mid-cycle agreement change -- interconnecting solar does
+    exactly this -- is listed as two, since the portal lists a bill per
+    agreement. Both are real boundaries; only the statement knows they were
+    printed on one page.
+    """
+    from ..timeutil import PACIFIC
+
+    with PgeSession(settings) as session:
+        session.login()
+        host, token, urn = session.opower()
+        now = datetime.now(PACIFIC)
+        answer = session.graphql(
+            host,
+            token,
+            urn,
+            "WUE_GetUsageExportBills",
+            BILL_PERIODS_QUERY,
+            {
+                "selectedAccount": urn,
+                "timeInterval": (
+                    f"{(now - timedelta(days=MAX_HISTORY_DAYS)).isoformat()}/{now.isoformat()}"
+                ),
+                "forceLegacyData": False,
+                "last": MAX_BILL_PERIODS,
+            },
+        )
+    account = (answer or {}).get("billingAccountByAuthContext") or {}
+    bills = account.get("bills")
+    if not isinstance(bills, list):
+        raise PortalError("the portal listed no bill periods", endpoint="bill_periods")
+    periods = [
+        _interval_to_period(str(bill["timeInterval"])) for bill in bills if bill.get("timeInterval")
+    ]
+    return sorted(periods, key=lambda period: period.start)
+
+
+def cached_bill_periods(
+    settings: PgeSettings | None = None,
+    *,
+    path: Path | None = None,
+    refresh: bool = False,
+    today: date | None = None,
+) -> list[BillingPeriod]:
+    """The utility's cycle boundaries, fetched only when they cannot answer.
+
+    A boundary is worth a network round trip once a month, not once a command,
+    and pricing from InfluxDB or Home Assistant should not start needing portal
+    credentials just to know when the cycle began. So the list is cached, and
+    refreshed only when it has stopped covering the present -- the same
+    staleness bound statement evidence uses, because it means the same thing:
+    a bill has been issued that this does not know about.
+
+    Returns what it has when a refresh is impossible. An out-of-date boundary
+    is reported as one by the caller; a failed command would be worse than a
+    boundary a month old.
+    """
+    from ..billing import STALE_EVIDENCE
+    from ..timeutil import PACIFIC
+
+    store = path or _default_period_cache()
+    day = today or datetime.now(PACIFIC).date()
+    known = _read_periods(store)
+    latest = max((period.end for period in known), default=None)
+    fresh = latest is not None and day - latest <= STALE_EVIDENCE
+    if fresh and not refresh:
+        return known
+    if settings is None:
+        return known
+    try:
+        periods = read_bill_periods(settings)
+    except Exception:
+        # Deliberately everything. This is a cache refresh, and no way for it to
+        # fail is worth failing a bill over: offline, an expired session, a
+        # portal that moved, or a transport error from a layer that does not
+        # speak this package's exceptions. What is on disk is still the
+        # utility's own answer, only older, and the caller says how old.
+        log.debug("could not refresh bill periods; keeping %d cached", len(known), exc_info=True)
+        return known
+    _write_periods(store, periods)
+    return periods
+
+
+def _read_periods(path: Path) -> list[BillingPeriod]:
+    if not path.is_file() or path.is_symlink():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return sorted(
+            (
+                BillingPeriod(date.fromisoformat(entry[0]), date.fromisoformat(entry[1]))
+                for entry in raw["periods"]
+            ),
+            key=lambda period: period.start,
+        )
+    except OSError, UnicodeError, ValueError, KeyError, TypeError:
+        # A cache that cannot be read is a cache miss, not a failure.
+        return []
+
+
+def _write_periods(path: Path, periods: Sequence[BillingPeriod]) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    body = json.dumps(
+        {"periods": [[p.start.isoformat(), p.end.isoformat()] for p in periods]},
+        separators=(",", ":"),
+    )
+    with suppress(OSError):
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(body + "\n")
+        path.chmod(0o600)

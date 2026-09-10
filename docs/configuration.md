@@ -417,8 +417,9 @@ satisfies the franchise fee half on its own.
 ## Billing cycle
 
 `tariffkit bill` with no `--start`/`--end` prices the cycle open right now. It
-takes the boundary from your imported statements where there are any; where
-there are not, this is the meter-read day it falls back to:
+takes the boundary from the portal's own list of billed cycles where credentials
+are stored, or from imported statements; where there is neither, this is the
+meter-read day it falls back to:
 
 ```toml
 [billing]

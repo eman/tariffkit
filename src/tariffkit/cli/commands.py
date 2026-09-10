@@ -561,12 +561,12 @@ def _billing_window(args: Any, profile: Any) -> tuple[Any, str]:
     answer without first looking up when the cycle began.
 
     Where that boundary came from is returned with it, because it is not always
-    known: statements fix it exactly, a configured meter-read day approximates
-    it, and with neither the calendar month is a guess that will not match a
-    bill. Printing the basis is what keeps the third case from reading like
-    the first.
+    known: the utility and its statements fix it exactly, a configured
+    meter-read day approximates it, and with none of those the calendar month
+    is a guess that will not match a bill. Printing the basis is what keeps the
+    last case from reading like the first.
     """
-    from ..billing import BillingPeriod, resolve_cycle, statement_periods
+    from ..billing import BillingPeriod, resolve_cycle
 
     if args.start and args.end:
         return BillingPeriod(args.start, args.end), ""
@@ -579,21 +579,46 @@ def _billing_window(args: Any, profile: Any) -> tuple[Any, str]:
         )
 
     today = datetime.now(PACIFIC).date()
-    cycle = resolve_cycle(today, _cycle_start_day(args), statement_periods(profile))
-    return BillingPeriod(
-        cycle.start, today
-    ), f"  cycle: {cycle.start} to {today}, {_BASIS[cycle.source]}"
+    periods, told_by = _known_periods(args, profile, refresh=args.refresh)
+    cycle = resolve_cycle(today, _cycle_start_day(args), periods)
+    basis = told_by if cycle.source == "statement" else cycle.source
+    return BillingPeriod(cycle.start, today), f"  cycle: {cycle.start} to {today}, {_BASIS[basis]}"
+
+
+def _known_periods(args: Any, profile: Any, *, refresh: bool = False) -> tuple[Any, str]:
+    """Cycle boundaries, from the utility where it will say and the statements otherwise.
+
+    The portal lists every cycle it has billed and the boundaries it billed them
+    on -- the same answer a statement carries, without a PDF to parse. It is
+    cached, because that changes once a month and pricing from a local meter
+    should not start requiring portal credentials.
+
+    Statements still count. An account may have imported them and have no
+    credentials configured at all, and the two agree wherever they overlap.
+    """
+    from ..billing import statement_periods
+    from ..sources import PgeSettings, cached_bill_periods
+
+    try:
+        settings: Any = PgeSettings.load(config_path=args.config)
+    except TariffKitError:
+        # No credentials is not an error here: a cached list still answers, and
+        # so does statement evidence.
+        settings = None
+    portal = cached_bill_periods(settings, refresh=refresh)
+    return (portal, "portal") if portal else (statement_periods(profile), "statement")
 
 
 #: How each boundary was arrived at, said plainly. The two guesses name what
 #: would replace them, because an unbilled cycle is where someone first
 #: notices the period does not match their statement.
 _BASIS = {
+    "portal": "the boundary PG&E billed on",
     "statement": "the boundary your statements print",
     "day_of_month": "from [billing] cycle_start_day; statements would date it exactly",
     "calendar_month": (
-        "a calendar month, which is a guess -- run 'tariffkit account sync --apply' "
-        "for real boundaries, or set [billing] cycle_start_day"
+        "a calendar month, which is a guess -- store PG&E credentials for the "
+        "boundaries the utility billed on, or set [billing] cycle_start_day"
     ),
 }
 

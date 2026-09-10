@@ -15,14 +15,17 @@ from pathlib import Path
 
 import pytest
 
+from tariffkit.billing import BillingPeriod
 from tariffkit.errors import DataError
 from tariffkit.sources import (
     GreenButtonLayout,
     PgeSettings,
+    cached_bill_periods,
     cached_exports,
     cached_green_button,
     read_green_button,
 )
+from tariffkit.sources.pge import PortalError, _interval_to_period, _write_periods
 from tariffkit.timeutil import export_hour
 
 
@@ -371,3 +374,95 @@ class TestExportCache:
         (tmp_path / "notes.csv").write_text("start,imported,exported\n", encoding="utf-8")
 
         assert cached_exports(tmp_path) == []
+
+
+class TestBillPeriods:
+    """The utility's own cycle boundaries, which beat any guess at a read day."""
+
+    @staticmethod
+    def _settings() -> PgeSettings:
+        return PgeSettings(username="person@example.invalid", password="secret")
+
+    def test_a_half_open_interval_becomes_an_inclusive_period(self) -> None:
+        """The portal's end is exclusive; a billing period's is the day before.
+
+        Both spellings of the same boundary arrive from the same account -- one
+        with a Pacific offset, one as UTC -- so both are converted rather than
+        sliced.
+        """
+        assert _interval_to_period("2026-07-29T07:00:00Z/2026-08-28T07:00:00Z") == BillingPeriod(
+            date(2026, 7, 29), date(2026, 8, 27)
+        )
+        assert _interval_to_period(
+            "2026-06-03T00:00:00-07:00/2026-06-30T00:00:00-07:00"
+        ) == BillingPeriod(date(2026, 6, 3), date(2026, 6, 29))
+
+    def test_an_interval_that_is_not_one_is_refused(self) -> None:
+        with pytest.raises(PortalError, match="not an interval"):
+            _interval_to_period("whenever")
+
+    def test_a_fresh_cache_answers_without_the_portal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pricing from a local meter must not start needing portal credentials."""
+        asked = []
+        monkeypatch.setattr(
+            "tariffkit.sources.pge.read_bill_periods",
+            lambda settings: asked.append(settings) or [],
+        )
+        store = tmp_path / "bill-periods.json"
+        _write_periods(store, [BillingPeriod(date(2026, 7, 29), date(2026, 8, 27))])
+
+        periods = cached_bill_periods(self._settings(), path=store, today=date(2026, 9, 9))
+
+        assert asked == []
+        assert periods == [BillingPeriod(date(2026, 7, 29), date(2026, 8, 27))]
+
+    def test_a_cache_that_stopped_covering_the_present_refreshes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bill has been issued that this does not know about."""
+        fresh = [BillingPeriod(date(2026, 7, 29), date(2026, 8, 27))]
+        monkeypatch.setattr("tariffkit.sources.pge.read_bill_periods", lambda settings: fresh)
+        store = tmp_path / "bill-periods.json"
+        _write_periods(store, [BillingPeriod(date(2026, 5, 1), date(2026, 5, 31))])
+
+        periods = cached_bill_periods(self._settings(), path=store, today=date(2026, 9, 9))
+
+        assert periods == fresh
+        # Written back, so the next command does not ask again.
+        assert cached_bill_periods(None, path=store, today=date(2026, 9, 9)) == fresh
+
+    def test_a_refresh_that_cannot_happen_keeps_what_is_known(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Offline is not a reason to fail a bill priced from a local meter."""
+
+        def unreachable(settings: object) -> list[BillingPeriod]:
+            raise RuntimeError("getaddrinfo failed")
+
+        monkeypatch.setattr("tariffkit.sources.pge.read_bill_periods", unreachable)
+        store = tmp_path / "bill-periods.json"
+        stale = [BillingPeriod(date(2026, 5, 1), date(2026, 5, 31))]
+        _write_periods(store, stale)
+
+        assert cached_bill_periods(self._settings(), path=store, today=date(2026, 9, 9)) == stale
+
+    def test_without_credentials_it_reports_nothing_rather_than_raising(
+        self, tmp_path: Path
+    ) -> None:
+        assert cached_bill_periods(None, path=tmp_path / "absent.json") == []
+
+    def test_an_unreadable_cache_is_a_miss_not_a_failure(self, tmp_path: Path) -> None:
+        store = tmp_path / "bill-periods.json"
+        store.write_text("{not json", encoding="utf-8")
+
+        assert cached_bill_periods(None, path=store) == []
+
+    def test_the_cache_is_private_to_its_owner(self, tmp_path: Path) -> None:
+        """It says when this household is billed, which is nobody else's."""
+        store = tmp_path / "nested" / "bill-periods.json"
+        _write_periods(store, [BillingPeriod(date(2026, 7, 29), date(2026, 8, 27))])
+
+        assert stat.S_IMODE(store.stat().st_mode) == 0o600
+        assert stat.S_IMODE(store.parent.stat().st_mode) == 0o700

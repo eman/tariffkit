@@ -205,6 +205,33 @@ prints it.
 The Green Button cache drops ranges a new download wholly contains, so billing
 an open cycle daily leaves one file rather than one a day.
 
+#### The cycle boundary comes from PG&E, not from a guess
+
+The portal knows exactly when every cycle it billed opened and closed, and will
+say so: `WUE_GetUsageExportBills` is what fills the export widget's bill-period
+dropdown. `tariffkit bill` with no dates now asks it, so the default window is
+the utility's own boundary rather than a meter-read day or a calendar month:
+
+```
+  cycle: 2026-08-28 to 2026-09-09, the boundary PG&E billed on
+```
+
+No statement import needed and no PDF parsed. `bills` turns out to be a field on
+the *account* rather than on `Query` -- which is why the operation name was no
+guide to it and introspection (disabled here) could not be asked -- so it was
+captured from the widget's own request; `audit/pge/PORTAL.md` has the query and
+the shape of what it returns.
+
+The list is cached at `~/.cache/tariffkit/pge/bill-periods.json` (mode `0600`)
+and refreshed only when it stops covering the present, which is the same
+staleness bound statement evidence uses and means the same thing: a bill has
+been issued that this does not know about. So pricing from InfluxDB or Home
+Assistant does not begin requiring portal credentials or a round trip. A refresh
+that cannot happen keeps what is on disk -- an old boundary reported as old
+beats a command that fails offline.
+
+New in `tariffkit.sources`: `cached_bill_periods` and `read_bill_periods`.
+
 
 ### Fixed
 - **`tariffkit bill` uses your account profile without being asked.** With one

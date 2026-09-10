@@ -149,6 +149,7 @@ def test_bill_without_dates_prices_the_open_cycle_from_statement_evidence(
     _account_with_statement(tmp_path, monkeypatch)
     monkeypatch.setenv("PGE_USERNAME", "person@example.invalid")
     monkeypatch.setenv("PGE_PASSWORD", "secret")
+    monkeypatch.setattr("tariffkit.sources.cached_bill_periods", lambda *a, **k: [])
     asked: dict[str, date] = {}
 
     def fake(settings: object, start: date, end: date, **kwargs: object) -> object:
@@ -166,6 +167,29 @@ def test_bill_without_dates_prices_the_open_cycle_from_statement_evidence(
 
 
 @freeze_time("2026-09-09T12:00:00-07:00")
+def test_bill_without_dates_takes_the_boundary_the_utility_billed_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No statement imported, and still exact: the portal lists what it billed."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    AccountStore(tmp_path).save(AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),)))
+    _stub_export(
+        tmp_path,
+        monkeypatch,
+        portal_periods=[
+            BillingPeriod(date(2026, 6, 30), date(2026, 7, 28)),
+            BillingPeriod(date(2026, 7, 29), date(2026, 8, 27)),
+        ],
+    )
+
+    assert main(["bill"]) == 0
+
+    out = capsys.readouterr().out
+    # Cycles are contiguous, so the open one began the day after the last close.
+    assert "cycle: 2026-08-28 to 2026-09-09, the boundary PG&E billed on" in out
+
+
+@freeze_time("2026-09-09T12:00:00-07:00")
 def test_bill_without_dates_says_when_the_boundary_is_a_guess(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -178,7 +202,7 @@ def test_bill_without_dates_says_when_the_boundary_is_a_guess(
 
     out = capsys.readouterr().out
     assert "cycle: 2026-09-01 to 2026-09-09, a calendar month, which is a guess" in out
-    assert "tariffkit account sync --apply" in out
+    assert "store PG&E credentials" in out
 
 
 @freeze_time("2026-09-09T12:00:00-07:00")
@@ -222,10 +246,23 @@ def test_bill_without_an_account_still_asks_for_dates(
     )
 
 
-def _stub_export(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Credentials that satisfy `PgeSettings.load`, and an export to read."""
+def _stub_export(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    portal_periods: list[BillingPeriod] | None = None,
+) -> None:
+    """Credentials that satisfy `PgeSettings.load`, and an export to read.
+
+    The portal's own cycle boundaries are stubbed too, and empty by default:
+    every one of these asserts which basis was used, so a real lookup would
+    make the answer depend on the machine.
+    """
     monkeypatch.setenv("PGE_USERNAME", "person@example.invalid")
     monkeypatch.setenv("PGE_PASSWORD", "secret")
+    monkeypatch.setattr(
+        "tariffkit.sources.cached_bill_periods", lambda *a, **k: portal_periods or []
+    )
     monkeypatch.setattr(
         "tariffkit.sources.cached_green_button",
         lambda *a, **k: SimpleNamespace(

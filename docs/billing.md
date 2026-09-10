@@ -170,19 +170,30 @@ Where that boundary came from is printed, because it is not always known:
 ```console
 $ tariffkit bill --source influx
 ...
-  cycle: 2026-08-28 to 2026-09-09, the boundary your statements print
+  cycle: 2026-08-28 to 2026-09-09, the boundary PG&E billed on
 ```
 
 | basis | when | how close |
 |---|---|---|
-| statements | the account has imported them | exact — cycles are contiguous, so the open one began the day after the last statement ended |
+| the portal | PG&E credentials are stored | exact — the utility lists every cycle it billed, with the boundaries it billed them on |
+| statements | the account has imported them | exact |
 | `[billing] cycle_start_day` | you set a meter-read day | approximate |
-| calendar month | neither | a guess, and it says so |
+| calendar month | none of the above | a guess, and it says so |
+
+Cycles are contiguous, so the open one began the day after the last one closed
+— derivable without waiting to be billed for it.
+
+The portal's list is cached at `~/.cache/tariffkit/pge/bill-periods.json` and
+refreshed only when it stops covering the present, so pricing from InfluxDB or
+Home Assistant does not start needing portal credentials or a network round
+trip. A refresh that cannot happen — offline, an expired session — keeps what
+is on disk rather than failing the bill.
 
 PG&E reads on business days, so a real account's cycles open on the 29th, the
 30th, the 1st and the 3rd in consecutive months — which is why a fixed day is
-only ever close. `tariffkit account sync --apply` imports the statements that
-date it exactly; failing that:
+only ever close. Store portal credentials (`tariffkit credentials set
+pge.username`) or import statements with `tariffkit account sync --apply` to
+get it exactly; failing both:
 
 ```toml
 # ~/.config/tariffkit/config.toml
