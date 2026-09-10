@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import importlib
 import json
 from datetime import date, datetime
@@ -14,14 +13,14 @@ from tariffkit.account import (
     AccountEpoch,
     AccountObservation,
     AccountProfile,
+    AccountStore,
     MeterSource,
     MeterSources,
-    NamedProfileRepository,
     ObservedAgreement,
 )
 from tariffkit.account.cli import migrate_existing, sync_profile
 from tariffkit.billing import BillingPeriod, IntervalReading
-from tariffkit.cli import _mqtt_settings, _pricing_context, build_parser, main
+from tariffkit.cli import _mqtt_settings, build_parser, main
 from tariffkit.config import Config
 from tariffkit.errors import ConfigError
 from tariffkit.models import Supplier
@@ -53,14 +52,14 @@ def test_account_migration_never_probes_repository_audit_file(
     config.write_text('tariff = "EV2-A"\n', encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    profile = migrate_existing("home", config_path=config)
+    profile = migrate_existing(config_path=config)
 
     assert profile.epochs[0].config.tariff == "EV2-A"
 
 
 def test_account_migration_requires_explicit_existing_audit_file(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="legacy audit account file not found"):
-        migrate_existing("home", audit_path=tmp_path / "missing.toml")
+        migrate_existing(audit_path=tmp_path / "missing.toml")
 
 
 def test_account_init_update_and_export_are_sanitized(
@@ -79,7 +78,6 @@ def test_account_init_update_and_export_are_sanitized(
                 str(config),
                 "account",
                 "init",
-                "home",
                 "--effective",
                 "2025-01-01",
             ]
@@ -91,7 +89,6 @@ def test_account_init_update_and_export_are_sanitized(
             [
                 "account",
                 "update",
-                "home",
                 "--effective",
                 "2026-01-01",
                 "--tariff",
@@ -103,7 +100,7 @@ def test_account_init_update_and_export_are_sanitized(
     )
 
     exported = tmp_path / "profile.json"
-    assert main(["account", "export", "home", "--output", str(exported)]) == 0
+    assert main(["account", "export", "--output", str(exported)]) == 0
     payload = json.loads(exported.read_text(encoding="utf-8"))
     assert [epoch["config"]["tariff"] for epoch in payload["epochs"]] == ["E-ELEC", "EV2-A"]
     assert "amount_due" not in exported.read_text(encoding="utf-8")
@@ -125,7 +122,6 @@ def test_account_update_previews_without_writing(tmp_path: Path) -> None:
                     str(monkeypatch_config),
                     "account",
                     "init",
-                    "home",
                     "--effective",
                     "2025-01-01",
                 ]
@@ -137,7 +133,6 @@ def test_account_update_previews_without_writing(tmp_path: Path) -> None:
                 [
                     "account",
                     "update",
-                    "home",
                     "--effective",
                     "2026-01-01",
                     "--tariff",
@@ -146,9 +141,9 @@ def test_account_update_previews_without_writing(tmp_path: Path) -> None:
             )
             == 0
         )
-        assert [
-            epoch.effective for epoch in NamedProfileRepository(tmp_path).load("home").epochs
-        ] == [date(2025, 1, 1)]
+        assert [epoch.effective for epoch in AccountStore(tmp_path).load().epochs] == [
+            date(2025, 1, 1)
+        ]
     finally:
         monkeypatch.undo()
 
@@ -169,7 +164,6 @@ def test_account_source_preview_apply_and_show(
                 str(config),
                 "account",
                 "init",
-                "home",
                 "--effective",
                 "2025-01-01",
             ]
@@ -177,15 +171,14 @@ def test_account_source_preview_apply_and_show(
         == 0
     )
     capsys.readouterr()
-    repository = NamedProfileRepository(tmp_path)
-    assert repository.load("home").meter_sources == MeterSources()
+    store = AccountStore(tmp_path)
+    assert store.load().meter_sources == MeterSources()
 
     assert (
         main(
             [
                 "account",
                 "source",
-                "home",
                 "set",
                 "ha",
                 "--grid-import-entity",
@@ -199,14 +192,13 @@ def test_account_source_preview_apply_and_show(
     )
     preview = json.loads(capsys.readouterr().out)
     assert preview["applied"] is False
-    assert repository.load("home").meter_sources == MeterSources()
+    assert store.load().meter_sources == MeterSources()
 
     assert (
         main(
             [
                 "account",
                 "source",
-                "home",
                 "set",
                 "ha",
                 "--grid-import-entity",
@@ -218,11 +210,9 @@ def test_account_source_preview_apply_and_show(
         )
         == 0
     )
-    assert repository.load("home").meter_sources.ha == MeterSource(
-        "sensor.grid_in", "sensor.grid_out"
-    )
+    assert store.load().meter_sources.ha == MeterSource("sensor.grid_in", "sensor.grid_out")
     capsys.readouterr()
-    assert main(["account", "source", "home", "show", "ha", "--json"]) == 0
+    assert main(["account", "source", "show", "ha", "--json"]) == 0
     shown = json.loads(capsys.readouterr().out)
     assert shown["configured"] is True
     assert shown["grid_import_entity"] == "sensor.grid_in"
@@ -242,8 +232,8 @@ def test_bill_passes_profile_entities_and_cli_overrides(
             influx=MeterSource("profile_in", "profile_out"),
         ),
     )
-    repository = NamedProfileRepository(tmp_path)
-    repository.save("home", profile)
+    store = AccountStore(tmp_path)
+    store.save(profile)
 
     captured: dict[str, object] = {}
     import tariffkit.sources as sources
@@ -281,8 +271,6 @@ def test_bill_passes_profile_entities_and_cli_overrides(
         main(
             [
                 "bill",
-                "--account",
-                "home",
                 "--source",
                 source,
                 "--start",
@@ -305,9 +293,8 @@ def test_bill_passes_profile_entities_and_cli_overrides(
 def test_account_import_statement_previews_then_applies(
     tmp_path: Path, monkeypatch: object
 ) -> None:
-    repository = NamedProfileRepository(tmp_path)
-    repository.save(
-        "home",
+    store = AccountStore(tmp_path)
+    store.save(
         AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),)),
     )
     pdf = tmp_path / "statement.pdf"
@@ -319,10 +306,10 @@ def test_account_import_statement_previews_then_applies(
     monkeypatch.setattr(reconcile_module, "import_statement", lambda _path: imported)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
 
-    assert main(["account", "import-statement", "home", str(pdf), "--json"]) == 0
-    assert len(repository.load("home").epochs) == 1
-    assert main(["account", "import-statement", "home", str(pdf), "--apply"]) == 0
-    assert [epoch.config.tariff for epoch in repository.load("home").epochs] == [
+    assert main(["account", "import-statement", str(pdf), "--json"]) == 0
+    assert len(store.load().epochs) == 1
+    assert main(["account", "import-statement", str(pdf), "--apply"]) == 0
+    assert [epoch.config.tariff for epoch in store.load().epochs] == [
         "E-ELEC",
         "EV2-A",
     ]
@@ -331,9 +318,8 @@ def test_account_import_statement_previews_then_applies(
 def test_account_sync_removes_private_cache_after_parsing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repository = NamedProfileRepository(tmp_path)
-    repository.save(
-        "home",
+    store = AccountStore(tmp_path)
+    store.save(
         AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),)),
     )
     imported = observation(tariff="EV2-A", digest="b" * 64)
@@ -376,7 +362,7 @@ def test_account_sync_removes_private_cache_after_parsing(
     reconcile_module = importlib.import_module("tariffkit.providers.pge.reconcile")
     monkeypatch.setattr(reconcile_module, "import_statement", lambda _path: imported)
 
-    _profile, proposals, skipped = sync_profile(repository, "home", apply=False)
+    _profile, proposals, skipped = sync_profile(store, apply=False)
 
     assert len(proposals) == 1
     assert skipped == []
@@ -401,8 +387,8 @@ def test_one_unreadable_statement_does_not_discard_the_rest(
     """
     from tariffkit.providers.pge.statements.errors import StatementError
 
-    repository = NamedProfileRepository(tmp_path)
-    repository.save("home", AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),)))
+    store = AccountStore(tmp_path)
+    store.save(AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),)))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
 
     class Session:
@@ -439,7 +425,7 @@ def test_one_unreadable_statement_does_not_discard_the_rest(
     reconcile_module = importlib.import_module("tariffkit.providers.pge.reconcile")
     monkeypatch.setattr(reconcile_module, "import_statement", _import)
 
-    _profile, proposals, skipped = sync_profile(repository, "home", apply=False)
+    _profile, proposals, skipped = sync_profile(store, apply=False)
 
     assert len(proposals) == 1, "the readable statement still imported"
     assert len(skipped) == 1
@@ -450,68 +436,11 @@ def test_one_unreadable_statement_does_not_discard_the_rest(
     assert "statement-0000" not in skipped[0]["reason"]
 
 
-def test_account_selection_rejects_config_and_accepts_profile(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    repository = NamedProfileRepository(tmp_path)
-    repository.save(
-        "ev",
-        AccountProfile((AccountEpoch(date(1970, 1, 1), Config(tariff="EV2-A")),)),
-    )
-
-    assert main(["info", "--account", "ev"]) == 0
-    assert "EV2-A" in capsys.readouterr().out
-    assert main(["--config", str(tmp_path / "config.toml"), "--account", "ev", "now"]) == 1
-
-
-def test_explicit_config_stops_mqtt_from_reverting_to_a_default_profile(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``--config`` must stay a stateless override for ``mqtt`` too.
-
-    A default profile can be selected two independent ways: the CLI's own
-    ``--account``/config-file precedence (``_pricing_context``), and
-    ``MqttSettings.load``'s own fallback to the ``TARIFFKIT_ACCOUNT`` /
-    ``TARIFFKIT_PROFILE`` environment variables. ``--config`` must win over
-    both, not just the first.
-    """
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.setenv("TARIFFKIT_ACCOUNT", "ev")
-    repository = NamedProfileRepository(tmp_path)
-    repository.save(
-        "ev",
-        AccountProfile((AccountEpoch(date(1970, 1, 1), Config(tariff="EV2-A")),)),
-    )
-    config_path = tmp_path / "config.toml"
-    config_path.write_text('tariff = "E-ELEC"\n', encoding="utf-8")
-
-    args = argparse.Namespace(
-        config=config_path,
-        account=None,
-        broker="broker.local",
-        port=None,
-        username=None,
-        topic_prefix=None,
-        discovery=None,
-        forecast_hours=None,
-        tls=None,
-        allow_insecure_auth=None,
-    )
-    _engine, config, profile_name, _repository = _pricing_context(args)
-
-    assert profile_name is None  # --config alone must disable profile selection
-
-    settings = _mqtt_settings(args, config=config, profile_name=profile_name)
-
-    assert settings.profile is None
-
-
 def test_mqtt_cli_accepts_insecure_auth_escape_hatch() -> None:
     args = build_parser().parse_args(
         ["mqtt", "--broker", "broker.local", "--username", "user", "--allow-insecure-auth"]
     )
 
-    settings = _mqtt_settings(args, config=None, profile_name=None)
+    settings = _mqtt_settings(args, config=None, from_account=False)
 
     assert settings.allow_insecure_auth is True

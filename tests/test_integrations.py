@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from tariffkit import Config, RateEngine
-from tariffkit.account import AccountEpoch, AccountProfile, NamedProfileRepository
+from tariffkit.account import AccountEpoch, AccountProfile, AccountStore
 from tariffkit.cli import main
 from tariffkit.components import EXPORT_GROUPS, IMPORT_GROUPS
 from tariffkit.mqtt.discovery import discovery_payloads
@@ -166,28 +166,25 @@ class TestWebApi:
         assert client.get("/v1/forecast", params={"hours": 0}).status_code == 422
         assert client.get("/v1/forecast", params={"hours": 10**6}).status_code == 422
 
-    def test_post_pricing_can_select_an_existing_profile(self, tmp_path: Path) -> None:
+    def test_pricing_can_ask_for_the_account(self, tmp_path: Path) -> None:
         from tariffkit.web import create_app
 
-        repository = NamedProfileRepository(tmp_path)
-        repository.save(
-            "ev",
-            AccountProfile((AccountEpoch(date(1970, 1, 1), Config(tariff="EV2-A")),)),
-        )
-        client = self._client(create_app(Config(), profile_repository=repository))
+        store = AccountStore(tmp_path)
+        store.save(AccountProfile((AccountEpoch(date(1970, 1, 1), Config(tariff="EV2-A")),)))
+        client = self._client(create_app(Config(), profile_repository=store))
 
-        response = client.post("/v1/meta", json={"profile": "ev"})
+        response = client.post("/v1/meta", json={"profile": True})
 
         assert response.status_code == 200
-        assert response.json()["account_profile"] == "ev"
+        assert response.json()["tariff"] == "EV2-A"
 
-    def test_unknown_profile_does_not_disclose_profile_storage(self, tmp_path: Path) -> None:
+    def test_asking_for_an_absent_account_does_not_disclose_storage(self, tmp_path: Path) -> None:
         from tariffkit.web import create_app
 
-        repository = NamedProfileRepository(tmp_path)
-        client = self._client(create_app(Config(), profile_repository=repository))
+        store = AccountStore(tmp_path)
+        client = self._client(create_app(Config(), profile_repository=store))
 
-        response = client.post("/v1/price/now", json={"profile": "missing"})
+        response = client.post("/v1/price/now", json={"profile": True})
 
         assert response.status_code == 404
         assert response.json()["detail"] == "profile unavailable"
@@ -202,33 +199,24 @@ class TestWebApi:
     def test_profile_prehistory_is_a_typed_not_found(self, tmp_path: Path) -> None:
         from tariffkit.web import create_app
 
-        repository = NamedProfileRepository(tmp_path)
-        repository.save(
-            "future",
-            AccountProfile((AccountEpoch(date(2030, 1, 1), Config()),)),
-        )
-        client = self._client(create_app(profile_name="future", profile_repository=repository))
+        store = AccountStore(tmp_path)
+        store.save(AccountProfile((AccountEpoch(date(2030, 1, 1), Config()),)))
+        client = self._client(create_app(use_account=True, profile_repository=store))
 
         response = client.get("/v1/price/at", params={"ts": "2026-09-15T19:00:00-07:00"})
 
         assert response.status_code == 404
         assert "before the first account epoch" in response.json()["detail"]
 
-    def test_server_uses_configured_default_profile(self, tmp_path: Path) -> None:
+    def test_server_uses_the_account_when_asked(self, tmp_path: Path) -> None:
+        """There is one account, so this is a switch rather than a name."""
         from tariffkit.web import create_app
 
-        repository = NamedProfileRepository(tmp_path)
-        repository.save(
-            "ev",
-            AccountProfile((AccountEpoch(date(1970, 1, 1), Config(tariff="EV2-A")),)),
-        )
-        config_path = tmp_path / "config.toml"
-        config_path.write_text(
-            '[account]\ndefault_profile = "ev"\ntariff = "E-ELEC"\n', encoding="utf-8"
-        )
-        client = self._client(create_app(profile_repository=repository, config_path=config_path))
+        store = AccountStore(tmp_path)
+        store.save(AccountProfile((AccountEpoch(date(1970, 1, 1), Config(tariff="EV2-A")),)))
+        client = self._client(create_app(use_account=True, profile_repository=store))
 
-        assert client.get("/v1/meta").json()["account_profile"] == "ev"
+        assert client.get("/v1/meta").json()["tariff"] == "EV2-A"
 
     @staticmethod
     def _client(app: Any) -> Any:

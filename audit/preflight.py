@@ -102,30 +102,19 @@ def _influx() -> Check:
     return Check("meter data (InfluxDB)", True, f"{len(readings)} intervals in the last 2 days")
 
 
-def _profile_name(account: str | None) -> str | None:
-    if account is not None:
-        return account
-    from tariffkit.account import configured_profile_name
-
-    return configured_profile_name()
-
-
-def _load_profile(account: str | None) -> tuple[str, AccountProfile]:
+def _load_profile() -> AccountProfile:
     from tariffkit.account import AccountStore
 
-    name = _profile_name(account)
-    if name is None:
-        raise ValueError("select a named account profile with --account or configuration")
-    return name, AccountStore().load(name)
+    return AccountStore().load()
 
 
 def _account(account: str | None) -> Check:
     try:
-        name, profile = _load_profile(account)
+        profile = _load_profile()
     except Exception as exc:
         return Check("account profile", False, str(exc)[:160])
     spans = ", ".join(f"{epoch.effective} {epoch.config.tariff}" for epoch in profile.epochs)
-    return Check(f"account profile ({name})", True, spans)
+    return Check("account", True, spans)
 
 
 def _recognition() -> Check:
@@ -162,7 +151,7 @@ def _rate_data(account: str | None, oldest: date) -> Check:
 
     checked: list[str] = []
     try:
-        _name, profile = _load_profile(account)
+        profile = _load_profile()
     except Exception:
         # Already reported by its own check; nothing to add here.
         profile = None
@@ -204,7 +193,7 @@ def _cca_card(account: str | None, oldest: date) -> Check:
     from tariffkit.errors import DataError
 
     try:
-        _name, profile = _load_profile(account)
+        profile = _load_profile()
     except Exception:
         return Check("CCA rate card", True, "no account profile to check against")
 

@@ -15,7 +15,6 @@ from ..account import (
     AccountRateEngine,
     AccountStore,
     ProfileNotFoundError,
-    AccountStore,
 )
 from ..config import Config
 from ..engine import RateEngine
@@ -31,7 +30,7 @@ _PROFILE_UNAVAILABLE = "profile unavailable"
 def create_app(
     config: Config | None = None,
     *,
-    profile_name: str | None = None,
+    use_account: bool = False,
     profile_repository: AccountStore | None = None,
     config_path: str | Path | None = None,
 ) -> FastAPI:
@@ -42,10 +41,10 @@ def create_app(
             "web support requires the 'web' extra: pip install 'tariffkit[web]'"
         ) from exc
 
-    def load_profile(name: str) -> AccountRateEngine:
-        repository = profile_repository or AccountStore()
+    def load_account() -> AccountRateEngine:
+        store = profile_repository or AccountStore()
         try:
-            return AccountRateEngine(repository.load(name))
+            return AccountRateEngine(store.load())
         except ProfileNotFoundError as exc:
             # Do not reveal whether a profile exists, nor details from its
             # managed file, through a request-facing error.
@@ -53,14 +52,10 @@ def create_app(
         except AccountError as exc:
             raise HTTPException(404, _PROFILE_UNAVAILABLE) from exc
 
-    selected_profile = profile_name
-    if selected_profile is None and config is None:
-        selected_profile = AccountStore(config_path)
-    engine: RateEngine | AccountRateEngine
-    if selected_profile is not None:
-        engine = load_profile(selected_profile)
-    else:
-        engine = RateEngine(config or Config.load(config_path))
+    from_account = use_account or (config is None and AccountStore().exists())
+    engine: RateEngine | AccountRateEngine = (
+        load_account() if from_account else RateEngine(config or Config.load(config_path))
+    )
 
     def request_engine(
         payload: dict[str, Any], *, allowed: set[str]
@@ -69,23 +64,18 @@ def create_app(
         if unknown:
             raise HTTPException(422, f"unknown request keys: {sorted(unknown)}")
         raw = payload.get("config")
-        requested_profile = payload.get("profile")
-        requested_account = payload.get("account")
-        if requested_profile is not None and requested_account is not None:
-            if requested_profile != requested_account:
-                raise HTTPException(422, "profile and account selections disagree")
-        elif requested_profile is None:
-            requested_profile = requested_account
-        if raw is not None and requested_profile is not None:
-            raise HTTPException(422, "choose either config or profile")
-        if requested_profile is not None:
-            if not isinstance(requested_profile, str):
-                raise HTTPException(404, _PROFILE_UNAVAILABLE)
-            return load_profile(requested_profile)
+        # "price this from my account" is now a switch, not a name: there is one
+        # account. Both spellings are accepted because both were, and a client
+        # that sent a name now gets the account it meant.
+        wants_account = payload.get("profile") is not None or payload.get("account") is not None
+        if raw is not None and wants_account:
+            raise HTTPException(422, "choose either config or the account")
+        if wants_account:
+            return load_account()
         if raw is None:
-            if selected_profile is not None:
+            if from_account:
                 return engine
-            raise HTTPException(422, "config must be a JSON object or profile must be selected")
+            raise HTTPException(422, "config must be a JSON object, or ask for the account")
         if not isinstance(raw, dict):
             raise HTTPException(422, "config must be a JSON object")
         try:

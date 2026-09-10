@@ -36,7 +36,7 @@ from typing import Any
 
 from ..account.model import MeterSource
 from ..billing.models import IntervalReading
-from ..config import default_config_path
+from ..config import default_config_path, default_dotenv_path
 from ..errors import ConfigError, DataError
 from ..secrets import get_secret
 from ..timeutil import to_pacific
@@ -82,7 +82,7 @@ class InfluxSettings:
     def load(
         cls,
         config_path: str | Path | None = None,
-        dotenv_path: str | Path = ".env",
+        dotenv_path: str | Path | None = None,
         profile_source: MeterSource | None = None,
         **overrides: str | None,
     ) -> InfluxSettings:
@@ -127,7 +127,8 @@ class InfluxSettings:
             raise ConfigError(
                 f"InfluxDB {', '.join(missing)} not set; put INFLUXDB3_HOST, "
                 f"INFLUXDB3_DATABASE and INFLUXDB3_AUTH_TOKEN in "
-                f"{Path(dotenv_path)}, the environment, or store influxdb.token with "
+                f"{Path(dotenv_path) if dotenv_path else default_dotenv_path()}, the "
+                f"environment, or store influxdb.token with "
                 f"`tariffkit credentials set`"
             )
         return cls(

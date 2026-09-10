@@ -5,6 +5,57 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+
+#### One account, and everything it needs in one directory
+
+**Breaking.** Named account profiles are gone. There is one account, and every
+file the CLI and the audit harness read lives in `$XDG_CONFIG_HOME/tariffkit`
+(`~/.config/tariffkit` by default). Real environment variables still win over
+the file, so a container or a systemd unit supplies these without one.
+
+```
+~/.config/tariffkit/
+  config.toml      settings that are true now
+  account.json     the agreement's dated history
+  .env             INFLUXDB3_*, HA_*, PGE_* -- was ./.env, in whatever
+                   directory the command happened to run from
+```
+
+**Migrating.** With one profile, nothing to do: the first command adopts
+`accounts/<name>.json` automatically. With several, pick the one you want and
+move it yourself, because choosing between them is a decision and guessing it
+prices bills from an agreement you did not choose:
+
+```bash
+mv ~/.config/tariffkit/accounts/<the-one-you-want>.json \
+   ~/.config/tariffkit/account.json
+chmod 600 ~/.config/tariffkit/account.json
+rm -r ~/.config/tariffkit/accounts        # once you are happy
+mv .env ~/.config/tariffkit/.env          # if you kept one in a project
+```
+
+**Home Assistant needs no migration.** The integration stores its account in its
+own config entry and never read the CLI's profiles, so nothing moves and no
+reconfiguration is needed -- upgrade and carry on. The only visible change is
+that a profile no longer carries a `credential_set`; the integration never set
+one.
+
+**Gone from the CLI:** `--account` on every command, `--credential-set`,
+`tariffkit account list`, and the name argument on `account show`, `update`,
+`import-statement`, `sync`, `export` and `source`. `tariffkit credentials
+--set NAME` goes with it -- one account reads one set of credentials.
+
+Why: the multiplicity earned its complexity only for someone billing several
+service agreements under one login, and cost everyone else a name to invent, a
+flag to remember, and a silent wrong answer when the flag was forgotten. A bill
+priced from `config.toml` instead of the agreement's history read a CCA account
+as bundled, which gives it one export credit bank where it has two and prices a
+cycle that crossed a rate change at a single tariff. What is kept is the part
+that earns its keep: the dated history, because a bill prices with the settings
+in force over its own days.
+
+
 ### Fixed
 - **`tariffkit bill` uses your account profile without being asked.** With one
   profile it is simply yours; with several it now refuses rather than falling

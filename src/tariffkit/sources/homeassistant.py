@@ -67,7 +67,7 @@ DEFAULT_EXPORT_ENTITY = "sensor.eagle_100_energy_received"
 MAX_INTERVAL_KW = 100.0
 
 
-def load_dotenv(path: str | Path = ".env") -> dict[str, str]:
+def load_dotenv(path: str | Path | None = None) -> dict[str, str]:
     """Parse a ``.env`` file leniently, returning what it defines.
 
     Tolerates ``KEY = "value"`` with spaces around the equals and quotes around
@@ -75,6 +75,10 @@ def load_dotenv(path: str | Path = ".env") -> dict[str, str]:
     files yield nothing rather than raising: a token may equally come from the
     environment.
     """
+    if path is None:
+        from ..config import default_dotenv_path
+
+        path = default_dotenv_path()
     found: dict[str, str] = {}
     file = Path(path)
     if not file.is_file():
@@ -109,7 +113,7 @@ class HaSettings:
     def load(
         cls,
         config_path: str | Path | None = None,
-        dotenv_path: str | Path = ".env",
+        dotenv_path: str | Path | None = None,
         profile_source: MeterSource | None = None,
         **overrides: str | None,
     ) -> HaSettings:

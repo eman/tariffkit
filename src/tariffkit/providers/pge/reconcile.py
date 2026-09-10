@@ -356,7 +356,6 @@ class AccountChangeSet:
         updated = AccountProfile(
             epochs=self.proposed_epochs or profile.epochs,
             name=profile.name,
-            credential_set=profile.credential_set,
             observations=(*profile.observations, self.observation),
             meter_sources=profile.meter_sources,
         )

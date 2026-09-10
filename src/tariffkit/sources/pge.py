@@ -253,7 +253,7 @@ class PgeSettings:
     def load(
         cls,
         config_path: str | Path | None = None,
-        dotenv_path: str | Path = ".env",
+        dotenv_path: str | Path | None = None,
         **overrides: str | None,
     ) -> PgeSettings:
         """Mirrors ``InfluxSettings.load``: config file, then .env, then env.

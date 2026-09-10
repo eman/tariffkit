@@ -300,13 +300,10 @@ def _reconcile(
     from .reconcile.account import check_against_statement
     from .sources import compare_sources, window
 
-    profile_name = account or configured_profile_name()
-    if profile_name is None:
-        raise AccountError("select a named managed account profile with --account")
     try:
-        profile = NamedProfileRepository().load(profile_name)
+        profile = AccountStore().load()
     except TariffKitError as exc:
-        raise AccountError(f"could not load account profile {profile_name!r}: {exc}") from exc
+        raise AccountError(f"could not load the account: {exc}") from exc
     settings = InfluxSettings.load()
 
     results = []

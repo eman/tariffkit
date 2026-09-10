@@ -20,7 +20,6 @@ def sanitize_profile(profile: AccountProfile) -> AccountProfile:
     return AccountProfile(
         epochs=profile.epochs,
         name=profile.name,
-        credential_set=None,
         observations=profile.observations,
         meter_sources=profile.meter_sources,
     )

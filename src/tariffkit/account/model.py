@@ -528,7 +528,6 @@ class AccountProfile:
         ):
             raise AccountError("profile name must be a lowercase slug")
 
-
     @property
     def effective_dates(self) -> tuple[date, ...]:
         return tuple(epoch.effective for epoch in self.epochs)

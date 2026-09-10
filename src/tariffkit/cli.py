@@ -20,11 +20,8 @@ from .errors import ConfigError, TariffKitError
 from .models import PriceCurve, PricePoint
 from .secrets import (
     SECRET_NAMES,
-    configured_named_secrets,
     configured_secrets,
-    delete_named_secret,
     delete_secret,
-    set_named_secret,
     set_secret,
 )
 from .timeutil import PACIFIC, to_pacific
@@ -37,7 +34,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"tariffkit {__version__}")
     parser.add_argument("--config", type=Path, help="path to a config TOML file")
-    parser.add_argument("--account", help="named account profile to use")
     parser.add_argument("-v", "--verbose", action="store_true", help="log to stderr")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -47,43 +43,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     credential_commands = credentials.add_subparsers(dest="credential_command", required=True)
     credential_set = credential_commands.add_parser("set", help="prompt for and store a secret")
-    credential_set.add_argument("--set", dest="credential_set", metavar="NAME")
     credential_set.add_argument("name", choices=SECRET_NAMES)
     credential_delete = credential_commands.add_parser("delete", help="delete a stored secret")
-    credential_delete.add_argument("--set", dest="credential_set", metavar="NAME")
     credential_delete.add_argument("name", choices=SECRET_NAMES)
-    credential_list = credential_commands.add_parser(
-        "list", help="list configured names without values"
-    )
-    credential_list.add_argument("--set", dest="credential_set", metavar="NAME")
+    credential_commands.add_parser("list", help="list configured names without values")
 
     account = sub.add_parser("account", help="manage named account profiles")
     account_commands = account.add_subparsers(dest="account_command", required=True)
-    account_init = account_commands.add_parser("init", help="create a named account profile")
-    account_init.add_argument("name")
+    account_init = account_commands.add_parser("init", help="set up your account")
     account_init.add_argument("--config", type=Path, default=argparse.SUPPRESS)
     account_init.add_argument("--effective", type=date.fromisoformat)
     account_init.add_argument("--config-json", type=Path)
-    account_init.add_argument("--credential-set")
     account_init.add_argument("--audit-file", type=Path)
     account_init.add_argument("--json", action="store_true")
-    account_commands.add_parser("list", help="list named account profiles").add_argument(
-        "--json", action="store_true"
-    )
-    account_show = account_commands.add_parser("show", help="show a named account profile")
-    account_show.add_argument("name")
+    account_show = account_commands.add_parser("show", help="show your account")
     account_show.add_argument("--json", action="store_true")
     account_history = account_commands.add_parser(
         "history", help="show account epochs and evidence"
     )
-    account_history.add_argument("name")
     account_history.add_argument("--json", action="store_true")
     account_update = account_commands.add_parser("update", help="add or replace an account epoch")
-    account_update.add_argument("name")
     account_update.add_argument("--config", type=Path, default=argparse.SUPPRESS)
     account_update.add_argument("--effective", required=True, type=date.fromisoformat)
     account_update.add_argument("--config-json", type=Path)
-    account_update.add_argument("--credential-set")
     account_update.add_argument("--tariff")
     account_update.add_argument("--supplier")
     account_update.add_argument("--interconnection-year", type=int, dest="interconnection_year")
@@ -102,27 +84,23 @@ def build_parser() -> argparse.ArgumentParser:
     account_import = account_commands.add_parser(
         "import-statement", help="import one or more local PG&E statement PDFs"
     )
-    account_import.add_argument("name")
     account_import.add_argument("pdf", nargs="+", type=Path)
     account_import.add_argument("--apply", action="store_true")
     account_import.add_argument("--json", action="store_true")
     account_sync = account_commands.add_parser("sync", help="sync statements from the PG&E portal")
-    account_sync.add_argument("name")
     account_sync.add_argument("--config", type=Path, default=argparse.SUPPRESS)
     account_sync.add_argument("--since", type=date.fromisoformat)
     account_sync.add_argument("--apply", action="store_true")
     account_sync.add_argument("--keep-statements", action="store_true")
     account_sync.add_argument("--json", action="store_true")
     account_export = account_commands.add_parser(
-        "export", help="export a sanitized account profile"
+        "export", help="export a sanitized copy of your account"
     )
-    account_export.add_argument("name")
     account_export.add_argument("--output", type=Path)
     account_export.add_argument("--json", action="store_true")
     account_source = account_commands.add_parser(
-        "source", help="manage profile-scoped grid meter entities"
+        "source", help="manage the grid meter entities to read"
     )
-    account_source.add_argument("name")
     source_commands = account_source.add_subparsers(dest="source_command", required=True)
     source_show = source_commands.add_parser("show", help="show one provider's meter entities")
     source_show.add_argument("provider", choices=("ha", "influx"))
@@ -148,37 +126,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     now = sub.add_parser("now", help="current import and export price")
     now.add_argument("--config", type=Path, default=argparse.SUPPRESS)
-    now.add_argument("--account", default=argparse.SUPPRESS, help="named account profile to use")
     now.add_argument("--json", action="store_true", help="emit JSON")
 
     forecast = sub.add_parser("forecast", help="upcoming hourly prices")
     forecast.add_argument("--config", type=Path, default=argparse.SUPPRESS)
-    forecast.add_argument(
-        "--account", default=argparse.SUPPRESS, help="named account profile to use"
-    )
     forecast.add_argument("--hours", type=int, default=24)
     forecast.add_argument("--start", type=datetime.fromisoformat, help="ISO 8601 with offset")
     forecast.add_argument("--format", choices=("table", "json", "csv"), default="table")
 
     info_parser = sub.add_parser("info", help="which data is loaded, and from where")
     info_parser.add_argument("--config", type=Path, default=argparse.SUPPRESS)
-    info_parser.add_argument(
-        "--account", default=argparse.SUPPRESS, help="named account profile to use"
-    )
 
     bill = sub.add_parser("bill", help="compute a bill from interval meter data")
     bill.add_argument("--config", type=Path, default=argparse.SUPPRESS)
-    bill.add_argument(
-        "--account",
-        default=argparse.SUPPRESS,
-        help="named account profile to price from. A profile is a dated history of the "
-        "agreement -- every tariff it has been on and when, who supplies generation, the "
-        "Permission To Operate date, and which meter entities to read -- where --config "
-        "and config.toml describe a single moment. Without one, a cycle crossing a rate "
-        "change is priced at one tariff throughout and a CCA account is priced as bundled, "
-        "which gives it one export credit bank where it has two. Defaults to the profile "
-        "named in config.toml, if any; `tariffkit account list` shows them",
-    )
     bill.add_argument(
         "csv",
         type=Path,
@@ -219,7 +179,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     mqtt = sub.add_parser("mqtt", help="publish to MQTT every hour")
     mqtt.add_argument("--config", type=Path, default=argparse.SUPPRESS)
-    mqtt.add_argument("--account", default=argparse.SUPPRESS, help="named account profile to use")
     mqtt.add_argument("--broker")
     mqtt.add_argument("--port", type=int)
     mqtt.add_argument("--username")
@@ -243,7 +202,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     serve = sub.add_parser("serve", help="run the REST API")
     serve.add_argument("--config", type=Path, default=argparse.SUPPRESS)
-    serve.add_argument("--account", default=argparse.SUPPRESS, help="named account profile to use")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
 
@@ -377,7 +335,7 @@ def _print_banks(entry: Any, config: Any) -> None:
         )
 
 
-def _priced_as(config: Any, profile_name: str | None) -> str:
+def _priced_as(config: Any, from_account: bool) -> str:
     """Which arrangement the bill was priced under.
 
     Worth a line because the answer changes the shape of the output and there
@@ -392,19 +350,15 @@ def _priced_as(config: Any, profile_name: str | None) -> str:
     cca = getattr(config, "cca", None)
     utility = getattr(getattr(config, "utility", None), "short_name", "the utility")
     by = cca.name if getattr(config, "supplier", None) is Supplier.CCA and cca else utility
-    source = (
-        f'account profile "{profile_name}"'
-        if profile_name
-        else "config.toml -- no account profile selected, so --account may be missing"
-    )
+    source = "your account" if from_account else "config.toml -- no account is set up"
     return f"priced from {source}: {tariff}, generation by {by}"
 
 
-def _print_bill(bill: Any, config: Any = None, profile_name: str | None = None) -> None:
+def _print_bill(bill: Any, config: Any = None, from_account: bool = False) -> None:
     p = bill.period
     print(f"Billing period {p.start} to {p.end} ({p.days} days)")
     if config is not None:
-        print(f"{_priced_as(config, profile_name)}\n")
+        print(f"{_priced_as(config, from_account)}\n")
     else:
         print()
     print(f"{'':<11} {'imported':>10} {'$':>8}   {'exported':>10} {'$':>8}")
@@ -572,7 +526,7 @@ def _run_account_command(args: Any) -> int:
                 )
             )
         else:
-            print(f"updated {args.name} at {args.effective}")
+            print(f"updated the account at {args.effective}")
             if not args.apply:
                 print("preview only; pass --apply to save")
         return 0
@@ -584,7 +538,6 @@ def _run_account_command(args: Any) -> int:
             apply=args.apply,
         )
         payload = {
-            "profile": args.name,
             "applied": args.apply,
             "proposals": proposals,
             "skipped": skipped,
@@ -621,7 +574,6 @@ def _run_account_command(args: Any) -> int:
             config_path=args.config,
         )
         payload = {
-            "profile": args.name,
             "applied": args.apply,
             "proposals": proposals,
             "skipped": skipped,
@@ -646,7 +598,7 @@ def _run_account_command(args: Any) -> int:
             args.output.write_text(raw, encoding="utf-8")
             args.output.chmod(0o600)
             if args.json:
-                print(json.dumps({"profile": args.name, "output": str(args.output)}))
+                print(json.dumps({"output": str(args.output)}))
         return 0
 
     if command == "source":
@@ -679,7 +631,7 @@ def _run_account_command(args: Any) -> int:
         if args.json:
             print(json.dumps(payload, indent=2))
         else:
-            print(f"profile: {args.name}")
+            print("account meter sources")
             print(f"source: {args.provider}")
             print(f"grid import: {summary['grid_import_entity']}")
             print(f"grid export: {summary['grid_export_entity']}")
@@ -690,7 +642,7 @@ def _run_account_command(args: Any) -> int:
     raise AssertionError(f"unhandled account command {command}")
 
 
-def _mqtt_settings(args: Any, *, config: Config | None, profile_name: str | None) -> Any:
+def _mqtt_settings(args: Any, *, config: Config | None, from_account: bool) -> Any:
     """Build MQTT settings, keeping ``--config``'s stateless choice authoritative.
 
     ``MqttSettings.load`` independently falls back to a configured default
@@ -718,10 +670,10 @@ def _mqtt_settings(args: Any, *, config: Config | None, profile_name: str | None
         forecast_hours=args.forecast_hours,
         tls=args.tls,
         allow_insecure_auth=args.allow_insecure_auth,
-        profile=profile_name,
+        account=from_account,
     )
-    if config is not None and settings.profile is not None:
-        settings = replace(settings, profile=None)
+    if config is not None and settings.account:
+        settings = replace(settings, account=False)
     return settings
 
 
@@ -738,23 +690,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "credentials":
             if args.credential_command == "set":
                 value = getpass.getpass(f"{args.name}: ")
-                if args.credential_set:
-                    set_named_secret(args.credential_set, args.name, value)
-                else:
-                    set_secret(args.name, value)
+                set_secret(args.name, value)
                 print(f"stored {args.name}")
             elif args.credential_command == "delete":
-                if args.credential_set:
-                    delete_named_secret(args.credential_set, args.name)
-                else:
-                    delete_secret(args.name)
+                delete_secret(args.name)
                 print(f"deleted {args.name}")
             else:
-                names = (
-                    configured_named_secrets(args.credential_set)
-                    if args.credential_set
-                    else configured_secrets()
-                )
+                names = configured_secrets()
                 for name in names:
                     print(name)
             return 0
@@ -922,7 +864,7 @@ def main(argv: list[str] | None = None) -> int:
             uvicorn.run(
                 create_app(
                     config,
-                    from_account=from_account,
+                    use_account=from_account,
                     profile_repository=profile_store,
                     config_path=args.config,
                 ),
