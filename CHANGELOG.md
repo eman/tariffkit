@@ -354,6 +354,30 @@ the source with a space, so those printed the temporary name anyway; a fifth
 contains a later colon of its own and lost the half that said what went wrong,
 keeping only its problem list. It strips the source *name* now.
 
+#### A Home Assistant row that is absent is not a measured zero
+
+`_readings_from` marked a direction unmetered when the recorder's figure was
+refused, and not when the row was missing altogether -- so an hour where only
+one entity reported read as "that direction moved nothing", and coverage
+accepted it. The recorder compiles an hour for any entity that has a state, and
+a flat counter still yields a change of zero, so no row at all means the entity
+had no state. It is unknown now, like a refusal, and an interval with neither
+direction known is dropped rather than counted as two zeros.
+
+The test that would have caught it was asserting the wrong thing under the
+wrong name: `test_a_backwards_counter_is_clamped_not_negated` passed because a
+*refused* value reads as 0.0, on a series whose export half was absent. A
+backwards counter is refused, not clamped, and the test says so now.
+
+#### A partial hour keeps its five-minute rows when nothing replaces them
+
+An hour the fine series only partly covers gives its rows up to the hourly row
+that covers it -- but only if there is one. Surrendering them unconditionally
+discarded every reading in a window that begins mid-hour, where no hourly row
+can exist: an explicit `resolution="5minute"` request for 04:20-05:00 had eight
+rows per entity on a real instance and raised "no statistics for ... between
+...".
+
 #### Coverage says what was reconstructed and what was merely shifted
 
 They were one sentence, and it was wrong either way. Counting only the

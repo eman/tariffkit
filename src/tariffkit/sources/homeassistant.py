@@ -292,15 +292,21 @@ def _readings_from(
         into_raw, out_raw = imported.get(stamp), exported.get(stamp)
         into = max(into_raw, 0.0) if into_raw is not None else 0.0
         out = max(out_raw, 0.0) if out_raw is not None else 0.0
+        # A row that is absent says as little as one that was refused. The
+        # recorder compiles an hour for any entity with a state, and a flat
+        # counter still yields a change of zero -- so no row at all means the
+        # entity had no state, not that nothing crossed the meter. Reading it
+        # as a measured zero is the claim this branch exists to stop making in
+        # the other direction, and it is the same claim.
         refused = frozenset(
             name
             for name, seen, value in (
                 ("imported", stamp in imported, into_raw),
                 ("exported", stamp in exported, out_raw),
             )
-            if seen and value is None
+            if not seen or value is None
         )
-        if refused:
+        if any(value is None for value in (into_raw, out_raw)):
             log.warning(
                 "discarding the %s half of the %s statistics point: the recorder's "
                 "figure implies more than %.0f kW over %s and the counter could not "
@@ -421,8 +427,14 @@ async def read_statistics_async(
     whole = {
         hour for hour, seconds in covered.items() if seconds >= PERIODS["hour"].total_seconds() - 1
     }
+    # A partial hour gives its fine rows up *to the hourly row that replaces
+    # them* -- and only if there is one. Surrendering them unconditionally threw
+    # away every reading in a window that begins mid-hour, where no hourly row
+    # can exist: an explicit five-minute request for 04:20-05:00 has eight rows
+    # per entity and returned "no statistics" for the period.
+    surrendered = {hour for hour in covered if hour not in whole and hour in hourly}
     readings = {stamp: r for stamp, r in hourly.items() if stamp not in whole}
-    readings.update({s: r for s, r in fine.items() if s - s % hour_ms in whole})
+    readings.update({s: r for s, r in fine.items() if s - s % hour_ms not in surrendered})
 
     if not readings:
         raise DataError(

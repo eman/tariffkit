@@ -194,11 +194,48 @@ class TestReadings:
         reading = next(iter(ha._readings_from(series, settings, step).values()))
         assert (reading.imported, reading.exported) == (0.5, 2.0)
 
-    def test_a_backwards_counter_is_clamped_not_negated(self, settings: ha.HaSettings) -> None:
+    def test_a_backwards_counter_is_refused_not_negated(self, settings: ha.HaSettings) -> None:
+        """It is not energy flowing the other way, and it is not zero either.
+
+        This asserted `imported == 0.0` against a series whose export half was
+        absent, and passed for the wrong reason: the refused value *reads* as
+        0.0 because a float cannot say "unknown", and the absent export was
+        being taken for a measured zero. With a real export row the refusal is
+        visible where it belongs.
+        """
         step = timedelta(minutes=5)
         start = datetime(2026, 7, 1, 12, tzinfo=PACIFIC)
-        series = {IMPORT_ID: [point(start, -3.0, step)], EXPORT_ID: []}
-        assert next(iter(ha._readings_from(series, settings, step).values())).imported == 0.0
+        series = {IMPORT_ID: [point(start, -3.0, step)], EXPORT_ID: [point(start, 2.0, step)]}
+
+        reading = next(iter(ha._readings_from(series, settings, step).values()))
+
+        assert reading.imported == 0.0
+        assert reading.exported == 2.0
+        assert reading.unmetered == frozenset({"imported"})
+
+    def test_an_absent_row_is_unknown_rather_than_a_measured_zero(
+        self, settings: ha.HaSettings
+    ) -> None:
+        """The recorder compiles an hour for any entity that has a state.
+
+        A flat counter still yields a change of zero, so no row at all means the
+        entity had no state -- not that nothing crossed the meter. An interval
+        with neither direction known is dropped, and coverage reports the hole.
+        """
+        step = timedelta(minutes=5)
+        start = datetime(2026, 7, 1, 12, tzinfo=PACIFIC)
+
+        one_side = ha._readings_from(
+            {IMPORT_ID: [point(start, 1.5, step)], EXPORT_ID: []}, settings, step
+        )
+        (reading,) = one_side.values()
+        assert reading.imported == 1.5
+        assert reading.unmetered == frozenset({"exported"})
+
+        neither = ha._readings_from(
+            {IMPORT_ID: [point(start, -3.0, step)], EXPORT_ID: []}, settings, step
+        )
+        assert neither == {}
 
     def test_a_running_sum_restart_is_discarded(
         self, settings: ha.HaSettings, captured_logs: CaptureLogs
@@ -471,3 +508,34 @@ def test_describe_resolution_names_a_mixed_run() -> None:
         IntervalReading(start, imported=1.0, duration=timedelta(hours=1)),
     ]
     assert ha.describe_resolution(readings) == "2 x 5minute, 1 x hour"
+
+
+def test_a_partial_hour_keeps_its_fine_rows_when_nothing_replaces_them(
+    settings: ha.HaSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A window beginning mid-hour has no hourly row, by construction.
+
+    Surrendering a partial hour's five-minute rows is the right trade only when
+    there is an hourly row to surrender them *to*. Doing it unconditionally
+    threw away every reading in such a window: an explicit five-minute request
+    for 04:20-05:00 had eight rows per entity on a real instance and raised
+    "no statistics for ... between ...".
+    """
+    step = timedelta(minutes=5)
+    start = datetime(2026, 7, 1, 4, 20, tzinfo=PACIFIC)
+    end = start + step * 8
+    patch_socket(
+        monkeypatch,
+        {
+            "5minute": {
+                IMPORT_ID: [point(start + step * n, 0.1, step) for n in range(8)],
+                EXPORT_ID: [point(start + step * n, 0.0, step) for n in range(8)],
+            },
+            "hour": {},
+        },
+    )
+
+    readings = ha.read_statistics(settings, start, end, resolution="5minute")
+
+    assert len(readings) == 8
+    assert sum(r.imported for r in readings) == pytest.approx(0.8)
