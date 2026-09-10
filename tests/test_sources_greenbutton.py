@@ -12,6 +12,7 @@ import io
 import stat
 from datetime import UTC, date, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -27,6 +28,7 @@ from tariffkit.sources import (
 )
 from tariffkit.sources.pge import (
     PortalError,
+    _covering,
     _interval_to_period,
     _write_periods,
     available_reads,
@@ -255,11 +257,14 @@ class TestExportCache:
 
         def fake(session: object, start: date, end: date) -> str:
             asked.append((start, end))
-            return (
-                "start,imported,exported\n"
-                "2026-07-06T02:00:00-07:00,1.5,0\n"
-                "2026-07-06T03:00:00-07:00,0,2.5\n"
+            # Covering the range asked for, because the file is now named for
+            # what it holds -- an export that answers with less is its own
+            # test below.
+            rows = "".join(
+                f"{(start + timedelta(days=n)).isoformat()}T02:00:00-07:00,1.5,0\n"
+                for n in range((end - start).days + 1)
             )
+            return "start,imported,exported\n" + rows
 
         monkeypatch.setattr("tariffkit.sources.pge.PgeSession", _Session)
         monkeypatch.setattr("tariffkit.sources.pge.available_reads", lambda session: available)
@@ -451,6 +456,76 @@ class TestExportCache:
         )
 
         assert asked == [(date(2026, 8, 28), date(2026, 9, 9))]
+
+    def test_an_export_that_answers_with_less_is_named_for_what_it_holds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, captured_logs: Any
+    ) -> None:
+        """The portal does not always honour the range it is given.
+
+        A real 32-day request came back with its last two days. Naming the file
+        for the *request* cached two days under a thirty-two-day name, which
+        then answered every later lookup inside that span with almost nothing,
+        and let `_drop_superseded` delete a correct narrower file for
+        overlapping a range this one only claimed.
+        """
+
+        class _Session:
+            def __init__(self, settings: object) -> None: ...
+
+            def __enter__(self) -> _Session:
+                return self
+
+            def __exit__(self, *exc: object) -> None: ...
+
+            def login(self) -> None: ...
+
+        monkeypatch.setattr("tariffkit.sources.pge.PgeSession", _Session)
+        monkeypatch.setattr("tariffkit.sources.pge.available_reads", lambda session: None)
+        monkeypatch.setattr(
+            "tariffkit.sources.pge._export_text",
+            lambda session, start, end: (
+                "start,imported,exported\n2026-05-30T02:00:00-07:00,1.5,0\n"
+                "2026-05-31T02:00:00-07:00,1.5,0\n"
+            ),
+        )
+
+        logs = captured_logs("tariffkit.sources.pge")
+        export = cached_green_button(
+            self._settings(), date(2026, 4, 30), date(2026, 5, 31), directory=tmp_path
+        )
+
+        assert export.covers == "2026-05-30..2026-05-31"
+        assert export.path.name == "2026-05-30_2026-05-31.csv"
+        assert any(
+            "the portal exported 2026-05-30..2026-05-31" in r.getMessage() for r in logs.records
+        )
+        # And it does not answer a later request for days it never held.
+        assert _covering(tmp_path, date(2026, 5, 1), date(2026, 5, 15)) is None
+
+    def test_an_export_with_no_readings_at_all_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class _Session:
+            def __init__(self, settings: object) -> None: ...
+
+            def __enter__(self) -> _Session:
+                return self
+
+            def __exit__(self, *exc: object) -> None: ...
+
+            def login(self) -> None: ...
+
+        monkeypatch.setattr("tariffkit.sources.pge.PgeSession", _Session)
+        monkeypatch.setattr("tariffkit.sources.pge.available_reads", lambda session: None)
+        monkeypatch.setattr(
+            "tariffkit.sources.pge._export_text",
+            lambda session, start, end: "start,imported,exported\n",
+        )
+
+        with pytest.raises(PortalError, match="holds no readings"):
+            cached_green_button(
+                self._settings(), date(2026, 5, 1), date(2026, 5, 31), directory=tmp_path
+            )
 
     def test_a_file_that_is_not_a_range_is_ignored(self, tmp_path: Path) -> None:
         """Anything else in the directory is not an export this wrote."""

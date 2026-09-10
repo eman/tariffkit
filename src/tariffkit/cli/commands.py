@@ -896,12 +896,10 @@ def _run_account_command(args: Any) -> int:
             if args.json:
                 print(json.dumps(summary, indent=2))
             elif summary["configured"]:
-                print(f"profile: {summary['profile']}")
                 print(f"source: {summary['source']}")
                 print(f"grid import: {summary['grid_import_entity']}")
                 print(f"grid export: {summary['grid_export_entity']}")
             else:
-                print(f"profile: {summary['profile']}")
                 print(f"source: {summary['source']}")
                 print("not configured; the source default will be used")
             return 0

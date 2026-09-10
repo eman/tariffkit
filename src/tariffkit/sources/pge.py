@@ -51,6 +51,7 @@ from ..billing import BillingPeriod, IntervalReading
 from ..config import default_config_path
 from ..errors import ConfigError, DataError
 from ..secrets import get_secret
+from ..timeutil import to_pacific
 from .greenbutton import GreenButtonLayout, read_green_button
 from .homeassistant import load_dotenv
 
@@ -1359,13 +1360,54 @@ def cached_green_button(
     text = read_green_button_export(settings, start, end)
     base.mkdir(mode=0o700, parents=True, exist_ok=True)
     base.chmod(0o700)
-    path = base / f"{start.isoformat()}_{end.isoformat()}.csv"
+
+    # Named for what came back, not for what was asked. The portal does not
+    # always honour the range: an older cycle requested as 32 days returned its
+    # last two, and the archive it sends says so in its own filename. Trusting
+    # the request wrote a two-day file under a thirty-two-day name, which then
+    # answered every later lookup inside that span with almost nothing -- and
+    # `_drop_superseded` would delete a correct narrower file for overlapping
+    # a range this one only claimed to hold.
+    held = _exported_span(text)
+    if held is None:
+        raise PortalError(
+            f"the export for {start}..{end} holds no readings", endpoint="green_button"
+        )
+    if held.start > start or held.end < end:
+        log.warning(
+            "the portal exported %s..%s for a request of %s..%s; caching what it sent",
+            held.start,
+            held.end,
+            start,
+            end,
+        )
+    path = base / f"{held.start.isoformat()}_{held.end.isoformat()}.csv"
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         handle.write(text)
     path.chmod(0o600)
-    _drop_superseded(base, start, end)
-    return CachedExport(path=path, start=start, end=end, downloaded=True)
+    _drop_superseded(base, held.start, held.end)
+    return CachedExport(path=path, start=held.start, end=held.end, downloaded=True)
+
+
+def _exported_span(text: str) -> BillingPeriod | None:
+    """The days an export actually carries, read from the readings themselves.
+
+    From the content rather than the archive's filename, because the filename
+    is the portal's claim about the file and this is the file.
+    """
+    import io
+
+    try:
+        readings = read_green_button(io.StringIO(text))
+    except DataError:
+        # An export with no rows at all. Reported by the caller, which can name
+        # the period that was asked for -- "CSV contained no data rows" cannot.
+        return None
+    if not readings:
+        return None
+    days = [to_pacific(reading.start).date() for reading in readings]
+    return BillingPeriod(min(days), max(days))
 
 
 def _covering(base: Path, start: date, end: date) -> CachedExport | None:

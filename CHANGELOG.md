@@ -354,6 +354,26 @@ the source with a space, so those printed the temporary name anyway; a fifth
 contains a later colon of its own and lost the half that said what went wrong,
 keeping only its problem list. It strips the source *name* now.
 
+#### A cached export is named for what it holds
+
+The portal does not always honour the range it is given: a 32-day request for
+an older cycle came back with its last two days, and its own archive filename
+said so. Naming the file for the *request* cached two days under a
+thirty-two-day name, so every later lookup inside that span got a hit with
+almost nothing in it, and the pruning would delete a correct narrower file for
+overlapping a range this one only claimed to hold.
+
+The span is read from the readings themselves, the file is named for it, and a
+short answer is logged. An export with no readings at all is refused by the
+period that was asked for rather than by "CSV contained no data rows".
+
+#### Three commands raised where they should have reported
+
+`account source show` had asked for a `profile` key since the account became
+singular, so it raised `KeyError` rather than printing the mapping. `bill
+missing.csv` and `--config missing.toml` let `FileNotFoundError` through, where
+every other misconfiguration is one line and exit 1.
+
 #### A superseded period does not come back with a label
 
 `tariffkit bill` labelled each boundary with the source it came from by

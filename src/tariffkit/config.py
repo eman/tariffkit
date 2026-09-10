@@ -380,8 +380,16 @@ class Config:
 
     @classmethod
     def from_toml(cls, path: str | Path) -> Config:
-        with Path(path).open("rb") as handle:
-            table = tomllib.load(handle)
+        try:
+            with Path(path).open("rb") as handle:
+                table = tomllib.load(handle)
+        except OSError as exc:
+            # A named file that is not there is a thing to report. Letting the
+            # OSError through gave `--config missing.toml` a traceback, where
+            # every other way of misconfiguring this gives one line and exit 1.
+            raise ConfigError(f"could not read the config file {path}: {exc}") from exc
+        except tomllib.TOMLDecodeError as exc:
+            raise ConfigError(f"{path} is not valid TOML: {exc}") from exc
         # The shared user config also carries integration settings such as the
         # default account profile and MQTT broker. They are not pricing fields
         # and must not make a stateless Config unusable.
