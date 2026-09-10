@@ -461,7 +461,12 @@ class AccountObservation:
 
 @dataclass(frozen=True, slots=True)
 class AccountProfile:
-    """A named account's complete, effective-dated configuration history."""
+    """An account's complete, effective-dated configuration history.
+
+    ``name`` is optional and identifies nothing here: the command line has one
+    account and leaves it empty, while Home Assistant sets it because a config
+    entry needs something stable to be known by.
+    """
 
     epochs: tuple[AccountEpoch, ...]
     name: str = ""

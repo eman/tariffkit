@@ -106,6 +106,31 @@ def test_account_init_update_and_export_are_sanitized(
     assert "amount_due" not in exported.read_text(encoding="utf-8")
 
 
+def test_account_update_json_names_the_account_it_wrote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The key is `account`: there is one, and it is not selected by name."""
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'tariff = "E-ELEC"\ninterconnection_year = 2026\npto_date = "2026-06-03"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert main(["--config", str(config), "account", "init", "--effective", "2025-01-01"]) == 0
+    capsys.readouterr()
+
+    assert (
+        main(["account", "update", "--effective", "2026-01-01", "--tariff", "EV2-A", "--json"]) == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["applied"] is False
+    assert [epoch["config"]["tariff"] for epoch in payload["account"]["epochs"]] == [
+        "E-ELEC",
+        "EV2-A",
+    ]
+
+
 def test_account_update_previews_without_writing(tmp_path: Path) -> None:
     monkeypatch_config = tmp_path / "config.toml"
     monkeypatch_config.write_text(

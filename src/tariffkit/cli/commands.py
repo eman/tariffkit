@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     credential_delete.add_argument("name", choices=SECRET_NAMES)
     credential_commands.add_parser("list", help="list configured names without values")
 
-    account = sub.add_parser("account", help="manage named account profiles")
+    account = sub.add_parser("account", help="manage your account's dated history")
     account_commands = account.add_subparsers(dest="account_command", required=True)
     account_init = account_commands.add_parser("init", help="set up your account")
     account_init.add_argument("--config", type=Path, default=argparse.SUPPRESS)
@@ -528,7 +528,7 @@ def _run_account_command(args: Any) -> int:
         if args.json:
             print(
                 json.dumps(
-                    {"profile": updated.to_dict(), "applied": args.apply},
+                    {"account": updated.to_dict(), "applied": args.apply},
                     indent=2,
                     default=str,
                 )

@@ -120,8 +120,8 @@ class HaSettings:
         """Resolve settings from config file, ``.env``, environment, and args.
 
         Later wins: ``[home_assistant]`` in the config file, then ``.env``, then
-        real environment variables, then a named profile's grid-import/grid-
-        export mapping, then explicit overrides.
+        real environment variables, then the account's grid-import/grid-export
+        mapping, then explicit overrides.
 
         The token is deliberately not read from the config file. Entity ids are
         configuration and belong somewhere shareable; a long-lived access token

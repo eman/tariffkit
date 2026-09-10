@@ -108,6 +108,10 @@ The documentation has been brought in line with all of this: `docs/accounts.md`
 show `--account NAME`, a profile name argument, `[account] default_profile`, or
 `--credential-set`.
 
+`tariffkit --help` said the `account` command manages "named account profiles";
+it manages your account's dated history. `tariffkit account update --json`
+emitted its result under a `profile` key, now `account`.
+
 
 ### Fixed
 - **`tariffkit bill` uses your account profile without being asked.** With one
