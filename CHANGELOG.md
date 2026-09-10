@@ -7,6 +7,48 @@ All notable changes to this project are documented here. This project follows
 
 ### Changed
 
+#### Upgrading Home Assistant: re-run the backfill
+
+Nothing has to be migrated. The config entry is still version 3, so
+`async_migrate_entry` does nothing to an existing one; the account stays in the
+entry at `schema_version` 1; and no entity id, unique id, device identifier or
+entity name changed, so nothing is orphaned or renamed. The single-account work
+below is entirely CLI-side -- the integration has always kept its account in its
+own config entry and never read `~/.config/tariffkit`.
+
+**But long-term statistics are written once and kept**, and the arithmetic
+behind them changed: PCIA moved from the bonus bucket to delivery, an in-cycle
+offset overrun is no longer banked, credit spend is floored at zero, the pre-PTO
+note no longer disqualifies the whole bank, and meter hours that used to be
+dropped are recovered (54.2 to 67.0 kWh of export on one real cycle). Rows
+already written keep the old numbers while new hours use the new ones, which
+reads as a step in the Energy dashboard's cost series.
+
+Re-running the backfill rewrites them -- the rows carry the same timestamps, so
+they are replaced rather than added to:
+
+```yaml
+action: tariffkit.backfill_usage
+data:
+  config_entry: <your entry>
+response_variable: backfilled
+```
+
+With no `start` it rebuilds from the billing cycle containing your PTO date,
+which is as far back as a bill means anything.
+
+Expect the live figures to move as well -- amount due, the credit bank,
+cycle-to-date. That is what most of this release is: a bank that was silently
+dropped now applies, and one folded across a warning is no longer discarded
+without a word.
+
+The integration does **not** gain the utility's own cycle boundaries described
+further down. Those come from the PG&E portal, and the integration holds no
+portal credentials by design; its boundaries still come from statement evidence
+in its profile, falling back to the configured meter-read day. Import statements
+with the CLI and re-import the profile through **Configure -> Import profile**
+to have the two agree exactly.
+
 #### One account, and everything it needs in one directory
 
 **Breaking.** Named account profiles are gone. There is one account, and every
@@ -35,11 +77,11 @@ rm -r ~/.config/tariffkit/accounts        # once you are happy
 mv .env ~/.config/tariffkit/.env          # if you kept one in a project
 ```
 
-**Home Assistant needs no migration.** The integration stores its account in its
-own config entry and never read the CLI's profiles, so nothing moves and no
-reconfiguration is needed -- upgrade and carry on. The only visible change is
-that a profile no longer carries a `credential_set`; the integration never set
-one.
+**Home Assistant needs no migration**, for this or anything else in this
+release: see [above](#upgrading-home-assistant-re-run-the-backfill). The
+integration stores its account in its own config entry and never read the CLI's
+profiles, so nothing moves. The only visible change here is that a profile no
+longer carries a `credential_set`; the integration never set one.
 
 **Gone from the CLI:** `--account` on every command, `--credential-set`,
 `tariffkit account list`, and the name argument on `account show`, `update`,
