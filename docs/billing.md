@@ -20,15 +20,28 @@ tariffkit bill - --json < intervals.csv
 
 ## Where readings come from
 
-Three sources, all in `tariffkit.sources`. Green Button is the default and needs
-nothing installed beyond the core package. Name a file you already have, or name
-none and let it fetch one:
+Three sources, all in `tariffkit.sources`. **Home Assistant is the default** —
+your own meter, read through the recorder, with no download step:
 
 ```bash
+pip install 'tariffkit[ha]'
 tariffkit bill                       # the cycle open right now, to today
 tariffkit bill --start 2026-07-29 --end 2026-08-27
+```
+
+It is the default because it is the meter, and the utility's own export is not
+always complete: on one real cycle PG&E's Green Button held 0.13 kWh of the
+71.6 the meter recorded, while the meter matched the printed statement to
+0.00 kWh. Reading the account's own instrument first is the safer default; the
+export remains the way to check it.
+
+**Green Button** is what a CSV path selects, and what `--source green-button`
+fetches from the portal:
+
+```bash
 tariffkit bill pge_electric_usage_interval_data_....csv --start 2026-07-02 --end 2026-07-28
 tariffkit bill - --json < intervals.csv
+tariffkit bill --source green-button --start 2026-07-29 --end 2026-08-27
 ```
 
 With no file, the export comes from
@@ -37,13 +50,6 @@ if it is not there — see [The export cache](#the-export-cache).
 
 `--source csv` is still accepted as a spelling of `--source green-button`, but
 "CSV" says nothing about *which* CSV, so the documented name is the format.
-
-Home Assistant reads the meter directly, so there is no download step:
-
-```bash
-pip install 'tariffkit[ha]'
-tariffkit bill --source ha --start 2026-07-29 --end 2026-08-09
-```
 
 Configure your account's source once and omit the entity flags:
 

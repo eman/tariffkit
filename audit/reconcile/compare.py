@@ -41,6 +41,12 @@ from .tolerance import Tolerance
 class Outcome(StrEnum):
     MATCH = "match"
     MISMATCH = "mismatch"
+    #: The rates reproduce this line from the statement's own kWh, so the
+    #: difference is which hours our meter recorded rather than what we charge
+    #: for them. Reported, and does not fail the check: no meter but the
+    #: utility's own agrees with the utility about every interval, and a run
+    #: that can never reach zero is one nobody reads.
+    METERED = "metered"
     UNMAPPED_LINE = "unmapped_line"
     UNMAPPED_COMPONENT = "unmapped_component"
     NOT_COMPUTED = "not_computed"
@@ -88,7 +94,7 @@ class Comparison:
 
     @property
     def ok(self) -> bool:
-        return self.outcome is Outcome.MATCH
+        return self.outcome in (Outcome.MATCH, Outcome.METERED)
 
     @property
     def rates_agree(self) -> bool | None:
@@ -333,11 +339,22 @@ def reconcile(
             independent = None
             if not matched and metered:
                 independent = _from_metered(rule, metered)
+            # Priced again from the kWh the statement itself prints. If that
+            # reproduces the line, the rates and the mapping are right and only
+            # the hours differ -- which better rate data cannot fix and a
+            # different meter would not agree on either.
+            outcome = Outcome.MATCH if matched else Outcome.MISMATCH
+            if (
+                outcome is Outcome.MISMATCH
+                and independent is not None
+                and allowed.line_ok(printed, independent, len(rule.components))
+            ):
+                outcome = Outcome.METERED
             comparisons.append(
                 Comparison(
                     label,
                     section.name,
-                    Outcome.MATCH if matched else Outcome.MISMATCH,
+                    outcome,
                     printed=printed,
                     computed=computed,
                     rule=rule,

@@ -33,6 +33,20 @@ class Tolerance:
     relative: float = 0.0005
     #: kWh agreement between two measurements of the same period.
     kwh_relative: float = 0.005
+    #: The smallest kWh difference worth calling a disagreement, whatever the
+    #: relative allowance works out to.
+    #:
+    #: Green Button rounds every interval to two decimals -- measured: all 2,880
+    #: values in a cycle's export carry exactly two -- so its own quantisation
+    #: accumulates about 0.31 kWh at two sigma over a cycle, and up to 14 kWh in
+    #: the worst case. Without a floor the relative test became an absolute
+    #: five-watt-hour test on any small quantity, which is sixty times finer than
+    #: the noise it was measuring: on a solar cycle importing almost nothing, a
+    #: 0.06 kWh difference worth about a penny failed the statement, while on a
+    #: 1,159 kWh winter cycle a 0.65 kWh difference worth thirteen cents passed.
+    #: Held above the quantisation, and still well under a dime at any
+    #: time-of-use spread on this tariff.
+    kwh_floor: float = 0.35
     #: A computed component smaller than this is not worth reporting as
     #: unmapped; it is rounding in the tariff, not a missing line.
     ignore_below: float = 0.005
@@ -56,4 +70,4 @@ class Tolerance:
 
     def kwh_ok(self, left: float, right: float) -> bool:
         scale = max(abs(left), abs(right), 1.0)
-        return abs(left - right) <= self.kwh_relative * scale
+        return abs(left - right) <= max(self.kwh_relative * scale, self.kwh_floor)

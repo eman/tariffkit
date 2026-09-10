@@ -354,6 +354,43 @@ the source with a space, so those printed the temporary name anyway; a fifth
 contains a later colon of its own and lost the half that said what went wrong,
 keeping only its problem list. It strips the source *name* now.
 
+#### Home Assistant is the default reading source
+
+`tariffkit bill` read Green Button unless told otherwise. It now reads the
+account's own meter through Home Assistant, and a CSV path still selects the
+Green Button reader because that is what a CSV is.
+
+The utility's export is not always complete. On one real cycle it held 0.13 kWh
+of the 71.6 the meter recorded -- PG&E truncated a 32-day request to its last
+two days -- while the meter matched the printed statement to 0.00 kWh. The
+account's own instrument is the safer thing to reach for first; the export
+stays as the independent check, which is the job it does well.
+
+#### The audit stops crying wolf, and says which kind of difference it found
+
+Two calibration faults, both measured rather than guessed. On real statements
+the run goes from 3/11 reconciled to 7/11, and every remaining failure is a
+disagreement worth reading.
+
+**A metering difference is not a mismatch.** `Distribution + Public Purpose
+Programs` was reported as a mismatch on two cycles while the audit itself
+printed, underneath, that the rates reproduce the line from the statement's own
+kWh -- the machinery to tell the two apart existed and the verdict ignored it.
+A line whose rates check out against the printed kWh is now `metering`:
+reported, and not a failure. No meter but the utility's own agrees with the
+utility about every interval, and a check that can never reach zero is one
+nobody reads.
+
+**The source comparison fired below the noise it was measuring.** `kwh_ok`
+allowed 0.5% of the larger figure with the scale floored at 1 kWh, which on a
+small quantity is an absolute five-watt-hour test. Green Button rounds every
+interval to two decimals -- measured: all 2,880 values in a cycle's export carry
+exactly two -- so its own quantisation accumulates about 0.31 kWh over a cycle
+at two sigma. A 0.06 kWh peak difference worth a penny failed a solar cycle
+while a 0.65 kWh difference worth thirteen cents passed a winter one. A 0.35 kWh
+floor holds the test above the source's own noise and still flags the 0.74,
+1.41 and 4.05 kWh differences that are worth a look.
+
 #### A cached export is named for what it holds
 
 The portal does not always honour the range it is given: a 32-day request for

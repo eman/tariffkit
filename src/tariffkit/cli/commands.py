@@ -153,17 +153,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         nargs="?",
         metavar="GREEN_BUTTON_CSV",
-        help="a Green Button CSV you already have; '-' for stdin. Omit it and "
-        "the export is taken from the cache, or downloaded from the portal "
-        "and cached. Not used with --source ha or --source influx",
+        help="a Green Button CSV you already have; '-' for stdin. Implies "
+        "--source green-button. Not used with --source ha or --source influx",
     )
     bill.add_argument(
         "--source",
         # "csv" stays accepted so existing invocations keep working, but it is
         # not the documented spelling: it says nothing about which CSV.
         choices=("green-button", "csv", "ha", "influx"),
-        default="green-button",
-        help="where the readings come from (default: green-button)",
+        default=None,
+        help="where the readings come from (default: ha, or green-button when a CSV path is given)",
     )
     bill.add_argument("--start", type=date.fromisoformat, help="cycle start (meter read date)")
     bill.add_argument("--end", type=date.fromisoformat, help="cycle end, inclusive")
@@ -1056,6 +1055,13 @@ def main(argv: list[str] | None = None) -> int:
             # A CSV names its own window when no dates are given -- but only
             # for the source that reads a CSV. Every other source is asked for
             # a period, so it has to be resolved even when a path was passed.
+            # Home Assistant by default: it is the account's own meter, read
+            # through the recorder, and the one source measured against the
+            # statement to 0.00 kWh where the utility's own export was missing
+            # 30 days of a cycle. A CSV path names the Green Button reader,
+            # since that is what a CSV is.
+            if args.source is None:
+                args.source = "green-button" if args.csv is not None else "ha"
             reads_csv = args.source in {"green-button", "csv"} and args.csv is not None
             period, cycle_basis = (
                 (None, "")

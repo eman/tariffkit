@@ -14,6 +14,7 @@ from .compare import Comparison, Outcome, Reconciliation
 _MARK = {
     Outcome.MATCH: "ok",
     Outcome.MISMATCH: "MISMATCH",
+    Outcome.METERED: "metering",
     Outcome.UNMAPPED_LINE: "UNMAPPED LINE",
     Outcome.UNMAPPED_COMPONENT: "UNMAPPED COMPONENT",
     Outcome.NOT_COMPUTED: "NOT COMPUTED",

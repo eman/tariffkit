@@ -164,7 +164,7 @@ def test_bill_without_dates_prices_the_open_cycle_from_statement_evidence(
 
     monkeypatch.setattr("tariffkit.sources.cached_green_button", fake)
 
-    assert main(["bill"]) == 0
+    assert main(["bill", "--source", "green-button"]) == 0
 
     # The cycle after the last statement: contiguous, so it opened on the 28th.
     assert asked == {"start": date(2026, 8, 28), "end": date(2026, 9, 9)}
@@ -188,7 +188,7 @@ def test_bill_without_dates_takes_the_boundary_the_utility_billed_on(
         ],
     )
 
-    assert main(["bill"]) == 0
+    assert main(["bill", "--source", "green-button"]) == 0
 
     out = capsys.readouterr().out
     # Cycles are contiguous, so the open one began the day after the last close.
@@ -204,7 +204,7 @@ def test_bill_without_dates_says_when_the_boundary_is_a_guess(
     AccountStore(tmp_path).save(AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),)))
     _stub_export(tmp_path, monkeypatch)
 
-    assert main(["bill"]) == 0
+    assert main(["bill", "--source", "green-button"]) == 0
 
     out = capsys.readouterr().out
     assert "cycle: 2026-09-01 to 2026-09-09, a calendar month, which is a guess" in out
@@ -223,7 +223,7 @@ def test_bill_without_dates_uses_a_configured_meter_read_day(
     AccountStore(tmp_path).save(AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),)))
     _stub_export(tmp_path, monkeypatch)
 
-    assert main(["bill"]) == 0
+    assert main(["bill", "--source", "green-button"]) == 0
 
     assert "cycle: 2026-08-29 to 2026-09-09" in capsys.readouterr().out
 
@@ -245,7 +245,7 @@ def test_bill_without_an_account_still_asks_for_dates(
     """Nothing says when the cycle began, so it does not invent one."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
 
-    assert main(["bill"]) == 1
+    assert main(["bill", "--source", "green-button"]) == 1
 
     assert "there is nothing to say when the current billing cycle began" in (
         capsys.readouterr().err
@@ -356,7 +356,7 @@ def test_portal_periods_do_not_overrule_a_statement_that_covers_the_same_days(
             ),
         ),
     )
-    args = build_parser().parse_args(["bill"])
+    args = build_parser().parse_args(["bill", "--source", "green-button"])
 
     origins = _known_periods(args, profile)
 
@@ -396,7 +396,9 @@ def test_a_period_the_merge_dropped_does_not_come_back_with_a_label(
         billing_periods=(whole,),
     )
 
-    origins = _known_periods(build_parser().parse_args(["bill"]), profile)
+    origins = _known_periods(
+        build_parser().parse_args(["bill", "--source", "green-button"]), profile
+    )
 
     assert list(origins) == [whole]
     assert origins[whole] == "recorded"
@@ -437,7 +439,7 @@ def test_the_basis_names_the_source_that_actually_answered(
     )
     capsys.readouterr()
 
-    assert main(["bill"]) == 0
+    assert main(["bill", "--source", "green-button"]) == 0
 
     out = capsys.readouterr().out
     assert "cycle: 2026-08-28 to 2026-09-09, the boundary PG&E billed on" in out
@@ -460,6 +462,21 @@ def test_naming_a_config_file_never_reaches_for_the_account(
 
     assert main(["--config", str(config), "now"]) == 0
     assert not (tmp_path / "tariffkit").exists()
+
+
+def test_the_default_source_is_home_assistant_unless_a_csv_says_otherwise() -> None:
+    """The account's own meter, not the utility's export.
+
+    PG&E's export was missing thirty days of one cycle where the meter matched
+    the statement to 0.00 kWh, and it is the source `bill` reached for first.
+    A CSV path still names the Green Button reader, since that is what a CSV is.
+    """
+    parser = build_parser()
+
+    assert parser.parse_args(["bill"]).source is None
+    assert parser.parse_args(["bill", "--source", "influx"]).source == "influx"
+    # Resolved in `main`, where the CSV argument is known.
+    assert parser.parse_args(["bill", "readings.csv"]).csv == Path("readings.csv")
 
 
 def test_a_csv_path_with_another_source_still_resolves_a_window(
