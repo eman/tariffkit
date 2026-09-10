@@ -9,12 +9,20 @@ StringIO, so no fixture file is needed.
 from __future__ import annotations
 
 import io
-from datetime import UTC, timedelta
+import stat
+from datetime import UTC, date, timedelta
+from pathlib import Path
 
 import pytest
 
 from tariffkit.errors import DataError
-from tariffkit.sources import GreenButtonLayout, read_green_button
+from tariffkit.sources import (
+    GreenButtonLayout,
+    PgeSettings,
+    cached_exports,
+    cached_green_button,
+    read_green_button,
+)
 from tariffkit.timeutil import export_hour
 
 
@@ -210,3 +218,129 @@ class TestGreenButtonCsv:
             io.StringIO(csv_text), GreenButtonLayout(date="day", time="clock")
         )[0]
         assert (reading.start.hour, reading.start.day) == (2, 6)
+
+
+class TestExportCache:
+    """The portal generates an export on demand; the same range twice is waste."""
+
+    @staticmethod
+    def _settings() -> PgeSettings:
+        return PgeSettings(username="person@example.invalid", password="secret")
+
+    @staticmethod
+    def _record(monkeypatch: pytest.MonkeyPatch) -> list[tuple[date, date]]:
+        asked: list[tuple[date, date]] = []
+
+        def fake(settings: PgeSettings, start: date, end: date) -> str:
+            asked.append((start, end))
+            return (
+                "start,imported,exported\n"
+                "2026-07-06T02:00:00-07:00,1.5,0\n"
+                "2026-07-06T03:00:00-07:00,0,2.5\n"
+            )
+
+        monkeypatch.setattr("tariffkit.sources.pge.read_green_button_export", fake)
+        return asked
+
+    def test_a_second_request_for_the_same_range_reads_the_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        asked = self._record(monkeypatch)
+
+        first = cached_green_button(
+            self._settings(), date(2026, 7, 1), date(2026, 7, 31), directory=tmp_path
+        )
+        second = cached_green_button(
+            self._settings(), date(2026, 7, 1), date(2026, 7, 31), directory=tmp_path
+        )
+
+        assert len(asked) == 1
+        assert first.downloaded and not second.downloaded
+        assert second.path == first.path
+        assert read_green_button(second.path)[0].imported == 1.5
+
+    def test_a_wider_file_serves_a_narrower_request(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Readings outside a billing period are ignored, so one year serves every cycle."""
+        asked = self._record(monkeypatch)
+
+        cached_green_button(
+            self._settings(), date(2026, 1, 1), date(2026, 12, 31), directory=tmp_path
+        )
+        cycle = cached_green_button(
+            self._settings(), date(2026, 7, 29), date(2026, 8, 27), directory=tmp_path
+        )
+
+        assert len(asked) == 1
+        assert not cycle.downloaded
+        assert cycle.covers == "2026-01-01..2026-12-31"
+
+    def test_a_range_reaching_past_the_cache_downloads(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        asked = self._record(monkeypatch)
+
+        cached_green_button(
+            self._settings(), date(2026, 7, 1), date(2026, 7, 31), directory=tmp_path
+        )
+        cached_green_button(
+            self._settings(), date(2026, 7, 1), date(2026, 8, 1), directory=tmp_path
+        )
+
+        assert asked == [
+            (date(2026, 7, 1), date(2026, 7, 31)),
+            (date(2026, 7, 1), date(2026, 8, 1)),
+        ]
+
+    def test_refresh_downloads_over_a_cached_range(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        asked = self._record(monkeypatch)
+        window = (date(2026, 7, 1), date(2026, 7, 31))
+
+        cached_green_button(self._settings(), *window, directory=tmp_path)
+        again = cached_green_button(self._settings(), *window, directory=tmp_path, refresh=True)
+
+        assert len(asked) == 2
+        assert again.downloaded
+
+    def test_the_export_is_private_to_its_owner(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """It carries a name, a service address, and every quarter hour of use."""
+        self._record(monkeypatch)
+
+        export = cached_green_button(
+            self._settings(), date(2026, 7, 1), date(2026, 7, 31), directory=tmp_path
+        )
+
+        assert stat.S_IMODE(export.path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(export.path.parent.stat().st_mode) == 0o700
+
+    def test_the_narrowest_covering_file_is_the_one_read(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._record(monkeypatch)
+        cached_green_button(
+            self._settings(), date(2026, 1, 1), date(2026, 12, 31), directory=tmp_path
+        )
+        cached_green_button(
+            self._settings(),
+            date(2026, 7, 1),
+            date(2026, 8, 31),
+            directory=tmp_path,
+            refresh=True,
+        )
+
+        chosen = cached_green_button(
+            self._settings(), date(2026, 7, 29), date(2026, 8, 27), directory=tmp_path
+        )
+
+        assert chosen.covers == "2026-07-01..2026-08-31"
+
+    def test_a_file_that_is_not_a_range_is_ignored(self, tmp_path: Path) -> None:
+        """Anything else in the directory is not an export this wrote."""
+        (tmp_path / "notes.csv").write_text("start,imported,exported\n", encoding="utf-8")
+
+        assert cached_exports(tmp_path) == []

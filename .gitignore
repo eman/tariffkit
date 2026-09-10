@@ -8,6 +8,10 @@ dist/
 venv/
 .env
 .env.bak*
+# A copy of it under any other name is still a copy of it: `env` at the root
+# was one `git add -A` from being committed, holding a live Home Assistant token.
+/env
+/*.env
 
 # One real account's tariff history. audit/account.example.toml is the template.
 audit/account.toml

@@ -66,7 +66,8 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument(
         "--green-button",
         action="store_true",
-        help="also download the utility's own interval export and compare the two meters",
+        help="also compare the utility's own interval export, cached under "
+        "~/.cache/tariffkit/pge/green-button and downloaded only if absent",
     )
     check.add_argument(
         "--readings",
@@ -91,7 +92,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--green-button",
         action="store_true",
-        help="also download the utility's own interval export and compare the two meters",
+        help="also compare the utility's own interval export, cached under "
+        "~/.cache/tariffkit/pge/green-button and downloaded only if absent",
     )
     run.add_argument(
         "--readings",
@@ -387,11 +389,16 @@ def _reconcile(
             # request because one meter cannot tell you it is incomplete: PG&E's
             # export was once missing a whole day, and only a second source
             # showed it.
-            from tariffkit.sources.pge import PgeSettings, read_green_button_download
+            from tariffkit.sources import read_green_button
+            from tariffkit.sources.pge import PgeSettings, cached_green_button
 
-            sources["green_button"] = read_green_button_download(
+            # Cached, because a run reconciles a statement at a time and the
+            # portal generates each export on demand -- twenty-one cycles was
+            # twenty-one jobs for data that had not changed since it closed.
+            export = cached_green_button(
                 PgeSettings.load(), statement.period.start, statement.period.end
             )
+            sources["green_button"] = read_green_button(export.path)
 
         parts = price_segments(segments, readings)
         bill = compute_segments(segments, readings, netted=True)

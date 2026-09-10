@@ -21,12 +21,18 @@ tariffkit bill - --json < intervals.csv
 ## Where readings come from
 
 Three sources, all in `tariffkit.sources`. Green Button is the default and needs
-nothing installed beyond the core package:
+nothing installed beyond the core package. Name a file you already have, or name
+none and let it fetch one:
 
 ```bash
+tariffkit bill --start 2026-07-29 --end 2026-08-27
 tariffkit bill pge_electric_usage_interval_data_....csv --start 2026-07-02 --end 2026-07-28
 tariffkit bill - --json < intervals.csv
 ```
+
+With no file, the export comes from
+`~/.cache/tariffkit/pge/green-button/`, and is downloaded from the portal only
+if it is not there — see [The export cache](#the-export-cache).
 
 `--source csv` is still accepted as a spelling of `--source green-button`, but
 "CSV" says nothing about *which* CSV, so the documented name is the format.
@@ -161,6 +167,35 @@ fifteen-minute resolution.
 
 **This reads the CSV form, not the XML one.** Green Button also has an ESPI/XML
 serialisation; that is a different parser and is not implemented.
+
+### The export cache
+
+You do not have to fetch the file yourself. Given `--start` and `--end` and no
+path, `tariffkit bill` downloads the export with your portal credentials (the
+same ones `account sync` uses) and keeps it:
+
+```console
+$ tariffkit bill --start 2026-07-29 --end 2026-08-27
+...
+  source: Green Button, downloaded (2880 intervals, ~/.cache/tariffkit/pge/green-button/2026-07-29_2026-08-27.csv)
+
+$ tariffkit bill --start 2026-08-01 --end 2026-08-20
+...
+  source: Green Button, cached 2026-07-29..2026-08-27 (2880 intervals, ~/.cache/tariffkit/pge/green-button/2026-07-29_2026-08-27.csv)
+```
+
+The portal generates each export on demand — a job, a poll loop, and a signed
+URL, about twenty seconds — and hands back the same readings every time for a
+range that has already closed. So it is fetched once. A **wider file serves a
+narrower request**, because readings outside a billing period are ignored when
+it is priced: download a year, then bill each cycle in it for nothing. When
+several files cover a request the narrowest wins, to parse the least.
+
+`--refresh` downloads again over a cached range — for a cycle that has not
+closed yet, where more readings arrive each day. Files are mode `0600` under a
+mode `0700` directory: an export carries your name, service address, and every
+quarter hour of consumption. Deleting any of them costs only the next
+download.
 
 It is Green Button first rather than Green Button only. The preamble skipping and
 the default column names exist for PG&E's export, but every column is

@@ -142,6 +142,35 @@ from -- `environment (PGE_USERNAME)`, `.env (HA_TOKEN)`, `keyring`, or
 `tariffkit.secrets.SECRET_ENV` is the new mapping behind it, and
 `keyring_backend()` reports the backend in use.
 
+#### `tariffkit bill` fetches the Green Button export itself, and keeps it
+
+It asked for a CSV path -- "give a Green Button CSV path, or use --source ha or
+--source influx" -- on a tool that can download the file. Given `--start` and
+`--end` and no path, it now takes the export from
+`~/.cache/tariffkit/pge/green-button/`, downloading it from the portal only if
+it is not there:
+
+```
+  source: Green Button, downloaded (2880 intervals, ~/.cache/tariffkit/pge/green-button/2026-07-29_2026-08-27.csv)
+  source: Green Button, cached 2026-07-29..2026-08-27 (2880 intervals, ...)
+```
+
+The portal generates each export on demand -- a job, a poll loop, and a signed
+URL, about twenty seconds -- and returns the same readings every time for a
+range that has closed. A **wider file serves a narrower request**, since
+readings outside a billing period are ignored when it is priced, so one
+download of a year prices every cycle in it; the narrowest covering file wins.
+`--refresh` downloads again, for a cycle still open. Files are mode `0600` under
+a mode `0700` directory, beside the session cache: an export carries a name, a
+service address, and every quarter hour of consumption.
+
+Passing a CSV still works and still skips the portal entirely.
+`audit --green-button` reads the same cache, which was re-downloading one export
+per statement.
+
+New in `tariffkit.sources`: `cached_green_button`, `cached_exports`,
+`CachedExport`, and `read_green_button_export`.
+
 
 ### Fixed
 - **`tariffkit bill` uses your account profile without being asked.** With one

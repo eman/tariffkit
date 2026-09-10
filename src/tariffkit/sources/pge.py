@@ -1233,7 +1233,105 @@ def read_green_button_download(
     Follows the ``read_*(settings, start, end, ...)`` shape the other sources
     use. Dates rather than datetimes: a billing cycle is date-bounded, and the
     portal's own selector is a date range.
+
+    Downloads every time it is called. :func:`cached_green_button` is the one
+    to reach for when the same range may be asked for again.
     """
+    return parse_green_button(read_green_button_export(settings, start, end), layout)
+
+
+def _default_export_cache() -> Path:
+    """Where downloaded interval exports are kept between runs.
+
+    Beside the session cache, under ``XDG_CACHE_HOME``, and private: the export
+    carries the customer's name, service address, and every fifteen minutes of
+    their consumption.
+    """
+    root = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+    return root / "tariffkit" / "pge" / "green-button"
+
+
+@dataclass(frozen=True, slots=True)
+class CachedExport:
+    """A Green Button export on disk, and how it got there."""
+
+    path: Path
+    start: date
+    end: date
+    #: False when an existing file covering the request was reused.
+    downloaded: bool
+
+    @property
+    def covers(self) -> str:
+        return f"{self.start}..{self.end}"
+
+
+_EXPORT_NAME = re.compile(r"^(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})\.csv$")
+
+
+def cached_exports(directory: Path | None = None) -> list[CachedExport]:
+    """Every export already downloaded, oldest range first."""
+    base = directory or _default_export_cache()
+    found: list[CachedExport] = []
+    if not base.is_dir():
+        return found
+    for path in sorted(base.glob("*.csv")):
+        match = _EXPORT_NAME.match(path.name)
+        if match is None or path.is_symlink() or not path.is_file():
+            continue
+        found.append(
+            CachedExport(
+                path=path,
+                start=date.fromisoformat(match.group(1)),
+                end=date.fromisoformat(match.group(2)),
+                downloaded=False,
+            )
+        )
+    return found
+
+
+def cached_green_button(
+    settings: PgeSettings,
+    start: date,
+    end: date,
+    *,
+    directory: Path | None = None,
+    refresh: bool = False,
+) -> CachedExport:
+    """The export covering ``[start, end]``, downloading it only if absent.
+
+    An export is expensive in a way its size does not suggest: the portal
+    generates the file on demand, which takes a job, a poll loop, and a signed
+    URL, and it hands back the same fifteen-minute readings every time for a
+    range that has already closed. Pricing twelve cycles meant twelve
+    downloads of overlapping data.
+
+    A wider file is reused for a narrower request, because readings outside a
+    billing period are ignored when it is priced -- so one download of a year
+    serves every cycle in it. The narrowest covering file wins, to parse the
+    least.
+    """
+    base = directory or _default_export_cache()
+    if not refresh:
+        covering = [
+            export for export in cached_exports(base) if export.start <= start and export.end >= end
+        ]
+        if covering:
+            return min(covering, key=lambda export: (export.end - export.start).days)
+
+    text = read_green_button_export(settings, start, end)
+    base.mkdir(mode=0o700, parents=True, exist_ok=True)
+    base.chmod(0o700)
+    path = base / f"{start.isoformat()}_{end.isoformat()}.csv"
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    path.chmod(0o600)
+    return CachedExport(path=path, start=start, end=end, downloaded=True)
+
+
+def read_green_button_export(settings: PgeSettings, start: date, end: date) -> str:
+    """The portal's export for ``[start, end]``, as text."""
     with PgeSession(settings) as session:
         session.login()
-        return parse_green_button(download_green_button(session, start, end), layout)
+        return download_green_button(session, start, end)

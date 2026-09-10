@@ -147,8 +147,9 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         nargs="?",
         metavar="GREEN_BUTTON_CSV",
-        help="PG&E Green Button CSV ('Download my data'); '-' for stdin. "
-        "Omit with --source ha or --source influx",
+        help="a Green Button CSV you already have; '-' for stdin. Omit it and "
+        "the export is taken from the cache, or downloaded from the portal "
+        "and cached. Not used with --source ha or --source influx",
     )
     bill.add_argument(
         "--source",
@@ -162,6 +163,11 @@ def build_parser() -> argparse.ArgumentParser:
     bill.add_argument("--end", type=date.fromisoformat, help="cycle end, inclusive")
     bill.add_argument("--json", action="store_true")
     bill.add_argument("--no-check", dest="check", action="store_false", help="skip coverage checks")
+    bill.add_argument(
+        "--refresh",
+        action="store_true",
+        help="download the Green Button export again even if it is cached",
+    )
     bill.add_argument("--ha-import-entity", help="override the grid-import entity")
     bill.add_argument("--ha-export-entity", help="override the grid-export entity")
     bill.add_argument("--influx-import-entity", help="override the grid-import series")
@@ -547,6 +553,14 @@ def _flattened(config: Mapping[str, Any], prefix: str = "") -> list[tuple[str, s
     return rows
 
 
+def _short_path(path: Path) -> str:
+    """A path with the home directory collapsed, for printing."""
+    try:
+        return f"~/{path.relative_to(Path.home())}"
+    except ValueError:
+        return str(path)
+
+
 def _print_credentials() -> None:
     """Where each credential resolves from -- never what it is.
 
@@ -906,13 +920,29 @@ def main(argv: list[str] | None = None) -> int:
                     f"  source: InfluxDB counters ({describe_resolution(readings)}; "
                     f"totals are exact, distribution follows sample density)"
                 )
-            elif args.csv is None:
-                raise ConfigError(
-                    "give a Green Button CSV path, or use --source ha or --source influx"
-                )
-            else:
+            elif args.csv is not None:
                 readings = read_green_button(sys.stdin if str(args.csv) == "-" else args.csv)
                 note = f"  source: Green Button CSV ({len(readings)} intervals)"
+            else:
+                from ..sources import PgeSettings, cached_green_button
+
+                if not (args.start and args.end):
+                    raise ConfigError(
+                        "--source green-button needs --start and --end to know what to "
+                        "download, or a Green Button CSV path you already have"
+                    )
+                export = cached_green_button(
+                    PgeSettings.load(config_path=args.config),
+                    args.start,
+                    args.end,
+                    refresh=args.refresh,
+                )
+                readings = read_green_button(export.path)
+                origin = "downloaded" if export.downloaded else f"cached {export.covers}"
+                note = (
+                    f"  source: Green Button, {origin} "
+                    f"({len(readings)} intervals, {_short_path(export.path)})"
+                )
 
             period = (
                 BillingPeriod(args.start, args.end)

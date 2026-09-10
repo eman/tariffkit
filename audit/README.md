@@ -104,7 +104,7 @@ one row per cycle. Useful flags:
 |---|---|
 | `--verbose` | show agreeing lines too, not just failures |
 | `--json` | machine-readable output instead of the report |
-| `--green-button` | also download PG&E's own interval export and compare the two meters |
+| `--green-button` | also compare PG&E's own interval export, from `~/.cache/tariffkit/pge/green-button/` or downloaded once |
 | `--keep-statements` | leave the downloaded PDFs in `.cache/pge/statements/` |
 | `--read-hour N` | move the cycle boundary off midnight |
 
