@@ -288,6 +288,42 @@ def _export_csv(tmp_path: Path) -> Path:
     return path
 
 
+def test_account_periods_records_the_boundaries_for_anything_reading_the_account(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Only the CLI has portal credentials; the account is how they travel."""
+    _init_account(tmp_path, monkeypatch, effective="2025-01-01")
+    monkeypatch.setenv("PGE_USERNAME", "person@example.invalid")
+    monkeypatch.setenv("PGE_PASSWORD", "secret")
+    monkeypatch.setattr(
+        "tariffkit.sources.cached_bill_periods",
+        lambda *a, **k: [
+            BillingPeriod(date(2026, 6, 30), date(2026, 7, 28)),
+            BillingPeriod(date(2026, 7, 29), date(2026, 8, 27)),
+        ],
+    )
+    capsys.readouterr()
+
+    assert main(["account", "periods"]) == 0
+    assert "preview only" in capsys.readouterr().out
+    assert AccountStore(tmp_path).load().billing_periods == ()
+
+    assert main(["account", "periods", "--apply"]) == 0
+
+    stored = AccountStore(tmp_path).load().billing_periods
+    assert [(p.start, p.end) for p in stored] == [
+        (date(2026, 6, 30), date(2026, 7, 28)),
+        (date(2026, 7, 29), date(2026, 8, 27)),
+    ]
+    # And they leave with the export, which is the integration's import format.
+    capsys.readouterr()
+    assert main(["account", "export"]) == 0
+    assert json.loads(capsys.readouterr().out)["billing_periods"][-1] == {
+        "start": "2026-07-29",
+        "end": "2026-08-27",
+    }
+
+
 def test_account_show_answers_what_is_in_force_not_what_history_answers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

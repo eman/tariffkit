@@ -66,6 +66,30 @@ def statement_periods(profile: AccountProfile) -> tuple[BillingPeriod, ...]:
     return tuple(sorted(found, key=lambda period: period.start))
 
 
+def known_periods(profile: AccountProfile) -> tuple[BillingPeriod, ...]:
+    """Every boundary the account knows, with statements outranking the portal.
+
+    Two sources say where cycles fell and they answer slightly different
+    questions. A statement is one page, so a cycle whose service agreement
+    changed partway -- interconnecting solar does exactly this -- is one period
+    on it. The portal lists a bill per agreement, so the same cycle comes back
+    as two. Following the utility's own page is what a cycle-to-date figure has
+    to do, so where they overlap the statement wins.
+
+    The portal covers the rest, which is most of it: it lists three years
+    without a PDF to parse, and an account that has imported no statements at
+    all -- Home Assistant's, until someone pastes one in -- would otherwise be
+    guessing at a meter-read day.
+    """
+    statements = statement_periods(profile)
+    kept = [
+        period
+        for period in profile.billing_periods
+        if not any(period.start <= other.end and other.start <= period.end for other in statements)
+    ]
+    return tuple(sorted([*statements, *kept], key=lambda period: period.start))
+
+
 def _by_day_of_month(day: date, start_day: int) -> Cycle:
     """Fall back to a fixed meter-read day, or to the calendar month.
 

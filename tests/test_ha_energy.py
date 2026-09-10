@@ -48,10 +48,15 @@ EXPORT_ENTITY = "sensor.grid_energy_received"
 NOW = datetime(2026, 8, 24, 14, 30, tzinfo=PACIFIC)
 
 
-def _entry(options: dict[str, Any] | None = None) -> MockConfigEntry:
+def _entry(
+    options: dict[str, Any] | None = None,
+    *,
+    billing_periods: tuple[BillingPeriod, ...] = (),
+) -> MockConfigEntry:
     profile = AccountProfile(
         (AccountEpoch(date(1970, 1, 1), Config(tariff="E-ELEC", pto_date=date(2026, 1, 1))),),
         name="metered",
+        billing_periods=billing_periods,
     )
     return MockConfigEntry(
         domain=DOMAIN,
@@ -526,6 +531,33 @@ async def test_metered_energy_is_configured_only_after_setup(hass: HomeAssistant
     # And the options menu is where it does appear.
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert "meters" in result["menu_options"]
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_billing_periods_in_the_entry_beat_the_configured_read_day(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """The integration holds no portal credentials, so they arrive with the profile.
+
+    Imported through the options flow, they are the utility's own boundaries
+    without a statement PDF ever being parsed here -- and they beat the
+    meter-read day, which is only ever close.
+    """
+    freezer.move_to(NOW)
+    entry = _entry(
+        _meter_options(**{CONF_CYCLE_START_DAY: 30}),
+        billing_periods=(
+            BillingPeriod(date(2026, 6, 30), date(2026, 7, 28)),
+            BillingPeriod(date(2026, 7, 29), date(2026, 8, 27)),
+        ),
+    )
+    await _setup(hass, entry)
+
+    cycle = _state(hass, entry, "amount_due_cycle")
+    # NOW is 2026-08-24, inside the cycle that opened on the 29th of July. The
+    # read day would have said the 30th.
+    assert cycle.attributes["period_start"] == "2026-07-29"
+    assert cycle.attributes["cycle_boundary"] == "statement"
 
 
 @pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")

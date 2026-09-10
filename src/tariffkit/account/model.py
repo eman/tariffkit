@@ -9,6 +9,7 @@ from bisect import bisect_right
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from itertools import pairwise
 from typing import Self
 
 from ..billing import BillingPeriod
@@ -18,7 +19,11 @@ from ..models import Supplier
 from ..timeutil import to_pacific
 from .errors import AccountError
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
+#: Versions this can read. 1 predates ``billing_periods`` and is upgraded on
+#: load, because every account file and every Home Assistant config entry
+#: written before it is one.
+_READABLE_SCHEMAS = (1, 2)
 SCHEMA_VERSION = _SCHEMA_VERSION
 _DIGEST = re.compile(r"^[0-9a-fA-F]{64}$")
 _SAFE_TEXT = re.compile(r"^[^\x00-\x1f\x7f]+$")
@@ -473,6 +478,11 @@ class AccountProfile:
     observations: tuple[AccountObservation, ...] = ()
     _revision: str | None = field(default=None, repr=False, compare=False)
     meter_sources: MeterSources = field(default_factory=MeterSources)
+    #: The cycles the utility says it billed, oldest first. Boundaries without
+    #: the statements that print them: the portal will list its own, which is
+    #: how an account that has never imported a PDF -- Home Assistant's, which
+    #: holds no portal credentials -- can still price the cycle it is in.
+    billing_periods: tuple[BillingPeriod, ...] = ()
 
     def __post_init__(self) -> None:
         epochs = tuple(self.epochs)
@@ -488,6 +498,19 @@ class AccountProfile:
         object.__setattr__(self, "epochs", epochs)
         if self.name:
             self._validate_slug(self.name)
+        periods = tuple(self.billing_periods)
+        if any(not isinstance(period, BillingPeriod) for period in periods):
+            raise AccountError("account billing periods must be BillingPeriod values")
+        starts = tuple(period.start for period in periods)
+        if starts != tuple(sorted(starts)):
+            raise AccountError("account billing periods must be sorted")
+        for earlier, later in pairwise(periods):
+            if later.start <= earlier.end:
+                raise AccountError(
+                    f"account billing periods overlap: {earlier.start}..{earlier.end} "
+                    f"and {later.start}..{later.end}"
+                )
+        object.__setattr__(self, "billing_periods", periods)
         observations = tuple(self.observations)
         if any(not isinstance(observation, AccountObservation) for observation in observations):
             raise AccountError("profile observations must be AccountObservation values")
@@ -618,6 +641,10 @@ class AccountProfile:
             "epochs": [epoch.to_dict() for epoch in self.epochs],
             "observations": [observation.to_dict() for observation in self.observations],
             "meter_sources": self.meter_sources.to_dict(),
+            "billing_periods": [
+                {"start": period.start.isoformat(), "end": period.end.isoformat()}
+                for period in self.billing_periods
+            ],
         }
 
     def to_json(self) -> str:
@@ -638,11 +665,14 @@ class AccountProfile:
                 "epochs",
                 "observations",
                 "meter_sources",
+                "billing_periods",
             },
             "profile",
         )
         version = raw.get("schema_version")
-        if not isinstance(version, int) or isinstance(version, bool) or version != _SCHEMA_VERSION:
+        if not isinstance(version, int) or isinstance(version, bool):
+            raise AccountError(f"unsupported account profile schema_version {version!r}")
+        if version not in _READABLE_SCHEMAS:
             raise AccountError(f"unsupported account profile schema_version {version!r}")
         epochs_value = raw.get("epochs")
         if not isinstance(epochs_value, list):
@@ -669,11 +699,16 @@ class AccountProfile:
             meter_sources = MeterSources.from_dict(meter_sources_value)
         else:
             raise AccountError("profile meter_sources must be an object")
+        periods_value = raw.get("billing_periods", [])
+        if not isinstance(periods_value, list):
+            raise AccountError("profile billing_periods must be an array")
+        periods = tuple(_billing_period(value) for value in periods_value)
         return cls(
             epochs=epochs,
             name=_text(name, field_name="name", allow_empty=True),
             observations=observations,
             meter_sources=meter_sources,
+            billing_periods=periods,
         )
 
     @classmethod
@@ -691,6 +726,21 @@ class AccountProfile:
         if not isinstance(value, Mapping):
             raise AccountError("profile JSON must contain an object")
         return cls.from_dict(value)
+
+
+def _billing_period(value: object) -> BillingPeriod:
+    if not isinstance(value, Mapping):
+        raise AccountError("a billing period must be an object")
+    _check_keys(value, {"start", "end"}, "billing period")
+    start = _as_date(value.get("start"), field_name="billing period start")
+    end = _as_date(value.get("end"), field_name="billing period end")
+    try:
+        return BillingPeriod(start, end)
+    except ValueError as exc:
+        # `BillingPeriod` guards its own ordering, and raises what a value
+        # object raises. Reading a file is where that becomes an account
+        # problem, which is the exception every caller here is catching.
+        raise AccountError(f"a billing period ends before it starts: {start}..{end}") from exc
 
 
 def _check_keys(raw: Mapping[str, object], allowed: set[str], label: str) -> None:

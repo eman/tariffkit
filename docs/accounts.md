@@ -451,6 +451,7 @@ output instead of the human summary shown above.
 | `account update --effective DATE [field flags...] [--config PATH \| --config-json PATH] [--note TEXT] [--apply] [--json]` | Add or replace one dated snapshot. Field flags (`--tariff`, `--supplier`, `--interconnection-year`, `--pto-date`, `--vintage`, `--acc-plus-segment`, `--discount`, `--base-services-charge-tier`, `--baseline-territory`, `--baseline-code`, `--nsc-rate`, `--cca-json`) change only the named fields against the snapshot in force the day before; `--config`/`--config-json` replace the whole snapshot. |
 | `account import-statement PDF... [--apply] [--json]` | Parse local PDFs and reconcile their evidence. |
 | `account sync [--config PATH] [--since DATE] [--apply] [--keep-statements] [--json]` | Download portal statements since a date and reconcile them. |
+| `account periods [--apply] [--json]` | Read the cycle boundaries PG&E billed on from the portal and record them on the account. |
 | `account export [--output PATH] [--json]` | Print (or write, mode `0600`) the sanitized account JSON — the Home Assistant import format. |
 | `account source show {ha,influx} [--json]` | Show the grid-import/grid-export entities for one meter source. |
 | `account source set {ha,influx} --grid-import-entity ID --grid-export-entity ID [--apply] [--json]` | Preview or save a provider-neutral meter mapping. It is not effective-dated. |
@@ -508,8 +509,11 @@ Top-level shape:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "name": null,
+  "billing_periods": [
+    {"start": "2026-07-29", "end": "2026-08-27"}
+  ],
   "meter_sources": {
     "ha": {
       "grid_import_entity": "sensor.grid_import",
@@ -554,6 +558,13 @@ deliberately excludes.
 `name` is `null` from the CLI, which has one account and no name to give it;
 Home Assistant sets it, because a config entry needs something stable to be
 identified by.
+
+`billing_periods` is what `account periods` records: the cycles the utility
+says it billed, inclusive at both ends, sorted and non-overlapping. Boundaries
+without the statements that print them, so anything holding the account can
+price the cycle it is in without a PDF or portal credentials — which is exactly
+Home Assistant's situation. `schema_version` 1 files predate the field and are
+read unchanged; saving one writes 2.
 
 `meter_sources` is optional when reading older schema-1 files, so an account
 written before meter mappings existed migrates to empty source settings. New

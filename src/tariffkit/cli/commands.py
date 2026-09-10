@@ -96,6 +96,12 @@ def build_parser() -> argparse.ArgumentParser:
     account_sync.add_argument("--apply", action="store_true")
     account_sync.add_argument("--keep-statements", action="store_true")
     account_sync.add_argument("--json", action="store_true")
+    account_periods = account_commands.add_parser(
+        "periods", help="record the cycle boundaries the utility billed on"
+    )
+    account_periods.add_argument("--config", type=Path, default=argparse.SUPPRESS)
+    account_periods.add_argument("--apply", action="store_true")
+    account_periods.add_argument("--json", action="store_true")
     account_export = account_commands.add_parser(
         "export", help="export a sanitized copy of your account"
     )
@@ -596,17 +602,20 @@ def _known_periods(args: Any, profile: Any, *, refresh: bool = False) -> tuple[A
     Statements still count. An account may have imported them and have no
     credentials configured at all, and the two agree wherever they overlap.
     """
-    from ..billing import statement_periods
+    from ..billing import known_periods
     from ..sources import PgeSettings, cached_bill_periods
 
+    stored = known_periods(profile)
     try:
         settings: Any = PgeSettings.load(config_path=args.config)
     except TariffKitError:
         # No credentials is not an error here: a cached list still answers, and
-        # so does statement evidence.
+        # so does what the account already carries.
         settings = None
     portal = cached_bill_periods(settings, refresh=refresh)
-    return (portal, "portal") if portal else (statement_periods(profile), "statement")
+    if portal:
+        return portal, "portal"
+    return (stored, "statement") if stored else ((), "statement")
 
 
 #: How each boundary was arrived at, said plainly. The two guesses name what
@@ -723,6 +732,9 @@ def _run_account_command(args: Any) -> int:
     if command == "show":
         _print_account(profile, json_output=args.json)
         return 0
+
+    if command == "periods":
+        return _run_account_periods(args, store, profile)
 
     if command == "history":
         if args.json:
@@ -872,6 +884,48 @@ def _run_account_command(args: Any) -> int:
         return 0
 
     raise AssertionError(f"unhandled account command {command}")
+
+
+def _run_account_periods(args: Any, store: Any, profile: Any) -> int:
+    """Store the boundaries PG&E billed on, so anything reading the account has them.
+
+    The portal lists its own cycles and needs no PDF to do it, but only the CLI
+    has credentials for it. Writing them onto the account is what carries them
+    anywhere else the account goes -- `account export` into Home Assistant's
+    config entry, most of all, which is otherwise left guessing at a
+    meter-read day.
+    """
+    from dataclasses import replace
+
+    from ..sources import PgeSettings, cached_bill_periods
+
+    periods = cached_bill_periods(PgeSettings.load(config_path=args.config), refresh=True)
+    if not periods:
+        raise ConfigError("the portal listed no billing periods")
+    updated = replace(profile, billing_periods=tuple(periods))
+    if args.apply:
+        updated = store.save(updated, expected_revision=profile.revision)
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "billing_periods": [
+                        {"start": p.start.isoformat(), "end": p.end.isoformat()} for p in periods
+                    ],
+                    "applied": args.apply,
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    print(f"{_plural(len(periods), 'billing period')}, {periods[0].start} to {periods[-1].end}")
+    for period in periods[-3:]:
+        print(f"  {period.start} to {period.end}")
+    if not args.apply:
+        print("preview only; pass --apply to save")
+    return 0
 
 
 def _mqtt_settings(args: Any, *, from_account: bool) -> Any:

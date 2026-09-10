@@ -42,9 +42,9 @@ from tariffkit.billing import (
     LedgerEntry,
     LifetimeLedger,
     apply_credits,
+    known_periods,
     resolve_cycle,
     run_lifetime,
-    statement_periods,
 )
 from tariffkit.errors import TariffKitError
 from tariffkit.timeutil import PACIFIC
@@ -253,7 +253,7 @@ def cycles_between(
     the month. Where it has none the configured meter-read day carries it, which
     is the same fallback the running totals use.
     """
-    periods = statement_periods(profile)
+    periods = known_periods(profile)
     found: list[BillingPeriod] = []
     cursor = closes
     while cursor >= opens:
@@ -533,7 +533,7 @@ def _bank_warnings(
     pto = profile.pto_date
     if pto is None:
         return []
-    begins = resolve_cycle(pto, start_day, statement_periods(profile)).start
+    begins = resolve_cycle(pto, start_day, known_periods(profile)).start
     if opens <= begins:
         return []
     return [

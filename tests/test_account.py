@@ -491,3 +491,60 @@ class TestAccountStore:
 
         assert path.read_bytes() == original
         assert not tuple(path.parent.glob(".home.*.tmp"))
+
+
+class TestBillingPeriods:
+    """Boundaries the utility billed on, carried without the statements."""
+
+    @staticmethod
+    def _profile(periods: tuple[BillingPeriod, ...]) -> AccountProfile:
+        return AccountProfile((AccountEpoch(date(2026, 1, 1), Config()),), billing_periods=periods)
+
+    def test_they_survive_the_json_the_integration_imports(self) -> None:
+        periods = (
+            BillingPeriod(date(2026, 6, 30), date(2026, 7, 28)),
+            BillingPeriod(date(2026, 7, 29), date(2026, 8, 27)),
+        )
+        payload = self._profile(periods).to_dict()
+
+        assert payload["schema_version"] == 2
+        assert AccountProfile.from_dict(payload).billing_periods == periods
+
+    def test_an_account_written_before_they_existed_still_reads(self) -> None:
+        """Every account file and every config entry on disk is one of these."""
+        payload = self._profile(()).to_dict()
+        del payload["billing_periods"]
+        payload["schema_version"] = 1
+
+        assert AccountProfile.from_dict(payload).billing_periods == ()
+
+    def test_a_schema_from_the_future_is_still_refused(self) -> None:
+        payload = self._profile(()).to_dict()
+        payload["schema_version"] = 99
+
+        with pytest.raises(AccountError, match="schema_version"):
+            AccountProfile.from_dict(payload)
+
+    def test_periods_must_be_sorted_and_must_not_overlap(self) -> None:
+        """Overlapping cycles would make the one containing a day ambiguous."""
+        with pytest.raises(AccountError, match="sorted"):
+            self._profile(
+                (
+                    BillingPeriod(date(2026, 7, 29), date(2026, 8, 27)),
+                    BillingPeriod(date(2026, 6, 30), date(2026, 7, 28)),
+                )
+            )
+        with pytest.raises(AccountError, match="overlap"):
+            self._profile(
+                (
+                    BillingPeriod(date(2026, 6, 30), date(2026, 7, 29)),
+                    BillingPeriod(date(2026, 7, 29), date(2026, 8, 27)),
+                )
+            )
+
+    def test_a_period_that_ends_before_it_starts_is_refused(self) -> None:
+        payload = self._profile(()).to_dict()
+        payload["billing_periods"] = [{"start": "2026-08-27", "end": "2026-07-29"}]
+
+        with pytest.raises(AccountError, match="ends before it starts"):
+            AccountProfile.from_dict(payload)

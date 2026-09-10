@@ -13,7 +13,14 @@ import pytest
 
 from tariffkit.account import AccountEpoch, AccountProfile
 from tariffkit.account.model import AccountObservation, ObservedAgreement
-from tariffkit.billing import BillingPeriod, Cycle, cycle_start, resolve_cycle, statement_periods
+from tariffkit.billing import (
+    BillingPeriod,
+    Cycle,
+    cycle_start,
+    known_periods,
+    resolve_cycle,
+    statement_periods,
+)
 from tariffkit.config import Config
 
 
@@ -116,3 +123,62 @@ def test_statement_periods_follow_the_bill_not_the_agreement() -> None:
     (period,) = statement_periods(profile)
 
     assert (period.start, period.end) == (date(2026, 6, 1), date(2026, 6, 29))
+
+
+def _observed(period: BillingPeriod, *, tariff: str = "E-ELEC") -> AccountObservation:
+    return AccountObservation(
+        agreements=(
+            ObservedAgreement(
+                provider="pge",
+                statement_date=period.end,
+                period=period,
+                tariff=tariff,
+            ),
+        )
+    )
+
+
+class TestKnownPeriods:
+    """Two sources of boundaries, answering slightly different questions."""
+
+    @staticmethod
+    def _profile(**kwargs: object) -> AccountProfile:
+        return AccountProfile((AccountEpoch(date(2026, 1, 1), Config()),), **kwargs)  # type: ignore[arg-type]
+
+    def test_the_portal_fills_in_where_no_statement_was_imported(self) -> None:
+        """Which is the whole point: Home Assistant holds no portal credentials."""
+        profile = self._profile(
+            billing_periods=(
+                _period((2026, 6, 30), (2026, 7, 28)),
+                _period((2026, 7, 29), (2026, 8, 27)),
+            )
+        )
+
+        assert resolve_cycle(date(2026, 9, 9), 0, known_periods(profile)) == Cycle(
+            date(2026, 8, 28), "statement"
+        )
+
+    def test_a_statement_outranks_the_portal_where_they_overlap(self) -> None:
+        """A cycle split by interconnection is one page and two agreements.
+
+        The portal lists a bill per agreement, so it reports the June cycle
+        twice; the statement prints it once, and a cycle-to-date figure has to
+        follow the page that was billed.
+        """
+        profile = self._profile(
+            observations=(_observed(_period((2026, 6, 1), (2026, 6, 29))),),
+            billing_periods=(
+                _period((2026, 6, 1), (2026, 6, 2)),
+                _period((2026, 6, 3), (2026, 6, 29)),
+                _period((2026, 6, 30), (2026, 7, 28)),
+            ),
+        )
+
+        assert known_periods(profile) == (
+            _period((2026, 6, 1), (2026, 6, 29)),
+            _period((2026, 6, 30), (2026, 7, 28)),
+        )
+        assert resolve_cycle(date(2026, 6, 15), 0, known_periods(profile)).start == date(2026, 6, 1)
+
+    def test_neither_source_is_no_periods_rather_than_an_error(self) -> None:
+        assert known_periods(self._profile()) == ()

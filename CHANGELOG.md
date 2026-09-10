@@ -42,12 +42,13 @@ cycle-to-date. That is what most of this release is: a bank that was silently
 dropped now applies, and one folded across a warning is no longer discarded
 without a word.
 
-The integration does **not** gain the utility's own cycle boundaries described
-further down. Those come from the PG&E portal, and the integration holds no
-portal credentials by design; its boundaries still come from statement evidence
-in its profile, falling back to the configured meter-read day. Import statements
-with the CLI and re-import the profile through **Configure -> Import profile**
-to have the two agree exactly.
+The integration can now have the utility's own cycle boundaries, but they do
+not arrive on their own: it holds no portal credentials by design, so they
+travel with the profile. `tariffkit account periods --apply` records them and
+`account export` carries them into **Configure -> Account history -> Import
+profile**. Without the CLI they can be read off the portal's own bill-period
+dropdown and typed into the exported JSON -- see [Getting the billing periods
+in](docs/home-assistant.md#getting-the-billing-periods-in).
 
 #### One account, and everything it needs in one directory
 
@@ -299,6 +300,28 @@ today's question, so the same cycle is not re-downloaded every morning. A
 `tariffkit bill` that has already asked today costs no network at all.
 
 New in `tariffkit.sources.pge`: `available_reads` and `cached_available_reads`.
+
+#### The account carries the cycle boundaries it was billed on
+
+**Profile schema 1 -> 2.** `AccountProfile` gains `billing_periods`: the cycles
+the utility says it billed, inclusive at both ends, sorted and non-overlapping.
+Schema 1 files -- every account file and every Home Assistant config entry
+written so far -- are read unchanged and simply have none; saving writes 2.
+
+Boundaries without the statements that print them is the point. Only the CLI
+has portal credentials, and only a statement import previously produced exact
+cycles, which meant parsing PDFs. `tariffkit account periods --apply` now reads
+them from the portal and records them, and `account export` carries them
+wherever the account goes -- above all into Home Assistant, which holds no
+portal credentials by design and was otherwise left approximating with a
+meter-read day. They can also be typed in by hand from the portal's own
+bill-period dropdown; `docs/home-assistant.md` has that path.
+
+`known_periods(profile)` is what every cycle lookup now reads: statements where
+they exist, the portal's list for everything else. Where the two overlap the
+statement wins, because it is one page -- a cycle whose service agreement
+changed partway is one billing period on the statement and two entries in the
+portal's list, and a cycle-to-date figure has to follow what was billed.
 
 
 ### Fixed

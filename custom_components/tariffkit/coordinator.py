@@ -20,8 +20,8 @@ from tariffkit.billing import (
     BillingPeriod,
     CreditBalances,
     IntervalReading,
+    known_periods,
     resolve_cycle,
-    statement_periods,
 )
 from tariffkit.components import ComponentGroup
 from tariffkit.config import CcaConfig, Config, stored_bsc_tier
@@ -437,7 +437,7 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         self.engine = AccountRateEngine(self.profile)
         self.meters = MeterSettings.from_entry({**entry.data, **entry.options}, self.profile)
         self._usage = (
-            UsageReader(hass, self.meters, statement_periods(self.profile))
+            UsageReader(hass, self.meters, known_periods(self.profile))
             if self.meters.configured
             else None
         )
@@ -543,9 +543,7 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
             return None, None
         opens = max(
             min(
-                resolve_cycle(
-                    pto, self.meters.cycle_start_day, statement_periods(self.profile)
-                ).start,
+                resolve_cycle(pto, self.meters.cycle_start_day, known_periods(self.profile)).start,
                 metered.cycle.start,
             ),
             min(self.profile.effective_dates),
