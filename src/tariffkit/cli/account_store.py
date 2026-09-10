@@ -1,5 +1,11 @@
 """Private, versioned JSON storage for the account.
 
+This is the command line's own file, not the library's. Where a machine keeps
+the account, how it is locked, and who may read it are decisions an
+application makes; a library that made them would be reading ``~/.config`` the
+moment it was imported. Everything below the CLI is handed an
+:class:`~tariffkit.account.AccountProfile` instead.
+
 One account, in one file. There used to be a directory of named profiles and a
 way to select between them, which earned its complexity only for someone billing
 several service agreements under one login -- a landlord with rental units. For
@@ -26,13 +32,22 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, suppress
 from pathlib import Path
 
+from ..account import AccountError, AccountProfile
+from ..config import config_home
 from ..errors import TariffKitError
-from .errors import (
-    ProfileConflictError,
-    ProfileNotFoundError,
-    ProfileStorageError,
-)
-from .model import AccountProfile
+
+
+class ProfileNotFoundError(AccountError):
+    """No account has been set up."""
+
+
+class ProfileStorageError(AccountError):
+    """The account file is malformed or unsafe to use."""
+
+
+class ProfileConflictError(ProfileStorageError):
+    """The account changed after the caller read the revision being replaced."""
+
 
 _MODE_DIR = 0o700
 _MODE_FILE = 0o600
@@ -44,11 +59,6 @@ ACCOUNT_FILE = "account.json"
 
 #: Where named profiles used to live. Read once, to adopt one automatically.
 LEGACY_DIRECTORY = "accounts"
-
-
-def _config_home() -> Path:
-    value = os.environ.get("XDG_CONFIG_HOME")
-    return Path(value) if value else Path.home() / ".config"
 
 
 def _json_bytes(profile: AccountProfile) -> bytes:
@@ -76,10 +86,11 @@ def _revision(raw: bytes) -> str:
 class AccountStore:
     """Read and write the one account file, privately and atomically."""
 
-    def __init__(self, config_home: str | Path | None = None) -> None:
-        base = Path(config_home) if config_home is not None else _config_home()
-        self.directory = base / "tariffkit"
-        self._check_no_symlink_components(base)
+    def __init__(self, base_directory: str | Path | None = None) -> None:
+        self.directory = (
+            Path(base_directory) / "tariffkit" if base_directory is not None else config_home()
+        )
+        self._check_no_symlink_components(self.directory.parent)
         self._ensure_directory()
         self.path = self.directory / ACCOUNT_FILE
         self._check_no_symlink_components(self.path)

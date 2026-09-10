@@ -55,6 +55,43 @@ cycle that crossed a rate change at a single tariff. What is kept is the part
 that earns its keep: the dated history, because a bill prices with the settings
 in force over its own days.
 
+#### Reading the account file is the application's job, not the library's
+
+**Breaking, for embedders only.** `AccountStore` has moved out of the library
+into the command line, at `tariffkit.cli.AccountStore`. Nothing below the CLI
+opens a file to find an account any more: it is handed the
+`AccountProfile` it should price with.
+
+| was | now |
+| --- | --- |
+| `from tariffkit.account import AccountStore` | `from tariffkit.cli import AccountStore` |
+| `tariffkit.account.ProfileNotFoundError`, `ProfileStorageError`, `ProfileConflictError` | `tariffkit.cli.account_store.<same>` |
+| `tariffkit.account.ProfileNameError` | gone; there are no names left to be invalid |
+| `create_app(use_account=True, profile_repository=store)` | `create_app(profile=store.load())` |
+| `MqttPublisher(engine, settings, store=store)` | `MqttPublisher(engine, settings, profile=store.load())` |
+
+`AccountStore(base)` still takes an optional directory to keep its
+`tariffkit/` folder under, which is what the tests use; with no argument it is
+`$XDG_CONFIG_HOME/tariffkit` as before. The on-disk format has not changed, so
+there is nothing to migrate.
+
+Why: `tariffkit.web` and `tariffkit.mqtt` each reached into `~/.config` to load
+an account, which made the file a hidden input to a library call -- two
+processes given the same `Config` priced differently depending on what was on
+the machine that imported them, and an embedder that already held a profile (as
+Home Assistant does, in its config entry) still paid for the lookup. Where the
+account lives, how it is locked, and who may read it are decisions an
+application makes.
+
+**Home Assistant is unaffected.** It has always been handed a profile from its
+own config entry.
+
+#### The audit harness no longer takes `--account`
+
+`audit reconcile`, `audit run` and `audit doctor` accepted a profile name and
+then ignored it: there is one account. Passing one now fails as an unknown
+flag rather than silently auditing a different agreement from the one named.
+
 
 ### Fixed
 - **`tariffkit bill` uses your account profile without being asked.** With one

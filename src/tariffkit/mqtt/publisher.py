@@ -16,11 +16,7 @@ from time import monotonic
 from types import FrameType
 from typing import Any
 
-from ..account import (
-    AccountProfile,
-    AccountRateEngine,
-    AccountStore,
-)
+from ..account import AccountProfile, AccountRateEngine
 from ..components import EXPORT_GROUPS, IMPORT_GROUPS, split_components
 from ..config import default_config_path
 from ..engine import RateEngine
@@ -58,6 +54,8 @@ class MqttSettings:
     client_id: str = "tariffkit"
     tls: bool = False
     allow_insecure_auth: bool = False
+    #: Whether to price from the stored account. Recorded here, honoured by
+    #: the caller: this module never goes looking for one.
     account: bool = False
 
     def __post_init__(self) -> None:
@@ -125,10 +123,6 @@ class MqttSettings:
                     "TARIFFKIT_MQTT_ALLOW_INSECURE_AUTH must be a boolean "
                     "(true/false, yes/no, on/off, or 1/0)"
                 )
-        # Price from the stored account unless told otherwise. There is only
-        # one, so this is a switch rather than a name.
-        if "account" not in values:
-            values["account"] = AccountStore().exists()
         if not values.get("username"):
             values["username"] = get_secret("mqtt.username")
         if not values.get("password"):
@@ -170,14 +164,17 @@ class MqttPublisher:
         client: Any | None = None,
         *,
         profile: AccountProfile | None = None,
-        store: AccountStore | None = None,
     ) -> None:
-        if profile is not None:
-            self.engine: RateEngine | AccountRateEngine = AccountRateEngine(profile)
-        elif settings.account:
-            self.engine = AccountRateEngine((store or AccountStore()).load())
-        else:
-            self.engine = engine
+        """Publish from ``profile`` when given one, and from ``engine`` otherwise.
+
+        ``settings.account`` records what was asked for; honouring it means
+        having an account to honour it with, which is the caller's to find.
+        ``tariffkit mqtt`` resolves it once, for every command, and hands the
+        engine down already built.
+        """
+        self.engine: RateEngine | AccountRateEngine = (
+            AccountRateEngine(profile) if profile is not None else engine
+        )
         self.settings = settings
         self._stop = threading.Event()
         self._connected = threading.Event()

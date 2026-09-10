@@ -50,12 +50,22 @@ class TestParser:
         assert caught.value.code == 2
 
     def test_a_check_that_could_not_run_exits_two_not_one(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         # "I could not check" and "your numbers disagree" call for opposite
         # responses. An AuditError escaping to Python gives exit 1, which reads
         # as a billing discrepancy that was never actually found.
-        code = main(["reconcile", str(tmp_path / "nope.pdf"), "--account", "missing-profile"])
+        #
+        # The config home is redirected because this has to be the same answer
+        # on a machine that has an account as on one that does not: pointed at
+        # a real ~/.config, the run got past "no account" and failed later for
+        # an unrelated reason, and the test passed or failed by whose laptop it
+        # was on.
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+        code = main(["reconcile", str(tmp_path / "nope.pdf")])
         assert code == EXIT_ERROR
         assert code != EXIT_MISMATCH
         assert "error:" in capsys.readouterr().out

@@ -56,10 +56,6 @@ def build_parser() -> argparse.ArgumentParser:
     check = sub.add_parser("reconcile", help="compare computed bills against statements")
     check.add_argument("pdf", nargs="+", type=Path)
     check.add_argument(
-        "--account",
-        help="named managed account profile (or the configured default)",
-    )
-    check.add_argument(
         "--read-hour",
         type=int,
         default=0,
@@ -89,10 +85,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--since", type=_day, default=None, help="earliest statement date (YYYY-MM-DD)"
     )
     run.add_argument("--until", type=_day, default=None, help="latest statement date (YYYY-MM-DD)")
-    run.add_argument(
-        "--account",
-        help="named managed account profile (or the configured default)",
-    )
     run.add_argument("--read-hour", type=int, default=0)
     run.add_argument("--verbose", action="store_true", help="show agreeing lines too")
     run.add_argument("--json", action="store_true", help="machine-readable output")
@@ -122,10 +114,6 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser(
         "doctor", help="check everything an end-to-end run needs, before running it"
     )
-    doctor.add_argument(
-        "--account",
-        help="named managed account profile (or the configured default)",
-    )
     doctor.add_argument("--since", type=_day, default=None, help="oldest cycle you intend to price")
     doctor.add_argument(
         "--offline", action="store_true", help="skip the checks that contact the portal and meter"
@@ -154,7 +142,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "reconcile":
             return _reconcile(
                 args.pdf,
-                account=args.account,
                 read_hour=args.read_hour,
                 verbose=args.verbose,
                 as_json=args.json,
@@ -165,7 +152,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run(
                 since=args.since,
                 until=args.until,
-                account=args.account,
                 read_hour=args.read_hour,
                 verbose=args.verbose,
                 as_json=args.json,
@@ -174,7 +160,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 keep=args.keep_statements,
             )
         if args.command == "doctor":
-            return _doctor(account=args.account, since=args.since, offline=args.offline)
+            return _doctor(since=args.since, offline=args.offline)
     except (AuditError, TariffKitError) as exc:
         print(f"error: {exc}")
         return EXIT_ERROR
@@ -187,7 +173,6 @@ def _run(
     *,
     since: date | None,
     until: date | None,
-    account: str | None,
     read_hour: int,
     verbose: bool,
     as_json: bool,
@@ -232,7 +217,6 @@ def _run(
                 return EXIT_ERROR
             return _reconcile(
                 paths,
-                account=account,
                 read_hour=read_hour,
                 verbose=verbose,
                 as_json=as_json,
@@ -241,7 +225,7 @@ def _run(
             )
 
 
-def _doctor(*, account: str | None, since: date | None = None, offline: bool = False) -> int:
+def _doctor(*, since: date | None = None, offline: bool = False) -> int:
     """Report what an end-to-end run needs and what is missing.
 
     The first question after any failure is whether the session expired, the
@@ -261,7 +245,7 @@ def _doctor(*, account: str | None, since: date | None = None, offline: bool = F
     print()
 
     oldest = since or date.today() - timedelta(days=365)
-    checks = run_checks(account=account, oldest=oldest, contact=not offline)
+    checks = run_checks(oldest=oldest, contact=not offline)
     width = max(len(check.name) for check in checks)
     for check in checks:
         print(f"  {check.mark:>8}  {check.name:<{width}}  {check.detail}")
@@ -282,15 +266,14 @@ def _doctor(*, account: str | None, since: date | None = None, offline: bool = F
 def _reconcile(
     paths: Sequence[Path],
     *,
-    account: str | None,
     read_hour: int,
     verbose: bool,
     as_json: bool,
     green_button: bool = False,
     readings_from: str = "influx",
 ) -> int:
-    from tariffkit.account import AccountStore
     from tariffkit.billing.engine import compute_segments, price_segments
+    from tariffkit.cli import AccountStore
     from tariffkit.engine import RateEngine
     from tariffkit.providers.pge.statements import read_statement
     from tariffkit.sources.influx import InfluxSettings, read_counters

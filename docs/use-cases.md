@@ -45,11 +45,11 @@ change as an epoch, and `segments_for` turns a cycle into the blocks that cycle
 was actually governed by.
 
 ```python
-from tariffkit.account import NamedProfileRepository
 from tariffkit.billing import BillingPeriod
 from tariffkit.billing.engine import compute_segments
+from tariffkit.cli import AccountStore
 
-profile = NamedProfileRepository().load("home")
+profile = AccountStore().load()
 period = BillingPeriod(date(2026, 7, 29), date(2026, 8, 28))
 
 bill = compute_segments(profile.segments_for(period), readings)

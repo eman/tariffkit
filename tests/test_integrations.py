@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import json
 from datetime import date
-from pathlib import Path
 from typing import Any
 
 import pytest
 
 from tariffkit import Config, RateEngine
-from tariffkit.account import AccountEpoch, AccountProfile, AccountStore
+from tariffkit.account import AccountEpoch, AccountProfile
 from tariffkit.cli import main
 from tariffkit.components import EXPORT_GROUPS, IMPORT_GROUPS
 from tariffkit.mqtt.discovery import discovery_payloads
@@ -166,23 +165,22 @@ class TestWebApi:
         assert client.get("/v1/forecast", params={"hours": 0}).status_code == 422
         assert client.get("/v1/forecast", params={"hours": 10**6}).status_code == 422
 
-    def test_pricing_can_ask_for_the_account(self, tmp_path: Path) -> None:
+    def test_pricing_can_ask_for_the_account(self) -> None:
         from tariffkit.web import create_app
 
-        store = AccountStore(tmp_path)
-        store.save(AccountProfile((AccountEpoch(date(1970, 1, 1), Config(tariff="EV2-A")),)))
-        client = self._client(create_app(Config(), profile_repository=store))
+        profile = AccountProfile((AccountEpoch(date(1970, 1, 1), Config(tariff="EV2-A")),))
+        client = self._client(create_app(Config(), profile=profile))
 
         response = client.post("/v1/meta", json={"profile": True})
 
         assert response.status_code == 200
         assert response.json()["tariff"] == "EV2-A"
 
-    def test_asking_for_an_absent_account_does_not_disclose_storage(self, tmp_path: Path) -> None:
+    def test_asking_for_an_absent_account_does_not_disclose_storage(self) -> None:
+        """The server was given no account, and says nothing more than that."""
         from tariffkit.web import create_app
 
-        store = AccountStore(tmp_path)
-        client = self._client(create_app(Config(), profile_repository=store))
+        client = self._client(create_app(Config()))
 
         response = client.post("/v1/price/now", json={"profile": True})
 
@@ -196,25 +194,23 @@ class TestWebApi:
         assert client.post("/v1/price/now", json={"credentials": {}}).status_code == 422
         assert client.post("/v1/price/now", json={"pdf": "statement.pdf"}).status_code == 422
 
-    def test_profile_prehistory_is_a_typed_not_found(self, tmp_path: Path) -> None:
+    def test_profile_prehistory_is_a_typed_not_found(self) -> None:
         from tariffkit.web import create_app
 
-        store = AccountStore(tmp_path)
-        store.save(AccountProfile((AccountEpoch(date(2030, 1, 1), Config()),)))
-        client = self._client(create_app(use_account=True, profile_repository=store))
+        profile = AccountProfile((AccountEpoch(date(2030, 1, 1), Config()),))
+        client = self._client(create_app(profile=profile))
 
         response = client.get("/v1/price/at", params={"ts": "2026-09-15T19:00:00-07:00"})
 
         assert response.status_code == 404
         assert "before the first account epoch" in response.json()["detail"]
 
-    def test_server_uses_the_account_when_asked(self, tmp_path: Path) -> None:
-        """There is one account, so this is a switch rather than a name."""
+    def test_server_uses_the_account_when_asked(self) -> None:
+        """An account and no config: every route prices from the account."""
         from tariffkit.web import create_app
 
-        store = AccountStore(tmp_path)
-        store.save(AccountProfile((AccountEpoch(date(1970, 1, 1), Config(tariff="EV2-A")),)))
-        client = self._client(create_app(use_account=True, profile_repository=store))
+        profile = AccountProfile((AccountEpoch(date(1970, 1, 1), Config(tariff="EV2-A")),))
+        client = self._client(create_app(profile=profile))
 
         assert client.get("/v1/meta").json()["tariff"] == "EV2-A"
 

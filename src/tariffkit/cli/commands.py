@@ -11,20 +11,23 @@ import sys
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
-from . import __version__
-from .config import Config
-from .engine import RateEngine
-from .errors import ConfigError, TariffKitError
-from .models import PriceCurve, PricePoint
-from .secrets import (
+from .. import __version__
+from ..config import Config
+from ..engine import RateEngine
+from ..errors import ConfigError, TariffKitError
+from ..models import PriceCurve, PricePoint
+from ..secrets import (
     SECRET_NAMES,
     configured_secrets,
     delete_secret,
     set_secret,
 )
-from .timeutil import PACIFIC, to_pacific
+from ..timeutil import PACIFIC, to_pacific
+
+if TYPE_CHECKING:
+    from ..account import AccountProfile
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -306,7 +309,7 @@ def _print_banks(entry: Any, config: Any) -> None:
     before it, which is what ``run_ledger`` and the Home Assistant bank entity
     are for.
     """
-    from .models import Supplier
+    from ..models import Supplier
 
     if not (entry.earned.total or entry.opening.total):
         return
@@ -344,7 +347,7 @@ def _priced_as(config: Any, from_account: bool) -> str:
     their profile saw a single bank and no sign of why -- the arrangement lives
     in the account profile, and a plain config.toml says "bundled" by default.
     """
-    from .models import Supplier
+    from ..models import Supplier
 
     tariff = getattr(config, "tariff", "?")
     cca = getattr(config, "cca", None)
@@ -398,7 +401,7 @@ def _print_bill(bill: Any, config: Any = None, from_account: bool = False) -> No
     # Shown as the statement lays it out, because the point of the three lines
     # is that the third is not the first two subtracted: what the credit could
     # not reach is banked, not owed.
-    from .billing import apply_credits
+    from ..billing import apply_credits
 
     entry = apply_credits(bill)
     print(f"\n  {'gross charges':<34} {entry.gross_charges:>+9.2f}")
@@ -414,12 +417,12 @@ def _print_bill(bill: Any, config: Any = None, from_account: bool = False) -> No
 
 
 def _account_store() -> Any:
-    from .account import AccountStore
+    from .account_store import AccountStore
 
     return AccountStore()
 
 
-def _pricing_context(args: Any) -> tuple[Any, Config | None, bool, Any | None]:
+def _pricing_context(args: Any) -> tuple[Any, Config | None, AccountProfile | None]:
     """Price from the account where there is one, and from a Config otherwise.
 
     The account wins unless ``--config`` names a file explicitly, because a
@@ -427,18 +430,23 @@ def _pricing_context(args: Any) -> tuple[Any, Config | None, bool, Any | None]:
     account carries that history. A stateless Config remains the answer for
     someone who has not set an account up, and for anyone deliberately pricing a
     hypothetical.
+
+    Reading it happens once, here, and the profile is what every command below
+    is handed. Nothing further down goes looking for the file, so `serve` and
+    `mqtt` publish the same account this printed.
     """
-    from .account import AccountRateEngine
+    from ..account import AccountRateEngine
 
     store = _account_store()
     if getattr(args, "config", None) is None and store.exists():
-        return AccountRateEngine(store.load()), None, True, store
+        profile = store.load()
+        return AccountRateEngine(profile), None, profile
     config = Config.load(getattr(args, "config", None))
-    return RateEngine(config), config, False, None
+    return RateEngine(config), config, None
 
 
 def _print_profile(profile: Any, *, json_output: bool) -> None:
-    from .account.cli import profile_summary
+    from .account_commands import profile_summary
 
     if json_output:
         print(json.dumps(profile.to_dict(), indent=2, default=str))
@@ -466,7 +474,7 @@ def _print_skipped(skipped: Sequence[Mapping[str, str]]) -> None:
 
 
 def _run_account_command(args: Any) -> int:
-    from .account.cli import (
+    from .account_commands import (
         config_changes,
         import_statements,
         init_profile,
@@ -602,7 +610,7 @@ def _run_account_command(args: Any) -> int:
         return 0
 
     if command == "source":
-        from .account.cli import meter_source_summary, set_meter_source
+        from .account_commands import meter_source_summary, set_meter_source
 
         if args.source_command == "show":
             summary = meter_source_summary(profile, args.provider)
@@ -642,25 +650,18 @@ def _run_account_command(args: Any) -> int:
     raise AssertionError(f"unhandled account command {command}")
 
 
-def _mqtt_settings(args: Any, *, config: Config | None, from_account: bool) -> Any:
+def _mqtt_settings(args: Any, *, from_account: bool) -> Any:
     """Build MQTT settings, keeping ``--config``'s stateless choice authoritative.
 
-    ``MqttSettings.load`` independently falls back to a configured default
-    profile (from the config file's ``[account]`` table or the
-    ``TARIFFKIT_ACCOUNT``/``TARIFFKIT_PROFILE`` environment variables) whenever
-    it is not told a profile explicitly. That fallback is correct for callers
-    of ``MqttSettings.load`` directly, but here ``_pricing_context`` already
-    resolved precedence: a non-``None`` ``config`` means the caller chose
-    ``--config`` and no profile should apply, even if one is configured
-    elsewhere. ``profile=None`` is indistinguishable from "not specified" once
-    it reaches ``load``'s override handling, so that decision has to be
-    re-asserted here instead.
+    ``[mqtt].account`` in the config file can also ask to price from the
+    account, but ``_pricing_context`` has already resolved that precedence for
+    every command: a ``--config`` file was named, so nothing else applies. It
+    is passed as an explicit override because an override is what outranks the
+    file.
     """
-    from dataclasses import replace
+    from ..mqtt import MqttSettings
 
-    from .mqtt import MqttSettings
-
-    settings = MqttSettings.load(
+    return MqttSettings.load(
         config_path=args.config,
         broker=args.broker,
         port=args.port,
@@ -672,9 +673,6 @@ def _mqtt_settings(args: Any, *, config: Config | None, from_account: bool) -> A
         allow_insecure_auth=args.allow_insecure_auth,
         account=from_account,
     )
-    if config is not None and settings.account:
-        settings = replace(settings, account=False)
-    return settings
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -704,7 +702,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "account":
             return _run_account_command(args)
 
-        engine, config, from_account, profile_store = _pricing_context(args)
+        engine, config, account_profile = _pricing_context(args)
+        from_account = account_profile is not None
 
         if args.command == "now":
             point = engine.price_now()
@@ -731,20 +730,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "bill":
-            from .billing import BillEngine, BillingPeriod
-            from .sources import read_green_button
-
-            account_profile = None
-            if from_account:
-                from .account import AccountRateEngine
-
-                if not isinstance(engine, AccountRateEngine):
-                    raise AssertionError("selected account did not produce an account rate engine")
-                account_profile = engine.profile
+            from ..billing import BillEngine, BillingPeriod
+            from ..sources import read_green_button
 
             note = ""
             if args.source == "ha":
-                from .sources import HaSettings, describe_resolution, read_statistics
+                from ..sources import HaSettings, describe_resolution, read_statistics
 
                 if not (args.start and args.end):
                     raise ConfigError("--source ha requires --start and --end")
@@ -764,7 +755,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 note = f"  source: Home Assistant statistics ({describe_resolution(readings)})"
             elif args.source == "influx":
-                from .sources import InfluxSettings, describe_resolution, read_counters
+                from ..sources import InfluxSettings, describe_resolution, read_counters
 
                 if not (args.start and args.end):
                     raise ConfigError("--source influx requires --start and --end")
@@ -807,7 +798,7 @@ def main(argv: list[str] | None = None) -> int:
                 else BillingPeriod.from_readings(readings)
             )
             if from_account:
-                from .billing.engine import compute_segments
+                from ..billing.engine import compute_segments
 
                 assert account_profile is not None
                 result = compute_segments(
@@ -842,9 +833,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "mqtt":
-            from .mqtt import MqttPublisher
+            from ..mqtt import MqttPublisher
 
-            settings = _mqtt_settings(args, config=config, from_account=from_account)
+            settings = _mqtt_settings(args, from_account=from_account)
             publisher = MqttPublisher(engine, settings)
             if args.once:
                 publisher.connect()
@@ -859,13 +850,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "serve":
             import uvicorn
 
-            from .web import create_app
+            from ..web import create_app
 
             uvicorn.run(
                 create_app(
                     config,
-                    use_account=from_account,
-                    profile_repository=profile_store,
+                    profile=account_profile,
                     config_path=args.config,
                 ),
                 host=args.host,

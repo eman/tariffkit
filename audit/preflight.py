@@ -103,12 +103,12 @@ def _influx() -> Check:
 
 
 def _load_profile() -> AccountProfile:
-    from tariffkit.account import AccountStore
+    from tariffkit.cli import AccountStore
 
     return AccountStore().load()
 
 
-def _account(account: str | None) -> Check:
+def _account() -> Check:
     try:
         profile = _load_profile()
     except Exception as exc:
@@ -131,7 +131,7 @@ def _recognition() -> Check:
     )
 
 
-def _rate_data(account: str | None, oldest: date) -> Check:
+def _rate_data(oldest: date) -> Check:
     """Whether every schedule the account was on can be priced back to ``oldest``.
 
     Checking one dataset was not enough. The tax vintage spans the whole window
@@ -181,7 +181,7 @@ def _slug(tariff: str) -> str:
     return tariff.lower().replace("-", "")
 
 
-def _cca_card(account: str | None, oldest: date) -> Check:
+def _cca_card(oldest: date) -> Check:
     """Whether the vendored CCA rate card is anywhere near the cycles priced.
 
     Its own check because it is not an error and cannot be fixed by vendoring
@@ -216,14 +216,14 @@ def _cca_card(account: str | None, oldest: date) -> Check:
     return Check("CCA rate card", True, "current for the window")
 
 
-def run_checks(*, account: str | None, oldest: date, contact: bool = True) -> list[Check]:
+def run_checks(*, oldest: date, contact: bool = True) -> list[Check]:
     """Every prerequisite, in the order a run needs them."""
     checks = [
         _credentials(),
-        _account(account),
+        _account(),
         _recognition(),
-        _rate_data(account, oldest),
-        _cca_card(account, oldest),
+        _rate_data(oldest),
+        _cca_card(oldest),
     ]
     if contact:
         # Ordered after the local checks so a missing .env is reported without

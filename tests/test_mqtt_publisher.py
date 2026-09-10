@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from tariffkit import CcaConfig, Config, RateEngine, Supplier
-from tariffkit.account import AccountEpoch, AccountProfile, AccountStore
+from tariffkit.account import AccountEpoch, AccountProfile
 from tariffkit.components import EXPORT_GROUPS, IMPORT_GROUPS
 from tariffkit.errors import ConfigError, PublishError
 from tariffkit.mqtt.publisher import OFFLINE, ONLINE, MqttPublisher, MqttSettings
@@ -343,15 +343,14 @@ def test_custom_topic_prefix() -> None:
     assert "energy/pge/import_price" in client_of(publisher).topics()
 
 
-def test_the_account_drives_active_rates(tmp_path: Path) -> None:
-    store = AccountStore(tmp_path)
-    store.save(AccountProfile((AccountEpoch(date(1970, 1, 1), Config(tariff="EV2-A")),)))
-    settings = MqttSettings(broker="broker.local", account=True)
+def test_the_account_drives_active_rates() -> None:
+    """The caller loads the account; the publisher is handed it."""
+    profile = AccountProfile((AccountEpoch(date(1970, 1, 1), Config(tariff="EV2-A")),))
     publisher = MqttPublisher(
         RateEngine(Config()),
-        settings,
+        MqttSettings(broker="broker.local", account=True),
         client=FakeClient(),
-        store=store,
+        profile=profile,
     )
 
     publisher.publish_now(datetime(2026, 9, 15, 19, tzinfo=PACIFIC))

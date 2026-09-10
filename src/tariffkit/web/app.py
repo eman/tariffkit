@@ -10,12 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..account import (
-    AccountError,
-    AccountRateEngine,
-    AccountStore,
-    ProfileNotFoundError,
-)
+from ..account import AccountError, AccountProfile, AccountRateEngine
 from ..config import Config
 from ..engine import RateEngine
 from ..errors import ConfigError, DataError, OutOfRangeError
@@ -30,10 +25,20 @@ _PROFILE_UNAVAILABLE = "profile unavailable"
 def create_app(
     config: Config | None = None,
     *,
-    use_account: bool = False,
-    profile_repository: AccountStore | None = None,
+    profile: AccountProfile | None = None,
     config_path: str | Path | None = None,
 ) -> FastAPI:
+    """Serve prices from ``profile`` when given one, and from ``config`` otherwise.
+
+    The account arrives already loaded. Finding and reading it is the caller's
+    job -- ``tariffkit serve`` does it, and an embedder that holds a profile
+    already has nothing to find -- so nothing here goes looking for a file, and
+    a request for an account this server was not given is a plain 404 rather
+    than a report on what does or does not exist on disk.
+
+    Passing both prices the unqualified routes from ``config`` while leaving
+    the account available to a request that asks for it.
+    """
     try:
         from fastapi import Body, FastAPI, HTTPException, Query
     except ImportError as exc:  # pragma: no cover - exercised by packaging
@@ -41,20 +46,19 @@ def create_app(
             "web support requires the 'web' extra: pip install 'tariffkit[web]'"
         ) from exc
 
-    def load_account() -> AccountRateEngine:
-        store = profile_repository or AccountStore()
-        try:
-            return AccountRateEngine(store.load())
-        except ProfileNotFoundError as exc:
-            # Do not reveal whether a profile exists, nor details from its
-            # managed file, through a request-facing error.
-            raise HTTPException(404, _PROFILE_UNAVAILABLE) from exc
-        except AccountError as exc:
-            raise HTTPException(404, _PROFILE_UNAVAILABLE) from exc
+    def account_engine() -> AccountRateEngine:
+        if profile is None:
+            # Do not reveal whether an account exists anywhere, nor anything
+            # from it, through a request-facing error.
+            raise HTTPException(404, _PROFILE_UNAVAILABLE)
+        return AccountRateEngine(profile)
 
-    from_account = use_account or (config is None and AccountStore().exists())
+    # An explicit ``config`` still wins for requests that ask for nothing in
+    # particular: passing both means "serve this, and let a client ask for the
+    # account by name when it wants the dated history instead".
+    from_account = profile is not None and config is None
     engine: RateEngine | AccountRateEngine = (
-        load_account() if from_account else RateEngine(config or Config.load(config_path))
+        account_engine() if from_account else RateEngine(config or Config.load(config_path))
     )
 
     def request_engine(
@@ -71,7 +75,7 @@ def create_app(
         if raw is not None and wants_account:
             raise HTTPException(422, "choose either config or the account")
         if wants_account:
-            return load_account()
+            return account_engine()
         if raw is None:
             if from_account:
                 return engine

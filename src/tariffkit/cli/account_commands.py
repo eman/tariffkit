@@ -1,9 +1,9 @@
-"""Account-profile operations used by the command line interface.
+"""Account operations used by the command line interface.
 
-The account model and repository deliberately know nothing about argparse or
-PG&E.  This module is the narrow CLI boundary: it performs migrations,
-statement reconciliation, and portal synchronization while keeping all
-persisted and printed values sanitized by the public account model.
+The account model deliberately knows nothing about argparse or PG&E.  This
+module is the narrow CLI boundary: it performs migrations, statement
+reconciliation, and portal synchronization while keeping all persisted and
+printed values sanitized by the public account model.
 """
 
 from __future__ import annotations
@@ -19,11 +19,17 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from ..account import (
+    AccountEpoch,
+    AccountError,
+    AccountObservation,
+    AccountProfile,
+    MeterSource,
+    MeterSources,
+)
 from ..config import Config
 from ..errors import ConfigError
-from .errors import AccountError
-from .model import AccountEpoch, AccountObservation, AccountProfile, MeterSource, MeterSources
-from .repository import AccountStore
+from .account_store import AccountStore
 
 
 def read_config_json(path: Path) -> Config:

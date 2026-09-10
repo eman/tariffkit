@@ -13,14 +13,14 @@ from tariffkit.account import (
     AccountEpoch,
     AccountObservation,
     AccountProfile,
-    AccountStore,
     MeterSource,
     MeterSources,
     ObservedAgreement,
 )
-from tariffkit.account.cli import migrate_existing, sync_profile
 from tariffkit.billing import BillingPeriod, IntervalReading
-from tariffkit.cli import _mqtt_settings, build_parser, main
+from tariffkit.cli.account_commands import migrate_existing, sync_profile
+from tariffkit.cli.account_store import AccountStore
+from tariffkit.cli.commands import _mqtt_settings, build_parser, main
 from tariffkit.config import Config
 from tariffkit.errors import ConfigError
 from tariffkit.models import Supplier
@@ -441,6 +441,6 @@ def test_mqtt_cli_accepts_insecure_auth_escape_hatch() -> None:
         ["mqtt", "--broker", "broker.local", "--username", "user", "--allow-insecure-auth"]
     )
 
-    settings = _mqtt_settings(args, config=None, from_account=False)
+    settings = _mqtt_settings(args, from_account=False)
 
     assert settings.allow_insecure_auth is True

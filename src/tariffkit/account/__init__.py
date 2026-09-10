@@ -1,12 +1,13 @@
-"""Public account profiles and secure named-profile persistence."""
+"""The account: what an agreement was, and when.
 
-from .errors import (
-    AccountError,
-    ProfileConflictError,
-    ProfileNameError,
-    ProfileNotFoundError,
-    ProfileStorageError,
-)
+A profile is a dated history of :class:`~tariffkit.config.Config` snapshots
+plus what the utility's own statements said, so a bill prices with the settings
+in force over its own days. Reading and writing one is the caller's business --
+the command line keeps a file, Home Assistant keeps a config entry -- so this
+package never touches a disk.
+"""
+
+from .errors import AccountError
 from .model import (
     SCHEMA_VERSION,
     AccountEpoch,
@@ -18,7 +19,6 @@ from .model import (
     mask_account_digits,
 )
 from .rates import AccountRateEngine
-from .repository import AccountStore
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -27,13 +27,8 @@ __all__ = [
     "AccountObservation",
     "AccountProfile",
     "AccountRateEngine",
-    "AccountStore",
     "MeterSource",
     "MeterSources",
     "ObservedAgreement",
-    "ProfileConflictError",
-    "ProfileNameError",
-    "ProfileNotFoundError",
-    "ProfileStorageError",
     "mask_account_digits",
 ]

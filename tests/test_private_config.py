@@ -88,9 +88,9 @@ def test_cli_prompts_instead_of_accepting_secret_on_argv(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     stored: list[tuple[str, str]] = []
-    monkeypatch.setattr("tariffkit.cli.getpass.getpass", lambda prompt: "hidden")
+    monkeypatch.setattr("tariffkit.cli.commands.getpass.getpass", lambda prompt: "hidden")
     monkeypatch.setattr(
-        "tariffkit.cli.set_secret", lambda name, value: stored.append((name, value))
+        "tariffkit.cli.commands.set_secret", lambda name, value: stored.append((name, value))
     )
 
     assert main(["credentials", "set", "pge.password"]) == 0
