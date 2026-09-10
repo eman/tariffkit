@@ -65,9 +65,10 @@ shell history. macOS Keychain, Windows Credential Locker, and the configured
 Linux Secret Service backend provide storage. Containers and unattended
 services can continue to inject environment variables instead.
 
-Secret precedence is: explicit library/CLI value, environment (including a
-working-directory `.env` for compatibility), then OS keyring. Non-secret
-settings use: defaults, `config.toml`, environment, then explicit arguments.
+Secret precedence is: explicit library/CLI value, real environment variables,
+`~/.config/tariffkit/.env`, then the OS keyring. Non-secret settings use:
+defaults, `config.toml`, environment, then explicit arguments.
+`tariffkit credentials list` prints where each one is actually resolving from.
 
 ### PG&E portal access
 
@@ -259,13 +260,13 @@ section is only needed to point elsewhere. Note the defaults are the
 `sensor.eagle_100_total_energy_delivered` is the raw device feed and drops to
 zero several times a day when the meter session restarts.
 
-The access token can come from the OS keyring, `.env` in the working directory,
-or the environment.
+The access token can come from the OS keyring, `~/.config/tariffkit/.env`, or
+the environment.
 The file is not shell — spaces around `=` and quoted values are fine, and are
 what the parser expects:
 
 ```ini
-# .env
+# ~/.config/tariffkit/.env
 HA_HOST = "https://homeassistant.example:8123"
 HA_TOKEN = "<long-lived access token>"
 ```
@@ -322,7 +323,7 @@ defaults to `sensor_numeric`, which is what Home Assistant's InfluxDB
 integration writes.
 
 ```ini
-# .env
+# ~/.config/tariffkit/.env
 INFLUXDB3_HOST = "influxdb.example"
 INFLUXDB3_DATABASE = "homedb"
 INFLUXDB3_AUTH_TOKEN = "<database token>"

@@ -22,7 +22,7 @@ from tariffkit.account import (
 from tariffkit.billing import BillingPeriod, IntervalReading
 from tariffkit.cli.account_commands import migrate_existing, sync_profile
 from tariffkit.cli.account_store import AccountStore
-from tariffkit.cli.commands import _mqtt_settings, build_parser, main
+from tariffkit.cli.commands import _merged_periods, _mqtt_settings, build_parser, main
 from tariffkit.config import Config
 from tariffkit.errors import ConfigError
 from tariffkit.models import Supplier
@@ -286,6 +286,43 @@ def _export_csv(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def test_portal_periods_do_not_overrule_a_statement_that_covers_the_same_days() -> None:
+    """The portal lists a bill per agreement; a statement is one page.
+
+    Taking its list wholesale opened a cycle split by interconnection on the
+    day the second agreement began, disagreeing with the statement and with
+    what the integration reports for the same account.
+    """
+    statements = [BillingPeriod(date(2026, 6, 1), date(2026, 6, 29))]
+    portal = [
+        BillingPeriod(date(2026, 6, 1), date(2026, 6, 2)),
+        BillingPeriod(date(2026, 6, 3), date(2026, 6, 29)),
+        BillingPeriod(date(2026, 6, 30), date(2026, 7, 28)),
+    ]
+
+    merged = _merged_periods(statements, portal)
+
+    assert [(p.start, p.end) for p in merged] == [
+        (date(2026, 6, 1), date(2026, 6, 29)),
+        (date(2026, 6, 30), date(2026, 7, 28)),
+    ]
+
+
+def test_a_csv_path_with_another_source_still_resolves_a_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--source ha` ignores the CSV, so it still needs a period, not an assertion."""
+    _account_with_statement(tmp_path, monkeypatch)
+    csv = _export_csv(tmp_path)
+
+    # It fails on the missing Home Assistant host, which is a configuration
+    # error and reported as one -- not on an assertion about the window.
+    code = main(["bill", str(csv), "--source", "ha"])
+
+    assert code == 1
+    assert "error:" in capsys.readouterr().err
 
 
 def test_account_periods_records_the_boundaries_for_anything_reading_the_account(

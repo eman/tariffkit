@@ -87,11 +87,19 @@ class AccountStore:
     """Read and write the one account file, privately and atomically."""
 
     def __init__(self, base_directory: str | Path | None = None) -> None:
+        """Resolve the paths. Creating anything waits until something is written.
+
+        Constructing this used to `mkdir` and `chmod` the configuration
+        directory, which made merely asking whether an account exists a write:
+        every `now`, `forecast`, `bill`, `mqtt` and `serve` created and
+        tightened a directory it might never read, and on a read-only mount --
+        which is how the container documentation says to run `serve` -- the
+        chmod failed at startup.
+        """
         self.directory = (
             Path(base_directory) / "tariffkit" if base_directory is not None else config_home()
         )
         self._check_no_symlink_components(self.directory.parent)
-        self._ensure_directory()
         self.path = self.directory / ACCOUNT_FILE
         self._check_no_symlink_components(self.path)
 
@@ -107,9 +115,18 @@ class AccountStore:
                 break
 
     def _ensure_directory(self) -> None:
-        self.directory.mkdir(mode=_MODE_DIR, parents=True, exist_ok=True)
-        self._check_no_symlink_components(self.directory)
-        self.directory.chmod(_MODE_DIR)
+        """Create the directory, privately, on the way to writing in it."""
+        try:
+            self.directory.mkdir(mode=_MODE_DIR, parents=True, exist_ok=True)
+            self._check_no_symlink_components(self.directory)
+            self.directory.chmod(_MODE_DIR)
+        except OSError as exc:
+            # An unwritable or read-only configuration root is a thing to
+            # report, not a traceback: `main` turns a TariffKitError into
+            # "error: ..." and exit 1, and lets everything else through.
+            raise ProfileStorageError(
+                f"could not create the account directory {self.directory}: {exc}"
+            ) from exc
 
     def _check_private_directory(self) -> None:
         if self.directory.is_symlink() or not self.directory.is_dir():
@@ -121,12 +138,18 @@ class AccountStore:
 
     def exists(self) -> bool:
         """Whether an account has been set up, adopting a legacy profile if one fits."""
+        if not self.directory.exists():
+            return False
         self._check_private_directory()
         if self.path.is_file():
             return True
         return self._adopt_legacy() is not None
 
     def load(self) -> AccountProfile:
+        if not self.directory.exists():
+            raise ProfileNotFoundError(
+                "no account has been set up; run 'tariffkit account init' to create one"
+            )
         self._check_private_directory()
         if not self.path.exists() and self._adopt_legacy() is None:
             raise ProfileNotFoundError(
@@ -162,6 +185,7 @@ class AccountStore:
         expected_revision: str | None = None,
     ) -> AccountProfile:
         """Atomically save a validated account with optimistic concurrency."""
+        self._ensure_directory()
         self._check_private_directory()
         replacement = _json_bytes(profile)
         with self._account_lock():
@@ -225,7 +249,8 @@ class AccountStore:
         found = sorted(p for p in legacy.glob("*.json") if p.is_file() and not p.is_symlink())
         if len(found) != 1:
             return None
-        with suppress(OSError):
+        temporary: Path | None = None
+        try:
             raw = found[0].read_bytes()
             fd, temporary_name = tempfile.mkstemp(
                 prefix=".account.", suffix=".tmp", dir=self.directory
@@ -240,7 +265,15 @@ class AccountStore:
             self.path.chmod(_MODE_FILE)
             self._fsync_directory()
             return self.path
-        return None
+        except OSError:
+            # Adoption is a convenience; failing it is not worth failing a
+            # command over. The temporary goes either way, or every retry
+            # leaves another one behind.
+            return None
+        finally:
+            if temporary is not None:
+                with suppress(OSError):
+                    temporary.unlink()
 
     @contextmanager
     def _account_lock(self) -> Iterator[None]:

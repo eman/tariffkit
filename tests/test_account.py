@@ -404,10 +404,33 @@ class TestAccountStore:
         config_home.mkdir(mode=0o755)
         config_home.chmod(0o755)
 
-        AccountStore(config_home)
+        AccountStore(config_home).save(profile())
 
         assert stat.S_IMODE(config_home.stat().st_mode) == 0o755
         assert stat.S_IMODE((config_home / "tariffkit").stat().st_mode) == 0o700
+
+    def test_constructing_it_writes_nothing(self, tmp_path: Path) -> None:
+        """Asking whether an account exists must not be a write.
+
+        Every priced command builds one, `--config` or not, and on the
+        read-only configuration mount the container documentation describes
+        creating and chmod-ing a directory fails at startup.
+        """
+        store = AccountStore(tmp_path)
+
+        assert not (tmp_path / "tariffkit").exists()
+        assert store.exists() is False
+
+    def test_an_unwritable_configuration_root_is_reported_not_raised(self, tmp_path: Path) -> None:
+        """`main` turns an account error into `error: ...`; an OSError is a traceback."""
+        root = tmp_path / "read-only"
+        root.mkdir()
+        root.chmod(0o500)
+        try:
+            with pytest.raises(ProfileStorageError, match="could not create"):
+                AccountStore(root).save(profile())
+        finally:
+            root.chmod(0o700)
 
     def test_concurrent_writers_cannot_both_replace_one_revision(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -449,6 +472,7 @@ class TestAccountStore:
 
     def test_rejects_traversal_symlinks_and_corrupt_schema(self, tmp_path: Path) -> None:
         store = AccountStore(tmp_path)
+        (tmp_path / "tariffkit").mkdir(mode=0o700)
         # There is no name to traverse with any more -- the path is fixed -- so
         # what is left to refuse is a symlink standing in for the account file.
         target = tmp_path / "outside.json"

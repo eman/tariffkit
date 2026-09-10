@@ -323,17 +323,6 @@ class LedgerEntry:
         }
 
 
-def _spent_offsets(bill: Bill, unspent: dict[CreditBucket, float]) -> CreditBalances:
-    """In-cycle offsets less the part that overran its bucket and banked."""
-    gross = in_cycle_offsets(bill)
-    return CreditBalances(
-        generation=max(0.0, gross.generation - unspent[CreditBucket.GENERATION]),
-        delivery=max(0.0, gross.delivery - unspent[CreditBucket.DELIVERY]),
-        bonus=max(0.0, gross.bonus - unspent[CreditBucket.BONUS]),
-        cca_bonus=max(0.0, gross.cca_bonus - unspent[CreditBucket.CCA_BONUS]),
-    )
-
-
 def in_cycle_offsets(bill: Bill) -> CreditBalances:
     """Export credits the statement spends this cycle rather than banking.
 
@@ -375,10 +364,8 @@ def credits_earned(bill: Bill) -> CreditBalances:
     )
 
 
-def charges_by_bucket(
-    bill: Bill,
-) -> tuple[dict[CreditBucket, float], float, dict[CreditBucket, float]]:
-    """``({bucket: offsettable charges}, non-offsettable charges, {bucket: unspent})``.
+def charges_by_bucket(bill: Bill) -> tuple[dict[CreditBucket, float], float]:
+    """``({bucket: offsettable charges}, non-offsettable charges)``.
 
     A component that nets out negative -- ``cca_cost_relief_credit``, or the
     recovery bond credit -- reduces its bucket rather than creating charge to
@@ -429,8 +416,7 @@ def charges_by_bucket(
     # question was never asked. This is the cycle ``SCOPING_VERIFIED`` was
     # waiting for -- credits exceeding the charges they may offset, with the
     # leftover finally visible -- and the leftover is spent, not saved.
-    unspent: dict[CreditBucket, float] = dict.fromkeys(CreditBucket, 0.0)
-    return offsettable, non_offsettable, unspent
+    return offsettable, non_offsettable
 
 
 def apply_credits(bill: Bill, opening: CreditBalances | None = None) -> LedgerEntry:
@@ -442,14 +428,8 @@ def apply_credits(bill: Bill, opening: CreditBalances | None = None) -> LedgerEn
     one could have covered, and strand the scoped credit.
     """
     opening = opening or CreditBalances()
-    offsettable, non_offsettable, unspent = charges_by_bucket(bill)
-
-    # An in-cycle offset larger than the charges it was meant to cover banks the
-    # remainder rather than being lost or turned into cash owed.
+    offsettable, non_offsettable = charges_by_bucket(bill)
     earned = credits_earned(bill)
-    for bucket, value in unspent.items():
-        if value:
-            earned = earned.with_bucket(bucket, earned[bucket] + value)
 
     available = CreditBalances(
         generation=opening.generation + earned.generation,
@@ -520,7 +500,7 @@ def apply_credits(bill: Bill, opening: CreditBalances | None = None) -> LedgerEn
         # the clamp above, so carrying the gross figure here would let the
         # annual reversal count that excess twice -- and it exceeds the charges
         # precisely in the heavy-export months that produce a surplus true-up.
-        in_cycle_offsets=_spent_offsets(bill, unspent),
+        in_cycle_offsets=in_cycle_offsets(bill),
     )
 
 

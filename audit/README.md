@@ -50,7 +50,9 @@ Statements are never committed. Point `TARIFFKIT_STATEMENT_DIR` at wherever
 yours already are, or let downloads land in `.cache/pge/statements/`. `*.pdf` is
 gitignored.
 
-Interval data comes from InfluxDB via `INFLUXDB3_*` in `.env`.
+Interval data comes from InfluxDB via `INFLUXDB3_*` in
+`~/.config/tariffkit/.env`, or the real environment. A repository `.env` is no
+longer read: what a command saw used to depend on the directory it ran from.
 
 ## Exit codes
 

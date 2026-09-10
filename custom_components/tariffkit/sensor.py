@@ -547,7 +547,7 @@ def _bucket_charges(bucket: CreditBucket) -> Reading:
 
     def read(bill: Bill, entry: LedgerEntry) -> float:
         del entry
-        offsettable, _, _ = charges_by_bucket(bill)
+        offsettable, _ = charges_by_bucket(bill)
         return offsettable[bucket]
 
     return read

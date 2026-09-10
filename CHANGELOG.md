@@ -248,6 +248,11 @@ prints it.
 The Green Button cache drops ranges a new download wholly contains, so billing
 an open cycle daily leaves one file rather than one a day.
 
+`tariffkit bill FILE --source ha` no longer fails an assertion. A CSV path
+names its own window only for the source that reads a CSV; every other source
+is asked for a period, and had been reaching `assert period is not None` --
+a traceback on a user error, and an `AttributeError` under `python -O`.
+
 #### The cycle boundary comes from PG&E, not from a guess
 
 The portal knows exactly when every cycle it billed opened and closed, and will
@@ -322,6 +327,21 @@ they exist, the portal's list for everything else. Where the two overlap the
 statement wins, because it is one page -- a cycle whose service agreement
 changed partway is one billing period on the statement and two entries in the
 portal's list, and a cycle-to-date figure has to follow what was billed.
+
+#### Reading the account no longer writes to the configuration directory
+
+Constructing `AccountStore` created and `chmod`-ed `$XDG_CONFIG_HOME/tariffkit`,
+so merely asking whether an account exists was a write -- on every `now`,
+`forecast`, `bill`, `mqtt` and `serve`, and even with `--config` naming a file
+somewhere else entirely. On a read-only configuration mount, which is how
+`docs/containers.md` says to run `serve`, the chmod failed at startup, and it
+failed as a raw `PermissionError` traceback rather than as `error: ...` and
+exit 1.
+
+Nothing is created until something is written, `--config` short-circuits the
+account lookup entirely, and a directory that cannot be created is reported.
+The legacy-profile adoption path no longer leaves its temporary file behind
+when the write fails partway.
 
 
 ### Fixed

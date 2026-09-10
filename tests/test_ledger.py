@@ -121,7 +121,7 @@ class TestPgeBank:
         associated with the ACC plus adder may be used to offset any charges
         incurred by the customer."
         """
-        offsettable, non_offsettable, _ = charges_by_bucket(pge_bill())
+        offsettable, non_offsettable = charges_by_bucket(pge_bill())
         nbcs_and_more = 0.24 + 0.23 + 0.01 + 1.39 + 0.02
         # They used to sit outside every bucket, payable in cash.
         assert non_offsettable == pytest.approx(0.0)
@@ -135,7 +135,7 @@ class TestPgeBank:
         # alone leave room for $0.92, and PG&E's wording is that the bonus
         # offsets anything not explicitly non-bypassable. A daily charge for
         # grid access is not that.
-        offsettable, non_offsettable, _ = charges_by_bucket(pge_bill())
+        offsettable, non_offsettable = charges_by_bucket(pge_bill())
         assert offsettable[CreditBucket.BONUS] >= 23.01
         assert non_offsettable < 23.01
 
@@ -182,7 +182,7 @@ class TestMceBank:
         earned and applied figures catch it.
         """
         assert credits_earned(mce_bill()).total == pytest.approx(11.33)
-        offsettable, _, _ = charges_by_bucket(mce_bill())
+        offsettable, _ = charges_by_bucket(mce_bill())
         assert offsettable[CreditBucket.GENERATION] == pytest.approx(3.63)
 
     def test_unspent_credit_is_available_next_cycle(self) -> None:
@@ -275,7 +275,7 @@ class TestInCycleOffsetOverrun:
         against smaller generation charges printed "Total MCE Electric
         Generation Charges  -$6.85", not zero.
         """
-        offsettable, _, _ = charges_by_bucket(self.bill())
+        offsettable, _ = charges_by_bucket(self.bill())
         assert offsettable[CreditBucket.GENERATION] == pytest.approx(-0.76)
         assert offsettable[CreditBucket.BONUS] >= 0.50
 
@@ -396,7 +396,7 @@ class TestTheDeliveryBoundary:
 
     def test_the_cent_charges_stay_outside_it(self) -> None:
         """That $2.94 closes without them, and they are a cent each."""
-        offsettable, _, _ = charges_by_bucket(self.bill())
+        offsettable, _ = charges_by_bucket(self.bill())
         assert offsettable[CreditBucket.DELIVERY] == pytest.approx(2.94)
         assert offsettable[CreditBucket.BONUS] == pytest.approx(0.02)
 
@@ -671,7 +671,7 @@ class TestTheBucketMapIsLoadBearing:
         Absent from the map it fell to the non-offsettable default, putting a
         distribution charge where no credit could reach it.
         """
-        offsettable, non_offsettable, _ = charges_by_bucket(
+        offsettable, non_offsettable = charges_by_bucket(
             self._bill(conservation_incentive_adjustment=5.0)
         )
         assert offsettable[CreditBucket.DELIVERY] == pytest.approx(5.0)
@@ -689,7 +689,7 @@ class TestTheBucketMapIsLoadBearing:
     def test_each_non_bypassable_charge_is_reachable_only_by_the_bonus(self, name: str) -> None:
         """Schedule NBT SC 2.f names exactly these four, "except for the ACC
         Plus credit" -- so each belongs to the bonus bucket and to no other."""
-        offsettable, non_offsettable, _ = charges_by_bucket(self._bill(**{name: 3.0}))
+        offsettable, non_offsettable = charges_by_bucket(self._bill(**{name: 3.0}))
         assert offsettable[CreditBucket.BONUS] == pytest.approx(3.0), name
         assert offsettable[CreditBucket.DELIVERY] == pytest.approx(0.0), name
         assert offsettable[CreditBucket.GENERATION] == pytest.approx(0.0), name

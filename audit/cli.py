@@ -400,7 +400,11 @@ def _reconcile(
             )
             sources["green_button"] = read_green_button(export.path)
 
-        parts = price_segments(segments, readings)
+        # Netted on both sides. The per-segment bills are handed to
+        # `reconcile` beside the merged one, so pricing them differently put
+        # the "intervals carry both directions" warning on every segment of
+        # every solar cycle while the bill next to them stayed quiet.
+        parts = price_segments(segments, readings, netted=True)
         bill = compute_segments(segments, readings, netted=True)
         results.append(
             reconcile(

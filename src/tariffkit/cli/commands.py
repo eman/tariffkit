@@ -449,11 +449,16 @@ def _pricing_context(args: Any) -> tuple[Any, Config | None, AccountProfile | No
     """
     from ..account import AccountRateEngine
 
-    store = _account_store()
-    if getattr(args, "config", None) is None and store.exists():
-        profile = store.load()
-        return AccountRateEngine(profile), None, profile
-    config = Config.load(getattr(args, "config", None))
+    named = getattr(args, "config", None)
+    if named is None:
+        # Only then is the account consulted at all. Asking first meant every
+        # priced command touched the configuration directory even when told
+        # exactly which file to price from.
+        store = _account_store()
+        if store.exists():
+            profile = store.load()
+            return AccountRateEngine(profile), None, profile
+    config = Config.load(named)
     return RateEngine(config), config, None
 
 
@@ -606,6 +611,10 @@ def _known_periods(args: Any, profile: Any, *, refresh: bool = False) -> tuple[A
     from ..sources import PgeSettings, cached_bill_periods
 
     stored = known_periods(profile)
+    # What to call them: a statement is evidence the account read itself, while
+    # `billing_periods` is the utility's list recorded onto it. Both are exact
+    # and they are not the same claim.
+    told_by = "statement" if profile.observations else "recorded" if stored else "portal"
     try:
         settings: Any = PgeSettings.load(config_path=args.config)
     except TariffKitError:
@@ -613,9 +622,25 @@ def _known_periods(args: Any, profile: Any, *, refresh: bool = False) -> tuple[A
         # so does what the account already carries.
         settings = None
     portal = cached_bill_periods(settings, refresh=refresh)
-    if portal:
-        return portal, "portal"
-    return (stored, "statement") if stored else ((), "statement")
+    if not portal:
+        return stored, told_by
+    # Merged the same way the account merges its own two sources: a statement
+    # is one page, and the portal lists a bill per agreement, so a cycle split
+    # by a mid-cycle change is one period on the statement and two here.
+    # Taking the portal's list wholesale would open that cycle on the wrong day
+    # and disagree with what the integration reports for the same account.
+    merged = _merged_periods(stored, portal)
+    return merged, (told_by if profile.observations else "portal")
+
+
+def _merged_periods(statements: Sequence[Any], portal: Sequence[Any]) -> tuple[Any, ...]:
+    """Statement periods, plus every portal period none of them overlaps."""
+    kept = [
+        period
+        for period in portal
+        if not any(period.start <= known.end and known.start <= period.end for known in statements)
+    ]
+    return tuple(sorted([*statements, *kept], key=lambda period: period.start))
 
 
 #: How each boundary was arrived at, said plainly. The two guesses name what
@@ -623,6 +648,7 @@ def _known_periods(args: Any, profile: Any, *, refresh: bool = False) -> tuple[A
 #: notices the period does not match their statement.
 _BASIS = {
     "portal": "the boundary PG&E billed on",
+    "recorded": "the boundary PG&E billed on, recorded on your account",
     "statement": "the boundary your statements print",
     "day_of_month": "from [billing] cycle_start_day; statements would date it exactly",
     "calendar_month": (
@@ -1012,16 +1038,20 @@ def main(argv: list[str] | None = None) -> int:
             # Resolved before any source is read, because every one of them is
             # asked for a window and a CSV on stdin is the only case where the
             # readings themselves can supply it.
+            # A CSV names its own window when no dates are given -- but only
+            # for the source that reads a CSV. Every other source is asked for
+            # a period, so it has to be resolved even when a path was passed.
+            reads_csv = args.source in {"green-button", "csv"} and args.csv is not None
             period, cycle_basis = (
                 (None, "")
-                if args.csv is not None and not (args.start or args.end)
+                if reads_csv and not (args.start or args.end)
                 else _billing_window(args, account_profile)
             )
             note = ""
             if args.source == "ha":
                 from ..sources import HaSettings, describe_resolution, read_statistics
 
-                assert period is not None
+                assert period is not None  # every source but the CSV resolves one
                 ha_settings = HaSettings.load(
                     config_path=args.config,
                     profile_source=(
