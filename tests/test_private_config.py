@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -32,6 +33,10 @@ class FakeKeyring:
 
     def delete_password(self, service: str, name: str) -> None:
         del self.values[(service, name)]
+
+    def get_keyring(self) -> FakeKeyring:
+        """The backend in use, which is how `credentials list` names it."""
+        return self
 
 
 def test_config_round_trips_through_api_shape() -> None:
@@ -82,6 +87,63 @@ def test_keyring_never_lists_values(monkeypatch: pytest.MonkeyPatch) -> None:
     assert secrets.configured_secrets() == ("pge.password",)
     secrets.delete_secret("pge.password")
     assert secrets.configured_secrets() == ()
+
+
+def test_credentials_list_is_never_silent_about_where_a_value_comes_from(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Printing only stored names printed nothing at all on a `.env` machine.
+
+    Which is indistinguishable from a keyring that is not being read, and was
+    reported as exactly that confusion.
+    """
+    for variable in secrets.SECRET_ENV.values():
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("PGE_USERNAME", "person@example.invalid")
+
+    assert main(["credentials", "list"]) == 0
+
+    out = capsys.readouterr().out
+    # The fixture disables the keyring, so the listing has to say so rather
+    # than leave an empty column to be read as "nothing is configured".
+    assert "keyring: none available here" in out
+    assert all(name in out for name in secrets.SECRET_NAMES)
+    assert "environment (PGE_USERNAME)" in out
+    assert out.count("not set") == len(secrets.SECRET_NAMES) - 1
+    assert "person@example.invalid" not in out
+
+
+def test_credentials_list_prefers_the_environment_over_dotenv_and_keyring(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The order it reports is the order every source actually resolves in."""
+    for variable in secrets.SECRET_ENV.values():
+        monkeypatch.delenv(variable, raising=False)
+    home = Path(os.environ["XDG_CONFIG_HOME"]) / "tariffkit"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".env").write_text(
+        'PGE_USERNAME="from-dotenv"\nHA_TOKEN="from-dotenv"\n', encoding="utf-8"
+    )
+    monkeypatch.setenv("PGE_USERNAME", "from-the-environment")
+
+    backend = FakeKeyring()
+    monkeypatch.delenv("TARIFFKIT_DISABLE_KEYRING")
+    monkeypatch.setattr(secrets, "_keyring", lambda: backend)
+    secrets.set_secret("mqtt.password", "not-printed")
+
+    assert main(["credentials", "list"]) == 0
+
+    out = capsys.readouterr().out
+    assert "FakeKeyring" in out
+    assert "environment (PGE_USERNAME)" in out
+    assert ".env (HA_TOKEN)" in out
+    assert "  mqtt.password          keyring" in out
+    assert "from-the-environment" not in out and "not-printed" not in out
+
+
+def test_every_secret_names_the_variable_that_supersedes_it() -> None:
+    """A name with no entry would list as `not set` while plainly working."""
+    assert set(secrets.SECRET_ENV) == set(secrets.SECRET_NAMES)
 
 
 def test_cli_prompts_instead_of_accepting_secret_on_argv(

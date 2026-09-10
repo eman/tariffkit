@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib
 import os
-from typing import Final, Protocol, cast
+from typing import Any, Final, Protocol, cast
 
 from .errors import ConfigError
 
@@ -20,6 +20,25 @@ SECRET_NAMES: Final = (
     "pge.username",
     "pge.validation_cookie",
 )
+
+#: The environment variable each stored secret defers to.
+#:
+#: Every source reads its environment (and ``.env``) before falling back to the
+#: keyring, so a variable set here is where the value actually comes from.
+#: Collected in one place because "nothing is in the keyring" and "nothing is
+#: configured" are different answers, and a listing that cannot tell them apart
+#: reads as a broken command.
+SECRET_ENV: Final = {
+    "home_assistant.token": "HA_TOKEN",
+    "influxdb.token": "INFLUXDB3_AUTH_TOKEN",
+    "mqtt.password": "TARIFFKIT_MQTT_PASSWORD",
+    "mqtt.username": "TARIFFKIT_MQTT_USERNAME",
+    "pge.account_urn": "PGE_ACCOUNT_URN",
+    "pge.browser_cookie": "PGE_BROWSER_COOKIE",
+    "pge.password": "PGE_PASSWORD",
+    "pge.username": "PGE_USERNAME",
+    "pge.validation_cookie": "PGE_VALIDATION_COOKIE",
+}
 
 
 class _KeyringErrors(Protocol):
@@ -89,6 +108,29 @@ def delete_secret(name: str) -> None:
 def configured_secrets() -> tuple[str, ...]:
     """Names that are present, without ever returning their values."""
     return tuple(name for name in SECRET_NAMES if get_secret(name) is not None)
+
+
+def keyring_backend() -> str | None:
+    """Which OS keyring is in use, or ``None`` when there is nothing to read.
+
+    ``None`` covers all three ways there is no keyring: the extra is not
+    installed, it is switched off, or the package resolved its "fail" backend
+    because the machine offers no secret service -- the headless-container
+    case. Reporting which one is in use is the only way a listing can say that
+    an empty result means "nothing stored here" rather than "not looking".
+    """
+    if os.environ.get("TARIFFKIT_DISABLE_KEYRING") == "1":
+        return None
+    keyring = _keyring()
+    if keyring is None:
+        return None
+    try:
+        backend = type(cast(Any, keyring).get_keyring())
+    except Exception:  # pragma: no cover - a broken backend is not a listing error
+        return None
+    if backend.__module__.endswith(".fail"):
+        return None
+    return f"{backend.__module__}.{backend.__qualname__}"
 
 
 def _require_keyring() -> _Keyring:

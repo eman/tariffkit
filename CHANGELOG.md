@@ -125,6 +125,23 @@ epochs are all future-dated says so instead of failing.
 
 `history` is unchanged: every epoch, and the statements that established them.
 
+#### `credentials list` printed nothing on a machine that is fully configured
+
+It listed only the names stored in the OS keyring, so a machine keeping its
+credentials in `~/.config/tariffkit/.env` -- which every source reads first --
+got no output at all. Empty is indistinguishable from a broken command, an
+uninstalled `keyring` extra, or a backend that is not being read, and it was
+reported as exactly that doubt.
+
+It now names the backend and every credential with the source it resolves
+from -- `environment (PGE_USERNAME)`, `.env (HA_TOKEN)`, `keyring`, or
+`not set` -- and still never prints a value. A machine with no usable keyring
+(a headless container, or `TARIFFKIT_DISABLE_KEYRING=1`) says
+`keyring: none available here` rather than leaving it to be inferred.
+
+`tariffkit.secrets.SECRET_ENV` is the new mapping behind it, and
+`keyring_backend()` reports the backend in use.
+
 
 ### Fixed
 - **`tariffkit bill` uses your account profile without being asked.** With one

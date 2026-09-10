@@ -581,11 +581,13 @@ failing silently.
 
 ### Credentials
 
-`account sync` reads the same keyring entries every other authenticated PG&E
+`account sync` reads the same credentials every other authenticated PG&E
 access uses — a Green Button download, the audit harness — stored with
-`tariffkit credentials set pge.username` and `pge.password`. One account reads
-one set of credentials, so there is nothing to select. `tariffkit credentials
-list` shows which names are populated, never their values. See
+`tariffkit credentials set pge.username` and `pge.password`, or supplied as
+`PGE_USERNAME`/`PGE_PASSWORD` in the environment or `~/.config/tariffkit/.env`,
+which win over the keyring. One account reads one set of credentials, so there
+is nothing to select. `tariffkit credentials list` shows where each name
+resolves from, never its value. See
 [Configuration](configuration.md#credentials).
 
 ## Explanation

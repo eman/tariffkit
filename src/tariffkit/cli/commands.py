@@ -547,6 +547,44 @@ def _flattened(config: Mapping[str, Any], prefix: str = "") -> list[tuple[str, s
     return rows
 
 
+def _print_credentials() -> None:
+    """Where each credential resolves from -- never what it is.
+
+    Printing only the keyring names meant printing nothing at all on a machine
+    that keeps its credentials in ``.env``, which is indistinguishable from a
+    keyring that is not being read. Every name is listed with its source, and
+    the backend is named so an empty keyring column says "nothing stored here"
+    rather than "not looking".
+    """
+    import os
+
+    from ..secrets import SECRET_ENV, keyring_backend
+    from ..sources.homeassistant import load_dotenv
+
+    backend = keyring_backend()
+    print(f"keyring: {backend}" if backend else "keyring: none available here")
+
+    dotenv = load_dotenv()
+    stored = set(configured_secrets())
+    rows = []
+    for name in SECRET_NAMES:
+        variable = SECRET_ENV[name]
+        if os.environ.get(variable):
+            rows.append((name, f"environment ({variable})"))
+        elif dotenv.get(variable):
+            rows.append((name, f".env ({variable})"))
+        elif name in stored:
+            rows.append((name, "keyring"))
+        else:
+            rows.append((name, "not set"))
+
+    width = max(len(name) for name, _ in rows) + 2
+    print()
+    for name, source in rows:
+        print(f"  {name:<{width}}{source}")
+    print("\nthe environment and .env win over the keyring; values are never printed")
+
+
 def _print_skipped(skipped: Sequence[Mapping[str, str]]) -> None:
     """Name the statements that were not imported, without failing the run.
 
@@ -780,9 +818,7 @@ def main(argv: list[str] | None = None) -> int:
                 delete_secret(args.name)
                 print(f"deleted {args.name}")
             else:
-                names = configured_secrets()
-                for name in names:
-                    print(name)
+                _print_credentials()
             return 0
 
         if args.command == "account":

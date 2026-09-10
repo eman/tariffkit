@@ -94,6 +94,31 @@ The cookie cache is created with mode `0600`. `PGE_USERNAME`, `PGE_PASSWORD`,
 `PGE_BROWSER_COOKIE`, `PGE_VALIDATION_COOKIE`, and `PGE_ACCOUNT_URN` remain
 available for containers.
 
+`tariffkit credentials list` says where each one is actually resolving from,
+and never prints a value:
+
+```console
+$ tariffkit credentials list
+keyring: keyring.backends.macOS.Keyring
+
+  home_assistant.token   .env (HA_TOKEN)
+  influxdb.token         .env (INFLUXDB3_AUTH_TOKEN)
+  mqtt.password          not set
+  mqtt.username          not set
+  pge.account_urn        .env (PGE_ACCOUNT_URN)
+  pge.browser_cookie     .env (PGE_BROWSER_COOKIE)
+  pge.password           keyring
+  pge.username           keyring
+  pge.validation_cookie  .env (PGE_VALIDATION_COOKIE)
+
+the environment and .env win over the keyring; values are never printed
+```
+
+The keyring line names the backend, so an all-`not set` listing tells you
+whether nothing is stored or nothing can be read — a headless container with
+no secret service reports `none available here`, and `TARIFFKIT_DISABLE_KEYRING=1`
+does the same on purpose.
+
 One account reads one set of credentials, so there is nothing to name or
 select. See [Credentials](accounts.md#credentials).
 
