@@ -381,15 +381,19 @@ reported, and not a failure. No meter but the utility's own agrees with the
 utility about every interval, and a check that can never reach zero is one
 nobody reads.
 
-**The source comparison fired below the noise it was measuring.** `kwh_ok`
-allowed 0.5% of the larger figure with the scale floored at 1 kWh, which on a
-small quantity is an absolute five-watt-hour test. Green Button rounds every
-interval to two decimals -- measured: all 2,880 values in a cycle's export carry
-exactly two -- so its own quantisation accumulates about 0.31 kWh over a cycle
-at two sigma. A 0.06 kWh peak difference worth a penny failed a solar cycle
-while a 0.65 kWh difference worth thirteen cents passed a winter one. A 0.35 kWh
-floor holds the test above the source's own noise and still flags the 0.74,
-1.41 and 4.05 kWh differences that are worth a look.
+**The time-of-use comparison asserted on a source with no authority.** It
+failed a statement when Green Button's peak share differed from InfluxDB's --
+two derivations of one meter, neither of which is the arbiter of the other.
+Where the statement prints the split, the meter is the closer of the two: on
+one cycle it sat 0.144 kWh from a printed 331.250 while the utility's own
+export sat 0.370 the other way, so the check was failing bills for the
+reference's error. It is reported now and asserts nothing.
+
+The statement is the real arbiter and `_printed_peak` reads it, but only
+correctly on a statement with one service agreement -- on a cycle the utility
+split it reported +77.74 kWh, which is a parsing difference and not an
+attribution one. It is printed beside the other deltas with that written down,
+and asserts nothing until it is right.
 
 #### A cached export is named for what it holds
 

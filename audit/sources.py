@@ -55,6 +55,42 @@ def peak_share(
     )
 
 
+def _printed_peak(statement: Statement) -> float | None:
+    """Kilowatt-hours the statement itself says were charged at the peak rate.
+
+    **Reported, never asserted on, because this is not yet right.** The
+    statement is the only real arbiter of the time-of-use split -- it prints
+    what the utility charged at each rate, and on one cycle our meter sat
+    0.144 kWh from a printed 331.250 while the utility's own export sat 0.370
+    the other way, which is the whole reason to prefer it to a second opinion.
+
+    But picking those rows out is not solved. ``max`` avoids double-counting a
+    quantity that prints twice, once as the energy charge and once as the
+    generation credit, and thereby undercounts a cycle the utility split across
+    two service agreements. Measured against the meter it produced -0.14 on one
+    statement and +77.74 on a split one, which is not an attribution difference
+    but a parsing one. Asserting on it failed statements for the reader's own
+    error -- the mistake this comparison exists to avoid making in the other
+    direction.
+    """
+    total = 0.0
+    found = False
+    for line in statement.lines():
+        label = line.label.strip().lower()
+        if line.quantity is None or not (line.unit or "").lower().startswith("kwh"):
+            continue
+        if not label.startswith("peak") and "peak" not in label.split():
+            continue
+        if label.startswith("off") or "off peak" in label or "off-peak" in label:
+            continue
+        # "Peak" and "Peak Winter" print the same quantity, once as the energy
+        # charge and once as the generation credit, so the same kilowatt-hours
+        # would be counted twice.
+        total = max(total, line.quantity)
+        found = True
+    return total if found else None
+
+
 def compare_sources(
     readings: Mapping[str, Sequence[IntervalReading]],
     statement: Statement,
@@ -109,21 +145,50 @@ def compare_sources(
 
     if classify is not None:
         base_peak = peak_share(readings[primary], classify)
+
+        # Against the statement first, where it prints the split. The utility
+        # says how many kilowatt-hours it charged at the peak rate, which is an
+        # arbiter rather than a second opinion -- and on a real cycle the meter
+        # sat 0.144 kWh from the printed 331.250 while the utility's own export
+        # sat 0.370 the other way. Judging our split against that export failed
+        # statements for the export's error.
+        printed_peak = _printed_peak(statement)
+        if printed_peak is not None:
+            deltas.append(
+                SourceDelta(
+                    left="statement peak",
+                    right=f"{primary} peak",
+                    imported_delta=printed_peak - base_peak,
+                    exported_delta=0.0,
+                    note=(
+                        "kilowatt-hours the utility says it charged at the peak rate "
+                        "-- reported only; see _printed_peak"
+                    ),
+                    significant=False,
+                )
+            )
+
         for name, series in readings.items():
             if name == primary:
                 continue
             other_peak = peak_share(series, classify)
-            # Judged against the same allowance as a total, because the money
-            # rides on the difference between the two rates, not on the size of
-            # either bucket.
+            # Reported, never asserted. Two derivations of a meter disagree
+            # about which hour a kilowatt-hour landed in, and neither is the
+            # authority on it: the statement above is. Asserting this made a
+            # second source's own attribution error our failure.
             deltas.append(
                 SourceDelta(
                     left=f"{name} peak",
                     right=f"{primary} peak",
                     imported_delta=other_peak - base_peak,
                     exported_delta=0.0,
-                    note="which hours the energy arrived in, where the two rates differ",
-                    significant=not allowed.kwh_ok(other_peak, base_peak),
+                    note=(
+                        "which hours the energy arrived in; the statement above "
+                        "is what either of them is measured against"
+                        if printed_peak is not None
+                        else "which hours the energy arrived in, where the two rates differ"
+                    ),
+                    significant=False,
                 )
             )
 
