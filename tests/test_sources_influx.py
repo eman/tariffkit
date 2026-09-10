@@ -478,4 +478,8 @@ def test_sub_floor_smearing_is_recorded_even_though_it_is_not_flagged() -> None:
     warnings = list(check_coverage(readings, period))
 
     assert sum(r.smeared for r in readings) > MATERIAL_SMEAR
-    assert any("reconstructed across gaps" in w and "4.5 kWh" in w for w in warnings), warnings
+    # And the sentence agrees with itself: counting only the intervals big
+    # enough to flag reported "0 interval(s) covering 0.0h and 4.5 kWh".
+    assert any(
+        "500 interval(s) covering 500.0h and 4.5 kWh were reconstructed" in w for w in warnings
+    ), warnings

@@ -366,6 +366,42 @@ def test_portal_periods_do_not_overrule_a_statement_that_covers_the_same_days(
     ]
 
 
+def test_a_period_the_merge_dropped_does_not_come_back_with_a_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Labelling as the merges went along kept what the merges had discarded.
+
+    A partial statement nested inside a whole cycle is superseded by it, and
+    putting it back beside the winner handed `resolve_cycle` the partial span
+    again -- undoing the wider-period rule inside the CLI.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr("tariffkit.sources.cached_bill_periods", lambda *a, **k: [])
+    partial = BillingPeriod(date(2026, 6, 10), date(2026, 6, 15))
+    whole = BillingPeriod(date(2026, 6, 1), date(2026, 6, 29))
+    profile = AccountProfile(
+        (AccountEpoch(date(2025, 1, 1), Config()),),
+        observations=(
+            AccountObservation(
+                agreements=(
+                    ObservedAgreement(
+                        provider="pge",
+                        statement_date=date(2026, 6, 20),
+                        period=partial,
+                        tariff="E-ELEC",
+                    ),
+                ),
+            ),
+        ),
+        billing_periods=(whole,),
+    )
+
+    origins = _known_periods(build_parser().parse_args(["bill"]), profile)
+
+    assert list(origins) == [whole]
+    assert origins[whole] == "recorded"
+
+
 @freeze_time("2026-09-09T12:00:00-07:00")
 def test_the_basis_names_the_source_that_actually_answered(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

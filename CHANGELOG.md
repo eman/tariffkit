@@ -354,6 +354,20 @@ the source with a space, so those printed the temporary name anyway; a fifth
 contains a later colon of its own and lost the half that said what went wrong,
 keeping only its problem list. It strips the source *name* now.
 
+#### A superseded period does not come back with a label
+
+`tariffkit bill` labelled each boundary with the source it came from by
+recording labels as the merges went along, which kept the periods the merges
+had just discarded -- putting a partial statement back beside the whole cycle
+that supersedes it, and handing the cycle lookup the partial span again. The
+labels are read off the merged list.
+
+#### `credentials set --set NAME` needs re-storing after upgrading
+
+Named credential sets are gone, so secrets kept under one are no longer read:
+the account adopts fine and then portal commands stop authenticating. The
+"credentials not found" error says so, and what to do about it.
+
 #### Copies of an account keep every field it has
 
 `billing_periods` was dropped by six paths that rebuilt `AccountProfile` field
@@ -385,7 +399,9 @@ The 0.01 kWh floor decided whether a reconstructed share *existed*, not just
 whether its interval was worth flagging, so it could accumulate out of sight:
 five hundred shares of nine watt-hours is 4.5 kWh time-shifted and no warning
 at all. The magnitude is always recorded now and materiality is applied to the
-cycle total, which is the question a reader is actually deciding.
+cycle total, which is the question a reader is actually deciding. Every
+interval that carried a share is counted in the warning, which otherwise read
+"0 interval(s) covering 0.0h and 4.5 kWh" -- a sentence at war with itself.
 
 #### Reading the account no longer writes to the configuration directory
 

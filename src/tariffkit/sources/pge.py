@@ -309,7 +309,9 @@ class PgeSettings:
         if not username or not password:
             raise ConfigError(
                 "PG&E credentials not found; store pge.username and pge.password with "
-                "`tariffkit credentials set`, or set PGE_USERNAME and PGE_PASSWORD"
+                "`tariffkit credentials set`, or set PGE_USERNAME and PGE_PASSWORD. "
+                "Credentials kept under a named credential set by an older version are "
+                "no longer read -- store them again without one"
             )
         cookie_path = Path(values.get("cookie_path", str(DEFAULT_COOKIE_PATH))).expanduser()
         return cls(

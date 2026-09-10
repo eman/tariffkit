@@ -630,20 +630,8 @@ def _known_periods(args: Any, profile: Any, *, refresh: bool = False) -> dict[An
     from ..billing import merge_periods, statement_periods
     from ..sources import PgeSettings, cached_bill_periods
 
-    # Each period, tagged with where it came from. A statement is evidence the
-    # account read itself; `billing_periods` is the utility's list recorded onto
-    # it; the live list is the utility asked just now. All three are exact and
-    # they are not the same claim, and which one answered is only known after
-    # the cycle resolves.
-    origins: dict[Any, str] = {}
     statements = statement_periods(profile)
-    for period in statements:
-        origins[period] = "statement"
-
     known = merge_periods(statements, profile.billing_periods)
-    for period in known:
-        origins.setdefault(period, "recorded")
-
     try:
         settings: Any = PgeSettings.load(config_path=args.config)
     except TariffKitError:
@@ -651,16 +639,25 @@ def _known_periods(args: Any, profile: Any, *, refresh: bool = False) -> dict[An
         # answers, and so does a cached list.
         settings = None
     portal = cached_bill_periods(settings, refresh=refresh)
-    if not portal:
-        return origins
     # Merged the way the account merges its own two sources: a statement is one
     # page, and the portal lists a bill per agreement, so a cycle split by a
     # mid-cycle change is one period on the statement and two here. Taking the
     # portal's list wholesale opened that cycle on the wrong day and disagreed
     # with what the integration reports for the same account.
-    for period in merge_periods(known, portal):
-        origins.setdefault(period, "portal")
-    return {period: origins[period] for period in sorted(origins, key=lambda p: p.start)}
+    final = merge_periods(known, portal) if portal else known
+
+    # Labelled from the merged list alone. Accumulating labels as the merges
+    # went along kept the periods the merges had just dropped, which put a
+    # partial statement back beside the whole cycle that supersedes it and
+    # handed `resolve_cycle` the partial span again.
+    def origin(period: Any) -> str:
+        if period in statements:
+            return "statement"
+        if period in profile.billing_periods:
+            return "recorded"
+        return "portal"
+
+    return {period: origin(period) for period in final}
 
 
 #: How each boundary was arrived at, said plainly. The two guesses name what

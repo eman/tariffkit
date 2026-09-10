@@ -152,10 +152,14 @@ def check_coverage(
     # hundred shares of nine watt-hours is 4.5 kWh time-shifted and no warning
     # at all.
     energy = sum(r.smeared or (r.imported + r.exported if r.estimated else 0.0) for r in ordered)
-    if guessed or energy >= MATERIAL_SMEAR:
-        hours = sum((r.duration for r in guessed), timedelta()).total_seconds() / 3600
+    # Every interval that carried a smeared share, not only the ones large
+    # enough to be flagged on their own -- counting just those reported "0
+    # interval(s) covering 0.0h and 4.5 kWh", a sentence at war with itself.
+    affected = [r for r in ordered if r.estimated or r.smeared]
+    if affected and (guessed or energy >= MATERIAL_SMEAR):
+        hours = sum((r.duration for r in affected), timedelta()).total_seconds() / 3600
         yield (
-            f"{len(guessed)} interval(s) covering {hours:.1f}h and {energy:.1f} kWh were "
+            f"{len(affected)} interval(s) covering {hours:.1f}h and {energy:.1f} kWh were "
             f"reconstructed across gaps in the source, so their time-of-use split is a "
             f"guess even though the cycle total is not. Spreading a long gap evenly gives "
             f"peak hours their share of the clock rather than their share of the load"
