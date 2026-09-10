@@ -112,6 +112,19 @@ show `--account NAME`, a profile name argument, `[account] default_profile`, or
 it manages your account's dated history. `tariffkit account update --json`
 emitted its result under a `profile` key, now `account`.
 
+#### `account show` and `account history` printed the same thing
+
+`show` listed the epochs, which is what `history` is for -- with no statement
+evidence recorded the two were identical output, and one of them was pointless.
+
+`show` now answers "what is my account?": the settings in force today, fully
+resolved, the date the epoch they came from took effect, and the meter entities.
+`--json` gives `{effective, config, meter_sources, epochs, observations}` rather
+than the whole file, which is what `account export` is for. An account whose
+epochs are all future-dated says so instead of failing.
+
+`history` is unchanged: every epoch, and the statements that established them.
+
 
 ### Fixed
 - **`tariffkit bill` uses your account profile without being asked.** With one

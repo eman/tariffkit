@@ -53,6 +53,25 @@ observations: 0
 that is when NEM 3.0 billing started. It is now `~/.config/tariffkit/account.json`;
 see [Reference](#the-account-file) for its exact shape and permissions.
 
+Check what it resolved to:
+
+```console
+$ tariffkit account show
+in force since 2026-06-03
+  utility                   pacific_gas_and_electric
+  tariff                    E-ELEC
+  supplier                  bundled
+  interconnection_year      2026
+  pto_date                  2026-06-03
+  ...
+
+1 epoch, 0 statement observations -- see 'tariffkit account history'
+```
+
+`show` answers "what is my account?" — one moment, fully resolved.
+`history` answers "how did it get here?" — every epoch, with the statements
+that established them.
+
 ### 3. Price with it
 
 ```console
@@ -407,7 +426,7 @@ with exit code `1`, and nothing is written. Recover by re-reading the current
 state and reapplying your change on top of it:
 
 ```bash
-tariffkit account show        # see what actually landed
+tariffkit account history     # see what actually landed
 tariffkit account update --effective 2027-06-01 --tariff E-TOU-C --apply
 ```
 
@@ -427,8 +446,8 @@ output instead of the human summary shown above.
 | Command | Does |
 |---|---|
 | `account init [--effective DATE] [--config PATH \| --config-json PATH] [--audit-file PATH] [--json]` | Set up your account. `--audit-file` explicitly migrates legacy audit history; otherwise one epoch comes from `--config`, `--config-json`, or the resolved main `Config`. Repository-local audit configuration is never read implicitly. |
-| `account show [--json]` | Print the epochs. |
-| `account history [--json]` | Print epochs and the statement evidence recorded against them. |
+| `account show [--json]` | Print the settings in force today, and where they came from. |
+| `account history [--json]` | Print every epoch and the statement evidence recorded against them. |
 | `account update --effective DATE [field flags...] [--config PATH \| --config-json PATH] [--note TEXT] [--apply] [--json]` | Add or replace one dated snapshot. Field flags (`--tariff`, `--supplier`, `--interconnection-year`, `--pto-date`, `--vintage`, `--acc-plus-segment`, `--discount`, `--base-services-charge-tier`, `--baseline-territory`, `--baseline-code`, `--nsc-rate`, `--cca-json`) change only the named fields against the snapshot in force the day before; `--config`/`--config-json` replace the whole snapshot. |
 | `account import-statement PDF... [--apply] [--json]` | Parse local PDFs and reconcile their evidence. |
 | `account sync [--config PATH] [--since DATE] [--apply] [--keep-statements] [--json]` | Download portal statements since a date and reconcile them. |

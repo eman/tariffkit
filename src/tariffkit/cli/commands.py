@@ -59,10 +59,10 @@ def build_parser() -> argparse.ArgumentParser:
     account_init.add_argument("--config-json", type=Path)
     account_init.add_argument("--audit-file", type=Path)
     account_init.add_argument("--json", action="store_true")
-    account_show = account_commands.add_parser("show", help="show your account")
+    account_show = account_commands.add_parser("show", help="show the settings in force today")
     account_show.add_argument("--json", action="store_true")
     account_history = account_commands.add_parser(
-        "history", help="show account epochs and evidence"
+        "history", help="show every epoch and the evidence behind it"
     )
     account_history.add_argument("--json", action="store_true")
     account_update = account_commands.add_parser("update", help="add or replace an account epoch")
@@ -461,6 +461,92 @@ def _print_profile(profile: Any, *, json_output: bool) -> None:
     print(f"observations: {summary['observations']}")
 
 
+def _account_state(profile: Any) -> dict[str, Any]:
+    """The settings in force today, and where they came from.
+
+    ``show`` used to print the same epoch list as ``history``, which made one
+    of the two commands pointless: with no statement evidence recorded they
+    were identical output. "What is my account?" is a different question from
+    "how did it get here?", and this answers the first one.
+    """
+    from ..errors import TariffKitError
+
+    today = datetime.now(PACIFIC).date()
+    effective: str | None = None
+    config: dict[str, Any] | None = None
+    try:
+        active = profile.config_at(today)
+    except TariffKitError:
+        # Every epoch is dated in the future -- an account imported ahead of a
+        # move-in date. Nothing is in force, which is the answer, not an error.
+        pass
+    else:
+        config = active.to_dict()
+        effective = max(
+            epoch.effective for epoch in profile.epochs if epoch.effective <= today
+        ).isoformat()
+    return {
+        "effective": effective,
+        "config": config,
+        "meter_sources": profile.meter_sources.to_dict(),
+        "epochs": len(profile.epochs),
+        "observations": len(profile.observations),
+    }
+
+
+def _print_account(profile: Any, *, json_output: bool) -> None:
+    state = _account_state(profile)
+    if json_output:
+        print(json.dumps(state, indent=2, default=str))
+        return
+
+    if state["config"] is None:
+        first = min(epoch.effective for epoch in profile.epochs)
+        print(f"nothing in force yet; the first epoch begins {first}")
+    else:
+        print(f"in force since {state['effective']}")
+        rows = _flattened(state["config"])
+        width = max(len(key) for key, _ in rows) + 2
+        for key, value in rows:
+            print(f"  {key:<{width}}{value}")
+
+    sources = state["meter_sources"]
+    if any(sources.values()):
+        print("\nmeter entities")
+        for provider, mapping in sources.items():
+            if mapping:
+                print(
+                    f"  {provider:<9}{mapping['grid_import_entity']} "
+                    f"/ {mapping['grid_export_entity']}"
+                )
+
+    print(
+        f"\n{_plural(state['epochs'], 'epoch')}, "
+        f"{_plural(state['observations'], 'statement observation')}"
+        " -- see 'tariffkit account history'"
+    )
+
+
+def _plural(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+def _flattened(config: Mapping[str, Any], prefix: str = "") -> list[tuple[str, str]]:
+    """Config as printable rows, with nested tables under a dotted key."""
+    rows: list[tuple[str, str]] = []
+    for key, value in config.items():
+        if isinstance(value, Mapping) and value:
+            rows.extend(_flattened(value, f"{prefix}{key}."))
+        elif value is None or value == [] or value == {}:
+            rows.append((f"{prefix}{key}", "-"))
+        elif isinstance(value, bool):
+            # The config file is TOML, where these are lowercase.
+            rows.append((f"{prefix}{key}", "true" if value else "false"))
+        else:
+            rows.append((f"{prefix}{key}", str(value)))
+    return rows
+
+
 def _print_skipped(skipped: Sequence[Mapping[str, str]]) -> None:
     """Name the statements that were not imported, without failing the run.
 
@@ -497,7 +583,7 @@ def _run_account_command(args: Any) -> int:
 
     profile = store.load()
     if command == "show":
-        _print_profile(profile, json_output=args.json)
+        _print_account(profile, json_output=args.json)
         return 0
 
     if command == "history":

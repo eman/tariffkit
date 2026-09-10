@@ -106,6 +106,71 @@ def test_account_init_update_and_export_are_sanitized(
     assert "amount_due" not in exported.read_text(encoding="utf-8")
 
 
+def _init_account(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, effective: str) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'tariff = "E-ELEC"\ninterconnection_year = 2026\npto_date = "2026-06-03"\n',
+        encoding="utf-8",
+    )
+    assert main(["--config", str(config), "account", "init", "--effective", effective]) == 0
+
+
+def test_account_show_answers_what_is_in_force_not_what_history_answers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`show` and `history` were the same output when no evidence was recorded."""
+    _init_account(tmp_path, monkeypatch, effective="2025-01-01")
+    assert (
+        main(["account", "update", "--effective", "2026-01-01", "--tariff", "EV2-A", "--apply"])
+        == 0
+    )
+    capsys.readouterr()
+
+    assert main(["account", "show"]) == 0
+    shown = capsys.readouterr().out
+    assert main(["account", "history"]) == 0
+    history = capsys.readouterr().out
+
+    assert shown != history
+    # The settings themselves, resolved to one moment -- not the epoch list.
+    assert "in force since 2026-01-01" in shown
+    assert "tariff" in shown and "EV2-A" in shown
+    assert "acc_plus_segment" in shown
+    assert "2025-01-01" not in shown
+    # The timeline, which is history's job.
+    assert "epochs" in history and "2025-01-01" in history
+
+
+def test_account_show_json_carries_the_resolved_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _init_account(tmp_path, monkeypatch, effective="2025-01-01")
+    capsys.readouterr()
+
+    assert main(["account", "show", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["effective"] == "2025-01-01"
+    assert payload["config"]["tariff"] == "E-ELEC"
+    assert payload["epochs"] == 1
+    assert payload["observations"] == 0
+
+
+def test_account_show_says_so_when_every_epoch_is_still_in_the_future(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An account imported ahead of a move-in date has nothing in force."""
+    _init_account(tmp_path, monkeypatch, effective="2099-01-01")
+    capsys.readouterr()
+
+    assert main(["account", "show"]) == 0
+
+    out = capsys.readouterr().out
+    assert "nothing in force yet" in out
+    assert "2099-01-01" in out
+
+
 def test_account_update_json_names_the_account_it_wrote(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
