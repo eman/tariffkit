@@ -280,11 +280,24 @@ before the end. A cycle split by a mid-cycle agreement change is listed as two
 bills (`06-01/06-03` and `06-03/06-30` on an account that interconnected on the
 3rd), because the portal lists a bill per agreement.
 
-`WUE_GetUsageExportAvailableAMIReadsTimeInterval` is captured but unused: it
-walks `serviceAgreementsConnection → servicePoints → registers` for
-`availableReadsTimeInterval`, which is how the widget knows to offer "Since your
-last bill" ending yesterday rather than today. Worth wiring up if the partial
-last day of an open cycle becomes a nuisance.
+**The export stops at the last published read, and the platform will say where
+that is.** `WUE_GetUsageExportAvailableAMIReadsTimeInterval` walks
+`serviceAgreementsConnection → servicePoints → registers` for
+`availableReadsTimeInterval`, which is how the widget offers "Since your last
+bill" ending yesterday rather than today:
+
+    DELIVERED  2024-04-15T00:00:00-07:00/2026-09-09T00:00:00-07:00
+    RECEIVED   2026-05-30T00:00:00-07:00/2026-09-09T00:00:00-07:00
+    NET_USAGE  2023-07-31T00:00:00-07:00/2026-09-09T00:00:00-07:00
+
+Half-open again, so the last day with readings is the 8th. The export register
+begins at interconnection while the import one goes back years, so the days
+every channel covers is the latest start and the earliest end.
+
+**`serviceType` is `ELECTRICITY`, not `ELECTRIC`.** Matching one spelling
+matched nothing and silently disabled the whole clamp, which looked exactly
+like a meter with a missing day. `unitOfMeasure: KWH` is the reliable filter --
+gas is metered in therms whatever the type is called.
 
 **The meter read is at local midnight.** The boundaries above are `T00:00:00`
 and `T23:59:59` in the offset in force at each end. So `--read-hour` defaults to

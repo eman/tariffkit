@@ -232,6 +232,32 @@ beats a command that fails offline.
 
 New in `tariffkit.sources`: `cached_bill_periods` and `read_bill_periods`.
 
+#### An open cycle ends at the last published read
+
+PG&E publishes interval reads a day behind, so pricing a cycle "through today"
+fetched an export that stopped a day short and then reported the shortfall:
+
+```
+  warning: 2026-08-28..2026-09-09 (E-ELEC): readings cover 288.0h of the 312h period (24.0h missing)
+```
+
+Nothing was missing. The reads are not published yet, which is a fact about the
+publishing schedule and not about the meter -- and the day was also charged a
+Base Services Charge it should not have been. The window now ends where the
+utility says its readings do, which the export widget has always done:
+
+```
+  cycle: 2026-08-28 to 2026-09-08, the boundary PG&E billed on
+```
+
+That answer comes from `WUE_GetUsageExportAvailableAMIReadsTimeInterval`, asked
+once a day and kept in `~/.cache/tariffkit/pge/available-reads.json`. It is also
+what makes the export cache work for an open cycle: yesterday's file covers
+today's question, so the same cycle is not re-downloaded every morning. A
+`tariffkit bill` that has already asked today costs no network at all.
+
+New in `tariffkit.sources.pge`: `available_reads` and `cached_available_reads`.
+
 
 ### Fixed
 - **`tariffkit bill` uses your account profile without being asked.** With one

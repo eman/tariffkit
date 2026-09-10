@@ -154,7 +154,9 @@ def test_bill_without_dates_prices_the_open_cycle_from_statement_evidence(
 
     def fake(settings: object, start: date, end: date, **kwargs: object) -> object:
         asked.update(start=start, end=end)
-        return SimpleNamespace(path=_export_csv(tmp_path), downloaded=False, covers="cached")
+        return SimpleNamespace(
+            path=_export_csv(tmp_path), start=start, end=end, downloaded=False, covers="cached"
+        )
 
     monkeypatch.setattr("tariffkit.sources.cached_green_button", fake)
 
@@ -265,8 +267,12 @@ def _stub_export(
     )
     monkeypatch.setattr(
         "tariffkit.sources.cached_green_button",
-        lambda *a, **k: SimpleNamespace(
-            path=_export_csv(tmp_path), downloaded=False, covers="cached"
+        lambda settings, start, end, **k: SimpleNamespace(
+            path=_export_csv(tmp_path),
+            start=start,
+            end=end,
+            downloaded=False,
+            covers="cached",
         ),
     )
 

@@ -239,6 +239,15 @@ narrower request**, because readings outside a billing period are ignored when
 it is priced: download a year, then bill each cycle in it for nothing. When
 several files cover a request the narrowest wins, to parse the least.
 
+**An open cycle ends at the last published read, not at today.** PG&E publishes
+a day behind, so asking for "through today" would fetch a file that stops a day
+short and then report the shortfall as missing coverage — a gap in the
+publishing schedule, not in the meter. The end is pulled back to what the
+utility says it has, which is also what lets yesterday's file answer this
+morning's question instead of downloading the same cycle again. That answer is
+asked for once a day and remembered in
+`~/.cache/tariffkit/pge/available-reads.json`.
+
 `--refresh` downloads again over a cached range — for a cycle that has not
 closed yet, where more readings arrive each day. Files are mode `0600` under a
 mode `0700` directory: an export carries your name, service address, and every

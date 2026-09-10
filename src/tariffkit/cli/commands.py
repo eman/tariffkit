@@ -582,7 +582,7 @@ def _billing_window(args: Any, profile: Any) -> tuple[Any, str]:
     periods, told_by = _known_periods(args, profile, refresh=args.refresh)
     cycle = resolve_cycle(today, _cycle_start_day(args), periods)
     basis = told_by if cycle.source == "statement" else cycle.source
-    return BillingPeriod(cycle.start, today), f"  cycle: {cycle.start} to {today}, {_BASIS[basis]}"
+    return BillingPeriod(cycle.start, today), basis
 
 
 def _known_periods(args: Any, profile: Any, *, refresh: bool = False) -> tuple[Any, str]:
@@ -952,13 +952,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "bill":
-            from ..billing import BillEngine
+            from ..billing import BillEngine, BillingPeriod
             from ..sources import read_green_button
 
             # Resolved before any source is read, because every one of them is
             # asked for a window and a CSV on stdin is the only case where the
             # readings themselves can supply it.
-            period, cycle_note = (
+            period, cycle_basis = (
                 (None, "")
                 if args.csv is not None and not (args.start or args.end)
                 else _billing_window(args, account_profile)
@@ -1025,6 +1025,12 @@ def main(argv: list[str] | None = None) -> int:
                     period.end,
                     refresh=args.refresh,
                 )
+                if cycle_basis and export.end < period.end:
+                    # The utility publishes a day behind, so an open cycle asked
+                    # for "through today" ends at the last read instead. Pricing
+                    # days it has no readings for would charge the Base Services
+                    # Charge for each and call the shortfall a gap in the meter.
+                    period = BillingPeriod(period.start, export.end)
                 readings = read_green_button(export.path)
                 origin = "downloaded" if export.downloaded else f"cached {export.covers}"
                 note = (
@@ -1033,8 +1039,6 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
             if period is None:
-                from ..billing import BillingPeriod
-
                 period = BillingPeriod.from_readings(readings)
             if from_account:
                 from ..billing.engine import compute_segments
@@ -1069,8 +1073,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 if note:
                     print(note)
-                if cycle_note:
-                    print(cycle_note)
+                if cycle_basis:
+                    print(f"  cycle: {period.start} to {period.end}, {_BASIS[cycle_basis]}")
             return 0
 
         if args.command == "mqtt":

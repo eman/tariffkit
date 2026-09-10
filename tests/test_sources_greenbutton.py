@@ -25,7 +25,13 @@ from tariffkit.sources import (
     cached_green_button,
     read_green_button,
 )
-from tariffkit.sources.pge import PortalError, _interval_to_period, _write_periods
+from tariffkit.sources.pge import (
+    PortalError,
+    _interval_to_period,
+    _write_periods,
+    available_reads,
+    cached_available_reads,
+)
 from tariffkit.timeutil import export_hour
 
 
@@ -231,10 +237,23 @@ class TestExportCache:
         return PgeSettings(username="person@example.invalid", password="secret")
 
     @staticmethod
-    def _record(monkeypatch: pytest.MonkeyPatch) -> list[tuple[date, date]]:
+    def _record(
+        monkeypatch: pytest.MonkeyPatch, *, available: BillingPeriod | None = None
+    ) -> list[tuple[date, date]]:
+        """Record what the portal was asked to export, without a portal."""
         asked: list[tuple[date, date]] = []
 
-        def fake(settings: PgeSettings, start: date, end: date) -> str:
+        class _Session:
+            def __init__(self, settings: PgeSettings) -> None: ...
+
+            def __enter__(self) -> _Session:
+                return self
+
+            def __exit__(self, *exc: object) -> None: ...
+
+            def login(self) -> None: ...
+
+        def fake(session: object, start: date, end: date) -> str:
             asked.append((start, end))
             return (
                 "start,imported,exported\n"
@@ -242,7 +261,9 @@ class TestExportCache:
                 "2026-07-06T03:00:00-07:00,0,2.5\n"
             )
 
-        monkeypatch.setattr("tariffkit.sources.pge.read_green_button_export", fake)
+        monkeypatch.setattr("tariffkit.sources.pge.PgeSession", _Session)
+        monkeypatch.setattr("tariffkit.sources.pge.available_reads", lambda session: available)
+        monkeypatch.setattr("tariffkit.sources.pge._export_text", fake)
         return asked
 
     def test_a_second_request_for_the_same_range_reads_the_file(
@@ -369,6 +390,68 @@ class TestExportCache:
             "2026-08-28..2026-09-01",
         ]
 
+    def test_an_end_past_the_last_published_read_is_pulled_back(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reads land a day behind, so "through today" would stop short anyway."""
+        asked = self._record(
+            monkeypatch, available=BillingPeriod(date(2024, 1, 1), date(2026, 9, 8))
+        )
+
+        export = cached_green_button(
+            self._settings(), date(2026, 8, 28), date(2026, 9, 9), directory=tmp_path
+        )
+
+        assert asked == [(date(2026, 8, 28), date(2026, 9, 8))]
+        assert export.end == date(2026, 9, 8)
+        # Named for what it holds, so tomorrow's lookup is not misled by it.
+        assert export.path.name == "2026-08-28_2026-09-08.csv"
+
+    def test_yesterdays_file_answers_todays_open_cycle(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The clamp is what makes the cache work at all for an open cycle."""
+        asked = self._record(
+            monkeypatch, available=BillingPeriod(date(2024, 1, 1), date(2026, 9, 8))
+        )
+        cached_green_button(
+            self._settings(), date(2026, 8, 28), date(2026, 9, 8), directory=tmp_path
+        )
+
+        # Tomorrow morning, before the next read is published.
+        again = cached_green_button(
+            self._settings(), date(2026, 8, 28), date(2026, 9, 9), directory=tmp_path
+        )
+
+        assert len(asked) == 1
+        assert not again.downloaded
+        assert again.end == date(2026, 9, 8)
+
+    def test_an_end_the_utility_can_cover_is_left_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        asked = self._record(
+            monkeypatch, available=BillingPeriod(date(2024, 1, 1), date(2026, 9, 8))
+        )
+
+        cached_green_button(
+            self._settings(), date(2026, 7, 29), date(2026, 8, 27), directory=tmp_path
+        )
+
+        assert asked == [(date(2026, 7, 29), date(2026, 8, 27))]
+
+    def test_a_platform_that_will_not_say_leaves_the_range_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unrecognised answer is a reason to ask for what was wanted."""
+        asked = self._record(monkeypatch, available=None)
+
+        cached_green_button(
+            self._settings(), date(2026, 8, 28), date(2026, 9, 9), directory=tmp_path
+        )
+
+        assert asked == [(date(2026, 8, 28), date(2026, 9, 9))]
+
     def test_a_file_that_is_not_a_range_is_ignored(self, tmp_path: Path) -> None:
         """Anything else in the directory is not an export this wrote."""
         (tmp_path / "notes.csv").write_text("start,imported,exported\n", encoding="utf-8")
@@ -466,3 +549,150 @@ class TestBillPeriods:
 
         assert stat.S_IMODE(store.stat().st_mode) == 0o600
         assert stat.S_IMODE(store.parent.stat().st_mode) == 0o700
+
+
+class TestAvailableReads:
+    """How far the utility will actually export, which is not today."""
+
+    @staticmethod
+    def _session(payload: object) -> object:
+        class _Session:
+            def opower(self) -> tuple[str, str, str]:
+                return ("pge.opower.com", "token", "urn:opower:v1:account:pge:uuid:x")
+
+            def graphql(self, *args: object, **kwargs: object) -> object:
+                return payload
+
+        return _Session()
+
+    @staticmethod
+    def _payload(points: list[dict[str, object]]) -> dict[str, object]:
+        return {
+            "billingAccountByAuthContext": {
+                "serviceAgreementsConnection": {"edges": [{"node": {"servicePoints": points}}]}
+            }
+        }
+
+    def test_the_span_is_the_days_every_channel_covers(self) -> None:
+        """Import goes back years and export begins at interconnection."""
+        payload = self._payload(
+            [
+                {
+                    # The portal says ELECTRICITY, not ELECTRIC. Matching one
+                    # spelling matched nothing and silently disabled the clamp.
+                    "serviceType": "ELECTRICITY",
+                    "registers": [
+                        {
+                            "availableReadsTimeInterval": (
+                                "2024-04-15T00:00:00-07:00/2026-09-09T00:00:00-07:00"
+                            ),
+                            "serviceQuantityIdentifier": "DELIVERED",
+                            "unitOfMeasure": "KWH",
+                        },
+                        {
+                            "availableReadsTimeInterval": (
+                                "2026-05-30T00:00:00-07:00/2026-09-09T00:00:00-07:00"
+                            ),
+                            "serviceQuantityIdentifier": "RECEIVED",
+                            "unitOfMeasure": "KWH",
+                        },
+                    ],
+                }
+            ]
+        )
+
+        span = available_reads(self._session(payload))
+
+        # Half-open, so the last day with readings is the 8th, not the 9th.
+        assert span == BillingPeriod(date(2026, 5, 30), date(2026, 9, 8))
+
+    def test_gas_is_not_electricity(self) -> None:
+        """A dual-fuel account must not have its window cut by the gas meter."""
+        payload = self._payload(
+            [
+                {
+                    "serviceType": "GAS",
+                    "registers": [
+                        {
+                            "availableReadsTimeInterval": (
+                                "2024-01-01T00:00:00-08:00/2026-08-01T00:00:00-07:00"
+                            ),
+                            "serviceQuantityIdentifier": "DELIVERED",
+                            "unitOfMeasure": "THERM",
+                        }
+                    ],
+                },
+                {
+                    "serviceType": "ELECTRICITY",
+                    "registers": [
+                        {
+                            "availableReadsTimeInterval": (
+                                "2024-01-01T00:00:00-08:00/2026-09-09T00:00:00-07:00"
+                            ),
+                            "serviceQuantityIdentifier": "DELIVERED",
+                            "unitOfMeasure": "KWH",
+                        }
+                    ],
+                },
+            ]
+        )
+
+        assert available_reads(self._session(payload)).end == date(2026, 9, 8)
+
+    def test_an_answer_in_an_unknown_shape_is_not_an_answer(self) -> None:
+        assert available_reads(self._session({})) is None
+        assert available_reads(self._session(self._payload([]))) is None
+
+    def test_asked_once_a_day_and_no_more(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reads publish daily; a round trip per command would be waste."""
+        calls: list[int] = []
+
+        class _Session:
+            def __init__(self, settings: object) -> None: ...
+
+            def __enter__(self) -> _Session:
+                return self
+
+            def __exit__(self, *exc: object) -> None: ...
+
+            def login(self) -> None: ...
+
+        monkeypatch.setattr("tariffkit.sources.pge.PgeSession", _Session)
+        monkeypatch.setattr(
+            "tariffkit.sources.pge.available_reads",
+            lambda session: calls.append(1) or BillingPeriod(date(2026, 1, 1), date(2026, 9, 8)),
+        )
+        store = tmp_path / "available-reads.json"
+        settings = PgeSettings(username="person@example.invalid", password="secret")
+
+        first = cached_available_reads(settings, path=store, today=date(2026, 9, 9))
+        second = cached_available_reads(settings, path=store, today=date(2026, 9, 9))
+        tomorrow = cached_available_reads(settings, path=store, today=date(2026, 9, 10))
+
+        span = BillingPeriod(date(2026, 1, 1), date(2026, 9, 8))
+        assert first == second == tomorrow == span
+        assert len(calls) == 2  # once today, once tomorrow
+        assert stat.S_IMODE(store.stat().st_mode) == 0o600
+
+    def test_a_lookup_that_cannot_happen_is_not_an_answer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Offline asks for the range that was wanted, rather than failing."""
+
+        def unreachable(settings: object) -> object:
+            raise RuntimeError("getaddrinfo failed")
+
+        monkeypatch.setattr("tariffkit.sources.pge.PgeSession", unreachable)
+
+        assert (
+            cached_available_reads(
+                PgeSettings(username="person@example.invalid", password="secret"),
+                path=tmp_path / "available-reads.json",
+            )
+            is None
+        )
+
+    def test_without_credentials_it_does_not_guess(self, tmp_path: Path) -> None:
+        assert cached_available_reads(None, path=tmp_path / "absent.json") is None
