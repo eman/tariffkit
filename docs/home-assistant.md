@@ -200,9 +200,9 @@ place, without a restart.
 | Metered energy | The grid import and export counters and the billing cycle start day. See [Metered energy](#metered-energy). Stored as options; clearing both entities removes the running-total entities on reload. |
 | **Account history** | Opens the sub-menu below. |
 
-Its entry holds a whole [named account profile](accounts.md) — an ordered,
-dated history of settings — not just today's values, so account history is
-its own sub-menu rather than flat top-level choices:
+Its entry holds a whole [account](accounts.md) — an ordered, dated history of
+settings — not just today's values, so account history is its own sub-menu
+rather than flat top-level choices:
 
 | Sub-menu item | Does |
 |---|---|
@@ -227,11 +227,10 @@ of them need today's active settings. Wait for the epoch's effective date,
 edit an existing future transition, or replace the profile through **Import
 profile** with one that already starts today.
 
-**The integration never stores PG&E credentials.** It strips a profile's
-`credential_set` before saving it, since this integration never signs in to
-the portal itself; a profile arriving through **Import profile** with a
-credential set keeps its epochs and evidence but loses that reference. Set
-one on the profile through the CLI instead if you use `account sync` there.
+**The integration never stores PG&E credentials.** It does not sign in to the
+portal, and a profile does not carry a credential reference for it to keep:
+the CLI's keyring entries stay with the CLI, which is where `account sync`
+runs.
 
 **Older config entries migrate automatically and safely.** An entry created
 before this schema exists has no stored profile, just old flat settings (or

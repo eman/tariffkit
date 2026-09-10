@@ -86,13 +86,14 @@ class TestAccountProfile:
         updated = account.with_observation(AccountObservation((agreement,)))
         assert updated.meter_sources == source
 
-    def test_home_assistant_sanitization_preserves_meter_sources(self) -> None:
+    def test_a_home_assistant_round_trip_preserves_meter_sources(self) -> None:
+        """What the integration exports is what importing it gets back."""
         pytest.importorskip("homeassistant")
         pytest.importorskip(
             "custom_components.tariffkit.profile",
             exc_type=ModuleNotFoundError,
         )
-        from custom_components.tariffkit.profile import profile_from_entry, sanitize_profile
+        from custom_components.tariffkit.profile import profile_from_entry, profile_payload
 
         source = MeterSources(ha=MeterSource("sensor.grid_in", "sensor.grid_out"))
         account = AccountProfile(
@@ -101,8 +102,8 @@ class TestAccountProfile:
             meter_sources=source,
         )
 
-        sanitized = sanitize_profile(account)
-        imported = profile_from_entry({"profile": sanitized.to_dict()})
+        imported = profile_from_entry({"profile": profile_payload(account)})
+
         assert imported.meter_sources == source
 
     def test_resolves_boundaries_and_rejects_prehistory(self) -> None:

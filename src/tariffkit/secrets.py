@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import importlib
 import os
-import re
 from typing import Final, Protocol, cast
 
 from .errors import ConfigError
 
 SERVICE: Final = "tariffkit"
-_CREDENTIAL_SET = re.compile(r"^[a-z0-9](?:[a-z0-9_.-]{0,62}[a-z0-9])?$")
 SECRET_NAMES: Final = (
     "home_assistant.token",
     "influxdb.token",
@@ -93,58 +91,6 @@ def configured_secrets() -> tuple[str, ...]:
     return tuple(name for name in SECRET_NAMES if get_secret(name) is not None)
 
 
-def get_named_secret(credential_set: str, name: str) -> str | None:
-    """Read a secret from a named keyring set without exposing its value."""
-    _validate_credential_set(credential_set)
-    _validate_name(name)
-    if os.environ.get("TARIFFKIT_DISABLE_KEYRING") == "1":
-        return None
-    keyring = _keyring()
-    if keyring is None:
-        return None
-    try:
-        return keyring.get_password(f"{SERVICE}:credential:{credential_set}", name)
-    except keyring.errors.NoKeyringError:
-        return None
-    except keyring.errors.KeyringError as exc:
-        raise ConfigError(
-            f"could not read {name!r} from credential set {credential_set!r}"
-        ) from exc
-
-
-def set_named_secret(credential_set: str, name: str, value: str) -> None:
-    """Store a secret in a named keyring set."""
-    _validate_credential_set(credential_set)
-    _validate_name(name)
-    if not value:
-        raise ConfigError("secret value must not be empty")
-    keyring = _require_keyring()
-    try:
-        keyring.set_password(f"{SERVICE}:credential:{credential_set}", name, value)
-    except keyring.errors.KeyringError as exc:
-        raise ConfigError(f"could not store {name!r} in credential set {credential_set!r}") from exc
-
-
-def delete_named_secret(credential_set: str, name: str) -> None:
-    """Delete a secret from a named keyring set."""
-    _validate_credential_set(credential_set)
-    _validate_name(name)
-    keyring = _require_keyring()
-    try:
-        keyring.delete_password(f"{SERVICE}:credential:{credential_set}", name)
-    except keyring.errors.KeyringError as exc:
-        raise ConfigError(
-            f"could not delete {name!r} from credential set {credential_set!r}"
-        ) from exc
-
-
-def configured_named_secrets(credential_set: str) -> tuple[str, ...]:
-    """List names present in a named credential set, without values."""
-    return tuple(
-        name for name in SECRET_NAMES if get_named_secret(credential_set, name) is not None
-    )
-
-
 def _require_keyring() -> _Keyring:
     keyring = _keyring()
     if keyring is None:
@@ -157,8 +103,3 @@ def _require_keyring() -> _Keyring:
 def _validate_name(name: str) -> None:
     if name not in SECRET_NAMES:
         raise ConfigError(f"unknown secret {name!r}; choose one of {', '.join(SECRET_NAMES)}")
-
-
-def _validate_credential_set(name: str) -> None:
-    if _CREDENTIAL_SET.fullmatch(name) is None:
-        raise ConfigError("credential set must be a lowercase safe name")

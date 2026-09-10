@@ -92,6 +92,22 @@ own config entry.
 then ignored it: there is one account. Passing one now fails as an unknown
 flag rather than silently auditing a different agreement from the one named.
 
+#### Named credential sets are gone
+
+`tariffkit.secrets.get_named_secret`, `set_named_secret`,
+`delete_named_secret` and `configured_named_secrets` are removed. They existed
+so two profiles could share one PG&E login without storing the password twice,
+and nothing has called them since the profiles went: one account reads one set
+of credentials, stored with `tariffkit credentials set pge.username`. The
+integration's `sanitize_profile` goes with them -- it stripped a field the
+model no longer has, so it claimed a protection it was not performing.
+
+The documentation has been brought in line with all of this: `docs/accounts.md`
+(now "Your account"), `billing.md`, `configuration.md`, `containers.md`,
+`web.md`, `home-assistant.md`, `use-cases.md` and `audit/README.md` no longer
+show `--account NAME`, a profile name argument, `[account] default_profile`, or
+`--credential-set`.
+
 
 ### Fixed
 - **`tariffkit bill` uses your account profile without being asked.** With one

@@ -38,13 +38,13 @@ pip install 'tariffkit[ha]'
 tariffkit bill --source ha --start 2026-07-29 --end 2026-08-09
 ```
 
-For a named account, configure its source once and omit entity flags:
+Configure your account's source once and omit the entity flags:
 
 ```bash
-tariffkit account source home set ha \
+tariffkit account source set ha \
   --grid-import-entity sensor.grid_import \
   --grid-export-entity sensor.grid_export --apply
-tariffkit bill --account home --source ha --start 2026-07-29 --end 2026-08-09
+tariffkit bill --source ha --start 2026-07-29 --end 2026-08-09
 ```
 
 Grid import means energy consumed from the grid, not whole-home load. Grid
@@ -102,12 +102,11 @@ pip install 'tariffkit[influx]'
 tariffkit bill --source influx --start 2026-06-30 --end 2026-07-28
 ```
 
-Set an InfluxDB pair on a named profile with
-`tariffkit account source home set influx --grid-import-entity NAME
---grid-export-entity NAME --apply`, then use
-`tariffkit bill --account home --source influx ...`. These names identify the
-grid-import and grid-export counters; they are not whole-home consumption
-entities.
+Set an InfluxDB pair on your account with
+`tariffkit account source set influx --grid-import-entity NAME
+--grid-export-entity NAME --apply`, then `tariffkit bill --source influx ...`
+uses it. These names identify the grid-import and grid-export counters; they
+are not whole-home consumption entities.
 
 Energy over a window is a cumulative counter's endpoints, so the total does not
 depend on how densely it was sampled in between. Against the July 2026
@@ -225,27 +224,27 @@ Omit the period and it is inferred from the readings' own span. Readings outside
 the period are ignored, so a year of data can be billed one cycle at a time
 without slicing it first.
 
-## Named account profiles
+## Pricing from your account
 
-`--account NAME` prices against a [named account profile](accounts.md)
-instead of a single `Config`:
+Once an account is set up, every `tariffkit bill` prices from it rather than
+from a single `Config` — there is nothing to pass:
 
 ```bash
-tariffkit bill intervals.csv --start 2026-07-02 --end 2026-07-28 --account home
+tariffkit bill intervals.csv --start 2026-07-02 --end 2026-07-28
 ```
 
 For a cycle that stays within one epoch, this produces exactly the figures a
-plain `tariffkit bill` with that epoch's settings would. Its purpose is the
-cycle that does not: when the profile records a tariff, supplier, or
-baseline-territory change effective partway through `[start, end]`,
-`--account` tiles the cycle into one `Segment` per epoch active during it
-(via `AccountProfile.segments_for()`) and prices each stretch under its own
-snapshot, the same way PG&E's own statement prints separate blocks for a
-mid-cycle change rather than blending the two rates. The output shape does
-not change — one `Bill` for the whole period — only how it was computed.
+`--config` run with that epoch's settings would. Its purpose is the cycle that
+does not: when the account records a tariff, supplier, or baseline-territory
+change effective partway through `[start, end]`, the cycle is tiled into one
+`Segment` per epoch active during it (via `AccountProfile.segments_for()`) and
+each stretch is priced under its own snapshot, the same way PG&E's own
+statement prints separate blocks for a mid-cycle change rather than blending
+the two rates. The output shape does not change — one `Bill` for the whole
+period — only how it was computed.
 
-`--account` and `--config` are mutually exclusive here as everywhere else;
-see [Selecting a profile](accounts.md#selecting-a-profile).
+`--config FILE` opts out for that command, pricing a hypothetical from one
+snapshot instead; see [Pricing from the account](accounts.md#pricing-from-the-account).
 
 ## Reading the output
 

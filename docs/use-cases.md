@@ -40,7 +40,7 @@ opens at the meter read date and closes at the next one.
 
 **The one thing that is not simple** is that the rate plan can change mid-cycle.
 The utility does not blend the rates — it prints two blocks on one statement and
-prices each by its own schedule. An [account profile](accounts.md) records the
+prices each by its own schedule. Your [account](accounts.md) records the
 change as an epoch, and `segments_for` turns a cycle into the blocks that cycle
 was actually governed by.
 

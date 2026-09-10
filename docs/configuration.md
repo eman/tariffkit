@@ -28,15 +28,14 @@ chmod 600 ~/.config/tariffkit/config.toml
 **This is the stateless path** — one `Config`, current settings only. If your
 service agreement has ever changed tariff, supplier, or baseline territory,
 and you want past bills to price with what was actually in force on their own
-days, use a [named account profile](accounts.md) instead: `--account NAME`
-(or a configured default profile) replaces this resolution order entirely for
-that command, and `--config`/`--account` cannot be combined. See
-[Selecting a profile](accounts.md#selecting-a-profile) for exactly how that
-choice is made.
+days, set up [your account](accounts.md) instead: every command prices from it
+rather than from this file, and passing `--config` is how you opt back out for
+one command. See [Pricing from the account](accounts.md#pricing-from-the-account)
+for exactly how that choice is made.
 
 ### Utility identity
 
-Profiles, configuration, and API payloads identify Pacific Gas and Electric
+The account, configuration, and API payloads identify Pacific Gas and Electric
 with the unambiguous machine value `pacific_gas_and_electric`. User interfaces
 show `PG&E` or `Pacific Gas and Electric Company`. The distinct `pge` machine
 value means Portland General Electric; TariffKit recognizes that identity but
@@ -73,7 +72,7 @@ settings use: defaults, `config.toml`, environment, then explicit arguments.
 ### PG&E portal access
 
 Portal credentials are needed for Green Button downloads, `account sync`
-(see [Named account profiles](accounts.md)), and the repository audit
+(see [Your account](accounts.md)), and the repository audit
 harness; pricing itself remains offline regardless. Store them once:
 
 ```bash
@@ -95,12 +94,8 @@ The cookie cache is created with mode `0600`. `PGE_USERNAME`, `PGE_PASSWORD`,
 `PGE_BROWSER_COOKIE`, `PGE_VALIDATION_COOKIE`, and `PGE_ACCOUNT_URN` remain
 available for containers.
 
-**Named credential sets** let more than one account profile share one login
-without duplicating it: `tariffkit credentials set pge.username --set NAME`
-stores it under `NAME` instead of the default, unnamed slot, and
-`tariffkit account init/update ... --credential-set NAME` associates a
-profile with it. See
-[Credential sets](accounts.md#credential-sets).
+One account reads one set of credentials, so there is nothing to name or
+select. See [Credentials](accounts.md#credentials).
 
 ## A worked example: PG&E delivery + MCE generation
 
@@ -258,11 +253,10 @@ export HA_TOKEN=...
 ```
 
 Resolution order, later winning: the config file, OS keyring, `.env`, real
-environment variables, a named account profile's source mapping, then
-`--ha-import-entity` / `--ha-export-entity`. For a bill, that is explicitly
-`--account NAME` or the configured default profile; it does not change
-stateless/global behavior. The profile mapping names grid import (consumed from
-the grid, not whole-home load) and grid export separately.
+environment variables, your account's source mapping, then
+`--ha-import-entity` / `--ha-export-entity`. The account's mapping applies to a
+bill, and does not change stateless/global behavior. It names grid import
+(consumed from the grid, not whole-home load) and grid export separately.
 `HA_TOKEN` is deliberately never read from the config file.
 
 ## Net Surplus Compensation
@@ -311,13 +305,13 @@ INFLUXDB3_AUTH_TOKEN = "<database token>"
 
 Resolution order, later winning: the config file, keyring, `.env`, then real
 environment variables (`TARIFFKIT_INFLUX_IMPORT_ENTITY` /
-`TARIFFKIT_INFLUX_EXPORT_ENTITY` for the series), a named account profile's
+`TARIFFKIT_INFLUX_EXPORT_ENTITY` for the series), your account's
 source mapping, then
 `--influx-import-entity` / `--influx-export-entity`. As with `HA_TOKEN`,
 `INFLUXDB3_AUTH_TOKEN` is never read from the config file.
 
-For a named profile, save the pair with `tariffkit account source NAME set
-influx ... --apply`; use `ha` for Home Assistant. The source mapping is not
+Save the pair on your account with `tariffkit account source set influx ...
+--apply`; use `ha` for Home Assistant. The source mapping is not
 effective-dated because it identifies the data store, not tariff history.
 
 ## MQTT

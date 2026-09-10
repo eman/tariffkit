@@ -33,17 +33,17 @@ a metered record fetched over HTTP is still a metered record, which is what
 
 ## Setup
 
-Create or migrate a named managed profile with the public CLI, then select it
-for the audit:
+Set up (or migrate) your account with the public CLI; the audit reads the same
+one:
 
 ```bash
-tariffkit account init home --audit-file /path/to/legacy-account.toml
-python -m audit reconcile --account home ~/Desktop/PGE_20260205.pdf
+tariffkit account init --audit-file /path/to/legacy-account.toml
+python -m audit reconcile ~/Desktop/PGE_20260205.pdf
 ```
 
-Profiles date the *account* — schedule, supplier, baseline territory, and PCIA
+The account dates itself — schedule, supplier, baseline territory, and PCIA
 vintage — because those change over its life and `Config` describes one moment.
-A cycle whose statement evidence does not exactly match the profile's segments
+A cycle whose statement evidence does not exactly match the account's segments
 is refused before interval data is priced.
 
 Statements are never committed. Point `TARIFFKIT_STATEMENT_DIR` at wherever
@@ -93,7 +93,7 @@ talks to it.
 ## Running it
 
 ```bash
-uv run python -m audit run --account home --since 2025-11-01 --until 2026-08-31
+uv run python -m audit run --since 2025-11-01 --until 2026-08-31
 ```
 
 Lists every statement the portal holds for that range, downloads each, prices
@@ -107,7 +107,6 @@ one row per cycle. Useful flags:
 | `--green-button` | also download PG&E's own interval export and compare the two meters |
 | `--keep-statements` | leave the downloaded PDFs in `.cache/pge/statements/` |
 | `--read-hour N` | move the cycle boundary off midnight |
-| `--account NAME` | the named managed profile (or use the configured default) |
 
 Statements are deleted after the run unless `--keep-statements`. One carries the
 service address, the account number, and a remittance scanline with the account
