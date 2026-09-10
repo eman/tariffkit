@@ -69,3 +69,20 @@ class TestParser:
         assert code == EXIT_ERROR
         assert code != EXIT_MISMATCH
         assert "error:" in capsys.readouterr().out
+
+
+def test_segment_bills_are_netted_like_the_bill_beside_them() -> None:
+    """Both sides of the reconciliation price the same way.
+
+    `netted` only silences the "intervals carry both directions" warning, which
+    every solar cycle raises once its readings are aggregated to an hour. Pricing
+    the per-segment bills without it put that warning on every segment while the
+    merged bill next to them stayed quiet -- the noise the flag exists to stop.
+    """
+    import inspect
+
+    from audit import cli
+
+    source = inspect.getsource(cli._reconcile)
+    assert "price_segments(segments, readings, netted=True)" in source
+    assert "compute_segments(segments, readings, netted=True)" in source

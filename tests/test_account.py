@@ -421,6 +421,39 @@ class TestAccountStore:
         assert not (tmp_path / "tariffkit").exists()
         assert store.exists() is False
 
+    def test_a_loose_directory_is_read_and_tightened_when_written(self, tmp_path: Path) -> None:
+        """docs/accounts.md says `mkdir -p`, which a default umask makes 0755.
+
+        Demanding exactly 0700 to *read* only ever passed because construction
+        chmod-ed its way there first; once creation became lazy the demand
+        outlived its self-heal and refused every command on a directory the
+        documentation itself told people to make. What guards the account is
+        the file's own 0600.
+        """
+        loose = tmp_path / "tariffkit"
+        loose.mkdir(mode=0o755)
+        loose.chmod(0o755)
+        store = AccountStore(tmp_path)
+
+        assert store.exists() is False
+
+        store.save(profile())
+
+        assert store.load().epochs
+        # Writing is where tightening it is ours to do.
+        assert stat.S_IMODE(loose.stat().st_mode) == 0o700
+
+    def test_a_read_only_directory_is_more_private_not_less(self, tmp_path: Path) -> None:
+        """A 0500 mount is how the container documentation says to run `serve`."""
+        home = tmp_path / "tariffkit"
+        home.mkdir(mode=0o700)
+        AccountStore(tmp_path).save(profile())
+        home.chmod(0o500)
+        try:
+            assert AccountStore(tmp_path).load().epochs
+        finally:
+            home.chmod(0o700)
+
     def test_an_unwritable_configuration_root_is_reported_not_raised(self, tmp_path: Path) -> None:
         """`main` turns an account error into `error: ...`; an OSError is a traceback."""
         root = tmp_path / "read-only"
@@ -496,6 +529,27 @@ class TestAccountStore:
 
         with pytest.raises(ProfileStorageError, match="symlink"):
             AccountStore(config_home)
+
+    def test_an_interrupted_adoption_leaves_no_temporary_behind(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every retry would otherwise leave another one in the directory."""
+        legacy = tmp_path / "tariffkit" / "accounts"
+        legacy.mkdir(mode=0o700, parents=True)
+        (legacy / "home.json").write_text(profile().to_json(), encoding="utf-8")
+        store = AccountStore(tmp_path)
+
+        def fail_replace(self: Path, target: Path) -> Path:
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(Path, "replace", fail_replace)
+        assert store.exists() is False
+        assert store.exists() is False
+        monkeypatch.undo()
+
+        assert sorted(p.name for p in (tmp_path / "tariffkit").iterdir()) == ["accounts"]
+        # And it still adopts once the write can succeed.
+        assert store.exists() is True
 
     def test_interrupted_replacement_keeps_original(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

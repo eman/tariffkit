@@ -66,6 +66,26 @@ def statement_periods(profile: AccountProfile) -> tuple[BillingPeriod, ...]:
     return tuple(sorted(found, key=lambda period: period.start))
 
 
+def merge_periods(
+    preferred: Sequence[BillingPeriod], extra: Sequence[BillingPeriod]
+) -> tuple[BillingPeriod, ...]:
+    """``preferred``, plus every ``extra`` period none of them already covers.
+
+    Covers, not merely touches. Dropping anything a preferred period *overlaps*
+    loses real coverage whenever the preferred one is narrower: a statement
+    whose agreement blocks were only partly recovered spans a few days, and
+    discarding the whole cycle it fell inside left the days around it with no
+    boundary at all, resolving to the calendar month -- an exact answer
+    downgraded to a guess by the act of learning something.
+    """
+    kept = [
+        period
+        for period in extra
+        if not any(known.start <= period.start and period.end <= known.end for known in preferred)
+    ]
+    return tuple(sorted([*preferred, *kept], key=lambda period: period.start))
+
+
 def known_periods(profile: AccountProfile) -> tuple[BillingPeriod, ...]:
     """Every boundary the account knows, with statements outranking the portal.
 
@@ -74,20 +94,14 @@ def known_periods(profile: AccountProfile) -> tuple[BillingPeriod, ...]:
     changed partway -- interconnecting solar does exactly this -- is one period
     on it. The portal lists a bill per agreement, so the same cycle comes back
     as two. Following the utility's own page is what a cycle-to-date figure has
-    to do, so where they overlap the statement wins.
+    to do, so a statement covering a portal cycle replaces it.
 
     The portal covers the rest, which is most of it: it lists three years
     without a PDF to parse, and an account that has imported no statements at
     all -- Home Assistant's, until someone pastes one in -- would otherwise be
     guessing at a meter-read day.
     """
-    statements = statement_periods(profile)
-    kept = [
-        period
-        for period in profile.billing_periods
-        if not any(period.start <= other.end and other.start <= period.end for other in statements)
-    ]
-    return tuple(sorted([*statements, *kept], key=lambda period: period.start))
+    return merge_periods(statement_periods(profile), profile.billing_periods)
 
 
 def _by_day_of_month(day: date, start_day: int) -> Cycle:

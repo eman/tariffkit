@@ -323,10 +323,36 @@ meter-read day. They can also be typed in by hand from the portal's own
 bill-period dropdown; `docs/home-assistant.md` has that path.
 
 `known_periods(profile)` is what every cycle lookup now reads: statements where
-they exist, the portal's list for everything else. Where the two overlap the
-statement wins, because it is one page -- a cycle whose service agreement
-changed partway is one billing period on the statement and two entries in the
-portal's list, and a cycle-to-date figure has to follow what was billed.
+they exist, the portal's list for everything else. A statement *covering* a
+portal cycle replaces it, because it is one page -- a cycle whose service
+agreement changed partway is one billing period on the statement and two
+entries in the portal's list, and a cycle-to-date figure has to follow what was
+billed. Covering, not merely overlapping: a statement whose agreement blocks
+were only partly recovered spans a few days, and dropping the whole cycle it
+fell inside would leave the days around it with no boundary at all. The rule
+lives once, in `tariffkit.billing.merge_periods`.
+
+The label printed beside the window names the source that actually answered,
+found by which period the cycle resolved from. Deciding it from "does the
+account hold any statements" called a portal boundary a statement's on any
+account holding one old PDF.
+
+#### `charges_by_bucket` returns two values, not three
+
+**Breaking, for embedders only.** Its third element was a bucket-to-unspent map
+that has been all zeros since the in-cycle clamp was removed, threaded through
+two call sites whose arithmetic it no longer changed. `offsettable,
+non_offsettable = charges_by_bucket(bill)`.
+
+#### A skipped statement never names the file the sync deleted
+
+`account sync` reports a statement it could not read by the date the utility
+issued it, stripping the source the parser prefixes its messages with -- which
+for a sync is a loop index inside a cache directory the run removes. It stripped
+everything up to the first `": "`, and four of the parser's messages separate
+the source with a space, so those printed the temporary name anyway; a fifth
+contains a later colon of its own and lost the half that said what went wrong,
+keeping only its problem list. It strips the source *name* now.
 
 #### Reading the account no longer writes to the configuration directory
 
@@ -342,6 +368,16 @@ Nothing is created until something is written, `--config` short-circuits the
 account lookup entirely, and a directory that cannot be created is reported.
 The legacy-profile adoption path no longer leaves its temporary file behind
 when the write fails partway.
+
+**Reading no longer demands mode 0700 of the directory.** It only ever passed
+that check because construction had just chmod-ed its way there, so making
+creation lazy left the demand without its self-heal: a `~/.config/tariffkit`
+made by the `mkdir -p` in `docs/accounts.md` is 0755 under a default umask,
+and every command that so much as asks whether an account exists refused to
+run -- `account init` included, leaving no way out. A read-only 0500 mount was
+refused for being *more* private than asked. Reads accept the directory and
+check the account file's own 0600, which is what protects it; writes create it
+0700 and tighten it, that being the point at which doing so is ours to do.
 
 
 ### Fixed

@@ -275,11 +275,7 @@ def _ocr_failure(
         )
     if failures and all(isinstance(failure, StatementAmbiguityError) for failure in failures):
         return failures[0]
-    # Colon-separated like every other message here, so a caller stripping the
-    # source prefix strips this one too: for a sync the source is a temporary
-    # filename in a directory the run deletes, and printing it sends whoever
-    # reads it looking for a file that never existed.
-    return StatementError(f"{source}: OCR did not produce a self-checking statement")
+    return StatementError(f"{source} OCR did not produce a self-checking statement")
 
 
 def read_statement(path: str | Path) -> Statement:

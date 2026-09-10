@@ -20,9 +20,13 @@ from tariffkit.account import (
     ObservedAgreement,
 )
 from tariffkit.billing import BillingPeriod, IntervalReading
-from tariffkit.cli.account_commands import migrate_existing, sync_profile
+from tariffkit.cli.account_commands import (
+    _statement_reason,
+    migrate_existing,
+    sync_profile,
+)
 from tariffkit.cli.account_store import AccountStore
-from tariffkit.cli.commands import _merged_periods, _mqtt_settings, build_parser, main
+from tariffkit.cli.commands import _known_periods, _mqtt_settings, build_parser, main
 from tariffkit.config import Config
 from tariffkit.errors import ConfigError
 from tariffkit.models import Supplier
@@ -288,26 +292,138 @@ def _export_csv(tmp_path: Path) -> Path:
     return path
 
 
-def test_portal_periods_do_not_overrule_a_statement_that_covers_the_same_days() -> None:
+@pytest.mark.parametrize(
+    "message",
+    [
+        "statement-0007.pdf OCR did not produce a self-checking statement",
+        "statement-0007.pdf could not be read as a PDF",
+        "statement-0007.pdf has no text layer, so it is a scan or a print-to-PDF export",
+        "statement-0007.pdf produced no pages to recognise",
+        "statement-0007.pdf failed its self-check (3 problem(s))",
+        "statement-0007.pdf OCR read the statement but it did not check out (2): a: b; c",
+    ],
+)
+def test_a_skipped_statement_never_names_the_file_the_sync_deleted(message: str) -> None:
+    """The source is a loop index inside a cache directory the run removes.
+
+    Stripping everything up to the first `": "` instead of the name itself
+    left it in four of these, and threw away the explanatory half of the
+    fifth, keeping only its problem list.
+    """
+    from tariffkit.providers.pge.statements.errors import StatementError
+
+    reason = _statement_reason(StatementError(message), Path("/tmp/cache/statement-0007.pdf"))
+
+    assert "statement-0007" not in reason
+    assert reason and not reason.startswith(":")
+    if "did not check out" in message:
+        assert reason.startswith("OCR read the statement")
+
+
+def test_portal_periods_do_not_overrule_a_statement_that_covers_the_same_days(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The portal lists a bill per agreement; a statement is one page.
 
     Taking its list wholesale opened a cycle split by interconnection on the
     day the second agreement began, disagreeing with the statement and with
-    what the integration reports for the same account.
+    what the integration reports for the same account. Exercised through
+    `_known_periods`, because that is where the list was taken wholesale.
     """
-    statements = [BillingPeriod(date(2026, 6, 1), date(2026, 6, 29))]
-    portal = [
-        BillingPeriod(date(2026, 6, 1), date(2026, 6, 2)),
-        BillingPeriod(date(2026, 6, 3), date(2026, 6, 29)),
-        BillingPeriod(date(2026, 6, 30), date(2026, 7, 28)),
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("PGE_USERNAME", "person@example.invalid")
+    monkeypatch.setenv("PGE_PASSWORD", "secret")
+    monkeypatch.setattr(
+        "tariffkit.sources.cached_bill_periods",
+        lambda *a, **k: [
+            BillingPeriod(date(2026, 6, 1), date(2026, 6, 2)),
+            BillingPeriod(date(2026, 6, 3), date(2026, 6, 29)),
+            BillingPeriod(date(2026, 6, 30), date(2026, 7, 28)),
+        ],
+    )
+    profile = AccountProfile(
+        (AccountEpoch(date(2025, 1, 1), Config()),),
+        observations=(
+            AccountObservation(
+                agreements=(
+                    ObservedAgreement(
+                        provider="pge",
+                        statement_date=date(2026, 7, 3),
+                        period=BillingPeriod(date(2026, 6, 1), date(2026, 6, 29)),
+                        tariff="E-ELEC",
+                    ),
+                ),
+            ),
+        ),
+    )
+    args = build_parser().parse_args(["bill"])
+
+    origins = _known_periods(args, profile)
+
+    assert [(p.start, p.end, origin) for p, origin in origins.items()] == [
+        (date(2026, 6, 1), date(2026, 6, 29), "statement"),
+        (date(2026, 6, 30), date(2026, 7, 28), "portal"),
     ]
 
-    merged = _merged_periods(statements, portal)
 
-    assert [(p.start, p.end) for p in merged] == [
-        (date(2026, 6, 1), date(2026, 6, 29)),
-        (date(2026, 6, 30), date(2026, 7, 28)),
-    ]
+@freeze_time("2026-09-09T12:00:00-07:00")
+def test_the_basis_names_the_source_that_actually_answered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One old statement plus a live portal is not "the boundary your statements print".
+
+    Deciding the label from "does the account hold any statements" said exactly
+    that, for a cycle no statement had anything to do with.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    store = AccountStore(tmp_path)
+    store.save(
+        AccountProfile(
+            (AccountEpoch(date(2025, 1, 1), Config()),),
+            observations=(
+                AccountObservation(
+                    agreements=(
+                        ObservedAgreement(
+                            provider="pge",
+                            statement_date=date(2026, 2, 3),
+                            period=BillingPeriod(date(2026, 1, 1), date(2026, 1, 30)),
+                            tariff="E-ELEC",
+                        ),
+                    ),
+                ),
+            ),
+        )
+    )
+    _stub_export(
+        tmp_path,
+        monkeypatch,
+        portal_periods=[BillingPeriod(date(2026, 7, 29), date(2026, 8, 27))],
+    )
+    capsys.readouterr()
+
+    assert main(["bill"]) == 0
+
+    out = capsys.readouterr().out
+    assert "cycle: 2026-08-28 to 2026-09-09, the boundary PG&E billed on" in out
+    assert "your statements print" not in out
+
+
+def test_naming_a_config_file_never_reaches_for_the_account(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--config` says which file to price from; consulting the account is a
+    write to the configuration directory it has no business making."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    config = tmp_path / "elsewhere.toml"
+    config.write_text('tariff = "E-ELEC"\ninterconnection_year = 2026\n', encoding="utf-8")
+
+    def refuse(*args: object, **kwargs: object) -> object:
+        raise AssertionError("the account was consulted despite --config")
+
+    monkeypatch.setattr("tariffkit.cli.commands._account_store", refuse)
+
+    assert main(["--config", str(config), "now"]) == 0
+    assert not (tmp_path / "tariffkit").exists()
 
 
 def test_a_csv_path_with_another_source_still_resolves_a_window(

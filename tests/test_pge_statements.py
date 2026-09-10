@@ -70,13 +70,7 @@ def test_a_reading_that_parsed_is_reported_over_one_that_did_not() -> None:
     # With nothing that parsed, the ambiguity is still the best thing to say.
     assert parse_module._ocr_failure("probe.pdf", [], ambiguous) is ambiguous[0]
     # And with neither, the generic refusal stands.
-    lastly = str(parse_module._ocr_failure("probe.pdf", [], []))
-    assert "did not produce" in lastly
-    # Colon-separated like the others, because `account sync` strips the source
-    # prefix off these: for a sync it is a temporary name in a cache directory
-    # the run has already deleted, and printing it sends the reader after a
-    # file that never existed.
-    assert lastly.startswith("probe.pdf: ")
+    assert "did not produce" in str(parse_module._ocr_failure("probe.pdf", [], []))
 
 
 def test_two_rows_sharing_a_truncated_label_are_not_an_overlap() -> None:

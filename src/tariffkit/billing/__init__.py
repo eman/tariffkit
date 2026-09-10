@@ -9,6 +9,7 @@ from .cycles import (
     Cycle,
     cycle_start,
     known_periods,
+    merge_periods,
     resolve_cycle,
     statement_periods,
 )
@@ -68,6 +69,7 @@ __all__ = [
     "hourly",
     "known_periods",
     "mce_cash_out",
+    "merge_periods",
     "net_intervals",
     "pge_true_up",
     "published_nsc_rate",

@@ -128,19 +128,29 @@ class AccountStore:
                 f"could not create the account directory {self.directory}: {exc}"
             ) from exc
 
-    def _check_private_directory(self) -> None:
+    def _check_directory(self) -> None:
+        """Refuse a path that is not a directory of ours. Mode is not checked here.
+
+        Reading used to demand exactly 0700 and, before that, quietly chmod-ed
+        its way to it -- so the check only ever passed because construction had
+        just fixed it. With creation made lazy the self-heal went too, and the
+        demand outlived it: a directory made by the `mkdir -p` in
+        docs/accounts.md is 0755 under a default umask, and every command that
+        so much as asks whether an account exists refused to run. A read-only
+        0500 mount was refused for being *more* private than asked.
+
+        What protects the account is the file's own 0600, checked on every
+        read. The directory is tightened when we create or write it, which is
+        the point at which doing so is ours to do.
+        """
         if self.directory.is_symlink() or not self.directory.is_dir():
             raise ProfileStorageError(f"the account directory is not a directory: {self.directory}")
-        if stat.S_IMODE(self.directory.stat().st_mode) != _MODE_DIR:
-            raise ProfileStorageError(
-                f"the account directory is not private (expected mode 0700): {self.directory}"
-            )
 
     def exists(self) -> bool:
         """Whether an account has been set up, adopting a legacy profile if one fits."""
         if not self.directory.exists():
             return False
-        self._check_private_directory()
+        self._check_directory()
         if self.path.is_file():
             return True
         return self._adopt_legacy() is not None
@@ -150,7 +160,7 @@ class AccountStore:
             raise ProfileNotFoundError(
                 "no account has been set up; run 'tariffkit account init' to create one"
             )
-        self._check_private_directory()
+        self._check_directory()
         if not self.path.exists() and self._adopt_legacy() is None:
             raise ProfileNotFoundError(
                 "no account has been set up; run 'tariffkit account init' to create one"
@@ -186,7 +196,7 @@ class AccountStore:
     ) -> AccountProfile:
         """Atomically save a validated account with optimistic concurrency."""
         self._ensure_directory()
-        self._check_private_directory()
+        self._check_directory()
         replacement = _json_bytes(profile)
         with self._account_lock():
             original = self._read_existing(self.path)
@@ -219,7 +229,9 @@ class AccountStore:
 
     def delete(self, *, expected_revision: str | None = None) -> None:
         """Delete the account only if its revision is the one the caller read."""
-        self._check_private_directory()
+        if not self.directory.exists():
+            raise ProfileNotFoundError("no account has been set up")
+        self._check_directory()
         with self._account_lock():
             original = self._read_existing(self.path)
             if original is None:

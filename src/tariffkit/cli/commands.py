@@ -590,13 +590,30 @@ def _billing_window(args: Any, profile: Any) -> tuple[Any, str]:
         )
 
     today = datetime.now(PACIFIC).date()
-    periods, told_by = _known_periods(args, profile, refresh=args.refresh)
-    cycle = resolve_cycle(today, _cycle_start_day(args), periods)
-    basis = told_by if cycle.source == "statement" else cycle.source
-    return BillingPeriod(cycle.start, today), basis
+    origins = _known_periods(args, profile, refresh=args.refresh)
+    cycle = resolve_cycle(today, _cycle_start_day(args), tuple(origins))
+    return BillingPeriod(cycle.start, today), _basis_of(cycle, origins)
 
 
-def _known_periods(args: Any, profile: Any, *, refresh: bool = False) -> tuple[Any, str]:
+def _basis_of(cycle: Any, origins: Mapping[Any, str]) -> str:
+    """Which source the boundary actually came from, not which ones exist.
+
+    Deciding this from "does the account hold any statements" labelled a
+    portal boundary as a statement's on any account holding one old PDF --
+    and on an account whose observations carry no agreement spans at all,
+    where every period in play is the portal's.
+    """
+    if cycle.source != "statement":
+        return str(cycle.source)
+    for period, origin in origins.items():
+        # Either the cycle containing today, or -- cycles being contiguous --
+        # the one opening the day after the last period ended.
+        if period.start == cycle.start or period.end + timedelta(days=1) == cycle.start:
+            return origin
+    return "statement"
+
+
+def _known_periods(args: Any, profile: Any, *, refresh: bool = False) -> dict[Any, str]:
     """Cycle boundaries, from the utility where it will say and the statements otherwise.
 
     The portal lists every cycle it has billed and the boundaries it billed them
@@ -606,41 +623,44 @@ def _known_periods(args: Any, profile: Any, *, refresh: bool = False) -> tuple[A
 
     Statements still count. An account may have imported them and have no
     credentials configured at all, and the two agree wherever they overlap.
+
+    Returns each period with the source it came from, oldest first, because the
+    label printed beside the window has to name whichever one actually answered.
     """
-    from ..billing import known_periods
+    from ..billing import merge_periods, statement_periods
     from ..sources import PgeSettings, cached_bill_periods
 
-    stored = known_periods(profile)
-    # What to call them: a statement is evidence the account read itself, while
-    # `billing_periods` is the utility's list recorded onto it. Both are exact
-    # and they are not the same claim.
-    told_by = "statement" if profile.observations else "recorded" if stored else "portal"
+    # Each period, tagged with where it came from. A statement is evidence the
+    # account read itself; `billing_periods` is the utility's list recorded onto
+    # it; the live list is the utility asked just now. All three are exact and
+    # they are not the same claim, and which one answered is only known after
+    # the cycle resolves.
+    origins: dict[Any, str] = {}
+    statements = statement_periods(profile)
+    for period in statements:
+        origins[period] = "statement"
+
+    known = merge_periods(statements, profile.billing_periods)
+    for period in known:
+        origins.setdefault(period, "recorded")
+
     try:
         settings: Any = PgeSettings.load(config_path=args.config)
     except TariffKitError:
-        # No credentials is not an error here: a cached list still answers, and
-        # so does what the account already carries.
+        # No credentials is not an error here: what the account carries still
+        # answers, and so does a cached list.
         settings = None
     portal = cached_bill_periods(settings, refresh=refresh)
     if not portal:
-        return stored, told_by
-    # Merged the same way the account merges its own two sources: a statement
-    # is one page, and the portal lists a bill per agreement, so a cycle split
-    # by a mid-cycle change is one period on the statement and two here.
-    # Taking the portal's list wholesale would open that cycle on the wrong day
-    # and disagree with what the integration reports for the same account.
-    merged = _merged_periods(stored, portal)
-    return merged, (told_by if profile.observations else "portal")
-
-
-def _merged_periods(statements: Sequence[Any], portal: Sequence[Any]) -> tuple[Any, ...]:
-    """Statement periods, plus every portal period none of them overlaps."""
-    kept = [
-        period
-        for period in portal
-        if not any(period.start <= known.end and known.start <= period.end for known in statements)
-    ]
-    return tuple(sorted([*statements, *kept], key=lambda period: period.start))
+        return origins
+    # Merged the way the account merges its own two sources: a statement is one
+    # page, and the portal lists a bill per agreement, so a cycle split by a
+    # mid-cycle change is one period on the statement and two here. Taking the
+    # portal's list wholesale opened that cycle on the wrong day and disagreed
+    # with what the integration reports for the same account.
+    for period in merge_periods(known, portal):
+        origins.setdefault(period, "portal")
+    return {period: origins[period] for period in sorted(origins, key=lambda p: p.start)}
 
 
 #: How each boundary was arrived at, said plainly. The two guesses name what

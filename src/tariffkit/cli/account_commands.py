@@ -306,16 +306,25 @@ def apply_observations(
     return working, proposals
 
 
-def _statement_reason(err: Exception) -> str:
+def _statement_reason(err: Exception, source: str | Path) -> str:
     """The parser's message without the source prefix it already carries.
 
     ``read_statement`` prefixes its errors with the file it was handed, which
-    for a sync is a temporary name the caller never sees. The reason is the
-    part after it.
+    for a sync is a temporary name in a cache directory the run deletes -- so
+    the one identifier in the message named a file that never outlived the
+    command.
+
+    Stripping *that name*, rather than everything up to the first ``": "``.
+    The punctuation was never a convention the parser kept: four of its
+    messages separate the source with a space and leaked the name anyway, and
+    one contains a later colon of its own, so partitioning threw away the half
+    that said what went wrong and kept only the problem list.
     """
     text = str(err)
-    _, separator, rest = text.partition(": ")
-    return rest.strip() if separator else text
+    for prefix in (f"{Path(source).name}: ", f"{Path(source).name} ", f"{source}: ", f"{source} "):
+        if text.startswith(prefix):
+            return text[len(prefix) :].strip()
+    return text
 
 
 def import_statements(
@@ -341,7 +350,7 @@ def import_statements(
         try:
             observations.append(import_statement(path))
         except StatementError as err:
-            skipped.append({"statement": str(path), "reason": _statement_reason(err)})
+            skipped.append({"statement": str(path), "reason": _statement_reason(err, path)})
     updated, proposals = apply_observations(store, observations, apply=apply)
     return updated, proposals, skipped
 
@@ -474,7 +483,7 @@ def sync_profile(
                     skipped.append(
                         {
                             "statement": issued_on or f"#{index}",
-                            "reason": _statement_reason(err),
+                            "reason": _statement_reason(err, pdf_path),
                         }
                     )
                 finally:
