@@ -354,6 +354,15 @@ the source with a space, so those printed the temporary name anyway; a fifth
 contains a later colon of its own and lost the half that said what went wrong,
 keeping only its problem list. It strips the source *name* now.
 
+#### Coverage says what was reconstructed and what was merely shifted
+
+They were one sentence, and it was wrong either way. Counting only the
+intervals the source could not speak for reported "0 interval(s) covering 0.0h
+and 4.5 kWh"; counting every interval that carried a share said 347 hours of a
+768-hour cycle were "reconstructed across gaps" when all 347 were measured and
+there were no gaps. A reconstructed interval and a shifted kilowatt-hour are
+different claims and now get different sentences.
+
 #### Home Assistant is the default reading source
 
 `tariffkit bill` read Green Button unless told otherwise. It now reads the
@@ -366,34 +375,33 @@ two days -- while the meter matched the printed statement to 0.00 kWh. The
 account's own instrument is the safer thing to reach for first; the export
 stays as the independent check, which is the job it does well.
 
-#### The audit stops crying wolf, and says which kind of difference it found
+#### The audit's time-of-use check fires above the noise, and nowhere else
 
-Two calibration faults, both measured rather than guessed. On real statements
-the run goes from 3/11 reconciled to 7/11, and every remaining failure is a
-disagreement worth reading.
+**A line the rate table reproduces is still a mismatch.** For a while it was
+not: a line was downgraded to a passing "metering" verdict whenever pricing it
+from the statement's own kWh reproduced the printed amount. That figure is
+`rate x printed kWh` and never passes through the billing engine, so it tests
+the rate table and nothing else -- and a hundredfold error in how the engine
+applies that rate leaves the two identical. Measured on a constructed
+statement: a $1,152.36 error on a $295.30 bill reconciled clean and vanished
+from the report. Reverted, and pinned by a test.
 
-**A metering difference is not a mismatch.** `Distribution + Public Purpose
-Programs` was reported as a mismatch on two cycles while the audit itself
-printed, underneath, that the rates reproduce the line from the statement's own
-kWh -- the machinery to tell the two apart existed and the verdict ignored it.
-A line whose rates check out against the printed kWh is now `metering`:
-reported, and not a failure. No meter but the utility's own agrees with the
-utility about every interval, and a check that can never reach zero is one
-nobody reads.
+**The split is asserted, above the reference's own noise.** `kwh_ok` allowed
+0.5% of the larger figure with the scale floored at 1 kWh -- an absolute
+five-watt-hour test on any small quantity. Green Button rounds every interval
+to two decimals (measured: all 2,880 values in a cycle's export carry exactly
+two), so its quantisation accumulates about 0.31 kWh over a cycle at two sigma.
+A 0.06 kWh peak difference worth a penny failed a solar cycle while a 0.65 kWh
+one worth thirteen cents passed a winter cycle. A 0.35 kWh floor holds the test
+above that noise, and it still asserts: a cycle's worth of misattributed peak
+energy is real money.
 
-**The time-of-use comparison asserted on a source with no authority.** It
-failed a statement when Green Button's peak share differed from InfluxDB's --
-two derivations of one meter, neither of which is the arbiter of the other.
-Where the statement prints the split, the meter is the closer of the two: on
-one cycle it sat 0.144 kWh from a printed 331.250 while the utility's own
-export sat 0.370 the other way, so the check was failing bills for the
-reference's error. It is reported now and asserts nothing.
-
-The statement is the real arbiter and `_printed_peak` reads it, but only
-correctly on a statement with one service agreement -- on a cycle the utility
-split it reported +77.74 kWh, which is a parsing difference and not an
-attribution one. It is printed beside the other deltas with that written down,
-and asserts nothing until it is right.
+The statement prints the split and would be a better arbiter than a second
+derivation of the meter. Reading those rows is not solved -- an attempt counted
+"Part Peak" as peak on the two schedules this account actually runs, took the
+maximum of a cycle's two seasonal rows instead of their sum, and read exported
+kilowatt-hours as imported -- so it is not in the tree. That is worth doing
+properly, as its own change.
 
 #### A cached export is named for what it holds
 
@@ -406,7 +414,10 @@ overlapping a range this one only claimed to hold.
 
 The span is read from the readings themselves, the file is named for it, and a
 short answer is logged. An export with no readings at all is refused by the
-period that was asked for rather than by "CSV contained no data rows".
+period that was asked for rather than by "CSV contained no data rows" -- but
+only a genuinely empty one: an unrecognised header, an unparseable timestamp
+and a non-numeric quantity are the parser failing, and reporting those as "the
+portal sent nothing" pointed the reader at PG&E for a regression of ours.
 
 #### Three commands raised where they should have reported
 
@@ -439,11 +450,13 @@ import workflow lost every boundary on arrival), both of its epoch editors,
 They all use `dataclasses.replace` now, which forwards what it is not told to
 change, so the next field added cannot go the same way.
 
-#### `{"profile": false}` means no
+#### `{"profile": false}` means no, and so does `0`
 
 The REST switch counted any non-null value as "price this from the account", so
 `false` turned it on -- and, alongside a `config`, was then rejected for asking
-for both. A boolean is allowed to say no; a legacy profile name still says yes.
+for both. Special-casing the boolean left `0`, `""`, `[]` and `{}` still meaning
+yes, which is the same bug with a different literal. Anything falsy is no; a
+legacy profile name still says yes.
 
 #### The fixed charge is prorated, and the documentation said it was not
 

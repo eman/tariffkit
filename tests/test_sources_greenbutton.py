@@ -771,3 +771,28 @@ class TestAvailableReads:
 
     def test_without_credentials_it_does_not_guess(self, tmp_path: Path) -> None:
         assert cached_available_reads(None, path=tmp_path / "absent.json") is None
+
+
+def test_a_missing_csv_is_reported_not_raised(tmp_path: Path) -> None:
+    """A path that is not there is a thing to report, not an OSError."""
+    with pytest.raises(DataError, match="could not read"):
+        read_green_button(tmp_path / "absent.csv")
+
+
+def test_a_parser_failure_is_not_blamed_on_the_portal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ "The export holds no readings" is the portal's answer, not ours.
+
+    Swallowing every `DataError` reported an unrecognised header, an
+    unparseable timestamp and a non-numeric quantity all as an empty export,
+    pointing the reader at PG&E for a regression of ours.
+    """
+    from tariffkit.sources.pge import _exported_span
+
+    with pytest.raises(DataError, match="no timestamp column"):
+        _exported_span("nonsense\n1\n")
+    with pytest.raises(DataError, match="could not parse timestamp"):
+        _exported_span("start,imported,exported\nnot-a-date,1.0,0\n")
+    # Genuinely empty stays the portal's answer to give.
+    assert _exported_span("start,imported,exported\n") is None

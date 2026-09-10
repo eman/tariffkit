@@ -297,3 +297,17 @@ class TestCredentialsStayPrivate:
             session._client.close()
 
         assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_a_named_config_file_that_is_missing_is_reported_not_raised(tmp_path: Path) -> None:
+    """Every other misconfiguration is one line and exit 1."""
+    with pytest.raises(ConfigError, match="could not read the config file"):
+        Config.from_toml(tmp_path / "absent.toml")
+
+
+def test_config_that_is_not_toml_is_reported_not_raised(tmp_path: Path) -> None:
+    bad = tmp_path / "bad.toml"
+    bad.write_text("this is not = = toml\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="not valid TOML"):
+        Config.from_toml(bad)

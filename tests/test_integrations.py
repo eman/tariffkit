@@ -198,10 +198,14 @@ class TestWebApi:
         client = self._client(create_app(Config(), profile=profile))
 
         assert client.post("/v1/meta", json={"profile": True}).json()["tariff"] == "EV2-A"
+        assert client.post("/v1/meta", json={"profile": "home"}).json()["tariff"] == "EV2-A"
         # Not the account, and a config was given, so the config prices it.
-        with_config = client.post("/v1/meta", json={"config": {}, "profile": False})
-        assert with_config.status_code == 200
-        assert with_config.json()["tariff"] == "E-ELEC"
+        # Every way of writing no, not just `false`: special-casing the boolean
+        # left `0`, `[]` and `{}` still turning the switch on.
+        for no in (False, 0, "", [], {}, None):
+            answer = client.post("/v1/meta", json={"config": {}, "profile": no})
+            assert answer.status_code == 200, no
+            assert answer.json()["tariff"] == "E-ELEC", no
 
     def test_post_without_config_stays_invalid_without_a_default_profile(self, client: Any) -> None:
         assert client.post("/v1/price/now", json={}).status_code == 422

@@ -478,8 +478,34 @@ def test_sub_floor_smearing_is_recorded_even_though_it_is_not_flagged() -> None:
     warnings = list(check_coverage(readings, period))
 
     assert sum(r.smeared for r in readings) > MATERIAL_SMEAR
-    # And the sentence agrees with itself: counting only the intervals big
-    # enough to flag reported "0 interval(s) covering 0.0h and 4.5 kWh".
+    # And the sentence is true of what it counts. Reporting it as intervals
+    # "reconstructed across gaps" said a whole cycle was invented when nothing
+    # was missing at all -- these 500 hours were measured.
+    assert any("4.5 kWh was spread between measured intervals" in w for w in warnings), warnings
+    assert not any("reconstructed across gaps" in w for w in warnings), warnings
+
+
+def test_a_real_gap_is_still_reported_as_reconstructed() -> None:
+    """The other half of the split: intervals the source could not speak for."""
+    from tariffkit.billing import BillingPeriod, IntervalReading, check_coverage
+    from tariffkit.timeutil import PACIFIC
+
+    start = datetime(2026, 7, 1, tzinfo=PACIFIC)
+    readings = [
+        IntervalReading(
+            start=start + timedelta(hours=n),
+            imported=2.0,
+            exported=0.0,
+            duration=timedelta(hours=1),
+            estimated=n < 6,
+            smeared=0.5 if n < 6 else 0.0,
+        )
+        for n in range(24)
+    ]
+
+    warnings = list(check_coverage(readings, BillingPeriod(date(2026, 7, 1), date(2026, 7, 1))))
+
     assert any(
-        "500 interval(s) covering 500.0h and 4.5 kWh were reconstructed" in w for w in warnings
+        "6 interval(s) covering 6.0h were reconstructed across gaps" in w and "3.0 kWh" in w
+        for w in warnings
     ), warnings

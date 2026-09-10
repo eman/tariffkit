@@ -93,16 +93,11 @@ def create_app(
 
         Any non-null value used to count, so ``{"profile": false}`` turned the
         switch *on* -- and, alongside a `config`, was rejected for asking for
-        both. A boolean has to be allowed to say no.
+        both. Special-casing ``bool`` left every other way of writing no --
+        ``0``, ``[]``, ``{}`` -- still meaning yes, which is the same bug with a
+        different literal. Anything falsy is no.
         """
-        for key in ("profile", "account"):
-            value = payload.get(key)
-            if isinstance(value, bool):
-                if value:
-                    return True
-            elif value is not None and value != "":
-                return True
-        return False
+        return any(bool(payload.get(key)) for key in ("profile", "account"))
 
     def request_timestamp(raw: object, name: str) -> datetime:
         if not isinstance(raw, str):

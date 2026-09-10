@@ -140,29 +140,36 @@ def check_coverage(
     if overlaps:
         yield f"{len(overlaps)} overlapping interval(s); first at {overlaps[0].isoformat()}"
 
-    guessed = [r for r in ordered if r.estimated]
-    # The energy actually spread where the source can say, and the whole
-    # interval where it cannot. Summing the whole interval regardless reported
-    # a cycle's 0.84 kWh of smearing as 144.6 kWh.
+    # Two different claims, kept apart because conflating them made both wrong.
     #
-    # Summed over every interval, not only the ones big enough to be called
-    # reconstructed. A share below that floor changes nothing by itself, which
-    # is why it is not flagged; a cycle's worth of them is a different claim,
-    # and applying the floor per interval made the total unsayable -- five
-    # hundred shares of nine watt-hours is 4.5 kWh time-shifted and no warning
-    # at all.
-    energy = sum(r.smeared or (r.imported + r.exported if r.estimated else 0.0) for r in ordered)
-    # Every interval that carried a smeared share, not only the ones large
-    # enough to be flagged on their own -- counting just those reported "0
-    # interval(s) covering 0.0h and 4.5 kWh", a sentence at war with itself.
-    affected = [r for r in ordered if r.estimated or r.smeared]
-    if affected and (guessed or energy >= MATERIAL_SMEAR):
-        hours = sum((r.duration for r in affected), timedelta()).total_seconds() / 3600
+    # An interval is *reconstructed* when the source could not say what happened
+    # in it and the counter's advance was spread across it. Energy is *shifted*
+    # when a share of some advance was attributed to it -- which happens to
+    # fully measured intervals too, and calling those reconstructed across gaps
+    # said a whole cycle was invented when nothing was missing at all: 347 hours
+    # of a 768-hour cycle, every one of them measured.
+    #
+    # The energy is the share where the source can say, and the whole interval
+    # where it cannot: summing the whole interval regardless reported a cycle's
+    # 0.84 kWh of smearing as 144.6 kWh. Summed over every interval, because a
+    # share too small to flag on its own still adds up -- five hundred shares of
+    # nine watt-hours is 4.5 kWh, and a per-interval floor made that unsayable.
+    guessed = [r for r in ordered if r.estimated]
+    shifted = sum(r.smeared or (r.imported + r.exported if r.estimated else 0.0) for r in ordered)
+    if guessed:
+        hours = sum((r.duration for r in guessed), timedelta()).total_seconds() / 3600
         yield (
-            f"{len(affected)} interval(s) covering {hours:.1f}h and {energy:.1f} kWh were "
-            f"reconstructed across gaps in the source, so their time-of-use split is a "
-            f"guess even though the cycle total is not. Spreading a long gap evenly gives "
-            f"peak hours their share of the clock rather than their share of the load"
+            f"{len(guessed)} interval(s) covering {hours:.1f}h were reconstructed across gaps "
+            f"in the source, carrying {shifted:.1f} kWh whose time-of-use split is a guess even "
+            f"though the cycle total is not. Spreading a long gap evenly gives peak hours their "
+            f"share of the clock rather than their share of the load"
+        )
+    elif shifted >= MATERIAL_SMEAR:
+        # No gaps, and still enough energy moved between measured intervals to
+        # be worth saying so.
+        yield (
+            f"{shifted:.1f} kWh was spread between measured intervals, so its time-of-use "
+            f"split is approximate even though nothing is missing"
         )
 
     both = [] if netted else [r for r in ordered if r.imported and r.exported]

@@ -464,19 +464,41 @@ def test_naming_a_config_file_never_reaches_for_the_account(
     assert not (tmp_path / "tariffkit").exists()
 
 
-def test_the_default_source_is_home_assistant_unless_a_csv_says_otherwise() -> None:
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["bill"], "Home Assistant"),
+        (["bill", "--start", "2026-08-01", "--end", "2026-08-10"], "Home Assistant"),
+        (["bill", "readings.csv"], "could not read"),
+        (["bill", "--source", "influx"], "InfluxDB"),
+        (["bill", "--source", "green-button"], "PG&E credentials"),
+    ],
+)
+def test_the_default_source_is_home_assistant_unless_a_csv_says_otherwise(
+    argv: list[str],
+    expected: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """The account's own meter, not the utility's export.
 
     PG&E's export was missing thirty days of one cycle where the meter matched
-    the statement to 0.00 kWh, and it is the source `bill` reached for first.
+    the statement to 0.00 kWh, and it was the source `bill` reached for first.
     A CSV path still names the Green Button reader, since that is what a CSV is.
-    """
-    parser = build_parser()
 
-    assert parser.parse_args(["bill"]).source is None
-    assert parser.parse_args(["bill", "--source", "influx"]).source == "influx"
-    # Resolved in `main`, where the CSV argument is known.
-    assert parser.parse_args(["bill", "readings.csv"]).csv == Path("readings.csv")
+    Asserted through what each invocation actually goes and asks for -- naming
+    the source in the failure it produces -- because the same test written
+    against `parse_args` passed with the resolution reverted.
+    """
+    _account_with_statement(tmp_path, monkeypatch)
+    for variable in ("HA_HOST", "HA_TOKEN", "INFLUXDB3_HOST", "PGE_USERNAME", "PGE_PASSWORD"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setattr("tariffkit.sources.cached_bill_periods", lambda *a, **k: [])
+
+    assert main(argv) == 1
+
+    assert expected in capsys.readouterr().err
 
 
 def test_a_csv_path_with_another_source_still_resolves_a_window(

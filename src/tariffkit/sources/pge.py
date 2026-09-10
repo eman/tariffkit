@@ -1400,9 +1400,14 @@ def _exported_span(text: str) -> BillingPeriod | None:
 
     try:
         readings = read_green_button(io.StringIO(text))
-    except DataError:
-        # An export with no rows at all. Reported by the caller, which can name
-        # the period that was asked for -- "CSV contained no data rows" cannot.
+    except DataError as exc:
+        if "no data rows" not in str(exc):
+            # A header this reader does not recognise, an unparseable timestamp,
+            # a quantity that is not a number: all of those are the parser
+            # failing, and reporting them as "the portal sent nothing" points
+            # the reader at PG&E for a regression of ours. Only a genuinely
+            # empty export is the portal's to answer for.
+            raise
         return None
     if not readings:
         return None
