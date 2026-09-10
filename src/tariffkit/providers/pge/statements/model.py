@@ -331,7 +331,7 @@ class Statement:
         # come back labelled "Current" on a combined statement. That is not an
         # overlap, and refusing the statement for it cost two real statements
         # out of twenty-one.
-        seen: set[tuple[Section, str, tuple[date, date] | None, str, int, float]] = set()
+        seen: set[tuple[Section, str, tuple[date, date] | None, str, int, int, float]] = set()
         for line in self.lines():
             key = (
                 line.section,
@@ -339,6 +339,11 @@ class Statement:
                 line.subperiod,
                 line.block,
                 line.agreement,
+                # The same row read into two sections is the same printed row,
+                # so it is on one page. Two rows that merely look alike -- both
+                # labels truncating to "Current", both amounts landing on the
+                # same cent -- usually are not.
+                line.page,
                 round(line.amount, 2),
             )
             if key in seen:

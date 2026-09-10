@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from contextlib import suppress
+from dataclasses import replace
 from datetime import date
 from typing import Any
 
@@ -546,11 +547,10 @@ def _profile_with_config(
             break
     else:
         epochs.append(replacement)
-    return AccountProfile(
+    return replace(
+        profile,
         epochs=tuple(sorted(epochs, key=lambda epoch: epoch.effective)),
         name=profile.name if name is None else name,
-        observations=profile.observations,
-        meter_sources=profile.meter_sources,
     )
 
 
@@ -560,12 +560,7 @@ def _profile_without_epoch(profile: AccountProfile, effective: date) -> AccountP
         raise AccountError("account epoch does not exist")
     if not epochs:
         raise AccountError("an account profile needs at least one epoch")
-    return AccountProfile(
-        epochs=epochs,
-        name=profile.name,
-        observations=profile.observations,
-        meter_sources=profile.meter_sources,
-    )
+    return replace(profile, epochs=epochs)
 
 
 async def _async_validate(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, str]:
@@ -776,12 +771,6 @@ class TariffKitConfigFlow(ConfigFlow, domain=DOMAIN):
                 imported = AccountProfile.from_json(raw)
                 if not imported.name:
                     raise AccountError("imported profile must have a name")
-                imported = AccountProfile(
-                    epochs=imported.epochs,
-                    name=imported.name,
-                    observations=imported.observations,
-                    meter_sources=imported.meter_sources,
-                )
                 await self.async_set_unique_id(f"profile:{imported.name}")
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(

@@ -354,6 +354,39 @@ the source with a space, so those printed the temporary name anyway; a fifth
 contains a later colon of its own and lost the half that said what went wrong,
 keeping only its problem list. It strips the source *name* now.
 
+#### Copies of an account keep every field it has
+
+`billing_periods` was dropped by six paths that rebuilt `AccountProfile` field
+by field: Home Assistant's **Import profile** (so the documented export ->
+import workflow lost every boundary on arrival), both of its epoch editors,
+`account update`, `account source set`, and applying a reconciliation -- so
+`account sync --apply` erased what `account periods --apply` had just recorded.
+They all use `dataclasses.replace` now, which forwards what it is not told to
+change, so the next field added cannot go the same way.
+
+#### `{"profile": false}` means no
+
+The REST switch counted any non-null value as "price this from the account", so
+`false` turned it on -- and, alongside a `config`, was then rejected for asking
+for both. A boolean is allowed to say no; a legacy profile name still says yes.
+
+#### The fixed charge is prorated, and the documentation said it was not
+
+`BillEngine` has priced the Base Services Charge day by day since before this
+branch, specifically to match the utility's proration -- AB 205's charge began
+mid-cycle and that cycle is billed 30 days at nothing and 2 at the new rate.
+`docs/billing.md` listed the opposite as a known limit and `docs/use-cases.md`
+repeated it as a trap, which would have had an embedder compensating for a
+limitation that does not exist.
+
+#### Smeared energy is counted whether or not it is flagged
+
+The 0.01 kWh floor decided whether a reconstructed share *existed*, not just
+whether its interval was worth flagging, so it could accumulate out of sight:
+five hundred shares of nine watt-hours is 4.5 kWh time-shifted and no warning
+at all. The magnitude is always recorded now and materiality is applied to the
+cycle total, which is the question a reader is actually deciding.
+
 #### Reading the account no longer writes to the configuration directory
 
 Constructing `AccountStore` created and `chmod`-ed `$XDG_CONFIG_HOME/tariffkit`,

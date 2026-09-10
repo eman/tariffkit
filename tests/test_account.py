@@ -571,6 +571,61 @@ class TestAccountStore:
         assert not tuple(path.parent.glob(".home.*.tmp"))
 
 
+class TestBillingPeriodsSurviveEveryCopy:
+    """A frozen dataclass copied field by field silently drops the next field.
+
+    `billing_periods` was that field: six copy paths listed the four they knew
+    about, so the documented export -> Import profile workflow lost every
+    boundary on arrival, and `account sync --apply` erased what
+    `account periods --apply` had just recorded.
+    """
+
+    @staticmethod
+    def _profile() -> AccountProfile:
+        return AccountProfile(
+            (AccountEpoch(date(2025, 1, 1), Config()),),
+            name="home",
+            billing_periods=(BillingPeriod(date(2026, 7, 29), date(2026, 8, 27)),),
+        )
+
+    def test_the_home_assistant_round_trip_keeps_them(self) -> None:
+        pytest.importorskip("homeassistant")
+        pytest.importorskip("custom_components.tariffkit.profile", exc_type=ModuleNotFoundError)
+        from custom_components.tariffkit.profile import profile_from_entry, profile_payload
+
+        back = profile_from_entry({"profile": profile_payload(self._profile())})
+
+        assert back.billing_periods == self._profile().billing_periods
+
+    def test_updating_an_epoch_keeps_them(self, tmp_path: Path) -> None:
+        from tariffkit.cli.account_commands import update_profile
+
+        store = AccountStore(tmp_path)
+        store.save(self._profile())
+
+        updated = update_profile(
+            store, effective=date(2026, 1, 1), changes={"tariff": "EV2-A"}, apply=True
+        )
+
+        assert updated.billing_periods == self._profile().billing_periods
+
+    def test_setting_a_meter_source_keeps_them(self, tmp_path: Path) -> None:
+        from tariffkit.cli.account_commands import set_meter_source
+
+        store = AccountStore(tmp_path)
+        store.save(self._profile())
+
+        updated = set_meter_source(
+            store,
+            provider="ha",
+            grid_import_entity="sensor.in",
+            grid_export_entity="sensor.out",
+            apply=True,
+        )
+
+        assert updated.billing_periods == self._profile().billing_periods
+
+
 class TestBillingPeriods:
     """Boundaries the utility billed on, carried without the statements."""
 

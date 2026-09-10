@@ -353,11 +353,14 @@ class AccountChangeSet:
             raise ReconciliationError(
                 "cannot apply a change set containing conflicts or missing values"
             )
-        updated = AccountProfile(
+        # `replace`, not a field-by-field rebuild: listing the fields means
+        # every field added later is silently dropped by every copy that forgot
+        # to grow. `billing_periods` was, so applying a statement erased the
+        # boundaries `account periods` had just recorded.
+        updated = replace(
+            profile,
             epochs=self.proposed_epochs or profile.epochs,
-            name=profile.name,
             observations=(*profile.observations, self.observation),
-            meter_sources=profile.meter_sources,
         )
         _validate_complete_profile(updated)
         return updated

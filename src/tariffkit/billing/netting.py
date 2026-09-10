@@ -30,6 +30,15 @@ COVERAGE_TOLERANCE = 0.01
 STALE_AFTER = timedelta(hours=3)
 
 
+#: How much smeared energy a whole cycle may carry before it is worth saying so.
+#:
+#: The per-interval floor asks "does this share change a bill", and a tenth of a
+#: kilowatt-hour is about five cents at the widest export spread on this tariff.
+#: This asks the same question of the cycle, which is the one a reader is
+#: actually deciding about.
+MATERIAL_SMEAR = 0.1
+
+
 def check_coverage(
     readings: Sequence[IntervalReading],
     period: BillingPeriod,
@@ -132,11 +141,18 @@ def check_coverage(
         yield f"{len(overlaps)} overlapping interval(s); first at {overlaps[0].isoformat()}"
 
     guessed = [r for r in ordered if r.estimated]
-    if guessed:
-        # The energy actually spread where the source can say, and the whole
-        # interval where it cannot. Summing the whole interval regardless
-        # reported a cycle's 0.84 kWh of smearing as 144.6 kWh.
-        energy = sum(r.smeared or (r.imported + r.exported) for r in guessed)
+    # The energy actually spread where the source can say, and the whole
+    # interval where it cannot. Summing the whole interval regardless reported
+    # a cycle's 0.84 kWh of smearing as 144.6 kWh.
+    #
+    # Summed over every interval, not only the ones big enough to be called
+    # reconstructed. A share below that floor changes nothing by itself, which
+    # is why it is not flagged; a cycle's worth of them is a different claim,
+    # and applying the floor per interval made the total unsayable -- five
+    # hundred shares of nine watt-hours is 4.5 kWh time-shifted and no warning
+    # at all.
+    energy = sum(r.smeared or (r.imported + r.exported if r.estimated else 0.0) for r in ordered)
+    if guessed or energy >= MATERIAL_SMEAR:
         hours = sum((r.duration for r in guessed), timedelta()).total_seconds() / 3600
         yield (
             f"{len(guessed)} interval(s) covering {hours:.1f}h and {energy:.1f} kWh were "

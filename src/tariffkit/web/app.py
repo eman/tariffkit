@@ -68,10 +68,7 @@ def create_app(
         if unknown:
             raise HTTPException(422, f"unknown request keys: {sorted(unknown)}")
         raw = payload.get("config")
-        # "price this from my account" is now a switch, not a name: there is one
-        # account. Both spellings are accepted because both were, and a client
-        # that sent a name now gets the account it meant.
-        wants_account = payload.get("profile") is not None or payload.get("account") is not None
+        wants_account = _asked_for_the_account(payload)
         if raw is not None and wants_account:
             raise HTTPException(422, "choose either config or the account")
         if wants_account:
@@ -86,6 +83,26 @@ def create_app(
             return RateEngine(Config.from_dict(raw))
         except (ConfigError, DataError) as exc:
             raise HTTPException(422, str(exc)) from exc
+
+    def _asked_for_the_account(payload: dict[str, Any]) -> bool:
+        """Whether this request asked to be priced from the account.
+
+        "Price this from my account" is a switch, not a name: there is one
+        account. Both spellings are accepted because both were, and a client
+        that sent a name gets the account it meant.
+
+        Any non-null value used to count, so ``{"profile": false}`` turned the
+        switch *on* -- and, alongside a `config`, was rejected for asking for
+        both. A boolean has to be allowed to say no.
+        """
+        for key in ("profile", "account"):
+            value = payload.get(key)
+            if isinstance(value, bool):
+                if value:
+                    return True
+            elif value is not None and value != "":
+                return True
+        return False
 
     def request_timestamp(raw: object, name: str) -> datetime:
         if not isinstance(raw, str):

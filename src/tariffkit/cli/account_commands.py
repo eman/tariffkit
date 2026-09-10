@@ -14,6 +14,7 @@ import re
 import shutil
 import sys
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -228,11 +229,7 @@ def update_profile(
     else:
         epochs.append(replacement)
     epochs.sort(key=lambda epoch: epoch.effective)
-    updated = AccountProfile(
-        tuple(epochs),
-        observations=profile.observations,
-        meter_sources=profile.meter_sources,
-    )
+    updated = replace(profile, epochs=tuple(epochs))
     return store.save(updated, expected_revision=profile.revision) if apply else updated
 
 
@@ -256,11 +253,7 @@ def set_meter_source(
         sources = MeterSources(ha=source, influx=profile.meter_sources.influx)
     else:
         sources = MeterSources(ha=profile.meter_sources.ha, influx=source)
-    updated = AccountProfile(
-        epochs=profile.epochs,
-        observations=profile.observations,
-        meter_sources=sources,
-    )
+    updated = replace(profile, meter_sources=sources)
     return store.save(updated, expected_revision=profile.revision) if apply else updated
 
 

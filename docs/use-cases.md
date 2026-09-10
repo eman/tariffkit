@@ -61,10 +61,12 @@ bill.fixed_charges  # the Base Services Charge
 `compute_segments` handles the single-schedule case too — one segment in, one
 bill out — so a CLI app never needs to branch on whether anything changed.
 
-**Trap.** A rate change mid-cycle is not prorated for the *fixed* charge; it is
-priced from the schedule in force at the cycle's start, while PG&E prorates. The
-same applies at the June 1 and October 1 season boundaries. See
-[What this does not do](billing.md#what-this-does-not-do).
+**The fixed charge is prorated**, day by day, so a cycle spanning a rate change
+or a season boundary is billed at each day's own rate — the same thing PG&E
+does. AB 205's Base Services Charge began on 2026-03-01, and the cycle that
+crosses it is billed 30 days at nothing and 2 days at the new rate. See
+[What this does not do](billing.md#what-this-does-not-do) for the one thing
+that genuinely is approximated.
 
 ## 2. A house with solar
 

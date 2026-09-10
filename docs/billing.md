@@ -507,12 +507,8 @@ true-up month is still in the future, which it will be for the first cash-out.
 
 ## What this does not do
 
-Two known limits:
+One known limit:
 
-- A **rate change mid-cycle** is not prorated. The Base Services Charge is priced
-  from the tariff in force at the start of the cycle; PG&E prorates. Cycles
-  spanning a rate change (or the June 1 / October 1 season boundary, for the
-  fixed charge specifically) will be slightly off.
 - **PCIA basis is assumed.** Your bill prints PCIA as a dollar amount with no
   rate or kWh, so its `$/kWh` is derived. If the real basis is gross rather than
   netted import, computed bills drift from actual by that difference.

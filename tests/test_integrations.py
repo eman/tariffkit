@@ -187,6 +187,22 @@ class TestWebApi:
         assert response.status_code == 404
         assert response.json()["detail"] == "profile unavailable"
 
+    def test_a_boolean_switch_is_allowed_to_say_no(self) -> None:
+        """Any non-null value counted, so `false` turned the switch on.
+
+        Alongside a `config` it was then rejected for asking for both.
+        """
+        from tariffkit.web import create_app
+
+        profile = AccountProfile((AccountEpoch(date(1970, 1, 1), Config(tariff="EV2-A")),))
+        client = self._client(create_app(Config(), profile=profile))
+
+        assert client.post("/v1/meta", json={"profile": True}).json()["tariff"] == "EV2-A"
+        # Not the account, and a config was given, so the config prices it.
+        with_config = client.post("/v1/meta", json={"config": {}, "profile": False})
+        assert with_config.status_code == 200
+        assert with_config.json()["tariff"] == "E-ELEC"
+
     def test_post_without_config_stays_invalid_without_a_default_profile(self, client: Any) -> None:
         assert client.post("/v1/price/now", json={}).status_code == 422
 

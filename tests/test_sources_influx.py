@@ -446,3 +446,36 @@ class TestSmearedGaps:
         ]
         problems = list(check_coverage(readings, period))
         assert any("reconstructed across gaps" in problem for problem in problems)
+
+
+def test_sub_floor_smearing_is_recorded_even_though_it_is_not_flagged() -> None:
+    """A share too small to matter alone still counts toward the cycle.
+
+    The floor decided whether the energy *existed*, not just whether the
+    interval was worth calling reconstructed, so five hundred shares of nine
+    watt-hours -- 4.5 kWh time-shifted -- were invisible to `check_coverage`.
+    """
+    from tariffkit.billing import IntervalReading, check_coverage
+    from tariffkit.billing.netting import MATERIAL_SMEAR
+    from tariffkit.timeutil import PACIFIC
+
+    start = datetime(2026, 7, 1, tzinfo=PACIFIC)
+    readings = [
+        IntervalReading(
+            start=start + timedelta(hours=n),
+            imported=0.009,
+            exported=0.0,
+            duration=timedelta(hours=1),
+            estimated=False,
+            smeared=0.009,
+        )
+        for n in range(500)
+    ]
+
+    from tariffkit.billing import BillingPeriod
+
+    period = BillingPeriod(date(2026, 7, 1), date(2026, 7, 21))
+    warnings = list(check_coverage(readings, period))
+
+    assert sum(r.smeared for r in readings) > MATERIAL_SMEAR
+    assert any("reconstructed across gaps" in w and "4.5 kWh" in w for w in warnings), warnings

@@ -394,7 +394,12 @@ def read_counters(
             exported=max(exported.get(edge, 0.0), 0.0),
             duration=resolution,
             estimated=spread(edge) >= SMEARED_FLOOR,
-            smeared=spread(edge) if spread(edge) >= SMEARED_FLOOR else 0.0,
+            # Recorded whatever its size. The floor decides whether *this*
+            # interval is worth calling reconstructed; it must not decide
+            # whether the energy existed, because a share too small to matter
+            # on its own still adds up across a cycle and the reader is owed
+            # the total. `check_coverage` applies materiality after summing.
+            smeared=spread(edge),
         )
         for edge in sorted(set(imported) | set(exported))
     ]
