@@ -322,15 +322,15 @@ portal credentials by design and was otherwise left approximating with a
 meter-read day. They can also be typed in by hand from the portal's own
 bill-period dropdown; `docs/home-assistant.md` has that path.
 
-`known_periods(profile)` is what every cycle lookup now reads: statements where
-they exist, the portal's list for everything else. A statement *covering* a
-portal cycle replaces it, because it is one page -- a cycle whose service
-agreement changed partway is one billing period on the statement and two
-entries in the portal's list, and a cycle-to-date figure has to follow what was
-billed. Covering, not merely overlapping: a statement whose agreement blocks
-were only partly recovered spans a few days, and dropping the whole cycle it
-fell inside would leave the days around it with no boundary at all. The rule
-lives once, in `tariffkit.billing.merge_periods`.
+`known_periods(profile)` is what every cycle lookup now reads. Where two
+periods overlap the wider one is kept, because cycles tile rather than nest and
+anything inside another period is a partial view of the same cycle. That is
+usually the statement, which is one page -- a cycle whose service agreement
+changed partway is one billing period on it and two entries in the portal's
+list, and a cycle-to-date figure has to follow what was billed. It is
+occasionally the portal, when a statement was only partly read and spans a few
+days inside a cycle the portal has whole. The rule lives once, in
+`tariffkit.billing.merge_periods`.
 
 The label printed beside the window names the source that actually answered,
 found by which period the cycle resolved from. Deciding it from "does the

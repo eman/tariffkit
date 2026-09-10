@@ -733,9 +733,15 @@ So TariffKit prefers evidence, of which the profile can carry two kinds:
 - **`billing_periods`** — the cycles PG&E says it billed, dates only. No
   statement PDF is involved, which is what makes them enterable by hand.
 - **Imported statements** — the same boundaries, plus the tariff and supplier
-  each cycle was billed under. Where the two overlap the statement wins, since
-  it is one page: a cycle whose service agreement changed partway is one
-  billing period on the statement and two entries in the portal's list.
+  each cycle was billed under.
+
+Where two periods overlap, the **wider** one is kept, because cycles tile
+rather than nest: anything sitting inside another period is a partial view of
+the same cycle. That is usually the statement, which is one page — a cycle
+whose service agreement changed partway is one billing period on it and two
+entries in the portal's list. It is occasionally the other way round, when a
+statement was only partly read, and then the portal's whole cycle is the
+better answer.
 
 Billing periods are contiguous, each beginning the day after the last one
 ended, so the *open* cycle's start follows from the most recent one without

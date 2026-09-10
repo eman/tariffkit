@@ -69,21 +69,38 @@ def statement_periods(profile: AccountProfile) -> tuple[BillingPeriod, ...]:
 def merge_periods(
     preferred: Sequence[BillingPeriod], extra: Sequence[BillingPeriod]
 ) -> tuple[BillingPeriod, ...]:
-    """``preferred``, plus every ``extra`` period none of them already covers.
+    """Both lists, with any period another one wholly contains dropped.
 
-    Covers, not merely touches. Dropping anything a preferred period *overlaps*
-    loses real coverage whenever the preferred one is narrower: a statement
-    whose agreement blocks were only partly recovered spans a few days, and
-    discarding the whole cycle it fell inside left the days around it with no
-    boundary at all, resolving to the calendar month -- an exact answer
-    downgraded to a guess by the act of learning something.
+    Cycles tile, they do not nest, so a period sitting inside another is not a
+    second cycle -- it is a partial view of the same one, and the wider period
+    is the boundary that was billed. Keeping the wider one is what makes a
+    statement outrank the portal in the case that matters (a cycle split by a
+    mid-cycle agreement change is one page and two bills) *and* the portal
+    outrank a statement in the case that does not (a statement whose agreement
+    blocks were only partly recovered spans a few days inside a cycle the
+    portal has whole).
+
+    The rule was "drop any ``extra`` a ``preferred`` overlaps", which lost the
+    real cycle to the partial view and left the days around it with no boundary
+    at all -- an exact answer downgraded to the calendar-month guess by the act
+    of learning something.
+
+    ``preferred`` breaks an exact tie, which is the only thing left for it to
+    decide.
     """
+    seen = {(period.start, period.end) for period in preferred}
+    candidates = [*preferred, *(p for p in extra if (p.start, p.end) not in seen)]
     kept = [
         period
-        for period in extra
-        if not any(known.start <= period.start and period.end <= known.end for known in preferred)
+        for period in candidates
+        if not any(
+            other.start <= period.start
+            and period.end <= other.end
+            and (other.start, other.end) != (period.start, period.end)
+            for other in candidates
+        )
     ]
-    return tuple(sorted([*preferred, *kept], key=lambda period: period.start))
+    return tuple(sorted(kept, key=lambda period: period.start))
 
 
 def known_periods(profile: AccountProfile) -> tuple[BillingPeriod, ...]:

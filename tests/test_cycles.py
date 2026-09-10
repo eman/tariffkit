@@ -18,6 +18,7 @@ from tariffkit.billing import (
     Cycle,
     cycle_start,
     known_periods,
+    merge_periods,
     resolve_cycle,
     statement_periods,
 )
@@ -182,3 +183,66 @@ class TestKnownPeriods:
 
     def test_neither_source_is_no_periods_rather_than_an_error(self) -> None:
         assert known_periods(self._profile()) == ()
+
+
+class TestMergePeriods:
+    """Cycles tile rather than nest, so a nested period is a partial view."""
+
+    def test_the_wider_statement_replaces_the_bills_it_covers(self) -> None:
+        """A cycle split by interconnection is one page and two bills."""
+        merged = merge_periods(
+            [_period((2026, 6, 1), (2026, 6, 29))],
+            [
+                _period((2026, 6, 1), (2026, 6, 2)),
+                _period((2026, 6, 3), (2026, 6, 29)),
+                _period((2026, 6, 30), (2026, 7, 28)),
+            ],
+        )
+
+        assert merged == (
+            _period((2026, 6, 1), (2026, 6, 29)),
+            _period((2026, 6, 30), (2026, 7, 28)),
+        )
+
+    def test_a_partly_recovered_statement_does_not_displace_the_real_cycle(self) -> None:
+        """The rule dropped anything a statement *overlapped*, and lost the cycle.
+
+        An OCR'd statement whose agreement blocks were only partly recovered
+        spans a few days. Discarding the cycle it sits inside left the days
+        around it with no boundary at all -- resolving to the calendar-month
+        guess -- and the days inside it opening on the wrong day.
+        """
+        narrow = _period((2026, 6, 10), (2026, 6, 15))
+        merged = merge_periods(
+            [narrow],
+            [_period((2026, 6, 1), (2026, 6, 29)), _period((2026, 6, 30), (2026, 7, 28))],
+        )
+
+        assert narrow not in merged
+        assert merged == (
+            _period((2026, 6, 1), (2026, 6, 29)),
+            _period((2026, 6, 30), (2026, 7, 28)),
+        )
+        for day, expected in ((date(2026, 6, 12), "inside"), (date(2026, 6, 20), "after")):
+            cycle = resolve_cycle(day, 0, merged)
+            assert cycle == Cycle(date(2026, 6, 1), "statement"), expected
+
+    def test_the_same_period_from_both_sides_appears_once(self) -> None:
+        period = _period((2026, 6, 1), (2026, 6, 29))
+
+        assert merge_periods([period], [period]) == (period,)
+
+    def test_periods_that_only_touch_are_both_kept(self) -> None:
+        """Overlap is not containment: neither is a partial view of the other."""
+        merged = merge_periods(
+            [_period((2026, 6, 1), (2026, 6, 15))], [_period((2026, 6, 10), (2026, 6, 29))]
+        )
+
+        assert len(merged) == 2
+
+    def test_either_side_empty_is_the_other_side(self) -> None:
+        period = _period((2026, 6, 1), (2026, 6, 29))
+
+        assert merge_periods([], [period]) == (period,)
+        assert merge_periods([period], []) == (period,)
+        assert merge_periods([], []) == ()
