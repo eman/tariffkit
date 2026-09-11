@@ -5,8 +5,17 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
-### Fixed
+## [0.8.1] - 2026-09-11
 
+### Changed
+- **Home Assistant 2026.8.0 is the minimum**, up from 2026.3.0. The fix below
+  calls `device_registry.async_get_device_by_identifier`, which first ships in
+  2026.8.0, so the floor moves with it; HACS will not offer this update to an
+  older core. The old floor was never a tested one -- it was the first release
+  on the declared Python patch line, which says nothing about whether anything
+  ran there, and the suite has only ever pinned the 2026.8 series.
+
+### Fixed
 - **The device lookup no longer uses a deprecated registry call.** Running the
   integration in a stock Home Assistant container logged
   `Detected that custom integration 'tariffkit' calls device_registry.async_get_device,
@@ -1571,7 +1580,8 @@ Initial release.
 - Holiday calendars are extracted per vintage from the source data rather than
   recomputed, because the vintage files disagree in far-future years.
 
-[Unreleased]: https://github.com/eman/tariffkit/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/eman/tariffkit/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/eman/tariffkit/releases/tag/v0.8.1
 [0.8.0]: https://github.com/eman/tariffkit/releases/tag/v0.8.0
 [0.7.0]: https://github.com/eman/tariffkit/releases/tag/v0.7.0
 [0.6.1]: https://github.com/eman/tariffkit/releases/tag/v0.6.1

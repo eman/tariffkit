@@ -9,6 +9,8 @@ import struct
 import tomllib
 from pathlib import Path
 
+from homeassistant.helpers import device_registry as dr
+
 import tariffkit
 
 ROOT = Path(__file__).parent.parent
@@ -39,10 +41,15 @@ def test_project_identity_and_version_are_consistent() -> None:
     assert hacs["filename"] == "tariffkit.zip"
     assert hacs["hide_default_branch"] is True
     assert hacs["country"] == "US"
-    # Not a coincidence: 2026.3.0 is the first Home Assistant release on the
-    # 3.14.2 patch line the floor above declares, so the two move together and
-    # raising either one raises the other. See docs/packaging_strategy.md.
-    assert hacs["homeassistant"] == "2026.3.0"
+    # The floor is set by the newest Home Assistant API the integration calls,
+    # not by the Python patch line -- it was 2026.3.0 on that older reasoning,
+    # which said nothing about whether anything ran there. HACS refuses the
+    # update below this version, which is the only thing standing between a
+    # 2026.7 user and an AttributeError. See docs/packaging_strategy.md.
+    assert hacs["homeassistant"] == "2026.8.0"
+    # The reason for that number, asserted rather than remembered: 2026.8.0 is
+    # the first release carrying the call `coordinator.py` makes.
+    assert hasattr(dr.DeviceRegistry, "async_get_device_by_identifier")
 
 
 def test_maintainer_dependencies_are_not_public_extras() -> None:
