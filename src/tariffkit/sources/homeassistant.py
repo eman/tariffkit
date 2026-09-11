@@ -49,12 +49,11 @@ Resolution = Literal["auto", "5minute", "hour"]
 #: Home Assistant's own period names, finest first.
 PERIODS: dict[str, timedelta] = {"5minute": timedelta(minutes=5), "hour": timedelta(hours=1)}
 
-#: A smart-meter reader's monotonic-filtered pair. The unfiltered entities are
-#: named ``..._total_energy_delivered`` and drop to zero several times a day when
-#: the device re-establishes its meter session, so they are the wrong default
-#: despite the more official-looking name.
-DEFAULT_IMPORT_ENTITY = "sensor.eagle_100_energy_delivered"
-DEFAULT_EXPORT_ENTITY = "sensor.eagle_100_energy_received"
+#: Nothing is assumed about which entities carry grid exchange. There used to be
+#: a default pair here, named for the hardware this was developed against, which
+#: meant an unconfigured install quietly asked Home Assistant about somebody
+#: else's sensors. Entity names are site-specific; a wrong guess is not a
+#: better starting point than no guess.
 
 #: Ceiling on implied power for one interval, in kW. Anything above it is a
 #: counter artefact rather than energy.
@@ -100,8 +99,32 @@ class HaSettings:
     #: Never printed. `repr=False` keeps it out of tracebacks, which render
     #: dataclass frames -- the same reason PgeSettings marks its own.
     token: str = field(repr=False)
-    import_entity: str = DEFAULT_IMPORT_ENTITY
-    export_entity: str = DEFAULT_EXPORT_ENTITY
+    #: Optional: rate pricing needs neither. ``None`` means "not configured",
+    #: which is answered when a read is attempted, not at load time.
+    import_entity: str | None = None
+    export_entity: str | None = None
+
+    def require_entities(self) -> tuple[str, str]:
+        """The two entity ids, or a ConfigError naming how to set them."""
+        missing = [
+            name
+            for name, value in (
+                ("import_entity", self.import_entity),
+                ("export_entity", self.export_entity),
+            )
+            if not value
+        ]
+        if missing:
+            raise ConfigError(
+                f"Home Assistant {' and '.join(missing)} not set; name the grid "
+                f"counters with `tariffkit account source set ha "
+                f"--grid-import-entity ... --grid-export-entity ...`, or put "
+                f"import_entity/export_entity under [home_assistant] in the "
+                f"config file. Rate pricing (`tariffkit now`, `forecast`, "
+                f"`info`) needs neither."
+            )
+        assert self.import_entity is not None and self.export_entity is not None
+        return self.import_entity, self.export_entity
 
     @property
     def websocket_url(self) -> str:
@@ -165,8 +188,8 @@ class HaSettings:
         return cls(
             host=values["host"],
             token=values["token"],
-            import_entity=values.get("import_entity", DEFAULT_IMPORT_ENTITY),
-            export_entity=values.get("export_entity", DEFAULT_EXPORT_ENTITY),
+            import_entity=values.get("import_entity") or None,
+            export_entity=values.get("export_entity") or None,
         )
 
 
@@ -280,8 +303,9 @@ def _readings_from(
             previous = carry(previous, slot, state)
         return out
 
-    imported = energies(settings.import_entity)
-    exported = energies(settings.export_entity)
+    import_entity, export_entity = settings.require_entities()
+    imported = energies(import_entity)
+    exported = energies(export_entity)
 
     readings: dict[int, IntervalReading] = {}
     for stamp in sorted(set(imported) | set(exported)):
@@ -352,7 +376,7 @@ async def _fetch(
                         "type": "recorder/statistics_during_period",
                         "start_time": start.astimezone(UTC).isoformat(),
                         "end_time": end.astimezone(UTC).isoformat(),
-                        "statistic_ids": [settings.import_entity, settings.export_entity],
+                        "statistic_ids": list(settings.require_entities()),
                         "period": period,
                         # `state` is the counter itself, and `interval_energy`
                         # needs it: a recorder that mistook a dropped-to-zero
@@ -390,6 +414,7 @@ async def read_statistics_async(
     therefore mix the two; :func:`describe_resolution` reports what was used, so
     a caller can say so rather than implying uniformity.
     """
+    settings.require_entities()
     if resolution not in ("auto", *PERIODS):
         raise ConfigError(f"unknown resolution {resolution!r}; use auto, 5minute or hour")
     for name, moment in (("start", start), ("end", end)):
@@ -437,8 +462,9 @@ async def read_statistics_async(
     readings.update({s: r for s, r in fine.items() if s - s % hour_ms not in surrendered})
 
     if not readings:
+        import_entity, export_entity = settings.require_entities()
         raise DataError(
-            f"no statistics for {settings.import_entity} / {settings.export_entity} "
+            f"no statistics for {import_entity} / {export_entity} "
             f"between {start.isoformat()} and {end.isoformat()}"
         )
     return [readings[stamp] for stamp in sorted(readings)]

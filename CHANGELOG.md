@@ -22,6 +22,27 @@ All notable changes to this project are documented here. This project follows
   already carries `meter_sources.ha` offers those as the suggested values.
 
 ### Changed
+- **The grid counters are optional everywhere, with no default.** The library
+  used to default `import_entity`/`export_entity` to one site's hardware, so an
+  install that had named no meter was indistinguishable from one configured as
+  somebody else's sensors -- and the request went out to Home Assistant or
+  InfluxDB either way. `HaSettings` and `InfluxSettings` now carry `None` until
+  something names them.
+
+  **Breaking** for anyone who relied on the fallback: name the entities with
+  `tariffkit account source set {ha,influx} --grid-import-entity ...
+  --grid-export-entity ...`, or under `[home_assistant]` / `[influxdb]` in the
+  config file. `DEFAULT_IMPORT_ENTITY` and `DEFAULT_EXPORT_ENTITY` are gone from
+  `tariffkit.sources`.
+
+  Nothing that prices a rate is affected: `tariffkit now`, `forecast` and
+  `info` never touched a meter and still need no configuration at all. Only
+  `bill --source ha` and `--source influx` require the entities, and they now
+  fail with a message naming both the missing key and the command that sets it,
+  instead of quietly reading a sensor that is not yours. The Home Assistant
+  integration already worked this way -- unset means no running totals, and the
+  rate entities appear regardless.
+
 - **The documentation no longer names one brand of meter reader.** Docstrings,
   guides, changelog entries and the `audit reconcile --readings` help described
   the hardware this was developed against -- a Rainforest Eagle-100 -- as

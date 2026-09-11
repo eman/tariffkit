@@ -24,8 +24,8 @@ from tariffkit.errors import ConfigError, DataError
 from tariffkit.sources import influx
 from tariffkit.timeutil import PACIFIC
 
-IMPORT_ID = influx.DEFAULT_IMPORT_ENTITY
-EXPORT_ID = influx.DEFAULT_EXPORT_ENTITY
+IMPORT_ID = "grid_import_total"
+EXPORT_ID = "grid_export_total"
 
 
 class FakeResponse:
@@ -70,7 +70,15 @@ class FakePost:
 
 @pytest.fixture
 def settings() -> influx.InfluxSettings:
-    return influx.InfluxSettings(host="influx.example", database="homedb", token="secret")
+    # The series are no longer defaulted, so a fixture that reads counters has
+    # to name them, the same as a real configuration does.
+    return influx.InfluxSettings(
+        host="influx.example",
+        database="homedb",
+        token="secret",
+        import_entity=IMPORT_ID,
+        export_entity=EXPORT_ID,
+    )
 
 
 @pytest.fixture
@@ -98,7 +106,9 @@ class TestSettings:
         )
         got = influx.InfluxSettings.load(config, tmp_path / "none", token="t")
         assert got.import_entity == "meter_in"
-        assert got.export_entity == EXPORT_ID
+        # Naming one and not the other leaves the other unset rather than
+        # substituting a guess.
+        assert got.export_entity is None
 
     def test_dotenv_supplies_host_and_token(self, tmp_path: Path) -> None:
         env = tmp_path / ".env"

@@ -33,8 +33,6 @@ it hard to find.
 
 from .greenbutton import GreenButtonLayout, read_green_button
 from .homeassistant import (
-    DEFAULT_EXPORT_ENTITY,
-    DEFAULT_IMPORT_ENTITY,
     HaSettings,
     describe_resolution,
     load_dotenv,
@@ -57,8 +55,6 @@ from .pge import (
 )
 
 __all__ = [
-    "DEFAULT_EXPORT_ENTITY",
-    "DEFAULT_IMPORT_ENTITY",
     "CachedExport",
     "GreenButtonLayout",
     "HaSettings",

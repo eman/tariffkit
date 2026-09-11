@@ -27,8 +27,8 @@ from tariffkit.errors import ConfigError, DataError
 from tariffkit.sources import homeassistant as ha
 from tariffkit.timeutil import PACIFIC
 
-IMPORT_ID = ha.DEFAULT_IMPORT_ENTITY
-EXPORT_ID = ha.DEFAULT_EXPORT_ENTITY
+IMPORT_ID = "sensor.grid_import_total"
+EXPORT_ID = "sensor.grid_export_total"
 
 
 def epoch_ms(moment: datetime) -> int:
@@ -74,7 +74,14 @@ class FakeSocket:
 
 @pytest.fixture
 def settings() -> ha.HaSettings:
-    return ha.HaSettings(host="https://ha.example:8123", token="tok")
+    # The entities are no longer defaulted, so a fixture that reads meters has
+    # to name them, the same as a real configuration does.
+    return ha.HaSettings(
+        host="https://ha.example:8123",
+        token="tok",
+        import_entity=IMPORT_ID,
+        export_entity=EXPORT_ID,
+    )
 
 
 def patch_socket(monkeypatch: pytest.MonkeyPatch, series: dict[str, Any]) -> FakeSocket:
@@ -105,7 +112,9 @@ class TestSettings:
         env.write_text('HA_TOKEN = "tok"\n')
         s = ha.HaSettings.load(config_path=cfg, dotenv_path=env)
         assert (s.host, s.import_entity, s.token) == ("http://cfg:8123", "sensor.in", "tok")
-        assert s.export_entity == ha.DEFAULT_EXPORT_ENTITY
+        # Naming one and not the other leaves the other unset rather than
+        # substituting a guess.
+        assert s.export_entity is None
 
     def test_dotenv_host_wins_over_the_config_file(self, tmp_path: Path) -> None:
         cfg = tmp_path / "config.toml"
@@ -148,8 +157,9 @@ class TestSettings:
         """argparse hands through None for a flag nobody passed."""
         env = tmp_path / ".env"
         env.write_text('HA_HOST = "http://env"\nHA_TOKEN = "tok"\n')
-        s = ha.HaSettings.load(dotenv_path=env, import_entity=None)
-        assert s.import_entity == ha.DEFAULT_IMPORT_ENTITY
+        s = ha.HaSettings.load(dotenv_path=env, import_entity="sensor.real", export_entity=None)
+        assert s.import_entity == "sensor.real"
+        assert s.export_entity is None
 
     def test_missing_token_says_what_to_set(self, tmp_path: Path) -> None:
         env = tmp_path / ".env"
@@ -539,3 +549,34 @@ def test_a_partial_hour_keeps_its_fine_rows_when_nothing_replaces_them(
 
     assert len(readings) == 8
     assert sum(r.imported for r in readings) == pytest.approx(0.8)
+
+
+class TestOptionalEntities:
+    """Naming the grid counters is optional; reading them without is an error."""
+
+    def test_settings_load_without_any_entity(self, tmp_path: Path) -> None:
+        """Rate pricing needs no meter, so loading must not demand one.
+
+        There used to be a default pair here, named for one site's hardware, so
+        "not configured" was indistinguishable from "configured as somebody
+        else's sensors" -- and the request went out to Home Assistant either way.
+        """
+        env = tmp_path / ".env"
+        env.write_text('HA_HOST = "http://env"\nHA_TOKEN = "tok"\n')
+        s = ha.HaSettings.load(config_path=tmp_path / "none.toml", dotenv_path=env)
+        assert (s.import_entity, s.export_entity) == (None, None)
+
+    def test_reading_without_entities_says_how_to_set_them(self, tmp_path: Path) -> None:
+        s = ha.HaSettings(host="https://ha.example", token="tok")
+        with pytest.raises(ConfigError) as err:
+            ha.read_statistics(
+                s,
+                datetime(2026, 7, 1, tzinfo=PACIFIC),
+                datetime(2026, 7, 2, tzinfo=PACIFIC),
+            )
+        message = str(err.value)
+        assert "import_entity and export_entity not set" in message
+        assert "tariffkit account source set ha" in message
+        # And it says what still works, so the answer is not "configure a meter
+        # or get nothing".
+        assert "needs neither" in message

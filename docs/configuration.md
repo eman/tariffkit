@@ -250,19 +250,20 @@ live in the config file; the access token is not and does not.
 ```toml
 [home_assistant]
 host = "https://homeassistant.example:8123"
-import_entity = "sensor.eagle_100_energy_delivered"
-export_entity = "sensor.eagle_100_energy_received"
+import_entity = "sensor.grid_import_total"
+export_entity = "sensor.grid_export_total"
 ```
 
-Both entities default to the values shown above, so a `[home_assistant]`
-section is only needed to point at your own smart-meter reader. Those defaults
-name one such device and will not match your entity ids unless you happen to
-run the same one.
+Both entities are **optional and have no default** — entity names are
+site-specific, and a guess is not a better starting point than no guess. Leave
+them unset and rate pricing (`tariffkit now`, `forecast`, `info`) works
+unchanged; only `tariffkit bill --source ha` needs them, and it says so by name
+if they are missing.
 
-Whatever you point them at, prefer a **monotonic-filtered** entity. Meter
-readers typically expose both a filtered counter and a raw device feed, and the
-raw one drops to zero several times a day when the reader restarts its session
-with the meter — differencing across that invents a huge interval and then a
+When you do name them, prefer a **monotonic-filtered** entity. Meter readers
+typically expose both a filtered counter and a raw device feed, and the raw one
+drops to zero several times a day when the reader restarts its session with the
+meter — differencing across that invents a huge interval and then a
 compensating hole.
 
 The access token can come from the OS keyring, `~/.config/tariffkit/.env`, or
@@ -315,15 +316,16 @@ names are configuration, while the token comes from keyring or environment.
 [influxdb]
 host = "influxdb.example"
 database = "homedb"
-import_entity = "eagle_100_total_energy_delivered"
-export_entity = "eagle_100_total_energy_received"
+import_entity = "grid_import_total"
+export_entity = "grid_export_total"
 ```
 
 `host` may be a bare name (`https://` is assumed) or a full URL with a scheme
-and port; `/api/v3/query_sql` is appended either way. The entity defaults are
-the **raw** counters, unlike the Home Assistant defaults — they reach back much
-further, and the drop-to-zero artefacts are filtered out on read. As above, the
-defaults name one particular meter reader; point them at your own. A `sensor.`
+and port; `/api/v3/query_sql` is appended either way. As above the two series
+are optional and have no default, and only `tariffkit bill --source influx`
+needs them. Prefer the **raw** counters here, unlike the Home Assistant side —
+they reach back much further, and the drop-to-zero artefacts are filtered out
+on read. A `sensor.`
 prefix is accepted and stripped, since InfluxDB stores the bare name. `table`
 defaults to `sensor_numeric`, which is what Home Assistant's InfluxDB
 integration writes.
