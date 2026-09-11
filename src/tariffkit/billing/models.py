@@ -34,8 +34,42 @@ class IntervalReading:
     #: the real day gives them nearly a third, which is a real dollar on a
     #: cycle whose total is exact to 0.05 kWh.
     estimated: bool = False
+    #: Energy in this interval, in kWh, that was spread from a sample gap wider
+    #: than the interval itself rather than measured inside it.
+    #:
+    #: The magnitude behind ``estimated``, for the sources that can say. A
+    #: boolean alone made the warning that reads it wildly wrong: it summed the
+    #: whole energy of every interval a wide gap merely *touched*, so a cycle
+    #: with 0.84 kWh actually spread across gaps was reported as having 144.6
+    #: kWh of guessed time-of-use split -- 172 times over, on a figure whose
+    #: whole job is to say how much to distrust.
+    #:
+    #: Zero where the producer cannot distinguish, in which case a reader falls
+    #: back to the interval's own energy: the Home Assistant backfill flags an
+    #: interval whose *entire* content was reconstructed, and there the two are
+    #: the same number.
+    smeared: float = 0.0
+    #: Directions this interval could not measure -- ``"imported"``,
+    #: ``"exported"``, or both. Their energy reads as ``0.0`` because a float
+    #: has no way to say "unknown", and without this nothing could tell that
+    #: zero apart from a measured hour of no energy.
+    #:
+    #: Import and export are separate meters whose counters fail independently,
+    #: so one can be refused while the other is sound. Dropping the whole
+    #: interval to keep the hole visible was the older answer and it threw away
+    #: the good half: on a real account an export counter that reset its session
+    #: several times a day took 21.4 kWh of good import with it, billing 74.5
+    #: kWh as 53.1. Keeping the good half and naming the refused one keeps both
+    #: the energy and the hole. :func:`check_coverage` reports it.
+    unmetered: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
+        unknown = self.unmetered - {"imported", "exported"}
+        if unknown:
+            raise ValueError(
+                f"unmetered names directions, got {sorted(unknown)}; "
+                f"expected 'imported' and/or 'exported'"
+            )
         if self.imported < 0 or self.exported < 0:
             raise ValueError(
                 f"readings must be non-negative; got imported={self.imported}, "
@@ -210,6 +244,17 @@ class Bill:
     #: carry coverage warnings, or cover the period perfectly and still be priced
     #: from an unverified CCA export credit. Check both before trusting a total.
     complete: bool = True
+    #: Energy exported before Permission To Operate, in kWh. Metered but not
+    #: compensated: Net Billing begins at PTO, so these kilowatt-hours are in
+    #: neither ``buckets`` nor ``export_components``.
+    #:
+    #: A number rather than a warning. It used to be one, and ``warnings`` is
+    #: read as "something here may be wrong" -- ``BankState.trustworthy``
+    #: disqualifies a bank for any entry in it -- so the note that an
+    #: arrangement had a start date kept a real balance unspendable for its
+    #: whole first year. Nothing that reads this is asking whether the bill is
+    #: sound; it is asking what happened, which is what a figure answers.
+    uncompensated_kwh: float = 0.0
 
     @property
     def imported_kwh(self) -> float:
@@ -348,5 +393,6 @@ class Bill:
             "fixed_charges": round(self.fixed_charges, 2),
             "total": round(self.total, 2),
             "complete": self.complete,
+            "uncompensated_kwh": round(self.uncompensated_kwh, 3),
             "warnings": list(self.warnings),
         }

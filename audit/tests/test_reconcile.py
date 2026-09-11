@@ -9,7 +9,8 @@ until it stopped complaining.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
+from typing import Any
 
 import pytest
 
@@ -17,7 +18,7 @@ from audit.reconcile import Outcome, Reconciliation, Tolerance, reconcile
 from audit.reconcile.compare import unclaimed_components
 from audit.reconcile.mapping import MAP, LineRule, Side, check_map, normalize_label, split_side
 from audit.reconcile.report import render
-from tariffkit.billing import Bill, BillingPeriod
+from tariffkit.billing import Bill, BillingPeriod, IntervalReading
 from tariffkit.config import CcaConfig, Config
 from tariffkit.models import Supplier
 from tariffkit.providers.pge.statements import Section, Statement, parse_statement
@@ -252,3 +253,80 @@ class TestPresentationsAreNotDoubleCounted:
         statement = _statement()
         result = reconcile(statement, _bill({"pcia": 10.00}), CONFIG)
         assert len([c for c in result.comparisons if c.label == "PCIA"]) == 1
+
+
+def test_a_line_the_rate_table_reproduces_is_still_a_mismatch() -> None:
+    """The independent figure checks the rate table, not the engine.
+
+    It is `rate x the statement's own kWh`, and never passes through
+    `BillEngine`. So a defect in how the engine applies that rate leaves the
+    two identical, and treating "the rates reproduce this line" as an excuse
+    made the check unable to fail on anything the rate table could reproduce:
+    a $1,152.36 error on a $295.30 bill reconciled clean.
+    """
+    from audit.reconcile.compare import Comparison, Outcome
+
+    reproduced = Comparison(
+        "PCIA",
+        MAP[0].section,
+        Outcome.MISMATCH,
+        printed=11.64,
+        computed=1164.00,
+        from_statement=11.64,
+    )
+
+    assert reproduced.rates_agree is True
+    assert reproduced.ok is False
+    assert not hasattr(Outcome, "METERED")
+
+
+def _hour(day: int, hour: int, kwh: float) -> IntervalReading:
+    from datetime import datetime
+
+    from tariffkit.timeutil import PACIFIC
+
+    return IntervalReading(
+        start=datetime(2026, 1, day, hour, tzinfo=PACIFIC),
+        imported=kwh,
+        exported=0.0,
+        duration=timedelta(hours=1),
+    )
+
+
+def test_the_time_of_use_split_is_asserted_on_above_the_source_noise() -> None:
+    """Two derivations disagreeing about *which hour* is real money.
+
+    Asserted, because a cycle's worth of misattributed peak energy is worth
+    dollars, and above a floor, because the reference rounds every interval to
+    two decimals and its own quantisation accumulates ~0.31 kWh over a cycle.
+    """
+    from audit.sources import compare_sources
+    from tariffkit.providers.pge.statements.model import Statement
+
+    classify = lambda moment: "peak" if 16 <= moment.hour < 21 else "off_peak"  # noqa: E731
+    statement = Statement(
+        statement_date=date(2026, 2, 1),
+        period=BillingPeriod(date(2026, 1, 1), date(2026, 1, 2)),
+        amount_due=0.0,
+    )
+
+    def deltas(other_peak_kwh: float) -> list[Any]:
+        return [
+            d
+            for d in compare_sources(
+                {
+                    "influx": [_hour(1, 17, 10.0)],
+                    "green_button": [_hour(1, 17, other_peak_kwh)],
+                },
+                statement,
+                classify=classify,
+            )
+            if d.left.endswith("peak")
+        ]
+
+    # Below the reference's own rounding noise: reported, not asserted.
+    (small,) = deltas(10.06)
+    assert small.significant is False
+    # A cycle's worth of misattribution: asserted.
+    (large,) = deltas(14.05)
+    assert large.significant is True

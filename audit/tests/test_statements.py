@@ -275,7 +275,11 @@ class TestRealStatements:
             readable += 1
             statement = read_statement(pdf)
             assert statement.self_check() == [], f"{pdf.name}: {statement.self_check()}"
-            assert statement.amount_due > 0
+            # Non-zero, not positive. An account in credit is issued a statement
+            # printing "CREDIT BALANCE - NO PAYMENT DUE" and a negative balance
+            # instead of a total, which is a real statement and a real figure --
+            # -21.96 on 2026-09-04, closing to the cent against its own sections.
+            assert statement.amount_due != 0
 
         if not readable:
             pytest.skip("every statement present is one of the unreadable Type 3 ones")

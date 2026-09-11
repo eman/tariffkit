@@ -15,11 +15,14 @@ from typing import Any
 
 import pytest
 
+from conftest import CaptureLogs
+
 # The source needs the 'ha' extra; skip rather than fail the whole module for a
 # contributor who installed without it.
 pytest.importorskip("websockets")
 
 from tariffkit.account import MeterSource
+from tariffkit.billing import BillingPeriod, check_coverage
 from tariffkit.errors import ConfigError, DataError
 from tariffkit.sources import homeassistant as ha
 from tariffkit.timeutil import PACIFIC
@@ -191,14 +194,51 @@ class TestReadings:
         reading = next(iter(ha._readings_from(series, settings, step).values()))
         assert (reading.imported, reading.exported) == (0.5, 2.0)
 
-    def test_a_backwards_counter_is_clamped_not_negated(self, settings: ha.HaSettings) -> None:
+    def test_a_backwards_counter_is_refused_not_negated(self, settings: ha.HaSettings) -> None:
+        """It is not energy flowing the other way, and it is not zero either.
+
+        This asserted `imported == 0.0` against a series whose export half was
+        absent, and passed for the wrong reason: the refused value *reads* as
+        0.0 because a float cannot say "unknown", and the absent export was
+        being taken for a measured zero. With a real export row the refusal is
+        visible where it belongs.
+        """
         step = timedelta(minutes=5)
         start = datetime(2026, 7, 1, 12, tzinfo=PACIFIC)
-        series = {IMPORT_ID: [point(start, -3.0, step)], EXPORT_ID: []}
-        assert next(iter(ha._readings_from(series, settings, step).values())).imported == 0.0
+        series = {IMPORT_ID: [point(start, -3.0, step)], EXPORT_ID: [point(start, 2.0, step)]}
+
+        reading = next(iter(ha._readings_from(series, settings, step).values()))
+
+        assert reading.imported == 0.0
+        assert reading.exported == 2.0
+        assert reading.unmetered == frozenset({"imported"})
+
+    def test_an_absent_row_is_unknown_rather_than_a_measured_zero(
+        self, settings: ha.HaSettings
+    ) -> None:
+        """The recorder compiles an hour for any entity that has a state.
+
+        A flat counter still yields a change of zero, so no row at all means the
+        entity had no state -- not that nothing crossed the meter. An interval
+        with neither direction known is dropped, and coverage reports the hole.
+        """
+        step = timedelta(minutes=5)
+        start = datetime(2026, 7, 1, 12, tzinfo=PACIFIC)
+
+        one_side = ha._readings_from(
+            {IMPORT_ID: [point(start, 1.5, step)], EXPORT_ID: []}, settings, step
+        )
+        (reading,) = one_side.values()
+        assert reading.imported == 1.5
+        assert reading.unmetered == frozenset({"exported"})
+
+        neither = ha._readings_from(
+            {IMPORT_ID: [point(start, -3.0, step)], EXPORT_ID: []}, settings, step
+        )
+        assert neither == {}
 
     def test_a_running_sum_restart_is_discarded(
-        self, settings: ha.HaSettings, caplog: pytest.LogCaptureFixture
+        self, settings: ha.HaSettings, captured_logs: CaptureLogs
     ) -> None:
         """The failure this filter exists for, taken from a real instance.
 
@@ -207,6 +247,59 @@ class TestReadings:
         ``change`` -- 543.663 kWh inside one five-minute slot, about 6,500 kW.
         Discarded rather than clamped: it is not a large reading, it is not a
         reading, and the hole it leaves is something coverage checking can report.
+
+        Uses ``captured_logs`` rather than ``caplog``: the Home Assistant test
+        plugin overrides that fixture by requesting it, which pytest 9 refuses
+        as a recursive dependency, and this test spent that whole window
+        uncollectable while looking like a passing suite.
+        """
+        logs = captured_logs(ha.log)
+        step = timedelta(minutes=5)
+        start = datetime(2026, 8, 1, 4, 15, tzinfo=PACIFIC)
+        series = {
+            IMPORT_ID: [point(start, 543.663, step), point(start + step, 0.02, step)],
+            EXPORT_ID: [point(start, 796.079, step), point(start + step, 0.0, step)],
+        }
+        got = ha._readings_from(series, settings, step)
+        assert len(got) == 1
+        assert next(iter(got.values())).imported == 0.02
+        assert "could not be differenced either" in logs.text
+
+    def test_one_meters_restart_does_not_discard_the_other_meters_energy(
+        self, settings: ha.HaSettings
+    ) -> None:
+        """Import and export restart their sums independently.
+
+        Refusing the whole interval when either did let a bad series destroy the
+        good one beside it. Taken from a real account whose unfiltered Eagle-100
+        export counter resets its meter session 5.5 times a day: the export
+        series' 56 bad hours took 21.4 kWh of good import with them, and a
+        74.5 kWh cycle was billed as 53.1.
+        """
+        step = timedelta(hours=1)
+        start = datetime(2026, 8, 29, 16, tzinfo=PACIFIC)
+        series = {
+            IMPORT_ID: [point(start, 1.872, step)],
+            EXPORT_ID: [point(start, 1463.578, step)],
+        }
+        got = ha._readings_from(series, settings, step)
+        assert len(got) == 1, "the interval survives on its good half"
+        reading = next(iter(got.values()))
+        assert reading.imported == 1.872, "the import meter said nothing wrong"
+        assert reading.exported == 0.0, "the export half is refused, not clamped"
+        # And the refusal is on the record, so the zero above cannot be mistaken
+        # for a measured hour of no export.
+        assert reading.unmetered == frozenset({"exported"})
+        problems = list(check_coverage([reading], BillingPeriod(start.date(), start.date())))
+        assert any("no exported reading" in p for p in problems)
+        assert not any("no imported reading" in p for p in problems)
+
+    def test_both_meters_restarting_still_drops_the_interval(self, settings: ha.HaSettings) -> None:
+        """Nothing is left to keep, so the hole is worth more than the row.
+
+        The counterpart to the test above: judging directions separately must
+        not turn an interval with no usable half into a row of two zeros, which
+        coverage checking would accept as a measured hour of no energy.
         """
         step = timedelta(minutes=5)
         start = datetime(2026, 8, 1, 4, 15, tzinfo=PACIFIC)
@@ -217,7 +310,52 @@ class TestReadings:
         got = ha._readings_from(series, settings, step)
         assert len(got) == 1
         assert next(iter(got.values())).imported == 0.02
-        assert "running sum restarted" in caplog.text
+
+    def test_a_spoiled_interval_is_repaired_from_the_counter(self, settings: ha.HaSettings) -> None:
+        """The same repair the integration does, now in one place.
+
+        A `total_increasing` sensor reading 0.0 is taken for a counter reset, so
+        the recorder reports the whole counter as the next interval's `change`.
+        The counter is intact in `state`, and differencing it recovers the
+        interval. This reader used to drop it while the integration's reader
+        repaired it -- two readers of the same statistics, disagreeing.
+        """
+        step = timedelta(minutes=5)
+        start = datetime(2026, 8, 1, 4, 15, tzinfo=PACIFIC)
+        series = {
+            IMPORT_ID: [
+                {**point(start - step, 0.02, step), "state": 1460.58},
+                {**point(start, 1460.60, step), "state": 1461.0},
+            ],
+            EXPORT_ID: [],
+        }
+        got = ha._readings_from(series, settings, step)
+        assert len(got) == 2, "the spoiled interval survives"
+        assert list(got.values())[1].imported == pytest.approx(0.42)
+
+    def test_a_partly_covered_hour_falls_back_to_the_hourly_row(
+        self, settings: ha.HaSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An hour the fine series only half covers must not lose the other half.
+
+        Dropping the hourly row for any hour with *some* fine data left the
+        uncovered part in neither series. On a real cycle the five-minute
+        statistics resumed at 04:20 after a restart, deleting the 04:00 hourly
+        row and leaving 04:00-04:20 nowhere -- reported as a gap, and short by
+        whatever crossed the meter in those twenty minutes.
+        """
+        hour = datetime(2026, 8, 30, 4, tzinfo=PACIFIC)
+        step = timedelta(minutes=5)
+        fine = {
+            IMPORT_ID: [point(hour + timedelta(minutes=m), 0.01, step) for m in range(20, 60, 5)],
+            EXPORT_ID: [],
+        }
+        whole = {IMPORT_ID: [point(hour, 0.50, timedelta(hours=1))], EXPORT_ID: []}
+        patch_socket(monkeypatch, {"5minute": fine, "hour": whole})
+        got = ha.read_statistics(settings, hour, hour + timedelta(hours=1), resolution="auto")
+        assert len(got) == 1, "the hour, not the eight slots that half-cover it"
+        assert got[0].duration == timedelta(hours=1)
+        assert got[0].imported == pytest.approx(0.50)
 
     def test_a_plausible_large_interval_survives(self, settings: ha.HaSettings) -> None:
         """The ceiling only ever catches the impossible, not a heavy hour."""
@@ -370,3 +508,34 @@ def test_describe_resolution_names_a_mixed_run() -> None:
         IntervalReading(start, imported=1.0, duration=timedelta(hours=1)),
     ]
     assert ha.describe_resolution(readings) == "2 x 5minute, 1 x hour"
+
+
+def test_a_partial_hour_keeps_its_fine_rows_when_nothing_replaces_them(
+    settings: ha.HaSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A window beginning mid-hour has no hourly row, by construction.
+
+    Surrendering a partial hour's five-minute rows is the right trade only when
+    there is an hourly row to surrender them *to*. Doing it unconditionally
+    threw away every reading in such a window: an explicit five-minute request
+    for 04:20-05:00 had eight rows per entity on a real instance and raised
+    "no statistics for ... between ...".
+    """
+    step = timedelta(minutes=5)
+    start = datetime(2026, 7, 1, 4, 20, tzinfo=PACIFIC)
+    end = start + step * 8
+    patch_socket(
+        monkeypatch,
+        {
+            "5minute": {
+                IMPORT_ID: [point(start + step * n, 0.1, step) for n in range(8)],
+                EXPORT_ID: [point(start + step * n, 0.0, step) for n in range(8)],
+            },
+            "hour": {},
+        },
+    )
+
+    readings = ha.read_statistics(settings, start, end, resolution="5minute")
+
+    assert len(readings) == 8
+    assert sum(r.imported for r in readings) == pytest.approx(0.8)

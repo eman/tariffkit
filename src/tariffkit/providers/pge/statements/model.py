@@ -173,6 +173,15 @@ class Statement:
     #: zero-money one. Recorded to make the amount due add up and then ignored:
     #: nothing here prices gas, so no computed component may claim it.
     gas_charges: float | None = None
+    #: The gas half of a summary adjustment, where the statement carries one.
+    #:
+    #: PG&E issues the California Climate Credit against gas and electricity
+    #: separately, in April and October, and prints both in the summary.
+    #: ``electric_adjustments`` picked up the electric half and nothing read the
+    #: gas half, so a combined April statement failed its own check by exactly
+    #: that credit: 135.21 electric, -58.23 electric adjustments, 65.71
+    #: generation, 62.22 gas and -67.03 unread, against a printed 137.88.
+    gas_adjustments: float | None = None
     #: Summary-level electric adjustments, e.g. the California Climate Credit,
     #: which belong to no detail section and are not per-cycle charges.
     electric_adjustments: float | None = None
@@ -225,7 +234,12 @@ class Statement:
         while the headline figures look $54 apart, which reads as a failure and
         is not one.
         """
-        return self.amount_due - (self.gas_charges or 0.0) - (self.electric_adjustments or 0.0)
+        return (
+            self.amount_due
+            - (self.gas_charges or 0.0)
+            - (self.gas_adjustments or 0.0)
+            - (self.electric_adjustments or 0.0)
+        )
 
     def self_check(self) -> list[str]:
         """Problems with the parse itself, independent of any computed bill.
@@ -282,13 +296,20 @@ class Statement:
         # summary-level adjustments that belong to no detail section. Both are
         # named on the statement, so both are added here rather than absorbed
         # into a tolerance -- an unexplained residue should stay visible.
-        expected = sum(parts) + (self.electric_adjustments or 0.0) + (self.gas_charges or 0.0)
+        expected = (
+            sum(parts)
+            + (self.electric_adjustments or 0.0)
+            + (self.gas_charges or 0.0)
+            + (self.gas_adjustments or 0.0)
+        )
         if parts and abs(expected - self.amount_due) > CENT:
             extra = []
             if self.electric_adjustments:
                 extra.append(f"adjustments {self.electric_adjustments:+.2f}")
             if self.gas_charges:
                 extra.append(f"gas {self.gas_charges:+.2f}")
+            if self.gas_adjustments:
+                extra.append(f"gas adjustments {self.gas_adjustments:+.2f}")
             detail = f" (sections {sum(parts):.2f}, {', '.join(extra)})" if extra else ""
             problems.append(
                 f"the statement's own parts sum to {expected:.2f} but it is due "
@@ -301,7 +322,16 @@ class Statement:
                 f"{self.period.start}..{self.period.end} span {self.period.days}"
             )
 
-        seen: set[tuple[Section, str, tuple[date, date] | None, str, int]] = set()
+        # Keyed on the amount as well as the label. What this looks for is one
+        # row collected twice because two sections overlapped, and a row
+        # collected twice carries the same amount both times. Two rows that
+        # merely share a label are a different thing entirely -- recognition
+        # widens the gaps inside a label, and `_fields` splits on two spaces, so
+        # "Current PG&E Electric Monthly Charges" and "Current Gas Charges" both
+        # come back labelled "Current" on a combined statement. That is not an
+        # overlap, and refusing the statement for it cost two real statements
+        # out of twenty-one.
+        seen: set[tuple[Section, str, tuple[date, date] | None, str, int, int, float]] = set()
         for line in self.lines():
             key = (
                 line.section,
@@ -309,6 +339,12 @@ class Statement:
                 line.subperiod,
                 line.block,
                 line.agreement,
+                # The same row read into two sections is the same printed row,
+                # so it is on one page. Two rows that merely look alike -- both
+                # labels truncating to "Current", both amounts landing on the
+                # same cent -- usually are not.
+                line.page,
+                round(line.amount, 2),
             )
             if key in seen:
                 problems.append(

@@ -109,6 +109,7 @@ def compare_sources(
 
     if classify is not None:
         base_peak = peak_share(readings[primary], classify)
+
         for name, series in readings.items():
             if name == primary:
                 continue

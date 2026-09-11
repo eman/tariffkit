@@ -131,6 +131,23 @@ BLOCK_HEADING = re.compile(
 #: printed total to check its rows against.
 SBP_TOTAL = re.compile(r"^\s*Solar\s+Billing\s+Plan\s+Charges\s")
 
+#: What the summary prints instead of a total when the account is in credit.
+#:
+#: There is then no "Total Amount Due" line anywhere on the statement, because
+#: nothing is due: the utility prints "CREDIT BALANCE - NO PAYMENT DUE" and the
+#: negative balance beside it. Refusing the statement for the absence of a line
+#: it is correct not to have reported "no total amount due found" -- true, and
+#: not an error -- and aborted the sync that met it.
+#:
+#: Matched across lines because layout extraction splits the label around its
+#: own figure: "CREDIT BALANCE - NO PAYMENT", then the amount, then "DUE". The
+#: span is bounded so the pattern cannot reach past the summary into the first
+#: negative number of some later section.
+CREDIT_BALANCE = re.compile(
+    r"CREDIT\s+BALANCE\s*[-\u2013]\s*NO\s+PAYMENT.{0,400}?(-\$?[\d,]+\.\d{2})",
+    re.I | re.S,
+)
+
 #: Gas, on a combined statement. Taken from the gas section's own total rather
 #: than from the summary: the summary prints "Current Gas Charges" with the
 #: amount in a column that extraction drops entirely, so the only place the
@@ -160,8 +177,24 @@ PRINTED_TARIFFS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"E-?ELEC|Electric\s+Home", re.I), "E-ELEC"),
     (re.compile(r"E-?TOU-?C|ETOUC", re.I), "E-TOU-C"),
     (re.compile(r"E-?TOU-?D|ETOUD", re.I), "E-TOU-D"),
-    (re.compile(r"Time-of-Use.*4\s*-\s*9", re.I), "E-TOU-C"),
-    (re.compile(r"Time-of-Use.*5\s*-\s*8", re.I), "E-TOU-D"),
+    # The dash between the hours is optional, and anchoring on the "p.m." after
+    # them is what makes that safe. Recognition drops the mark -- it is small and
+    # it sits in a gap, the same reason `_implied_at` exists for the "@" -- so
+    # "Peak Pricing 4 - 9 p.m." comes back as "4 9 p.m.", no tariff is
+    # recognised, and `_agreements` refuses the statement as printing an
+    # unsupported one. Two statements in a run of twenty-one were lost to a
+    # single missing hyphen.
+    (re.compile(r"Time-of-Use.*4\s*[-\u2013\u2014]?\s*9\s*p", re.I), "E-TOU-C"),
+    (re.compile(r"Time-of-Use.*5\s*[-\u2013\u2014]?\s*8\s*p", re.I), "E-TOU-D"),
+    # Anchored on the words instead of on the "p.m.", for the readings that lose
+    # both. One statement came back as "(Peak Pricing 4 9    Every Day)" -- dash
+    # and meridiem alike swallowed by the gap they sit in -- and no tariff
+    # matched, so `_agreements` refused it as printing an unsupported one. The
+    # remaining "Peak Pricing 4 ... 9" is unambiguous enough on its own; these
+    # follow the two above so a statement that prints the meridiem and not the
+    # words is still read.
+    (re.compile(r"Peak\s+Pricing\s+4\s*[-\u2013\u2014]?\s*9\b", re.I), "E-TOU-C"),
+    (re.compile(r"Peak\s+Pricing\s+5\s*[-\u2013\u2014]?\s*8\b", re.I), "E-TOU-D"),
 )
 
 #: Rows that are structure rather than charges.
@@ -187,8 +220,27 @@ def _fields(line: str) -> list[str]:
 
 
 def _parse_date(text: str) -> date:
-    month, day, year = (int(part) for part in text.split("/"))
-    return date(year, month, day)
+    """A printed MM/DD/YYYY field, or a refusal this module owns.
+
+    ``StatementError`` rather than the ``ValueError`` ``date()`` raises, because
+    of where this is reached from. Recognition reads the pre-November-2025
+    statements whose fonts call every glyph a space, and it can misread a digit
+    -- ``read_statement`` says so, and its reading loop is built to discard a
+    bad reading and try the next one. That guard catches ``StatementError``, so
+    a misread that produced an impossible date escaped it entirely and took the
+    process down: one statement out of twenty-one printed
+    ``month must be in 1..12, not 41`` as a traceback, from inside the loop
+    whose whole purpose is to survive exactly that.
+
+    Not a validity check on the utility's printing. It is a reading that cannot
+    be a date, and the layer that knows how to try again is the one that should
+    hear about it.
+    """
+    try:
+        month, day, year = (int(part) for part in text.split("/"))
+        return date(year, month, day)
+    except ValueError as exc:
+        raise StatementError(f"{text!r} is not a date") from exc
 
 
 def normalize_tariff(printed: str) -> str | None:
@@ -197,6 +249,33 @@ def normalize_tariff(printed: str) -> str | None:
         if pattern.search(printed):
             return tariff
     return None
+
+
+def _ocr_failure(
+    source: str,
+    unchecked: Sequence[Sequence[str]],
+    failures: Sequence[StatementError],
+) -> StatementError:
+    """Which reading's problem to report when none of them checked out.
+
+    The near-miss, whenever there is one. A reading that produced a whole
+    Statement and came up short by a row is closer to right than one that could
+    not read a word, and its problems name what to go and look at; the other
+    only says that some reading somewhere disagreed. Reporting the wrong one
+    sent two investigations to the wrong page -- a statement blamed "page 3
+    prints an unsupported tariff", from a reading whose "p.m." had vanished,
+    while the reading that named the tariff correctly had failed its self-check
+    for an unrelated reason.
+    """
+    if unchecked:
+        closest = min(unchecked, key=len)
+        return StatementError(
+            f"{source} OCR read the statement but it did not check out "
+            f"({len(closest)} problem(s)): {'; '.join(closest[:3])}"
+        )
+    if failures and all(isinstance(failure, StatementAmbiguityError) for failure in failures):
+        return failures[0]
+    return StatementError(f"{source} OCR did not produce a self-checking statement")
 
 
 def read_statement(path: str | Path) -> Statement:
@@ -246,20 +325,29 @@ def read_statement(path: str | Path) -> Statement:
         # become evidence merely because it produced a Statement object.
         scored: list[Statement] = []
         failures: list[StatementError] = []
+        # Readings that parsed and then failed their own arithmetic. Kept
+        # because they are the closer near-miss: a reading that produced a whole
+        # Statement and came up short by a row says far more about what is wrong
+        # than a different reading's complaint about a word it could not read.
+        # Dropping them silently made the error report the wrong reading -- one
+        # statement blamed "page 3 prints an unsupported tariff" from a reading
+        # whose "p.m." had vanished, while the reading that named the tariff
+        # correctly had failed its self-check for an unrelated reason. Two
+        # investigations went to the wrong page.
+        unchecked: list[list[str]] = []
         for pages in readings(source):
             try:
                 candidate = parse_statement(pages, source=source.name, recognised=True)
             except StatementError as exc:
                 failures.append(exc)
                 continue
-            if not candidate.self_check():
+            problems = candidate.self_check()
+            if not problems:
                 scored.append(candidate)
+            else:
+                unchecked.append(problems)
         if not scored:
-            if failures and all(
-                isinstance(failure, StatementAmbiguityError) for failure in failures
-            ):
-                raise failures[0]
-            raise StatementError(f"{source.name} OCR did not produce a self-checking statement")
+            raise _ocr_failure(source.name, unchecked, failures)
         return scored[0]
     statement = parse_statement(pages, source=source.name)
     problems = statement.self_check()
@@ -328,17 +416,75 @@ def _summary_amount(summary: StatementSection, label: str) -> float | None:
     return matches[0].amount if matches else None
 
 
+def _gas_adjustment(summary: StatementSection) -> float | None:
+    """The gas half of a summary adjustment, or None where there is none.
+
+    PG&E issues the California Climate Credit against gas and electricity
+    separately, in April and October, and prints both in the summary. The
+    electric half is read by name and the gas half was read by nothing, so a
+    combined April statement failed its own check by exactly that credit --
+    $67.03 on 2025-05-05, the whole difference between its parts and its total.
+
+    Matched on a label *beginning* "gas" rather than by an exact name, because
+    recognition truncates a label at any wide gap inside it and this one came
+    back as bare "Gas". The charges row is excluded by its own prefix: it prints
+    as "Current Gas Charges" and is already read from the gas section's total.
+    """
+    for line in summary.lines:
+        label = line.label.strip().lower()
+        if label.startswith("gas") and not label.startswith("current gas"):
+            return line.amount
+    return None
+
+
 def _agreement_spans(page: str) -> tuple[BillingPeriod, ...]:
-    """Return the agreement-level date spans printed on one page."""
+    """Return the agreement-level date spans printed on one page.
+
+    Distinct *periods*, deduplicated on the dates alone. The day count is
+    evidence about a span, not part of its identity, and folding it into the
+    key meant one period printed twice with two different day counts came back
+    as two agreements -- which is what ``_agreements`` reports as "prints 2 date
+    spans for one delivery schedule" and refuses the statement over. On the
+    recognised statements, where a digit can be misread, that is a difference of
+    one character between a statement that reconciles and one that is thrown out
+    whole.
+    """
     matches = [
         (_parse_date(start), _parse_date(end), days) for start, end, days in CYCLE.findall(page)
     ]
     dated = [match for match in matches if match[2]]
     candidates = dated or matches
-    return tuple(
+    spans = dict.fromkeys(
         BillingPeriod(start, end)
-        for start, end, _ in sorted(set(candidates), key=lambda value: value[:2])
+        for start, end, _ in sorted(candidates, key=lambda value: value[:2])
     )
+    return _joined(tuple(spans))
+
+
+def _joined(spans: tuple[BillingPeriod, ...]) -> tuple[BillingPeriod, ...]:
+    """Fold spans that continue one another into the period they cover.
+
+    A rate change splits a cycle where it lands, and the utility prints the two
+    blocks under one schedule: 08/28-08/31 then 09/01-09/28, one Time-of-Use
+    agreement, one meter. Read as two spans that is two agreements for one
+    schedule, which ``_agreements`` calls ambiguous and refuses the statement
+    over -- so a cycle crossing a rate change or the June 1 season boundary was
+    thrown out whole rather than priced in the two blocks the tariff actually
+    charges. ``parse_statement`` already chains the cycle this way for the
+    statement's own period; this is the same rule, applied where the ambiguity
+    is judged.
+
+    Only *continuing* spans join, one starting the day after the last ended. Two
+    spans with a gap between them are two agreements, and saying so is the whole
+    point of the check.
+    """
+    joined: list[BillingPeriod] = []
+    for span in spans:
+        if joined and span.start == joined[-1].end + timedelta(days=1):
+            joined[-1] = BillingPeriod(joined[-1].start, span.end)
+        else:
+            joined.append(span)
+    return tuple(joined)
 
 
 def _agreements(pages: Sequence[str]) -> tuple[StatementAgreement, ...]:
@@ -475,7 +621,19 @@ def parse_statement(
     sections = _sections(pages)
 
     summary = next((s for s in sections if s.name is Section.SUMMARY), None)
-    if summary is None or summary.printed_total is None:
+    if summary is None:
+        raise StatementError(f"{source or 'statement'}: no account summary found")
+    printed_total = summary.printed_total
+    if printed_total is None:
+        # A credit balance prints no total, and that is the statement being
+        # right rather than the parse being wrong. The figure is the balance
+        # itself, negative: `self_check` already expects exactly that, since it
+        # tests the detail sections plus the summary adjustments against this
+        # number -- 21.07 delivery, -6.85 generation, -36.18 adjustments, and
+        # -21.96 printed, which closes to the cent.
+        credit = CREDIT_BALANCE.search(joined)
+        printed_total = _money(credit.group(1)) if credit else None
+    if printed_total is None:
         raise StatementError(f"{source or 'statement'}: no total amount due found")
 
     # Summed over distinct blocks, not the first found. A statement covering
@@ -506,13 +664,14 @@ def parse_statement(
     return Statement(
         statement_date=_parse_date(stamp.group(1)),
         period=period,
-        amount_due=summary.printed_total,
+        amount_due=printed_total,
         account_masked=re.sub(r"\D", "", account.group(1))[-4:] if account else "",
         billed_days=billed_days,
         billed_kwh=(sum(kwh for kwh, _ in usage_blocks) or None if usage_blocks else None),
         service_agreements=len(agreements) or max(1, _delivery_pages(pages)),
         agreements=agreements,
         gas_charges=_scalar(joined, GAS_TOTAL),
+        gas_adjustments=_gas_adjustment(summary),
         electric_adjustments=_summary_amount(summary, "Electric Adjustments"),
         sections=sections,
         rate_schedule=agreements[0].printed_schedule if agreements else "",
@@ -683,6 +842,33 @@ def _implied_at(rest: list[str]) -> int | None:
     return None
 
 
+def _split_at(fields: list[str]) -> list[str]:
+    """Separate an "@" that came out glued to the rate beside it.
+
+    ``_fields`` splits on two or more spaces, so whether "@ $0.10867" arrives
+    as one field or two depends on how wide that gap printed -- and on the
+    2026-09-04 statement it printed as one space. Everything downstream looks
+    for "@" as a field of its own: it does not find one, ``_implied_at`` needs
+    two money-shaped fields after the unit and can only see the amount, and the
+    fallback scan then takes the first money-shaped field on the row. That is
+    the *quantity*, because ``MONEY`` allows up to six decimals and a metered
+    figure prints as "10.122000".
+
+    So an Off Peak row reading "10.122000 kWh @ $0.10867  1.10" was billed as
+    $10.12, and the section summed to 51.67 against a printed 21.07 -- kWh read
+    as dollars, three times over. Splitting the field here rather than widening
+    ``_fields`` keeps the two-space rule that separates every other column.
+    """
+    split: list[str] = []
+    for field in fields:
+        rest = field[1:].strip() if field.startswith("@") else ""
+        if rest:
+            split.extend(("@", rest))
+        else:
+            split.append(field)
+    return split
+
+
 def _line(line: str, section: Section, page: int, *, label: str = "") -> StatementLine | None:
     """One row, if it carries an amount.
 
@@ -692,7 +878,7 @@ def _line(line: str, section: Section, page: int, *, label: str = "") -> Stateme
     read as its amount, which is the shape of error that looks like a $22
     discrepancy.
     """
-    fields = _fields(line)
+    fields = _split_at(_fields(line))
     if len(fields) < 2:
         return None
 

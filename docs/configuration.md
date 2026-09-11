@@ -28,15 +28,14 @@ chmod 600 ~/.config/tariffkit/config.toml
 **This is the stateless path** — one `Config`, current settings only. If your
 service agreement has ever changed tariff, supplier, or baseline territory,
 and you want past bills to price with what was actually in force on their own
-days, use a [named account profile](accounts.md) instead: `--account NAME`
-(or a configured default profile) replaces this resolution order entirely for
-that command, and `--config`/`--account` cannot be combined. See
-[Selecting a profile](accounts.md#selecting-a-profile) for exactly how that
-choice is made.
+days, set up [your account](accounts.md) instead: every command prices from it
+rather than from this file, and passing `--config` is how you opt back out for
+one command. See [Pricing from the account](accounts.md#pricing-from-the-account)
+for exactly how that choice is made.
 
 ### Utility identity
 
-Profiles, configuration, and API payloads identify Pacific Gas and Electric
+The account, configuration, and API payloads identify Pacific Gas and Electric
 with the unambiguous machine value `pacific_gas_and_electric`. User interfaces
 show `PG&E` or `Pacific Gas and Electric Company`. The distinct `pge` machine
 value means Portland General Electric; TariffKit recognizes that identity but
@@ -66,14 +65,15 @@ shell history. macOS Keychain, Windows Credential Locker, and the configured
 Linux Secret Service backend provide storage. Containers and unattended
 services can continue to inject environment variables instead.
 
-Secret precedence is: explicit library/CLI value, environment (including a
-working-directory `.env` for compatibility), then OS keyring. Non-secret
-settings use: defaults, `config.toml`, environment, then explicit arguments.
+Secret precedence is: explicit library/CLI value, real environment variables,
+`~/.config/tariffkit/.env`, then the OS keyring. Non-secret settings use:
+defaults, `config.toml`, environment, then explicit arguments.
+`tariffkit credentials list` prints where each one is actually resolving from.
 
 ### PG&E portal access
 
 Portal credentials are needed for Green Button downloads, `account sync`
-(see [Named account profiles](accounts.md)), and the repository audit
+(see [Your account](accounts.md)), and the repository audit
 harness; pricing itself remains offline regardless. Store them once:
 
 ```bash
@@ -95,12 +95,33 @@ The cookie cache is created with mode `0600`. `PGE_USERNAME`, `PGE_PASSWORD`,
 `PGE_BROWSER_COOKIE`, `PGE_VALIDATION_COOKIE`, and `PGE_ACCOUNT_URN` remain
 available for containers.
 
-**Named credential sets** let more than one account profile share one login
-without duplicating it: `tariffkit credentials set pge.username --set NAME`
-stores it under `NAME` instead of the default, unnamed slot, and
-`tariffkit account init/update ... --credential-set NAME` associates a
-profile with it. See
-[Credential sets](accounts.md#credential-sets).
+`tariffkit credentials list` says where each one is actually resolving from,
+and never prints a value:
+
+```console
+$ tariffkit credentials list
+keyring: keyring.backends.macOS.Keyring
+
+  home_assistant.token   .env (HA_TOKEN)
+  influxdb.token         .env (INFLUXDB3_AUTH_TOKEN)
+  mqtt.password          not set
+  mqtt.username          not set
+  pge.account_urn        .env (PGE_ACCOUNT_URN)
+  pge.browser_cookie     .env (PGE_BROWSER_COOKIE)
+  pge.password           keyring
+  pge.username           keyring
+  pge.validation_cookie  .env (PGE_VALIDATION_COOKIE)
+
+the environment and .env win over the keyring; values are never printed
+```
+
+The keyring line names the backend, so an all-`not set` listing tells you
+whether nothing is stored or nothing can be read — a headless container with
+no secret service reports `none available here`, and `TARIFFKIT_DISABLE_KEYRING=1`
+does the same on purpose.
+
+One account reads one set of credentials, so there is nothing to name or
+select. See [Credentials](accounts.md#credentials).
 
 ## A worked example: PG&E delivery + MCE generation
 
@@ -239,13 +260,13 @@ section is only needed to point elsewhere. Note the defaults are the
 `sensor.eagle_100_total_energy_delivered` is the raw device feed and drops to
 zero several times a day when the meter session restarts.
 
-The access token can come from the OS keyring, `.env` in the working directory,
-or the environment.
+The access token can come from the OS keyring, `~/.config/tariffkit/.env`, or
+the environment.
 The file is not shell — spaces around `=` and quoted values are fine, and are
 what the parser expects:
 
 ```ini
-# .env
+# ~/.config/tariffkit/.env
 HA_HOST = "https://homeassistant.example:8123"
 HA_TOKEN = "<long-lived access token>"
 ```
@@ -258,11 +279,10 @@ export HA_TOKEN=...
 ```
 
 Resolution order, later winning: the config file, OS keyring, `.env`, real
-environment variables, a named account profile's source mapping, then
-`--ha-import-entity` / `--ha-export-entity`. For a bill, that is explicitly
-`--account NAME` or the configured default profile; it does not change
-stateless/global behavior. The profile mapping names grid import (consumed from
-the grid, not whole-home load) and grid export separately.
+environment variables, your account's source mapping, then
+`--ha-import-entity` / `--ha-export-entity`. The account's mapping applies to a
+bill, and does not change stateless/global behavior. It names grid import
+(consumed from the grid, not whole-home load) and grid export separately.
 `HA_TOKEN` is deliberately never read from the config file.
 
 ## Net Surplus Compensation
@@ -303,7 +323,7 @@ defaults to `sensor_numeric`, which is what Home Assistant's InfluxDB
 integration writes.
 
 ```ini
-# .env
+# ~/.config/tariffkit/.env
 INFLUXDB3_HOST = "influxdb.example"
 INFLUXDB3_DATABASE = "homedb"
 INFLUXDB3_AUTH_TOKEN = "<database token>"
@@ -311,13 +331,13 @@ INFLUXDB3_AUTH_TOKEN = "<database token>"
 
 Resolution order, later winning: the config file, keyring, `.env`, then real
 environment variables (`TARIFFKIT_INFLUX_IMPORT_ENTITY` /
-`TARIFFKIT_INFLUX_EXPORT_ENTITY` for the series), a named account profile's
+`TARIFFKIT_INFLUX_EXPORT_ENTITY` for the series), your account's
 source mapping, then
 `--influx-import-entity` / `--influx-export-entity`. As with `HA_TOKEN`,
 `INFLUXDB3_AUTH_TOKEN` is never read from the config file.
 
-For a named profile, save the pair with `tariffkit account source NAME set
-influx ... --apply`; use `ha` for Home Assistant. The source mapping is not
+Save the pair on your account with `tariffkit account source set influx ...
+--apply`; use `ha` for Home Assistant. The source mapping is not
 effective-dated because it identifies the data store, not tariff history.
 
 ## MQTT
@@ -394,6 +414,22 @@ Until generation rates and a franchise fee are supplied, CCA mode returns
 delivery-only prices flagged `complete = False` rather than a plausible-looking
 wrong total. Check that flag before acting on a price. Setting `pcia_vintage`
 satisfies the franchise fee half on its own.
+
+## Billing cycle
+
+`tariffkit bill` with no `--start`/`--end` prices the cycle open right now. It
+takes the boundary from the portal's own list of billed cycles where credentials
+are stored, or from imported statements; where there is neither, this is the
+meter-read day it falls back to:
+
+```toml
+[billing]
+cycle_start_day = 29    # 1-31; clamps in short months
+```
+
+Unset, the fallback is the calendar month, which will not match a bill and says
+so when it is used. See
+[The default window](billing.md#the-default-window).
 
 ## Reading your bill
 

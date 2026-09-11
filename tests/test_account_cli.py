@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import argparse
 import importlib
 import json
 from datetime import date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from freezegun import freeze_time
 
 from tariffkit.account import (
     AccountEpoch,
@@ -16,12 +17,16 @@ from tariffkit.account import (
     AccountProfile,
     MeterSource,
     MeterSources,
-    NamedProfileRepository,
     ObservedAgreement,
 )
-from tariffkit.account.cli import migrate_existing, sync_profile
 from tariffkit.billing import BillingPeriod, IntervalReading
-from tariffkit.cli import _mqtt_settings, _pricing_context, build_parser, main
+from tariffkit.cli.account_commands import (
+    _statement_reason,
+    migrate_existing,
+    sync_profile,
+)
+from tariffkit.cli.account_store import AccountStore
+from tariffkit.cli.commands import _known_periods, _mqtt_settings, build_parser, main
 from tariffkit.config import Config
 from tariffkit.errors import ConfigError
 from tariffkit.models import Supplier
@@ -53,14 +58,14 @@ def test_account_migration_never_probes_repository_audit_file(
     config.write_text('tariff = "EV2-A"\n', encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    profile = migrate_existing("home", config_path=config)
+    profile = migrate_existing(config_path=config)
 
     assert profile.epochs[0].config.tariff == "EV2-A"
 
 
 def test_account_migration_requires_explicit_existing_audit_file(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="legacy audit account file not found"):
-        migrate_existing("home", audit_path=tmp_path / "missing.toml")
+        migrate_existing(audit_path=tmp_path / "missing.toml")
 
 
 def test_account_init_update_and_export_are_sanitized(
@@ -79,7 +84,6 @@ def test_account_init_update_and_export_are_sanitized(
                 str(config),
                 "account",
                 "init",
-                "home",
                 "--effective",
                 "2025-01-01",
             ]
@@ -91,7 +95,6 @@ def test_account_init_update_and_export_are_sanitized(
             [
                 "account",
                 "update",
-                "home",
                 "--effective",
                 "2026-01-01",
                 "--tariff",
@@ -103,10 +106,530 @@ def test_account_init_update_and_export_are_sanitized(
     )
 
     exported = tmp_path / "profile.json"
-    assert main(["account", "export", "home", "--output", str(exported)]) == 0
+    assert main(["account", "export", "--output", str(exported)]) == 0
     payload = json.loads(exported.read_text(encoding="utf-8"))
     assert [epoch["config"]["tariff"] for epoch in payload["epochs"]] == ["E-ELEC", "EV2-A"]
     assert "amount_due" not in exported.read_text(encoding="utf-8")
+
+
+def _init_account(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, effective: str) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'tariff = "E-ELEC"\ninterconnection_year = 2026\npto_date = "2026-06-03"\n',
+        encoding="utf-8",
+    )
+    assert main(["--config", str(config), "account", "init", "--effective", effective]) == 0
+
+
+def _account_with_statement(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AccountProfile:
+    """An account whose last statement closed on 2026-08-27."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    store = AccountStore(tmp_path)
+    profile = AccountProfile(
+        (AccountEpoch(date(2025, 1, 1), Config()),),
+        observations=(
+            AccountObservation(
+                agreements=(
+                    ObservedAgreement(
+                        provider="pge",
+                        statement_date=date(2026, 9, 1),
+                        period=BillingPeriod(date(2026, 7, 29), date(2026, 8, 27)),
+                        tariff="E-ELEC",
+                    ),
+                ),
+            ),
+        ),
+    )
+    store.save(profile)
+    return profile
+
+
+@freeze_time("2026-09-09T12:00:00-07:00")
+def test_bill_without_dates_prices_the_open_cycle_from_statement_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ "What do I owe so far?" was the one question it could not answer alone."""
+    _account_with_statement(tmp_path, monkeypatch)
+    monkeypatch.setenv("PGE_USERNAME", "person@example.invalid")
+    monkeypatch.setenv("PGE_PASSWORD", "secret")
+    monkeypatch.setattr("tariffkit.sources.cached_bill_periods", lambda *a, **k: [])
+    asked: dict[str, date] = {}
+
+    def fake(settings: object, start: date, end: date, **kwargs: object) -> object:
+        asked.update(start=start, end=end)
+        return SimpleNamespace(
+            path=_export_csv(tmp_path), start=start, end=end, downloaded=False, covers="cached"
+        )
+
+    monkeypatch.setattr("tariffkit.sources.cached_green_button", fake)
+
+    assert main(["bill", "--source", "green-button"]) == 0
+
+    # The cycle after the last statement: contiguous, so it opened on the 28th.
+    assert asked == {"start": date(2026, 8, 28), "end": date(2026, 9, 9)}
+    out = capsys.readouterr().out
+    assert "cycle: 2026-08-28 to 2026-09-09, the boundary your statements print" in out
+
+
+@freeze_time("2026-09-09T12:00:00-07:00")
+def test_bill_without_dates_takes_the_boundary_the_utility_billed_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No statement imported, and still exact: the portal lists what it billed."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    AccountStore(tmp_path).save(AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),)))
+    _stub_export(
+        tmp_path,
+        monkeypatch,
+        portal_periods=[
+            BillingPeriod(date(2026, 6, 30), date(2026, 7, 28)),
+            BillingPeriod(date(2026, 7, 29), date(2026, 8, 27)),
+        ],
+    )
+
+    assert main(["bill", "--source", "green-button"]) == 0
+
+    out = capsys.readouterr().out
+    # Cycles are contiguous, so the open one began the day after the last close.
+    assert "cycle: 2026-08-28 to 2026-09-09, the boundary PG&E billed on" in out
+
+
+@freeze_time("2026-09-09T12:00:00-07:00")
+def test_bill_without_dates_says_when_the_boundary_is_a_guess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A calendar month will not match a bill, so it must not read as one."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    AccountStore(tmp_path).save(AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),)))
+    _stub_export(tmp_path, monkeypatch)
+
+    assert main(["bill", "--source", "green-button"]) == 0
+
+    out = capsys.readouterr().out
+    assert "cycle: 2026-09-01 to 2026-09-09, a calendar month, which is a guess" in out
+    assert "store PG&E credentials" in out
+
+
+@freeze_time("2026-09-09T12:00:00-07:00")
+def test_bill_without_dates_uses_a_configured_meter_read_day(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    (tmp_path / "tariffkit").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "tariffkit" / "config.toml").write_text(
+        "[billing]\ncycle_start_day = 29\n", encoding="utf-8"
+    )
+    AccountStore(tmp_path).save(AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),)))
+    _stub_export(tmp_path, monkeypatch)
+
+    assert main(["bill", "--source", "green-button"]) == 0
+
+    assert "cycle: 2026-08-29 to 2026-09-09" in capsys.readouterr().out
+
+
+def test_bill_refuses_one_date_without_the_other(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Half a window is a typo, not a request to guess the other half."""
+    _account_with_statement(tmp_path, monkeypatch)
+
+    assert main(["bill", "--start", "2026-08-01"]) == 1
+
+    assert "give both --start and --end" in capsys.readouterr().err
+
+
+def test_bill_without_an_account_still_asks_for_dates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Nothing says when the cycle began, so it does not invent one."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+    assert main(["bill", "--source", "green-button"]) == 1
+
+    assert "there is nothing to say when the current billing cycle began" in (
+        capsys.readouterr().err
+    )
+
+
+def _stub_export(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    portal_periods: list[BillingPeriod] | None = None,
+) -> None:
+    """Credentials that satisfy `PgeSettings.load`, and an export to read.
+
+    The portal's own cycle boundaries are stubbed too, and empty by default:
+    every one of these asserts which basis was used, so a real lookup would
+    make the answer depend on the machine.
+    """
+    monkeypatch.setenv("PGE_USERNAME", "person@example.invalid")
+    monkeypatch.setenv("PGE_PASSWORD", "secret")
+    monkeypatch.setattr(
+        "tariffkit.sources.cached_bill_periods", lambda *a, **k: portal_periods or []
+    )
+    monkeypatch.setattr(
+        "tariffkit.sources.cached_green_button",
+        lambda settings, start, end, **k: SimpleNamespace(
+            path=_export_csv(tmp_path),
+            start=start,
+            end=end,
+            downloaded=False,
+            covers="cached",
+        ),
+    )
+
+
+def _export_csv(tmp_path: Path) -> Path:
+    path = tmp_path / "export.csv"
+    path.write_text(
+        "start,imported,exported\n"
+        "2026-09-01T02:00:00-07:00,1.5,0\n"
+        "2026-09-01T03:00:00-07:00,0,2.5\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "statement-0007.pdf OCR did not produce a self-checking statement",
+        "statement-0007.pdf could not be read as a PDF",
+        "statement-0007.pdf has no text layer, so it is a scan or a print-to-PDF export",
+        "statement-0007.pdf produced no pages to recognise",
+        "statement-0007.pdf failed its self-check (3 problem(s))",
+        "statement-0007.pdf OCR read the statement but it did not check out (2): a: b; c",
+    ],
+)
+def test_a_skipped_statement_never_names_the_file_the_sync_deleted(message: str) -> None:
+    """The source is a loop index inside a cache directory the run removes.
+
+    Stripping everything up to the first `": "` instead of the name itself
+    left it in four of these, and threw away the explanatory half of the
+    fifth, keeping only its problem list.
+    """
+    from tariffkit.providers.pge.statements.errors import StatementError
+
+    reason = _statement_reason(StatementError(message), Path("/tmp/cache/statement-0007.pdf"))
+
+    assert "statement-0007" not in reason
+    assert reason and not reason.startswith(":")
+    if "did not check out" in message:
+        assert reason.startswith("OCR read the statement")
+
+
+def test_portal_periods_do_not_overrule_a_statement_that_covers_the_same_days(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The portal lists a bill per agreement; a statement is one page.
+
+    Taking its list wholesale opened a cycle split by interconnection on the
+    day the second agreement began, disagreeing with the statement and with
+    what the integration reports for the same account. Exercised through
+    `_known_periods`, because that is where the list was taken wholesale.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("PGE_USERNAME", "person@example.invalid")
+    monkeypatch.setenv("PGE_PASSWORD", "secret")
+    monkeypatch.setattr(
+        "tariffkit.sources.cached_bill_periods",
+        lambda *a, **k: [
+            BillingPeriod(date(2026, 6, 1), date(2026, 6, 2)),
+            BillingPeriod(date(2026, 6, 3), date(2026, 6, 29)),
+            BillingPeriod(date(2026, 6, 30), date(2026, 7, 28)),
+        ],
+    )
+    profile = AccountProfile(
+        (AccountEpoch(date(2025, 1, 1), Config()),),
+        observations=(
+            AccountObservation(
+                agreements=(
+                    ObservedAgreement(
+                        provider="pge",
+                        statement_date=date(2026, 7, 3),
+                        period=BillingPeriod(date(2026, 6, 1), date(2026, 6, 29)),
+                        tariff="E-ELEC",
+                    ),
+                ),
+            ),
+        ),
+    )
+    args = build_parser().parse_args(["bill", "--source", "green-button"])
+
+    origins = _known_periods(args, profile)
+
+    assert [(p.start, p.end, origin) for p, origin in origins.items()] == [
+        (date(2026, 6, 1), date(2026, 6, 29), "statement"),
+        (date(2026, 6, 30), date(2026, 7, 28), "portal"),
+    ]
+
+
+def test_a_period_the_merge_dropped_does_not_come_back_with_a_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Labelling as the merges went along kept what the merges had discarded.
+
+    A partial statement nested inside a whole cycle is superseded by it, and
+    putting it back beside the winner handed `resolve_cycle` the partial span
+    again -- undoing the wider-period rule inside the CLI.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr("tariffkit.sources.cached_bill_periods", lambda *a, **k: [])
+    partial = BillingPeriod(date(2026, 6, 10), date(2026, 6, 15))
+    whole = BillingPeriod(date(2026, 6, 1), date(2026, 6, 29))
+    profile = AccountProfile(
+        (AccountEpoch(date(2025, 1, 1), Config()),),
+        observations=(
+            AccountObservation(
+                agreements=(
+                    ObservedAgreement(
+                        provider="pge",
+                        statement_date=date(2026, 6, 20),
+                        period=partial,
+                        tariff="E-ELEC",
+                    ),
+                ),
+            ),
+        ),
+        billing_periods=(whole,),
+    )
+
+    origins = _known_periods(
+        build_parser().parse_args(["bill", "--source", "green-button"]), profile
+    )
+
+    assert list(origins) == [whole]
+    assert origins[whole] == "recorded"
+
+
+@freeze_time("2026-09-09T12:00:00-07:00")
+def test_the_basis_names_the_source_that_actually_answered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One old statement plus a live portal is not "the boundary your statements print".
+
+    Deciding the label from "does the account hold any statements" said exactly
+    that, for a cycle no statement had anything to do with.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    store = AccountStore(tmp_path)
+    store.save(
+        AccountProfile(
+            (AccountEpoch(date(2025, 1, 1), Config()),),
+            observations=(
+                AccountObservation(
+                    agreements=(
+                        ObservedAgreement(
+                            provider="pge",
+                            statement_date=date(2026, 2, 3),
+                            period=BillingPeriod(date(2026, 1, 1), date(2026, 1, 30)),
+                            tariff="E-ELEC",
+                        ),
+                    ),
+                ),
+            ),
+        )
+    )
+    _stub_export(
+        tmp_path,
+        monkeypatch,
+        portal_periods=[BillingPeriod(date(2026, 7, 29), date(2026, 8, 27))],
+    )
+    capsys.readouterr()
+
+    assert main(["bill", "--source", "green-button"]) == 0
+
+    out = capsys.readouterr().out
+    assert "cycle: 2026-08-28 to 2026-09-09, the boundary PG&E billed on" in out
+    assert "your statements print" not in out
+
+
+def test_naming_a_config_file_never_reaches_for_the_account(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--config` says which file to price from; consulting the account is a
+    write to the configuration directory it has no business making."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    config = tmp_path / "elsewhere.toml"
+    config.write_text('tariff = "E-ELEC"\ninterconnection_year = 2026\n', encoding="utf-8")
+
+    def refuse(*args: object, **kwargs: object) -> object:
+        raise AssertionError("the account was consulted despite --config")
+
+    monkeypatch.setattr("tariffkit.cli.commands._account_store", refuse)
+
+    assert main(["--config", str(config), "now"]) == 0
+    assert not (tmp_path / "tariffkit").exists()
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["bill"], "Home Assistant"),
+        (["bill", "--start", "2026-08-01", "--end", "2026-08-10"], "Home Assistant"),
+        (["bill", "readings.csv"], "could not read"),
+        (["bill", "--source", "influx"], "InfluxDB"),
+        (["bill", "--source", "green-button"], "PG&E credentials"),
+    ],
+)
+def test_the_default_source_is_home_assistant_unless_a_csv_says_otherwise(
+    argv: list[str],
+    expected: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The account's own meter, not the utility's export.
+
+    PG&E's export was missing thirty days of one cycle where the meter matched
+    the statement to 0.00 kWh, and it was the source `bill` reached for first.
+    A CSV path still names the Green Button reader, since that is what a CSV is.
+
+    Asserted through what each invocation actually goes and asks for -- naming
+    the source in the failure it produces -- because the same test written
+    against `parse_args` passed with the resolution reverted.
+    """
+    _account_with_statement(tmp_path, monkeypatch)
+    for variable in ("HA_HOST", "HA_TOKEN", "INFLUXDB3_HOST", "PGE_USERNAME", "PGE_PASSWORD"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setattr("tariffkit.sources.cached_bill_periods", lambda *a, **k: [])
+
+    assert main(argv) == 1
+
+    assert expected in capsys.readouterr().err
+
+
+def test_a_csv_path_with_another_source_still_resolves_a_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--source ha` ignores the CSV, so it still needs a period, not an assertion."""
+    _account_with_statement(tmp_path, monkeypatch)
+    csv = _export_csv(tmp_path)
+
+    # It fails on the missing Home Assistant host, which is a configuration
+    # error and reported as one -- not on an assertion about the window.
+    code = main(["bill", str(csv), "--source", "ha"])
+
+    assert code == 1
+    assert "error:" in capsys.readouterr().err
+
+
+def test_account_periods_records_the_boundaries_for_anything_reading_the_account(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Only the CLI has portal credentials; the account is how they travel."""
+    _init_account(tmp_path, monkeypatch, effective="2025-01-01")
+    monkeypatch.setenv("PGE_USERNAME", "person@example.invalid")
+    monkeypatch.setenv("PGE_PASSWORD", "secret")
+    monkeypatch.setattr(
+        "tariffkit.sources.cached_bill_periods",
+        lambda *a, **k: [
+            BillingPeriod(date(2026, 6, 30), date(2026, 7, 28)),
+            BillingPeriod(date(2026, 7, 29), date(2026, 8, 27)),
+        ],
+    )
+    capsys.readouterr()
+
+    assert main(["account", "periods"]) == 0
+    assert "preview only" in capsys.readouterr().out
+    assert AccountStore(tmp_path).load().billing_periods == ()
+
+    assert main(["account", "periods", "--apply"]) == 0
+
+    stored = AccountStore(tmp_path).load().billing_periods
+    assert [(p.start, p.end) for p in stored] == [
+        (date(2026, 6, 30), date(2026, 7, 28)),
+        (date(2026, 7, 29), date(2026, 8, 27)),
+    ]
+    # And they leave with the export, which is the integration's import format.
+    capsys.readouterr()
+    assert main(["account", "export"]) == 0
+    assert json.loads(capsys.readouterr().out)["billing_periods"][-1] == {
+        "start": "2026-07-29",
+        "end": "2026-08-27",
+    }
+
+
+def test_account_show_answers_what_is_in_force_not_what_history_answers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`show` and `history` were the same output when no evidence was recorded."""
+    _init_account(tmp_path, monkeypatch, effective="2025-01-01")
+    assert (
+        main(["account", "update", "--effective", "2026-01-01", "--tariff", "EV2-A", "--apply"])
+        == 0
+    )
+    capsys.readouterr()
+
+    assert main(["account", "show"]) == 0
+    shown = capsys.readouterr().out
+    assert main(["account", "history"]) == 0
+    history = capsys.readouterr().out
+
+    assert shown != history
+    # The settings themselves, resolved to one moment -- not the epoch list.
+    assert "in force since 2026-01-01" in shown
+    assert "tariff" in shown and "EV2-A" in shown
+    assert "acc_plus_segment" in shown
+    assert "2025-01-01" not in shown
+    # The timeline, which is history's job.
+    assert "epochs" in history and "2025-01-01" in history
+
+
+def test_account_show_json_carries_the_resolved_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _init_account(tmp_path, monkeypatch, effective="2025-01-01")
+    capsys.readouterr()
+
+    assert main(["account", "show", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["effective"] == "2025-01-01"
+    assert payload["config"]["tariff"] == "E-ELEC"
+    assert payload["epochs"] == 1
+    assert payload["observations"] == 0
+
+
+def test_account_show_says_so_when_every_epoch_is_still_in_the_future(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An account imported ahead of a move-in date has nothing in force."""
+    _init_account(tmp_path, monkeypatch, effective="2099-01-01")
+    capsys.readouterr()
+
+    assert main(["account", "show"]) == 0
+
+    out = capsys.readouterr().out
+    assert "nothing in force yet" in out
+    assert "2099-01-01" in out
+
+
+def test_account_update_json_names_the_account_it_wrote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The key is `account`: there is one, and it is not selected by name."""
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'tariff = "E-ELEC"\ninterconnection_year = 2026\npto_date = "2026-06-03"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert main(["--config", str(config), "account", "init", "--effective", "2025-01-01"]) == 0
+    capsys.readouterr()
+
+    assert (
+        main(["account", "update", "--effective", "2026-01-01", "--tariff", "EV2-A", "--json"]) == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["applied"] is False
+    assert [epoch["config"]["tariff"] for epoch in payload["account"]["epochs"]] == [
+        "E-ELEC",
+        "EV2-A",
+    ]
 
 
 def test_account_update_previews_without_writing(tmp_path: Path) -> None:
@@ -125,7 +648,6 @@ def test_account_update_previews_without_writing(tmp_path: Path) -> None:
                     str(monkeypatch_config),
                     "account",
                     "init",
-                    "home",
                     "--effective",
                     "2025-01-01",
                 ]
@@ -137,7 +659,6 @@ def test_account_update_previews_without_writing(tmp_path: Path) -> None:
                 [
                     "account",
                     "update",
-                    "home",
                     "--effective",
                     "2026-01-01",
                     "--tariff",
@@ -146,9 +667,9 @@ def test_account_update_previews_without_writing(tmp_path: Path) -> None:
             )
             == 0
         )
-        assert [
-            epoch.effective for epoch in NamedProfileRepository(tmp_path).load("home").epochs
-        ] == [date(2025, 1, 1)]
+        assert [epoch.effective for epoch in AccountStore(tmp_path).load().epochs] == [
+            date(2025, 1, 1)
+        ]
     finally:
         monkeypatch.undo()
 
@@ -169,7 +690,6 @@ def test_account_source_preview_apply_and_show(
                 str(config),
                 "account",
                 "init",
-                "home",
                 "--effective",
                 "2025-01-01",
             ]
@@ -177,15 +697,14 @@ def test_account_source_preview_apply_and_show(
         == 0
     )
     capsys.readouterr()
-    repository = NamedProfileRepository(tmp_path)
-    assert repository.load("home").meter_sources == MeterSources()
+    store = AccountStore(tmp_path)
+    assert store.load().meter_sources == MeterSources()
 
     assert (
         main(
             [
                 "account",
                 "source",
-                "home",
                 "set",
                 "ha",
                 "--grid-import-entity",
@@ -199,14 +718,13 @@ def test_account_source_preview_apply_and_show(
     )
     preview = json.loads(capsys.readouterr().out)
     assert preview["applied"] is False
-    assert repository.load("home").meter_sources == MeterSources()
+    assert store.load().meter_sources == MeterSources()
 
     assert (
         main(
             [
                 "account",
                 "source",
-                "home",
                 "set",
                 "ha",
                 "--grid-import-entity",
@@ -218,11 +736,9 @@ def test_account_source_preview_apply_and_show(
         )
         == 0
     )
-    assert repository.load("home").meter_sources.ha == MeterSource(
-        "sensor.grid_in", "sensor.grid_out"
-    )
+    assert store.load().meter_sources.ha == MeterSource("sensor.grid_in", "sensor.grid_out")
     capsys.readouterr()
-    assert main(["account", "source", "home", "show", "ha", "--json"]) == 0
+    assert main(["account", "source", "show", "ha", "--json"]) == 0
     shown = json.loads(capsys.readouterr().out)
     assert shown["configured"] is True
     assert shown["grid_import_entity"] == "sensor.grid_in"
@@ -242,8 +758,8 @@ def test_bill_passes_profile_entities_and_cli_overrides(
             influx=MeterSource("profile_in", "profile_out"),
         ),
     )
-    repository = NamedProfileRepository(tmp_path)
-    repository.save("home", profile)
+    store = AccountStore(tmp_path)
+    store.save(profile)
 
     captured: dict[str, object] = {}
     import tariffkit.sources as sources
@@ -281,8 +797,6 @@ def test_bill_passes_profile_entities_and_cli_overrides(
         main(
             [
                 "bill",
-                "--account",
-                "home",
                 "--source",
                 source,
                 "--start",
@@ -305,9 +819,8 @@ def test_bill_passes_profile_entities_and_cli_overrides(
 def test_account_import_statement_previews_then_applies(
     tmp_path: Path, monkeypatch: object
 ) -> None:
-    repository = NamedProfileRepository(tmp_path)
-    repository.save(
-        "home",
+    store = AccountStore(tmp_path)
+    store.save(
         AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),)),
     )
     pdf = tmp_path / "statement.pdf"
@@ -319,10 +832,10 @@ def test_account_import_statement_previews_then_applies(
     monkeypatch.setattr(reconcile_module, "import_statement", lambda _path: imported)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
 
-    assert main(["account", "import-statement", "home", str(pdf), "--json"]) == 0
-    assert len(repository.load("home").epochs) == 1
-    assert main(["account", "import-statement", "home", str(pdf), "--apply"]) == 0
-    assert [epoch.config.tariff for epoch in repository.load("home").epochs] == [
+    assert main(["account", "import-statement", str(pdf), "--json"]) == 0
+    assert len(store.load().epochs) == 1
+    assert main(["account", "import-statement", str(pdf), "--apply"]) == 0
+    assert [epoch.config.tariff for epoch in store.load().epochs] == [
         "E-ELEC",
         "EV2-A",
     ]
@@ -331,9 +844,8 @@ def test_account_import_statement_previews_then_applies(
 def test_account_sync_removes_private_cache_after_parsing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repository = NamedProfileRepository(tmp_path)
-    repository.save(
-        "home",
+    store = AccountStore(tmp_path)
+    store.save(
         AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),)),
     )
     imported = observation(tariff="EV2-A", digest="b" * 64)
@@ -376,70 +888,78 @@ def test_account_sync_removes_private_cache_after_parsing(
     reconcile_module = importlib.import_module("tariffkit.providers.pge.reconcile")
     monkeypatch.setattr(reconcile_module, "import_statement", lambda _path: imported)
 
-    _profile, proposals = sync_profile(repository, "home", apply=False)
+    _profile, proposals, skipped = sync_profile(store, apply=False)
 
     assert len(proposals) == 1
+    assert skipped == []
     assert not tuple(cache.rglob("*.pdf"))
     # Without this the statement list comes back empty and the sync reports
     # "0 statement update(s)" against an account that has plenty.
     assert opened[0].signed_in, "sync must sign in before listing statements"
 
 
-def test_account_selection_rejects_config_and_accepts_profile(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    repository = NamedProfileRepository(tmp_path)
-    repository.save(
-        "ev",
-        AccountProfile((AccountEpoch(date(1970, 1, 1), Config(tariff="EV2-A")),)),
-    )
-
-    assert main(["info", "--account", "ev"]) == 0
-    assert "EV2-A" in capsys.readouterr().out
-    assert main(["--config", str(tmp_path / "config.toml"), "--account", "ev", "now"]) == 1
-
-
-def test_explicit_config_stops_mqtt_from_reverting_to_a_default_profile(
+def test_one_unreadable_statement_does_not_discard_the_rest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``--config`` must stay a stateless override for ``mqtt`` too.
+    """The portal lists what it lists; the parser does not have to like all of it.
 
-    A default profile can be selected two independent ways: the CLI's own
-    ``--account``/config-file precedence (``_pricing_context``), and
-    ``MqttSettings.load``'s own fallback to the ``TARIFFKIT_ACCOUNT`` /
-    ``TARIFFKIT_PROFILE`` environment variables. ``--config`` must win over
-    both, not just the first.
+    A `StatementError` from one document used to propagate out of the whole
+    loop, so an account with statements going back years imported none of them
+    because the newest one would not parse -- and the command exited non-zero,
+    as though the portal or the credentials were at fault. Reported from a real
+    sync as `error: statement-0000.pdf: no total amount due found`, which named
+    a temporary file inside a cache directory the function deletes on its way
+    out: nothing the owner could open, and no clue which statement it meant.
     """
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.setenv("TARIFFKIT_ACCOUNT", "ev")
-    repository = NamedProfileRepository(tmp_path)
-    repository.save(
-        "ev",
-        AccountProfile((AccountEpoch(date(1970, 1, 1), Config(tariff="EV2-A")),)),
-    )
-    config_path = tmp_path / "config.toml"
-    config_path.write_text('tariff = "E-ELEC"\n', encoding="utf-8")
+    from tariffkit.providers.pge.statements.errors import StatementError
 
-    args = argparse.Namespace(
-        config=config_path,
-        account=None,
-        broker="broker.local",
-        port=None,
-        username=None,
-        topic_prefix=None,
-        discovery=None,
-        forecast_hours=None,
-        tls=None,
-        allow_insecure_auth=None,
-    )
-    _engine, config, profile_name, _repository = _pricing_context(args)
+    store = AccountStore(tmp_path)
+    store.save(AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),)))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
 
-    assert profile_name is None  # --config alone must disable profile selection
+    class Session:
+        def __enter__(self) -> Session:
+            return self
 
-    settings = _mqtt_settings(args, config=config, profile_name=profile_name)
+        def __exit__(self, *args: object) -> None:
+            return None
 
-    assert settings.profile is None
+        def login(self, *, force: bool = False) -> None:
+            return None
+
+        def bill_history(self) -> list[dict[str, str]]:
+            return [
+                {"billId": "newest", "billDate": "2026-09-04"},
+                {"billId": "older", "billDate": "2026-08-04"},
+            ]
+
+        def download_bill(self, bill_id: str) -> bytes:
+            return bill_id.encode()
+
+    import tariffkit.sources.pge as pge_module
+
+    monkeypatch.setattr(pge_module, "PgeSession", lambda _settings: Session())
+    monkeypatch.setattr(pge_module.PgeSettings, "load", lambda _path=None: object())
+
+    good = observation(tariff="EV2-A", digest="c" * 64)
+
+    def _import(path: Path) -> object:
+        if path.read_bytes() == b"newest":
+            raise StatementError(f"{path.name}: no total amount due found")
+        return good
+
+    reconcile_module = importlib.import_module("tariffkit.providers.pge.reconcile")
+    monkeypatch.setattr(reconcile_module, "import_statement", _import)
+
+    _profile, proposals, skipped = sync_profile(store, apply=False)
+
+    assert len(proposals) == 1, "the readable statement still imported"
+    assert len(skipped) == 1
+    # Named by the date the utility issued it, not by the temporary file the
+    # loop index produced -- that name is gone by the time anyone reads it.
+    assert skipped[0]["statement"] == "2026-09-04"
+    assert skipped[0]["reason"] == "no total amount due found"
+    assert "statement-0000" not in skipped[0]["reason"]
 
 
 def test_mqtt_cli_accepts_insecure_auth_escape_hatch() -> None:
@@ -447,6 +967,6 @@ def test_mqtt_cli_accepts_insecure_auth_escape_hatch() -> None:
         ["mqtt", "--broker", "broker.local", "--username", "user", "--allow-insecure-auth"]
     )
 
-    settings = _mqtt_settings(args, config=None, profile_name=None)
+    settings = _mqtt_settings(args, from_account=False)
 
     assert settings.allow_insecure_auth is True

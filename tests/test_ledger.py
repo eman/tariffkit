@@ -121,7 +121,7 @@ class TestPgeBank:
         associated with the ACC plus adder may be used to offset any charges
         incurred by the customer."
         """
-        offsettable, non_offsettable, _ = charges_by_bucket(pge_bill())
+        offsettable, non_offsettable = charges_by_bucket(pge_bill())
         nbcs_and_more = 0.24 + 0.23 + 0.01 + 1.39 + 0.02
         # They used to sit outside every bucket, payable in cash.
         assert non_offsettable == pytest.approx(0.0)
@@ -135,7 +135,7 @@ class TestPgeBank:
         # alone leave room for $0.92, and PG&E's wording is that the bonus
         # offsets anything not explicitly non-bypassable. A daily charge for
         # grid access is not that.
-        offsettable, non_offsettable, _ = charges_by_bucket(pge_bill())
+        offsettable, non_offsettable = charges_by_bucket(pge_bill())
         assert offsettable[CreditBucket.BONUS] >= 23.01
         assert non_offsettable < 23.01
 
@@ -182,7 +182,7 @@ class TestMceBank:
         earned and applied figures catch it.
         """
         assert credits_earned(mce_bill()).total == pytest.approx(11.33)
-        offsettable, _, _ = charges_by_bucket(mce_bill())
+        offsettable, _ = charges_by_bucket(mce_bill())
         assert offsettable[CreditBucket.GENERATION] == pytest.approx(3.63)
 
     def test_unspent_credit_is_available_next_cycle(self) -> None:
@@ -268,29 +268,153 @@ class TestInCycleOffsetOverrun:
             export_components={"cca_solar_bonus": -0.96},
         )
 
-    def test_it_cannot_reduce_non_bypassable_charges(self) -> None:
-        """The excess must not leak into charges nothing is allowed to reduce.
+    def test_it_takes_its_own_bucket_below_zero(self) -> None:
+        """The supplier lets its own section go negative rather than stopping at nil.
 
-        A generation-scoped offset reaching the non-bypassable charges would be
-        exactly backwards -- non-bypassable is what those charges are.
+        Settled by the 2026-09-03 statement: an MCE Solar Bonus Credit of -8.33
+        against smaller generation charges printed "Total MCE Electric
+        Generation Charges  -$6.85", not zero.
         """
-        offsettable, _, _ = charges_by_bucket(self.bill())
-        # The non-bypassable charges sit in the bonus bucket now, out of reach
-        # of a generation-scoped offset, which is the property under test. An
-        # overrun banks instead of reaching them.
-        assert offsettable[CreditBucket.GENERATION] == pytest.approx(0.0)
+        offsettable, _ = charges_by_bucket(self.bill())
+        assert offsettable[CreditBucket.GENERATION] == pytest.approx(-0.76)
         assert offsettable[CreditBucket.BONUS] >= 0.50
 
-    def test_the_excess_banks_rather_than_becoming_cash_owed(self) -> None:
-        """The statement's rule for any credit it cannot spend: saved for later."""
-        entry = apply_credits(self.bill())
-        assert entry.earned.generation == pytest.approx(0.76)  # 0.96 less the 0.20 it covered
-        assert entry.closing.generation == pytest.approx(0.76)
+    def test_the_excess_is_credited_on_the_bill_not_banked(self) -> None:
+        """It is a credit the customer was given, not a deposit they still hold.
 
-    def test_cash_due_is_the_non_bypassable_charge(self) -> None:
+        The same statement shows where it did *not* go. MCE's own bank on that
+        page reads beginning 12.63, earned 86.16, applied 0.00, remaining 98.79
+        -- which closes exactly and leaves no room for a banked remainder, while
+        the -6.85 goes straight into the summary and helps print a -21.96 credit
+        balance. Banking it overstated the bank by the overrun and understated
+        the credit given: $7.13 on that cycle.
+        """
         entry = apply_credits(self.bill())
-        assert entry.cash_due == pytest.approx(0.50)
-        assert entry.cash_due > 0
+        assert entry.earned.generation == pytest.approx(0.0), "nothing banked"
+        assert entry.closing.generation == pytest.approx(0.0)
+
+    def test_the_overrun_reduces_what_is_owed(self) -> None:
+        """0.50 of charges against a 0.76 overrun leaves nothing to pay.
+
+        `cash_due` floors at zero because a statement charges nothing rather
+        than paying out; the overrun beyond that is the credit balance, which
+        `not_paid_out` carries.
+        """
+        entry = apply_credits(self.bill())
+        assert entry.gross_charges == pytest.approx(-0.26)
+        assert entry.cash_due == pytest.approx(0.0)
+
+    def test_a_banked_credit_still_cannot_reach_a_non_bypassable_charge(self) -> None:
+        """The rule this class used to test, tested where it actually lives.
+
+        Special Condition 2.f bars *export credits* from the non-bypassable
+        charges, and that is the `applied` path -- generation credit is spent
+        against generation charges and reaches nothing else. A supplier's own
+        section printing negative is a different mechanism and not that rule.
+        """
+        bill = Bill(
+            period=PERIOD,
+            import_components={"public_purpose_programs": 0.50},
+            export_components={"cca_generation": -4.0},
+        )
+        entry = apply_credits(bill)
+        assert entry.applied.total == pytest.approx(0.0), "no generation charge to reach"
+        assert entry.closing.generation == pytest.approx(4.0), "it banks, as a credit does"
+        assert entry.cash_due == pytest.approx(0.50), "the non-bypassable charge stands"
+
+
+class TestTheTwoBanksAreNeverSummed:
+    """A CCA account holds two, on unrelated settlement calendars.
+
+    PG&E's settles at the Permission To Operate anniversary and the CCA's on its
+    own cash-out year, and the statement prints them on separate pages. Adding
+    them gives a figure no statement shows and that never settles as a whole --
+    `held_by` exists to keep them apart, and a reporting path that reached for
+    `closing.total` instead announced a single "+94.43" where the statement
+    printed $11.96 on one page and $98.79 on another.
+    """
+
+    def bill(self) -> Bill:
+        return Bill(
+            period=PERIOD,
+            import_components={"distribution": 2.54, "pcia": 0.40, "cca_generation": 8.88},
+            export_components={
+                "delivery": -14.90,
+                "acc_plus": -2.88,
+                "cca_generation": -83.28,
+                "cca_acc_plus": -2.88,
+            },
+        )
+
+    def test_each_bank_holds_only_its_own_buckets(self) -> None:
+        closing = apply_credits(self.bill()).closing
+        utility = closing.held_by("utility", split=True)
+        generation = closing.held_by("generation", split=True)
+        assert utility == pytest.approx(closing.delivery + closing.bonus)
+        assert generation == pytest.approx(closing.generation + closing.cca_bonus)
+        assert utility + generation == pytest.approx(closing.total)
+        assert utility != pytest.approx(closing.total), "the sum is not either bank"
+
+    def test_a_bundled_account_holds_one(self) -> None:
+        """Without a CCA the utility supplies generation too, so either name is all of it."""
+        closing = apply_credits(self.bill()).closing
+        assert closing.held_by("utility", split=False) == pytest.approx(closing.total)
+        assert closing.held_by("generation", split=False) == pytest.approx(closing.total)
+
+
+class TestTheDeliveryBoundary:
+    """Where an "Energy Delivered charge" ends, drawn by a statement at last.
+
+    `SCOPING_VERIFIED` named the evidence needed: a cycle whose credits exceed
+    the charges they may offset, so the cap binds and the leftover is visible.
+    The 2026-09-03 cycle is it, and it puts the PCIA inside the boundary.
+    """
+
+    def bill(self) -> Bill:
+        # The delivery page of that statement: time-of-use rows of 0.31, 0.08
+        # and 2.15, a PCIA of 0.40, and far more export credit than either.
+        return Bill(
+            period=PERIOD,
+            import_components={
+                "distribution": 2.54,
+                "pcia": 0.40,
+                "energy_cost_recovery": 0.01,
+                "franchise_fee_surcharge": 0.01,
+            },
+            export_components={"delivery": -14.90},
+        )
+
+    def test_delivery_credit_reaches_the_pcia(self) -> None:
+        """PG&E applied $2.94 where the time-of-use rows come to $2.54.
+
+        The only charge that closes the difference is the PCIA at 0.40. It had
+        been in the bonus bucket -- reachable by the ACC Plus adder and nothing
+        else -- so delivery credit stopped 40 cents short every cycle.
+        """
+        entry = apply_credits(self.bill())
+        assert entry.applied.delivery == pytest.approx(2.94)
+
+    def test_the_cent_charges_stay_outside_it(self) -> None:
+        """That $2.94 closes without them, and they are a cent each."""
+        offsettable, _ = charges_by_bucket(self.bill())
+        assert offsettable[CreditBucket.DELIVERY] == pytest.approx(2.94)
+        assert offsettable[CreditBucket.BONUS] == pytest.approx(0.02)
+
+    def test_the_bonus_adder_can_still_reach_the_pcia(self) -> None:
+        """Moving it out of the bonus bucket does not put it out of that reach.
+
+        SC 2.d: the ACC Plus adder "may be used to offset any charges incurred
+        by the customer". The bonus is spent against whatever remains across
+        every bucket, so the PCIA is still within it.
+        """
+        bill = Bill(
+            period=PERIOD,
+            import_components={"pcia": 0.40},
+            export_components={"acc_plus": -1.00},
+        )
+        entry = apply_credits(bill)
+        assert entry.applied.bonus == pytest.approx(0.40)
+        assert entry.cash_due == pytest.approx(0.0)
 
 
 class TestScoping:
@@ -520,8 +644,11 @@ class TestTheReversalRate:
         true-up, so the customer was clawed back more than the tariff allows.
         """
         entry = self._entry(gen_charge=1.0, eec=6.0, bonus=2.0)
-        assert entry.earned.generation == pytest.approx(7.0)
-        assert entry.in_cycle_offsets.generation == pytest.approx(1.0)
+        # The whole bonus is spent -- it drives the section negative rather than
+        # stopping at nil -- so none of it banks and all of it is an in-cycle
+        # offset. The rate is what has to hold either way, and does.
+        assert entry.earned.generation == pytest.approx(6.0)
+        assert entry.in_cycle_offsets.generation == pytest.approx(2.0)
         assert average_export_rate([entry], CreditBucket.GENERATION) == pytest.approx(0.08)
 
     def test_an_export_with_no_bonus_is_unaffected(self) -> None:
@@ -544,7 +671,7 @@ class TestTheBucketMapIsLoadBearing:
         Absent from the map it fell to the non-offsettable default, putting a
         distribution charge where no credit could reach it.
         """
-        offsettable, non_offsettable, _ = charges_by_bucket(
+        offsettable, non_offsettable = charges_by_bucket(
             self._bill(conservation_incentive_adjustment=5.0)
         )
         assert offsettable[CreditBucket.DELIVERY] == pytest.approx(5.0)
@@ -562,7 +689,7 @@ class TestTheBucketMapIsLoadBearing:
     def test_each_non_bypassable_charge_is_reachable_only_by_the_bonus(self, name: str) -> None:
         """Schedule NBT SC 2.f names exactly these four, "except for the ACC
         Plus credit" -- so each belongs to the bonus bucket and to no other."""
-        offsettable, non_offsettable, _ = charges_by_bucket(self._bill(**{name: 3.0}))
+        offsettable, non_offsettable = charges_by_bucket(self._bill(**{name: 3.0}))
         assert offsettable[CreditBucket.BONUS] == pytest.approx(3.0), name
         assert offsettable[CreditBucket.DELIVERY] == pytest.approx(0.0), name
         assert offsettable[CreditBucket.GENERATION] == pytest.approx(0.0), name

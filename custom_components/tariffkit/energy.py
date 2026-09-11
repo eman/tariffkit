@@ -24,7 +24,6 @@ rule that exports before Permission To Operate earn nothing.
 from __future__ import annotations
 
 import logging
-from calendar import monthrange
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -37,9 +36,19 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util.unit_conversion import EnergyConverter
 
 from tariffkit.account import AccountProfile
-from tariffkit.billing import Bill, BillingPeriod, IntervalReading, check_coverage
+from tariffkit.billing import (
+    Bill,
+    BillingPeriod,
+    Cycle,
+    IntervalReading,
+    check_coverage,
+    resolve_cycle,
+)
 from tariffkit.billing.engine import compute_segments
 from tariffkit.errors import TariffKitError
+from tariffkit.sources.homeassistant import MAX_INTERVAL_KW as _MAX_INTERVAL_KW
+from tariffkit.sources.homeassistant import carry as _carry
+from tariffkit.sources.homeassistant import interval_energy
 from tariffkit.timeutil import PACIFIC, hour_floor, now_pacific, to_pacific
 
 from .const import (
@@ -55,11 +64,17 @@ _LOGGER = logging.getLogger(__name__)
 #: rename upstream is a type error here rather than a silent mismatch.
 KWH = UnitOfEnergy.KILO_WATT_HOUR
 
-#: Ceiling on implied power for one hour, in kW. Mirrors
-#: ``tariffkit.sources.homeassistant.MAX_INTERVAL_KW``: a statistics series that
-#: restarts reports its whole accumulated total as one period's change, which is
-#: energy no residential service could have moved.
-MAX_INTERVAL_KW = 100.0
+#: Re-exported rather than restated. The repair that reads it lives in the
+#: library now: this module and ``tariffkit.sources.homeassistant`` read the
+#: same statistics through different transports -- the recorder in process, the
+#: WebSocket API out of it -- and two spellings of one derivation is how the two
+#: come to disagree about a bill. They did: this one repaired a spoiled interval
+#: from the counter and that one dropped it.
+MAX_INTERVAL_KW = _MAX_INTERVAL_KW
+
+#: One hour, in seconds. This module reads hourly statistics rows, so it is the
+#: step every repaired interval is measured against.
+HOUR = 3600.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,96 +122,6 @@ class MeterSettings:
             export_entity=raw_export or None,
             cycle_start_day=day if 1 <= day <= 31 else DEFAULT_CYCLE_START_DAY,
         )
-
-
-#: How long after a statement's period ends its evidence still fixes the
-#: current cycle's start. A real PG&E cycle runs 27 to 33 days, so a wider gap
-#: means at least one statement has been issued that the profile never imported
-#: and the next boundary is no longer derivable from what it knows.
-#:
-#: Measured from the day the derived cycle opened, so the bound is one less than
-#: the longest real cycle: at 32 days elapsed the cycle-to-date spans 33 days,
-#: and anything beyond that would report a period no bill could have.
-STALE_EVIDENCE = timedelta(days=32)
-
-
-@dataclass(frozen=True, slots=True)
-class Cycle:
-    """When the current billing cycle opened, and how that was established."""
-
-    start: date
-    #: ``statement`` when real evidence fixed it, ``day_of_month`` when the
-    #: configured meter-read day was used, ``calendar_month`` when neither was
-    #: available. Carried to the entity so a figure that does not match a bill
-    #: says why before the reader has to guess.
-    source: str
-
-
-def statement_periods(profile: AccountProfile) -> tuple[BillingPeriod, ...]:
-    """Billing periods the profile holds statement evidence for, oldest first.
-
-    One per statement, not one per agreement. A cycle that changed service
-    agreement partway -- which is exactly what interconnecting solar does --
-    prints two agreement blocks inside one billing period, and it is the period
-    the utility bills that a cycle-to-date figure has to follow.
-    """
-    found: list[BillingPeriod] = []
-    for observation in profile.observations:
-        spans = [agreement.period for agreement in observation.agreements]
-        if not spans:
-            continue
-        found.append(BillingPeriod(min(s.start for s in spans), max(s.end for s in spans)))
-    return tuple(sorted(found, key=lambda period: period.start))
-
-
-def _by_day_of_month(day: date, start_day: int) -> Cycle:
-    """Fall back to a fixed meter-read day, or to the calendar month.
-
-    Months are not all the same length, so a 31st-of-the-month read clamps to
-    the 30th in April and the 28th in February rather than failing or skipping
-    a cycle.
-    """
-    if not start_day:
-        return Cycle(day.replace(day=1), "calendar_month")
-    anchor = min(start_day, monthrange(day.year, day.month)[1])
-    if day.day >= anchor:
-        return Cycle(day.replace(day=anchor), "day_of_month")
-    previous = day.replace(day=1) - timedelta(days=1)
-    anchor = min(start_day, monthrange(previous.year, previous.month)[1])
-    return Cycle(previous.replace(day=anchor), "day_of_month")
-
-
-def resolve_cycle(day: date, start_day: int, periods: Sequence[BillingPeriod] = ()) -> Cycle:
-    """Find the billing cycle containing ``day``, preferring real evidence.
-
-    A meter-read day is a guess, and a bad one: PG&E reads on business days, so
-    a real account's cycles open on the 29th, the 30th, the 1st and the 3rd in
-    consecutive months. Any fixed day of the month is therefore wrong for most
-    cycles, which is fine for a rough month-to-date figure and not fine for one
-    that claims to track a bill.
-
-    Statements say exactly where the boundaries fell, and a profile that has
-    imported them knows. Cycles are contiguous -- each period begins the day
-    after the last one ended -- so the open cycle's start follows from the most
-    recent statement, without waiting for the statement that will close it.
-
-    ``start_day`` remains the fallback, because a profile configured through the
-    UI has no statement evidence at all.
-    """
-    for period in reversed(periods):
-        if period.start <= day <= period.end:
-            return Cycle(period.start, "statement")
-    latest = max((period.end for period in periods), default=None)
-    if latest is not None and latest < day:
-        opened = latest + timedelta(days=1)
-        if day - opened <= STALE_EVIDENCE:
-            return Cycle(opened, "statement")
-    return _by_day_of_month(day, start_day)
-
-
-def cycle_start(day: date, start_day: int, periods: Sequence[BillingPeriod] = ()) -> date:
-    """The cycle's first day; see :func:`resolve_cycle` for how it is chosen."""
-    return resolve_cycle(day, start_day, periods).start
 
 
 @dataclass(frozen=True, slots=True)
@@ -328,18 +253,23 @@ class UsageReader:
         ):
             if not entity:
                 continue
+            previous: tuple[float, float] | None = None
             for row in rows.get(entity) or []:
                 slot = float(row["start"])
                 if slot < opens_at.timestamp():
+                    previous = _carry(previous, slot, row.get("state"))
                     continue
                 recorded.setdefault(entity, set()).add(slot)
                 change = row.get("change")
-                if change is None:
-                    continue
-                if change < 0 or change > MAX_INTERVAL_KW:
-                    # Loudly, unlike a silent skip: this is a statistics series
-                    # catching up after a gap, so real energy is being dropped
-                    # and the totals below it will be short by that much.
+                energy = interval_energy(change, row.get("state"), previous, slot, HOUR)
+                previous = _carry(previous, slot, row.get("state"))
+                if energy is None:
+                    if change is None:
+                        continue
+                    # Loudly, unlike a silent skip: the recorder's figure was
+                    # not usable and the counter could not be differenced
+                    # either, so real energy is being dropped and the totals
+                    # below it will be short by that much.
                     _LOGGER.warning(
                         "Backfill ignoring implausible change of %.1f kWh for %s at %s",
                         change,
@@ -351,7 +281,7 @@ class UsageReader:
                     # now, and the hours either side of it carry or lost the
                     # energy it held, which is what `_reconstructed` looks for.
                     continue
-                hours.setdefault(slot, [0.0, 0.0])[direction] += change
+                hours.setdefault(slot, [0.0, 0.0])[direction] += energy
                 covered.setdefault(entity, set()).add(slot)
         self.discarded = tuple(sorted(set(dropped)))
         self.absent = self._absent_series(covered, recorded, opens_at, closes_at)
@@ -498,26 +428,30 @@ class UsageReader:
         for entity in entities:
             series = rows.get(entity) or []
             hours: dict[float, float] = {}
+            previous: tuple[float, float] | None = None
             for row in series:
-                change = row.get("change")
-                if change is None:
-                    continue
                 slot = float(row["start"])
                 # A statistics series that restarted reports its whole
-                # accumulated total as one hour's change. Dropping it loses that
-                # hour's real energy; keeping it would charge for a year of it.
+                # accumulated total as one hour's change. Charging for that
+                # would bill a year inside an hour; dropping it loses the hour's
+                # real energy, which `interval_energy` recovers from the counter.
                 if slot < opens.timestamp():
+                    previous = _carry(previous, slot, row.get("state"))
                     continue
-                if change < 0 or change > MAX_INTERVAL_KW:
-                    _LOGGER.warning(
-                        "Ignoring implausible change of %.1f kWh for %s at %s",
-                        change,
-                        entity,
-                        datetime.fromtimestamp(slot, tz=PACIFIC).isoformat(),
-                    )
-                    dropped += 1
+                change = row.get("change")
+                energy = interval_energy(change, row.get("state"), previous, slot, HOUR)
+                previous = _carry(previous, slot, row.get("state"))
+                if energy is None:
+                    if change is not None:
+                        _LOGGER.warning(
+                            "Ignoring implausible change of %.1f kWh for %s at %s",
+                            change,
+                            entity,
+                            datetime.fromtimestamp(slot, tz=PACIFIC).isoformat(),
+                        )
+                        dropped += 1
                     continue
-                hours[slot] = change
+                hours[slot] = energy
             self._hours[entity] = hours
             for row in reversed(series):
                 recorded = row.get("state")
@@ -671,7 +605,12 @@ def price(
     unexplained ``unknown``, so the reason travels with the refusal.
     """
     try:
-        return compute_segments(profile.segments_for(period), readings, check=False), ""
+        # `check=False` because `coverage_warnings` runs the check itself, with
+        # the clock; `netted=True` for the same reason it passes it there.
+        return (
+            compute_segments(profile.segments_for(period), readings, check=False, netted=True),
+            "",
+        )
     except (TariffKitError, ValueError) as err:
         _LOGGER.debug("Cannot price %s to %s: %s", period.start, period.end, err)
         return None, f"cannot price {period.start} to {period.end}: {err}"

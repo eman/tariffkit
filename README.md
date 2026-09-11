@@ -59,6 +59,7 @@ Nothing here touches the network at runtime.
 
 | | |
 |---|---|
+| [Use cases](https://github.com/eman/tariffkit/blob/main/docs/use-cases.md) | The four questions the calculator answers, what memory each one needs, and the traps in each |
 | [Configuration](https://github.com/eman/tariffkit/blob/main/docs/configuration.md) | Settings, CCA setup, reading your bill |
 | [Library](https://github.com/eman/tariffkit/blob/main/docs/library.md) | Embedding in Python |
 | [Named account profiles](https://github.com/eman/tariffkit/blob/main/docs/accounts.md) | Tracking a changing service agreement over time, importing PG&E statements |

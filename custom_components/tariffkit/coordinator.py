@@ -15,7 +15,14 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from tariffkit.account import AccountError, AccountProfile, AccountRateEngine
-from tariffkit.billing import Bill, BillingPeriod, CreditBalances, IntervalReading
+from tariffkit.billing import (
+    Bill,
+    BillingPeriod,
+    CreditBalances,
+    IntervalReading,
+    known_periods,
+    resolve_cycle,
+)
 from tariffkit.components import ComponentGroup
 from tariffkit.config import CcaConfig, Config, stored_bsc_tier
 from tariffkit.errors import TariffKitError
@@ -61,8 +68,6 @@ from .energy import (
     UsageReader,
     coverage_warnings,
     price,
-    resolve_cycle,
-    statement_periods,
 )
 from .profile import profile_from_entry
 
@@ -293,11 +298,21 @@ class TariffKitData:
 
     @property
     def opening_note(self) -> str:
-        """Why the figures were computed without a bank, or empty."""
-        if self.usage is None or self.bank_pending is None:
+        """Why the figures were computed without a bank, or empty.
+
+        A bank that exists is judged on its own. ``bank_pending`` explains an
+        *absent* bank and nothing else, and gating the untrustworthy case behind
+        it made that case unreachable in exactly the situation it exists for: a
+        fold that succeeds sets no pending reason (``_async_bank`` sets the note
+        only when it returns no bank), so a folded-but-warned-about balance was
+        dropped from every money entity in silence -- the outcome ``opening``
+        says must not happen. Measured on a real account: a $26.55 cycle stated
+        before a $7.73 delivery bank it never mentioned.
+        """
+        if self.usage is None:
             return ""
         if self.bank is None:
-            return self.bank_pending
+            return self.bank_pending or ""
         if not self.bank.trustworthy:
             return (
                 f"the export credit bank is not trustworthy ({'; '.join(self.bank.warnings)}), "
@@ -422,7 +437,7 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         self.engine = AccountRateEngine(self.profile)
         self.meters = MeterSettings.from_entry({**entry.data, **entry.options}, self.profile)
         self._usage = (
-            UsageReader(hass, self.meters, statement_periods(self.profile))
+            UsageReader(hass, self.meters, known_periods(self.profile))
             if self.meters.configured
             else None
         )
@@ -528,9 +543,7 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
             return None, None
         opens = max(
             min(
-                resolve_cycle(
-                    pto, self.meters.cycle_start_day, statement_periods(self.profile)
-                ).start,
+                resolve_cycle(pto, self.meters.cycle_start_day, known_periods(self.profile)).start,
                 metered.cycle.start,
             ),
             min(self.profile.effective_dates),

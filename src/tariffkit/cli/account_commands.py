@@ -1,9 +1,9 @@
-"""Account-profile operations used by the command line interface.
+"""Account operations used by the command line interface.
 
-The account model and repository deliberately know nothing about argparse or
-PG&E.  This module is the narrow CLI boundary: it performs migrations,
-statement reconciliation, and portal synchronization while keeping all
-persisted and printed values sanitized by the public account model.
+The account model deliberately knows nothing about argparse or PG&E.  This
+module is the narrow CLI boundary: it performs migrations, statement
+reconciliation, and portal synchronization while keeping all persisted and
+printed values sanitized by the public account model.
 """
 
 from __future__ import annotations
@@ -14,17 +14,23 @@ import re
 import shutil
 import sys
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from ..account import (
+    AccountEpoch,
+    AccountError,
+    AccountObservation,
+    AccountProfile,
+    MeterSource,
+    MeterSources,
+)
 from ..config import Config
 from ..errors import ConfigError
-from ..secrets import get_named_secret
-from .errors import AccountError
-from .model import AccountEpoch, AccountObservation, AccountProfile, MeterSource, MeterSources
-from .repository import NamedProfileRepository, validate_profile_name
+from .account_store import AccountStore
 
 
 def read_config_json(path: Path) -> Config:
@@ -44,7 +50,7 @@ def read_config_json(path: Path) -> Config:
         raise ConfigError(f"invalid config JSON: {exc}") from exc
 
 
-def _config_from_audit(path: Path, *, name: str, credential_set: str | None) -> AccountProfile:
+def _config_from_audit(path: Path) -> AccountProfile:
     """Convert the repository's legacy ``audit/account.toml`` representation."""
     import tomllib
 
@@ -92,76 +98,55 @@ def _config_from_audit(path: Path, *, name: str, credential_set: str | None) -> 
         raise AccountError("legacy account history has no epochs to migrate")
     return AccountProfile(
         tuple(sorted(epochs, key=lambda epoch: epoch.effective)),
-        name=name,
-        credential_set=credential_set,
     )
 
 
 def migrate_existing(
-    name: str,
     *,
     config_path: str | Path | None = None,
     audit_path: str | Path | None = None,
     effective: date | None = None,
-    credential_set: str | None = None,
 ) -> AccountProfile:
-    """Build a named profile from an explicit legacy file or the current Config.
+    """Build the account from an explicit legacy file or the current Config.
 
     An explicit config path wins over an explicit audit path. Requiring the
     legacy path avoids silently reading developer-only repository state.
     """
-    validate_profile_name(name)
     if config_path is None and audit_path is not None:
         candidate = Path(audit_path)
         if not candidate.is_file():
             raise ConfigError(f"legacy audit account file not found: {candidate}")
-        return _config_from_audit(candidate, name=name, credential_set=credential_set)
+        return _config_from_audit(candidate)
 
     config = Config.load(config_path)
-    return AccountProfile(
-        (
-            AccountEpoch(
-                effective or date.today(),
-                config,
-            ),
-        ),
-        name=name,
-        credential_set=credential_set,
-    )
+    return AccountProfile((AccountEpoch(effective or date.today(), config),))
 
 
 def init_profile(
-    repository: NamedProfileRepository,
-    name: str,
+    store: AccountStore,
     *,
     config_path: str | Path | None = None,
     config_json: Path | None = None,
     effective: date | None = None,
-    credential_set: str | None = None,
     audit_path: str | Path | None = None,
 ) -> AccountProfile:
-    """Create a profile from explicit inputs or the resolved public configuration."""
-    validate_profile_name(name)
-    if name in repository.names():
-        raise ConfigError(f"profile {name!r} already exists")
+    """Create the account from explicit inputs or the resolved public configuration."""
+    if store.exists():
+        raise ConfigError(
+            f"an account already exists at {store.path}; 'tariffkit account update' changes it"
+        )
     if config_json is not None and config_path is not None:
         raise ConfigError("choose either --config or --config-json")
     if config_json is not None:
         config = read_config_json(config_json)
-        profile = AccountProfile(
-            (AccountEpoch(effective or date.today(), config),),
-            name=name,
-            credential_set=credential_set,
-        )
+        profile = AccountProfile((AccountEpoch(effective or date.today(), config),))
     else:
         profile = migrate_existing(
-            name,
             config_path=config_path,
             audit_path=audit_path,
             effective=effective,
-            credential_set=credential_set,
         )
-    return repository.save(name, profile)
+    return store.save(profile)
 
 
 def config_changes(args: Any) -> dict[str, object]:
@@ -195,19 +180,17 @@ def config_changes(args: Any) -> dict[str, object]:
 
 
 def update_profile(
-    repository: NamedProfileRepository,
-    name: str,
+    store: AccountStore,
     *,
     effective: date,
     config_path: str | Path | None = None,
     config_json: Path | None = None,
     changes: Mapping[str, object] | None = None,
     note: str | None = None,
-    credential_set: str | None = None,
     apply: bool = False,
 ) -> AccountProfile:
     """Create or replace one complete effective-dated Config snapshot."""
-    profile = repository.load(name)
+    profile = store.load()
     if config_json is not None and config_path is not None:
         raise ConfigError("choose either --config or --config-json")
     if config_json is not None:
@@ -246,19 +229,12 @@ def update_profile(
     else:
         epochs.append(replacement)
     epochs.sort(key=lambda epoch: epoch.effective)
-    updated = AccountProfile(
-        tuple(epochs),
-        name=profile.name,
-        credential_set=credential_set if credential_set is not None else profile.credential_set,
-        observations=profile.observations,
-        meter_sources=profile.meter_sources,
-    )
-    return repository.save(name, updated, expected_revision=profile.revision) if apply else updated
+    updated = replace(profile, epochs=tuple(epochs))
+    return store.save(updated, expected_revision=profile.revision) if apply else updated
 
 
 def set_meter_source(
-    repository: NamedProfileRepository,
-    name: str,
+    store: AccountStore,
     *,
     provider: str,
     grid_import_entity: str,
@@ -268,7 +244,7 @@ def set_meter_source(
     """Preview or persist one provider's profile-scoped meter mapping."""
     if provider not in ("ha", "influx"):
         raise ConfigError("meter source must be ha or influx")
-    profile = repository.load(name)
+    profile = store.load()
     source = MeterSource(
         grid_import_entity=grid_import_entity,
         grid_export_entity=grid_export_entity,
@@ -277,14 +253,8 @@ def set_meter_source(
         sources = MeterSources(ha=source, influx=profile.meter_sources.influx)
     else:
         sources = MeterSources(ha=profile.meter_sources.ha, influx=source)
-    updated = AccountProfile(
-        epochs=profile.epochs,
-        name=profile.name,
-        credential_set=profile.credential_set,
-        observations=profile.observations,
-        meter_sources=sources,
-    )
-    return repository.save(name, updated, expected_revision=profile.revision) if apply else updated
+    updated = replace(profile, meter_sources=sources)
+    return store.save(updated, expected_revision=profile.revision) if apply else updated
 
 
 def meter_source_summary(profile: AccountProfile, provider: str) -> dict[str, object]:
@@ -293,7 +263,6 @@ def meter_source_summary(profile: AccountProfile, provider: str) -> dict[str, ob
         raise ConfigError("meter source must be ha or influx")
     source = profile.meter_sources.ha if provider == "ha" else profile.meter_sources.influx
     return {
-        "profile": profile.name,
         "source": provider,
         "configured": source is not None,
         "grid_import_entity": source.grid_import_entity if source is not None else None,
@@ -302,8 +271,7 @@ def meter_source_summary(profile: AccountProfile, provider: str) -> dict[str, ob
 
 
 def apply_observations(
-    repository: NamedProfileRepository,
-    name: str,
+    store: AccountStore,
     observations: Sequence[AccountObservation],
     *,
     apply: bool,
@@ -311,7 +279,7 @@ def apply_observations(
     """Reconcile evidence in order and optionally persist one atomic update."""
     from ..providers.pge.reconcile import reconcile
 
-    profile = repository.load(name)
+    profile = store.load()
     working = profile
     proposals: list[dict[str, object]] = []
     can_apply = True
@@ -327,30 +295,65 @@ def apply_observations(
         if not can_apply:
             raise ConfigError("account update contains conflicts or missing required values")
         if working != profile:
-            working = repository.save(name, working, expected_revision=profile.revision)
+            working = store.save(working, expected_revision=profile.revision)
     return working, proposals
 
 
+def _statement_reason(err: Exception, source: str | Path) -> str:
+    """The parser's message without the source prefix it already carries.
+
+    ``read_statement`` prefixes its errors with the file it was handed, which
+    for a sync is a temporary name in a cache directory the run deletes -- so
+    the one identifier in the message named a file that never outlived the
+    command.
+
+    Stripping *that name*, rather than everything up to the first ``": "``.
+    The punctuation was never a convention the parser kept: four of its
+    messages separate the source with a space and leaked the name anyway, and
+    one contains a later colon of its own, so partitioning threw away the half
+    that said what went wrong and kept only the problem list.
+    """
+    text = str(err)
+    for prefix in (f"{Path(source).name}: ", f"{Path(source).name} ", f"{source}: ", f"{source} "):
+        if text.startswith(prefix):
+            return text[len(prefix) :].strip()
+    return text
+
+
 def import_statements(
-    repository: NamedProfileRepository,
-    name: str,
+    store: AccountStore,
     paths: Sequence[Path],
     *,
     apply: bool,
-) -> tuple[AccountProfile, list[dict[str, object]]]:
-    """Parse local PDFs and reconcile only their sanitized observations."""
+) -> tuple[AccountProfile, list[dict[str, object]], list[dict[str, str]]]:
+    """Parse local PDFs and reconcile only their sanitized observations.
+
+    Returns the statements that could not be read alongside the proposals, for
+    the same reason :func:`sync_profile` does: a directory of statements is
+    worth importing even when one of them is a document this parser has never
+    seen. Here the caller named the files, so each skip is reported by its own
+    path rather than by a date.
+    """
     from ..providers.pge.reconcile import import_statement
+    from ..providers.pge.statements.errors import StatementError
 
-    observations = [import_statement(path) for path in paths]
-    return apply_observations(repository, name, observations, apply=apply)
+    observations = []
+    skipped: list[dict[str, str]] = []
+    for path in paths:
+        try:
+            observations.append(import_statement(path))
+        except StatementError as err:
+            skipped.append({"statement": str(path), "reason": _statement_reason(err, path)})
+    updated, proposals = apply_observations(store, observations, apply=apply)
+    return updated, proposals, skipped
 
 
-def _cache_directory(name: str) -> Path:
+def _cache_directory() -> Path:
     root = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
     parent = root / "tariffkit" / "account-sync"
     parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     parent.chmod(0o700)
-    path = parent / f"{name}-{uuid4().hex}"
+    path = parent / uuid4().hex
     path.mkdir(mode=0o700)
     path.chmod(0o700)
     return path
@@ -384,50 +387,41 @@ def _row_date(row: Mapping[str, object]) -> date | None:
 
 
 def _pge_settings(profile: AccountProfile, config_path: str | Path | None = None) -> Any:
+    """The portal settings, from the one place credentials are kept.
+
+    There used to be a second place: a profile could name a keyring "credential
+    set" so several profiles shared one login. That was the landlord's case and
+    it went with the named profiles -- one account reads one set of credentials.
+    """
+    del profile
     from ..sources.pge import PgeSettings
 
-    if profile.credential_set is None:
-        return PgeSettings.load(config_path)
-    prefix = profile.credential_set
-    username = get_named_secret(prefix, "pge.username")
-    password = get_named_secret(prefix, "pge.password")
-    if not username or not password:
-        raise ConfigError(
-            f"credential set {prefix!r} does not contain both pge.username and pge.password"
-        )
-    settings = PgeSettings.load(config_path, username=username, password=password)
-    values = {
-        "browser_cookie": get_named_secret(prefix, "pge.browser_cookie"),
-        "validation_cookie": get_named_secret(prefix, "pge.validation_cookie"),
-        "account_urn": get_named_secret(prefix, "pge.account_urn"),
-    }
-    return type(settings)(
-        username=settings.username,
-        password=settings.password,
-        account_id=settings.account_id,
-        cookie_path=settings.cookie_path,
-        browser_cookie=values["browser_cookie"] or settings.browser_cookie,
-        validation_cookie=values["validation_cookie"] or settings.validation_cookie,
-        account_urn=values["account_urn"] or settings.account_urn,
-    )
+    return PgeSettings.load(config_path)
 
 
 def sync_profile(
-    repository: NamedProfileRepository,
-    name: str,
+    store: AccountStore,
     *,
     since: date | None = None,
     apply: bool,
     keep_statements: bool = False,
     config_path: str | Path | None = None,
-) -> tuple[AccountProfile, list[dict[str, object]]]:
-    """Download, parse, and reconcile portal statements through a private cache."""
+) -> tuple[AccountProfile, list[dict[str, object]], list[dict[str, str]]]:
+    """Download, parse, and reconcile portal statements through a private cache.
+
+    Returns the profile, the reconciliation proposals, and the statements that
+    could not be read. The third is not an error: the portal lists whatever it
+    lists, and one document the parser does not recognise must not cost the
+    caller the twenty-four beside it.
+    """
     from ..providers.pge.reconcile import import_statement
+    from ..providers.pge.statements.errors import StatementError
     from ..sources.pge import PgeSession
 
-    profile = repository.load(name)
-    cache = _cache_directory(name)
+    profile = store.load()
+    cache = _cache_directory()
     observations: list[AccountObservation] = []
+    skipped: list[dict[str, str]] = []
     try:
         settings = _pge_settings(profile, config_path)
         with PgeSession(settings) as session:
@@ -457,27 +451,48 @@ def sync_profile(
                     continue
                 selected.append((identifier, issued.isoformat() if issued else None))
             if not selected:
-                return profile, []
-            for index, (identifier, _issued) in enumerate(selected):
+                return profile, [], []
+            for index, (identifier, issued_on) in enumerate(selected):
                 pdf_path = cache / f"statement-{index:04d}.pdf"
                 pdf_path.write_bytes(session.download_bill(identifier))
                 pdf_path.chmod(0o600)
                 try:
                     observations.append(import_statement(pdf_path))
+                except StatementError as err:
+                    # One statement the parser cannot read is a statement not
+                    # imported, not a failed sync. Letting it propagate threw
+                    # away every observation already collected and every
+                    # statement after it -- an account with 25 statements
+                    # imported none of them because the newest one would not
+                    # parse, and the command exited non-zero as though the
+                    # portal or the credentials were at fault.
+                    #
+                    # Named by the date the utility issued it, not by the
+                    # temporary file. `statement-0000.pdf` is a loop index
+                    # inside a cache directory this function deletes on the way
+                    # out, so the one identifier in the message named a file
+                    # that no longer existed and said nothing about which
+                    # statement to go and look at.
+                    skipped.append(
+                        {
+                            "statement": issued_on or f"#{index}",
+                            "reason": _statement_reason(err, pdf_path),
+                        }
+                    )
                 finally:
                     if not keep_statements:
                         pdf_path.unlink(missing_ok=True)
     finally:
         if not keep_statements:
             shutil.rmtree(cache, ignore_errors=False)
-    return apply_observations(repository, name, observations, apply=apply)
+    updated, proposals = apply_observations(store, observations, apply=apply)
+    return updated, proposals, skipped
 
 
 def profile_summary(profile: AccountProfile) -> dict[str, Any]:
     """Return sanitized data suitable for human or JSON CLI output."""
     return {
         "name": profile.name,
-        "credential_set": profile.credential_set,
         "epochs": [
             {
                 "effective": epoch.effective.isoformat(),

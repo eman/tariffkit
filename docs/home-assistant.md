@@ -200,9 +200,9 @@ place, without a restart.
 | Metered energy | The grid import and export counters and the billing cycle start day. See [Metered energy](#metered-energy). Stored as options; clearing both entities removes the running-total entities on reload. |
 | **Account history** | Opens the sub-menu below. |
 
-Its entry holds a whole [named account profile](accounts.md) — an ordered,
-dated history of settings — not just today's values, so account history is
-its own sub-menu rather than flat top-level choices:
+Its entry holds a whole [account](accounts.md) — an ordered, dated history of
+settings — not just today's values, so account history is its own sub-menu
+rather than flat top-level choices:
 
 | Sub-menu item | Does |
 |---|---|
@@ -227,11 +227,10 @@ of them need today's active settings. Wait for the epoch's effective date,
 edit an existing future transition, or replace the profile through **Import
 profile** with one that already starts today.
 
-**The integration never stores PG&E credentials.** It strips a profile's
-`credential_set` before saving it, since this integration never signs in to
-the portal itself; a profile arriving through **Import profile** with a
-credential set keeps its epochs and evidence but loses that reference. Set
-one on the profile through the CLI instead if you use `account sync` there.
+**The integration never stores PG&E credentials.** It does not sign in to the
+portal, and a profile does not carry a credential reference for it to keep:
+the CLI's keyring entries stay with the CLI, which is where `account sync`
+runs.
 
 **Older config entries migrate automatically and safely.** An entry created
 before this schema exists has no stored profile, just old flat settings (or
@@ -729,12 +728,28 @@ days, so one real account's cycles opened on the 29th, the 30th, the 1st and
 the 3rd in consecutive months. No fixed day of the month matches more than a
 fraction of them.
 
-So TariffKit prefers evidence. If the profile carries imported statements — via
-[Account history](#account-history), or `tariffkit account sync` / `account
-import-statement` on the CLI — the cycle boundary comes from the statements
-themselves. Billing periods are contiguous, each beginning the day after the
-last one ended, so the *open* cycle's start follows from the most recent
-statement without waiting for the one that will close it.
+So TariffKit prefers evidence, of which the profile can carry two kinds:
+
+- **`billing_periods`** — the cycles PG&E says it billed, dates only. No
+  statement PDF is involved, which is what makes them enterable by hand.
+- **Imported statements** — the same boundaries, plus the tariff and supplier
+  each cycle was billed under.
+
+Where two periods overlap, the **wider** one is kept, because cycles tile
+rather than nest: anything sitting inside another period is a partial view of
+the same cycle. That is usually the statement, which is one page — a cycle
+whose service agreement changed partway is one billing period on it and two
+entries in the portal's list. It is occasionally the other way round, when a
+statement was only partly read, and then the portal's whole cycle is the
+better answer.
+
+Billing periods are contiguous, each beginning the day after the last one
+ended, so the *open* cycle's start follows from the most recent one without
+waiting for the statement that will close it.
+
+The integration never signs in to PG&E, so it does not fetch either. They
+arrive with the profile — see [Getting the billing periods
+in](#getting-the-billing-periods-in) below.
 
 The `cycle_boundary` attribute on the three cycle **money** entities says which was used:
 
@@ -748,6 +763,64 @@ Evidence more than 35 days stale is ignored — a statement has been issued that
 the profile never imported, so the next boundary is no longer derivable, and
 trusting the old one would report a 90-day "cycle" and bill Base Services
 Charge for every day of it. It falls back and says so.
+
+### Getting the billing periods in
+
+**With the CLI**, one command reads them from the portal and writes them onto
+the account, then the profile carries them here:
+
+```bash
+tariffkit account periods --apply
+tariffkit account export
+```
+
+Paste that output into **Configure → Account history → Import profile**.
+
+**Without the CLI**, you can read the boundaries off PG&E's own site and type
+them in. They are not on the bill summary page; the reliable list is the one
+the data export uses:
+
+1. Sign in and open
+   [**Download my data**](https://myaccount.pge.com/myaccount/apex/myAcct_VF_GreenButton)
+   (My Account → Energy Usage Details → *Green Button — Download my data*).
+2. Choose **Bill periods**. The dropdown lists every cycle it has, most recent
+   first, as `Jul 29, 2026 - Aug 27, 2026`. The first entry is the open cycle
+   and reads *"Since your last bill"*.
+3. Write them down. Each printed statement carries its own period too, so an
+   old PDF or a saved bill works for cycles the dropdown no longer offers.
+
+Then use **Configure → Account history → Export profile**, add a
+`billing_periods` array to the JSON, and paste the result back through
+**Import profile**:
+
+```json
+{
+  "schema_version": 2,
+  "name": "home",
+  "epochs": [{ "...": "leave everything else exactly as it was" }],
+  "observations": [],
+  "meter_sources": { "ha": null, "influx": null },
+  "billing_periods": [
+    { "start": "2026-06-30", "end": "2026-07-28" },
+    { "start": "2026-07-29", "end": "2026-08-27" }
+  ]
+}
+```
+
+Both dates are **inclusive**, so the end is the day before the next cycle's
+start — the dropdown's own labels read that way, and `Aug 27` above is followed
+by a cycle opening `Aug 28`. The list must be sorted and must not overlap;
+either mistake is refused on import with a message naming the two periods,
+rather than being taken and quietly making the containing cycle ambiguous.
+
+Gaps are allowed, so a handful of recent cycles is worth entering on its own —
+the current one is the only one a cycle-to-date figure needs, and one entry
+covering the last closed cycle is enough to place it. Add the next one when
+your next bill arrives, or leave it: after about 35 days the entry goes stale
+and the read day takes over again, which is where you started.
+
+An account written before this field existed (`schema_version` 1) imports
+unchanged and simply has none.
 
 The cycle figures are **cycle to date**, not a balance due. Under Net Billing
 an export credit carries into the next cycle and settles at the annual

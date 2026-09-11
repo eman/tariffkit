@@ -58,6 +58,9 @@ SUPPORTED_RESOLUTIONS = (15, 30, 60)
 #: The running totals' time-of-use breakdown. Named here because it is
 #: excluded from the recorder alongside the other large attributes.
 ATTR_BUCKETS = "buckets"
+#: Which charges each kind of export credit may reach, and what it did reach.
+#: Excluded from the recorder for the same reason as ``ATTR_BUCKETS``.
+ATTR_CREDIT_BUCKETS = "credit_buckets"
 #: Fixed explanatory prose on an entity; excluded from the recorder.
 ATTR_DESCRIPTION = "description"
 ATTR_RATES = "rates"

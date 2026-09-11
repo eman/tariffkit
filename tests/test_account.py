@@ -21,14 +21,15 @@ from tariffkit.account import (
     AccountRateEngine,
     MeterSource,
     MeterSources,
-    NamedProfileRepository,
     ObservedAgreement,
-    ProfileConflictError,
-    ProfileNameError,
-    ProfileStorageError,
     mask_account_digits,
 )
 from tariffkit.billing import BillingPeriod
+from tariffkit.cli.account_store import (
+    AccountStore,
+    ProfileConflictError,
+    ProfileStorageError,
+)
 from tariffkit.config import CcaConfig, Config
 from tariffkit.errors import ConfigError
 from tariffkit.export import NbtExportRates
@@ -85,25 +86,24 @@ class TestAccountProfile:
         updated = account.with_observation(AccountObservation((agreement,)))
         assert updated.meter_sources == source
 
-    def test_home_assistant_sanitization_preserves_meter_sources(self) -> None:
+    def test_a_home_assistant_round_trip_preserves_meter_sources(self) -> None:
+        """What the integration exports is what importing it gets back."""
         pytest.importorskip("homeassistant")
         pytest.importorskip(
             "custom_components.tariffkit.profile",
             exc_type=ModuleNotFoundError,
         )
-        from custom_components.tariffkit.profile import profile_from_entry, sanitize_profile
+        from custom_components.tariffkit.profile import profile_from_entry, profile_payload
 
         source = MeterSources(ha=MeterSource("sensor.grid_in", "sensor.grid_out"))
         account = AccountProfile(
             (AccountEpoch(date(2025, 1, 1), Config()),),
             name="home",
-            credential_set="portal",
             meter_sources=source,
         )
 
-        sanitized = sanitize_profile(account)
-        imported = profile_from_entry({"profile": sanitized.to_dict()})
-        assert sanitized.credential_set is None
+        imported = profile_from_entry({"profile": profile_payload(account)})
+
         assert imported.meter_sources == source
 
     def test_resolves_boundaries_and_rejects_prehistory(self) -> None:
@@ -383,37 +383,93 @@ class TestAccountEvidence:
             profile().with_observation(first).with_observation(second)
 
 
-class TestNamedProfileRepository:
+class TestAccountStore:
     def test_round_trip_permissions_and_revision_conflicts(self, tmp_path: Path) -> None:
-        repository = NamedProfileRepository(tmp_path)
-        saved = repository.save("home", profile())
-        path = tmp_path / "tariffkit" / "accounts" / "home.json"
+        store = AccountStore(tmp_path)
+        saved = store.save(profile())
+        path = tmp_path / "tariffkit" / "account.json"
 
-        assert repository.load("home").revision == saved.revision
+        assert store.load().revision == saved.revision
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
         assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
         assert "schema_version" in json.loads(path.read_text(encoding="utf-8"))
 
         changed = replace(saved, epochs=(AccountEpoch(date(2025, 1, 1), Config()),))
-        repository.save("home", changed)
+        store.save(changed)
         with pytest.raises(ProfileConflictError):
-            repository.save("home", saved)
+            store.save(saved)
 
     def test_does_not_change_shared_config_root_permissions(self, tmp_path: Path) -> None:
         config_home = tmp_path / "shared-config"
         config_home.mkdir(mode=0o755)
         config_home.chmod(0o755)
 
-        NamedProfileRepository(config_home)
+        AccountStore(config_home).save(profile())
 
         assert stat.S_IMODE(config_home.stat().st_mode) == 0o755
         assert stat.S_IMODE((config_home / "tariffkit").stat().st_mode) == 0o700
 
+    def test_constructing_it_writes_nothing(self, tmp_path: Path) -> None:
+        """Asking whether an account exists must not be a write.
+
+        Every priced command builds one, `--config` or not, and on the
+        read-only configuration mount the container documentation describes
+        creating and chmod-ing a directory fails at startup.
+        """
+        store = AccountStore(tmp_path)
+
+        assert not (tmp_path / "tariffkit").exists()
+        assert store.exists() is False
+
+    def test_a_loose_directory_is_read_and_tightened_when_written(self, tmp_path: Path) -> None:
+        """docs/accounts.md says `mkdir -p`, which a default umask makes 0755.
+
+        Demanding exactly 0700 to *read* only ever passed because construction
+        chmod-ed its way there first; once creation became lazy the demand
+        outlived its self-heal and refused every command on a directory the
+        documentation itself told people to make. What guards the account is
+        the file's own 0600.
+        """
+        loose = tmp_path / "tariffkit"
+        loose.mkdir(mode=0o755)
+        loose.chmod(0o755)
+        store = AccountStore(tmp_path)
+
+        assert store.exists() is False
+
+        store.save(profile())
+
+        assert store.load().epochs
+        # Writing is where tightening it is ours to do.
+        assert stat.S_IMODE(loose.stat().st_mode) == 0o700
+
+    def test_a_read_only_directory_is_more_private_not_less(self, tmp_path: Path) -> None:
+        """A 0500 mount is how the container documentation says to run `serve`."""
+        home = tmp_path / "tariffkit"
+        home.mkdir(mode=0o700)
+        AccountStore(tmp_path).save(profile())
+        home.chmod(0o500)
+        try:
+            assert AccountStore(tmp_path).load().epochs
+        finally:
+            home.chmod(0o700)
+
+    def test_an_unwritable_configuration_root_is_reported_not_raised(self, tmp_path: Path) -> None:
+        """`main` turns an account error into `error: ...`; an OSError is a traceback."""
+        root = tmp_path / "read-only"
+        root.mkdir()
+        root.chmod(0o500)
+        try:
+            with pytest.raises(ProfileStorageError, match="could not create"):
+                AccountStore(root).save(profile())
+        finally:
+            root.chmod(0o700)
+
     def test_concurrent_writers_cannot_both_replace_one_revision(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        repository = NamedProfileRepository(tmp_path)
-        saved = repository.save("home", profile())
+        store = AccountStore(tmp_path)
+        saved = store.save(profile())
         first = replace(
             saved,
             epochs=(AccountEpoch(date(2025, 1, 1), Config(tariff="EV2-A")),),
@@ -432,7 +488,7 @@ class TestNamedProfileRepository:
 
         def save(candidate: AccountProfile) -> str:
             try:
-                repository.save("home", candidate)
+                store.save(candidate)
             except ProfileConflictError:
                 return "conflict"
             return "saved"
@@ -442,28 +498,28 @@ class TestNamedProfileRepository:
             outcomes = tuple(executor.map(save, (first, second)))
 
         assert sorted(outcomes) == ["conflict", "saved"]
-        assert repository.load("home").config_at(date(2026, 1, 1)).tariff in {
+        assert store.load().config_at(date(2026, 1, 1)).tariff in {
             "EV2-A",
             "E-TOU-C",
         }
 
     def test_rejects_traversal_symlinks_and_corrupt_schema(self, tmp_path: Path) -> None:
-        repository = NamedProfileRepository(tmp_path)
-        with pytest.raises(ProfileNameError):
-            repository.path_for("../escape")
-
+        store = AccountStore(tmp_path)
+        (tmp_path / "tariffkit").mkdir(mode=0o700)
+        # There is no name to traverse with any more -- the path is fixed -- so
+        # what is left to refuse is a symlink standing in for the account file.
         target = tmp_path / "outside.json"
         target.write_text("{}", encoding="utf-8")
-        path = tmp_path / "tariffkit" / "accounts" / "home.json"
+        path = tmp_path / "tariffkit" / "account.json"
         path.symlink_to(target)
         with pytest.raises(ProfileStorageError):
-            repository.load("home")
+            store.load()
 
         path.unlink()
         path.write_text(json.dumps({"schema_version": 999}), encoding="utf-8")
         path.chmod(stat.S_IRUSR | stat.S_IWUSR)
         with pytest.raises(ProfileStorageError, match="validation"):
-            repository.load("home")
+            store.load()
 
     def test_rejects_symlinked_parent_component(self, tmp_path: Path) -> None:
         outside = tmp_path / "outside"
@@ -472,14 +528,35 @@ class TestNamedProfileRepository:
         config_home.parent.symlink_to(outside)
 
         with pytest.raises(ProfileStorageError, match="symlink"):
-            NamedProfileRepository(config_home)
+            AccountStore(config_home)
+
+    def test_an_interrupted_adoption_leaves_no_temporary_behind(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every retry would otherwise leave another one in the directory."""
+        legacy = tmp_path / "tariffkit" / "accounts"
+        legacy.mkdir(mode=0o700, parents=True)
+        (legacy / "home.json").write_text(profile().to_json(), encoding="utf-8")
+        store = AccountStore(tmp_path)
+
+        def fail_replace(self: Path, target: Path) -> Path:
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(Path, "replace", fail_replace)
+        assert store.exists() is False
+        assert store.exists() is False
+        monkeypatch.undo()
+
+        assert sorted(p.name for p in (tmp_path / "tariffkit").iterdir()) == ["accounts"]
+        # And it still adopts once the write can succeed.
+        assert store.exists() is True
 
     def test_interrupted_replacement_keeps_original(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        repository = NamedProfileRepository(tmp_path)
-        saved = repository.save("home", profile())
-        path = tmp_path / "tariffkit" / "accounts" / "home.json"
+        store = AccountStore(tmp_path)
+        saved = store.save(profile())
+        path = tmp_path / "tariffkit" / "account.json"
         original = path.read_bytes()
 
         def fail_replace(self: Path, target: Path) -> Path:
@@ -488,7 +565,119 @@ class TestNamedProfileRepository:
         changed = replace(saved, epochs=(AccountEpoch(date(2025, 1, 1), Config()),))
         monkeypatch.setattr(Path, "replace", fail_replace)
         with pytest.raises(ProfileStorageError):
-            repository.save("home", changed)
+            store.save(changed)
 
         assert path.read_bytes() == original
         assert not tuple(path.parent.glob(".home.*.tmp"))
+
+
+class TestBillingPeriodsSurviveEveryCopy:
+    """A frozen dataclass copied field by field silently drops the next field.
+
+    `billing_periods` was that field: six copy paths listed the four they knew
+    about, so the documented export -> Import profile workflow lost every
+    boundary on arrival, and `account sync --apply` erased what
+    `account periods --apply` had just recorded.
+    """
+
+    @staticmethod
+    def _profile() -> AccountProfile:
+        return AccountProfile(
+            (AccountEpoch(date(2025, 1, 1), Config()),),
+            name="home",
+            billing_periods=(BillingPeriod(date(2026, 7, 29), date(2026, 8, 27)),),
+        )
+
+    def test_the_home_assistant_round_trip_keeps_them(self) -> None:
+        pytest.importorskip("homeassistant")
+        pytest.importorskip("custom_components.tariffkit.profile", exc_type=ModuleNotFoundError)
+        from custom_components.tariffkit.profile import profile_from_entry, profile_payload
+
+        back = profile_from_entry({"profile": profile_payload(self._profile())})
+
+        assert back.billing_periods == self._profile().billing_periods
+
+    def test_updating_an_epoch_keeps_them(self, tmp_path: Path) -> None:
+        from tariffkit.cli.account_commands import update_profile
+
+        store = AccountStore(tmp_path)
+        store.save(self._profile())
+
+        updated = update_profile(
+            store, effective=date(2026, 1, 1), changes={"tariff": "EV2-A"}, apply=True
+        )
+
+        assert updated.billing_periods == self._profile().billing_periods
+
+    def test_setting_a_meter_source_keeps_them(self, tmp_path: Path) -> None:
+        from tariffkit.cli.account_commands import set_meter_source
+
+        store = AccountStore(tmp_path)
+        store.save(self._profile())
+
+        updated = set_meter_source(
+            store,
+            provider="ha",
+            grid_import_entity="sensor.in",
+            grid_export_entity="sensor.out",
+            apply=True,
+        )
+
+        assert updated.billing_periods == self._profile().billing_periods
+
+
+class TestBillingPeriods:
+    """Boundaries the utility billed on, carried without the statements."""
+
+    @staticmethod
+    def _profile(periods: tuple[BillingPeriod, ...]) -> AccountProfile:
+        return AccountProfile((AccountEpoch(date(2026, 1, 1), Config()),), billing_periods=periods)
+
+    def test_they_survive_the_json_the_integration_imports(self) -> None:
+        periods = (
+            BillingPeriod(date(2026, 6, 30), date(2026, 7, 28)),
+            BillingPeriod(date(2026, 7, 29), date(2026, 8, 27)),
+        )
+        payload = self._profile(periods).to_dict()
+
+        assert payload["schema_version"] == 2
+        assert AccountProfile.from_dict(payload).billing_periods == periods
+
+    def test_an_account_written_before_they_existed_still_reads(self) -> None:
+        """Every account file and every config entry on disk is one of these."""
+        payload = self._profile(()).to_dict()
+        del payload["billing_periods"]
+        payload["schema_version"] = 1
+
+        assert AccountProfile.from_dict(payload).billing_periods == ()
+
+    def test_a_schema_from_the_future_is_still_refused(self) -> None:
+        payload = self._profile(()).to_dict()
+        payload["schema_version"] = 99
+
+        with pytest.raises(AccountError, match="schema_version"):
+            AccountProfile.from_dict(payload)
+
+    def test_periods_must_be_sorted_and_must_not_overlap(self) -> None:
+        """Overlapping cycles would make the one containing a day ambiguous."""
+        with pytest.raises(AccountError, match="sorted"):
+            self._profile(
+                (
+                    BillingPeriod(date(2026, 7, 29), date(2026, 8, 27)),
+                    BillingPeriod(date(2026, 6, 30), date(2026, 7, 28)),
+                )
+            )
+        with pytest.raises(AccountError, match="overlap"):
+            self._profile(
+                (
+                    BillingPeriod(date(2026, 6, 30), date(2026, 7, 29)),
+                    BillingPeriod(date(2026, 7, 29), date(2026, 8, 27)),
+                )
+            )
+
+    def test_a_period_that_ends_before_it_starts_is_refused(self) -> None:
+        payload = self._profile(()).to_dict()
+        payload["billing_periods"] = [{"start": "2026-08-27", "end": "2026-07-29"}]
+
+        with pytest.raises(AccountError, match="ends before it starts"):
+            AccountProfile.from_dict(payload)

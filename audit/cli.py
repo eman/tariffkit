@@ -56,10 +56,6 @@ def build_parser() -> argparse.ArgumentParser:
     check = sub.add_parser("reconcile", help="compare computed bills against statements")
     check.add_argument("pdf", nargs="+", type=Path)
     check.add_argument(
-        "--account",
-        help="named managed account profile (or the configured default)",
-    )
-    check.add_argument(
         "--read-hour",
         type=int,
         default=0,
@@ -70,7 +66,19 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument(
         "--green-button",
         action="store_true",
-        help="also download the utility's own interval export and compare the two meters",
+        help="also compare the utility's own interval export, cached under "
+        "~/.cache/tariffkit/pge/green-button and downloaded only if absent",
+    )
+    check.add_argument(
+        "--readings",
+        choices=("influx", "statistics"),
+        default="influx",
+        help="which derivation of the meter prices the bill: InfluxDB counter samples "
+        "from eagle_100_total_energy_delivered/_received (default), or Home Assistant "
+        "hourly statistics from sensor.eagle_100_energy_delivered/_received. Both are "
+        "the same physical meter through different pipelines, so agreement between "
+        "them says nothing about whether the meter is right -- for that, use "
+        "--green-button, which fetches an independent record from the utility",
     )
 
     run = sub.add_parser("run", help="download every statement the portal lists and reconcile it")
@@ -78,17 +86,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--since", type=_day, default=None, help="earliest statement date (YYYY-MM-DD)"
     )
     run.add_argument("--until", type=_day, default=None, help="latest statement date (YYYY-MM-DD)")
-    run.add_argument(
-        "--account",
-        help="named managed account profile (or the configured default)",
-    )
     run.add_argument("--read-hour", type=int, default=0)
     run.add_argument("--verbose", action="store_true", help="show agreeing lines too")
     run.add_argument("--json", action="store_true", help="machine-readable output")
     run.add_argument(
         "--green-button",
         action="store_true",
-        help="also download the utility's own interval export and compare the two meters",
+        help="also compare the utility's own interval export, cached under "
+        "~/.cache/tariffkit/pge/green-button and downloaded only if absent",
+    )
+    run.add_argument(
+        "--readings",
+        choices=("influx", "statistics"),
+        default="influx",
+        help="which derivation of the meter prices the bill: InfluxDB counter samples "
+        "from eagle_100_total_energy_delivered/_received (default), or Home Assistant "
+        "hourly statistics from sensor.eagle_100_energy_delivered/_received. Both are "
+        "the same physical meter through different pipelines, so agreement between "
+        "them says nothing about whether the meter is right -- for that, use "
+        "--green-button, which fetches an independent record from the utility",
     )
     run.add_argument(
         "--keep-statements",
@@ -99,10 +115,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = sub.add_parser(
         "doctor", help="check everything an end-to-end run needs, before running it"
-    )
-    doctor.add_argument(
-        "--account",
-        help="named managed account profile (or the configured default)",
     )
     doctor.add_argument("--since", type=_day, default=None, help="oldest cycle you intend to price")
     doctor.add_argument(
@@ -132,25 +144,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "reconcile":
             return _reconcile(
                 args.pdf,
-                account=args.account,
                 read_hour=args.read_hour,
                 verbose=args.verbose,
                 as_json=args.json,
                 green_button=args.green_button,
+                readings_from=args.readings,
             )
         if args.command == "run":
             return _run(
                 since=args.since,
                 until=args.until,
-                account=args.account,
                 read_hour=args.read_hour,
                 verbose=args.verbose,
                 as_json=args.json,
                 green_button=args.green_button,
+                readings_from=args.readings,
                 keep=args.keep_statements,
             )
         if args.command == "doctor":
-            return _doctor(account=args.account, since=args.since, offline=args.offline)
+            return _doctor(since=args.since, offline=args.offline)
     except (AuditError, TariffKitError) as exc:
         print(f"error: {exc}")
         return EXIT_ERROR
@@ -163,11 +175,11 @@ def _run(
     *,
     since: date | None,
     until: date | None,
-    account: str | None,
     read_hour: int,
     verbose: bool,
     as_json: bool,
     green_button: bool,
+    readings_from: str = "influx",
     keep: bool,
 ) -> int:
     """Ask the portal what statements exist, then reconcile each of them."""
@@ -207,15 +219,15 @@ def _run(
                 return EXIT_ERROR
             return _reconcile(
                 paths,
-                account=account,
                 read_hour=read_hour,
                 verbose=verbose,
                 as_json=as_json,
                 green_button=green_button,
+                readings_from=readings_from,
             )
 
 
-def _doctor(*, account: str | None, since: date | None = None, offline: bool = False) -> int:
+def _doctor(*, since: date | None = None, offline: bool = False) -> int:
     """Report what an end-to-end run needs and what is missing.
 
     The first question after any failure is whether the session expired, the
@@ -235,7 +247,7 @@ def _doctor(*, account: str | None, since: date | None = None, offline: bool = F
     print()
 
     oldest = since or date.today() - timedelta(days=365)
-    checks = run_checks(account=account, oldest=oldest, contact=not offline)
+    checks = run_checks(oldest=oldest, contact=not offline)
     width = max(len(check.name) for check in checks)
     for check in checks:
         print(f"  {check.mark:>8}  {check.name:<{width}}  {check.detail}")
@@ -256,14 +268,14 @@ def _doctor(*, account: str | None, since: date | None = None, offline: bool = F
 def _reconcile(
     paths: Sequence[Path],
     *,
-    account: str | None,
     read_hour: int,
     verbose: bool,
     as_json: bool,
     green_button: bool = False,
+    readings_from: str = "influx",
 ) -> int:
-    from tariffkit.account import NamedProfileRepository, configured_profile_name
     from tariffkit.billing.engine import compute_segments, price_segments
+    from tariffkit.cli import AccountStore
     from tariffkit.engine import RateEngine
     from tariffkit.providers.pge.statements import read_statement
     from tariffkit.sources.influx import InfluxSettings, read_counters
@@ -273,13 +285,10 @@ def _reconcile(
     from .reconcile.account import check_against_statement
     from .sources import compare_sources, window
 
-    profile_name = account or configured_profile_name()
-    if profile_name is None:
-        raise AccountError("select a named managed account profile with --account")
     try:
-        profile = NamedProfileRepository().load(profile_name)
+        profile = AccountStore().load()
     except TariffKitError as exc:
-        raise AccountError(f"could not load account profile {profile_name!r}: {exc}") from exc
+        raise AccountError(f"could not load the account: {exc}") from exc
     settings = InfluxSettings.load()
 
     results = []
@@ -329,29 +338,84 @@ def _reconcile(
             continue
 
         start, end = window(statement.period, read_hour=read_hour)
-        readings = read_counters(settings, start, end)
-        sources = {"influx": readings}
+        # Keyed by the entity each reading came from, not by the store it came
+        # out of. "influx" and "ha" name pipelines, and both pipelines carry
+        # several entities -- the unfiltered Eagle counters and the filtered
+        # pair -- so a delta line reading "statement vs influx" left the one
+        # thing a reader needs unstated: which sensor disagreed.
+        influx_key = f"influx:{settings.export_entity}"
+        sources = {influx_key: read_counters(settings, start, end)}
+        primary = influx_key
+
+        # Home Assistant's hourly statistics, when asked for.
+        #
+        # Not a second meter. It is the same Eagle-100 through a second
+        # pipeline: Home Assistant's recorder aggregates the entity's states
+        # into hourly buckets, while its InfluxDB integration writes the same
+        # states as rows that `read_counters` differences. Agreement between
+        # them corroborates nothing about the meter, and `--green-button` is
+        # the option that fetches a genuinely independent record.
+        #
+        # What it is good for is finding a derivation bug. The two agree on a
+        # cycle's totals to the kilowatt-hour and then disagree about which
+        # hours the energy arrived in -- 19.9 kWh of export over one 720-hour
+        # cycle, 189 hours apart by more than 0.01. Since neither path measures
+        # anything, one of the two derivations is misplacing it, and that is
+        # real money because peak delivery costs more than off-peak.
+        #
+        # `influx` stays the default on measurement: across four statements it
+        # reconciles two where Home Assistant reconciles none. Not because
+        # either meter is inaccurate, though, and the tempting story about
+        # reconstructed hours does not survive contact with the evidence. The
+        # disagreement is spread evenly over hours InfluxDB reconstructed and
+        # hours it sampled (10.37 kWh against 9.55 kWh), and scored against the
+        # only arbiter there is -- the time-of-use kilowatt-hours the statement
+        # prints itself -- both reproduce the import split, Home Assistant
+        # marginally the closer: against a printed 0.488 / 0.677 / 38.741,
+        # InfluxDB reads 0.495 / 0.685 / 38.722 and Home Assistant
+        # 0.497 / 0.665 / 38.740. Where they part company is the export side,
+        # which no printed figure settles. So the default rests on the
+        # reconciliation result and not on a claim about which meter is better.
+        if readings_from == "statistics":
+            from tariffkit.sources.homeassistant import HaSettings, read_statistics
+
+            ha = HaSettings.load(profile_source=profile.meter_sources.home_assistant)
+            primary = f"statistics:{ha.export_entity}"
+            sources[primary] = read_statistics(ha, start, end)
+        readings = sources[primary]
 
         if green_button:
             # The utility's own record of the same period. Worth the extra
             # request because one meter cannot tell you it is incomplete: PG&E's
             # export was once missing a whole day, and only a second source
             # showed it.
-            from tariffkit.sources.pge import PgeSettings, read_green_button_download
+            from tariffkit.sources import read_green_button
+            from tariffkit.sources.pge import PgeSettings, cached_green_button
 
-            sources["green_button"] = read_green_button_download(
+            # Cached, because a run reconciles a statement at a time and the
+            # portal generates each export on demand -- twenty-one cycles was
+            # twenty-one jobs for data that had not changed since it closed.
+            export = cached_green_button(
                 PgeSettings.load(), statement.period.start, statement.period.end
             )
+            sources["green_button"] = read_green_button(export.path)
 
-        parts = price_segments(segments, readings)
-        bill = compute_segments(segments, readings)
+        # Netted on both sides. The per-segment bills are handed to
+        # `reconcile` beside the merged one, so pricing them differently put
+        # the "intervals carry both directions" warning on every segment of
+        # every solar cycle while the bill next to them stayed quiet.
+        parts = price_segments(segments, readings, netted=True)
+        bill = compute_segments(segments, readings, netted=True)
         results.append(
             reconcile(
                 statement,
                 bill,
                 config,
                 source_deltas=compare_sources(
-                    sources, statement, classify=RateEngine(config).tariff.period
+                    sources,
+                    statement,
+                    primary=primary,
+                    classify=RateEngine(config).tariff.period,
                 ),
                 segment_bills=parts,
             )

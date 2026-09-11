@@ -30,6 +30,15 @@ COVERAGE_TOLERANCE = 0.01
 STALE_AFTER = timedelta(hours=3)
 
 
+#: How much smeared energy a whole cycle may carry before it is worth saying so.
+#:
+#: The per-interval floor asks "does this share change a bill", and a tenth of a
+#: kilowatt-hour is about five cents at the widest export spread on this tariff.
+#: This asks the same question of the cycle, which is the one a reader is
+#: actually deciding about.
+MATERIAL_SMEAR = 0.1
+
+
 def check_coverage(
     readings: Sequence[IntervalReading],
     period: BillingPeriod,
@@ -90,6 +99,22 @@ def check_coverage(
             f"({shortfall.total_seconds() / 3600:.1f}h missing)"
         )
 
+    # A direction refused inside an interval the other direction still covers.
+    # `covered` above cannot see it -- the interval is present and its duration
+    # counts in full -- so without this the hole is indistinguishable from a
+    # measured hour of no energy, and the bill is quietly short by whatever the
+    # refused meter would have said.
+    for direction in ("imported", "exported"):
+        refused = [r for r in ordered if direction in r.unmetered]
+        if refused:
+            span = sum((r.duration for r in refused), timedelta())
+            yield (
+                f"{len(refused)} interval(s) covering "
+                f"{span.total_seconds() / 3600:.1f}h have no {direction} reading, so "
+                f"that direction's energy is missing from these totals while the other "
+                f"direction's is not"
+            )
+
     if through is not None:
         # A hole after the last reading, which `find_gaps` cannot see: a gap
         # needs a reading on each side of it, and the whole point of a series
@@ -115,15 +140,36 @@ def check_coverage(
     if overlaps:
         yield f"{len(overlaps)} overlapping interval(s); first at {overlaps[0].isoformat()}"
 
+    # Two different claims, kept apart because conflating them made both wrong.
+    #
+    # An interval is *reconstructed* when the source could not say what happened
+    # in it and the counter's advance was spread across it. Energy is *shifted*
+    # when a share of some advance was attributed to it -- which happens to
+    # fully measured intervals too, and calling those reconstructed across gaps
+    # said a whole cycle was invented when nothing was missing at all: 347 hours
+    # of a 768-hour cycle, every one of them measured.
+    #
+    # The energy is the share where the source can say, and the whole interval
+    # where it cannot: summing the whole interval regardless reported a cycle's
+    # 0.84 kWh of smearing as 144.6 kWh. Summed over every interval, because a
+    # share too small to flag on its own still adds up -- five hundred shares of
+    # nine watt-hours is 4.5 kWh, and a per-interval floor made that unsayable.
     guessed = [r for r in ordered if r.estimated]
+    shifted = sum(r.smeared or (r.imported + r.exported if r.estimated else 0.0) for r in ordered)
     if guessed:
-        energy = sum(r.imported + r.exported for r in guessed)
         hours = sum((r.duration for r in guessed), timedelta()).total_seconds() / 3600
         yield (
-            f"{len(guessed)} interval(s) covering {hours:.1f}h and {energy:.1f} kWh were "
-            f"reconstructed across gaps in the source, so their time-of-use split is a "
-            f"guess even though the cycle total is not. Spreading a long gap evenly gives "
-            f"peak hours their share of the clock rather than their share of the load"
+            f"{len(guessed)} interval(s) covering {hours:.1f}h were reconstructed across gaps "
+            f"in the source, carrying {shifted:.1f} kWh whose time-of-use split is a guess even "
+            f"though the cycle total is not. Spreading a long gap evenly gives peak hours their "
+            f"share of the clock rather than their share of the load"
+        )
+    elif shifted >= MATERIAL_SMEAR:
+        # No gaps, and still enough energy moved between measured intervals to
+        # be worth saying so.
+        yield (
+            f"{shifted:.1f} kWh was spread between measured intervals, so its time-of-use "
+            f"split is approximate even though nothing is missing"
         )
 
     both = [] if netted else [r for r in ordered if r.imported and r.exported]

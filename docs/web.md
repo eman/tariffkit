@@ -157,48 +157,56 @@ or firewall. It exposes your rate plan and interconnection details, and it is
 read-only, but it is not written to face the internet. Request bodies must never
 contain credentials; this API has no credential-backed operation.
 
-## Named account profiles
+## The account
 
 `GET /v1/meta`, `POST /v1/meta`, and every `POST` pricing endpoint can price
-against a [named account profile](accounts.md) instead of a stateless
+from [your account](accounts.md) — its dated history — instead of a stateless
 `Config`:
 
 ```bash
 curl -s localhost:8000/v1/meta -X POST -H 'content-type: application/json' \
-  -d '{"profile": "home"}' | jq '.account_profile, .account_effective.tariff'
+  -d '{"profile": true}' | jq '.account_effective.tariff'
 ```
 
-When a profile is active, `describe()` adds `account_profile` (its name) and
-`account_effective` (the resolved `Config.to_dict()` for the requested
-moment) to the usual `/v1/meta` fields.
+When the account is in use, `describe()` adds `account_profile` (its name,
+`null` from the CLI) and `account_effective` (the resolved `Config.to_dict()`
+for the requested moment) to the usual `/v1/meta` fields.
 
-**Server-wide default.** `create_app(profile_name=..., profile_repository=...,
-config_path=...)` selects a profile for every request that does not name one
-itself, resolved the same way as the CLI's implicit default (env vars, then
-`[account] default_profile` in `config.toml`) when `profile_name` is not
-passed explicitly. `tariffkit serve` wires this up automatically; building
-the app yourself with `create_app(Config(...))` (a `config` positional
-argument) opts out of profile resolution entirely for that server, the same
-way `--config` does on the CLI.
+**Server-wide.** `create_app(profile=...)` is *handed* an account, and nothing
+in the library goes looking for one — see
+[The account file](accounts.md#the-account-file) for why. `tariffkit serve`
+reads it and passes it in, so serving uses the same account `tariffkit bill`
+prices from. Passing only `create_app(Config(...))` serves that snapshot and
+has no account to offer; a request that asks for one then gets a 404.
 
-**Per-request selection.** Pass `profile` (or `account` — the two must agree
-if both are given) alongside `ts`/`hours` instead of `config`:
+```python
+from tariffkit.cli import AccountStore
+from tariffkit.web import create_app
+
+app = create_app(profile=AccountStore().load())
+```
+
+Passing both prices the plain routes from the `Config` while leaving the
+account available to a request that asks for it.
+
+**Per-request.** Pass `profile` (or `account` — there is one account, so this
+is a switch, not a name) alongside `ts`/`hours` instead of `config`:
 
 ```bash
 curl -s localhost:8000/v1/price/now -X POST -H 'content-type: application/json' \
-  -d '{"profile": "home"}'
+  -d '{"profile": true}'
 ```
 
 `config` and `profile`/`account` are mutually exclusive per request (422
-`"choose either config or profile"`), the same restriction as the CLI's
-`--account`/`--config`. An unknown or unreadable profile name returns
-`404 {"detail": "profile unavailable"}` — deliberately identical whether the
-name does not exist, is malformed, or fails to load, so a request cannot
-enumerate what profiles exist on the server.
+`"choose either config or the account"`), the same restriction as the CLI's
+`--config`. Asking for an account the server was not given returns
+`404 {"detail": "profile unavailable"}` — deliberately the same answer whether
+the server has none, holds one that cannot price the moment, or is simply not
+configured with it, so a request cannot learn what is on the machine.
 
-**Nothing here can change a profile.** There is no endpoint to list, create,
-update, import, export, or delete one, and none accepts a PDF or a
+**Nothing here can change the account.** There is no endpoint to create,
+update, import, export, or delete it, and none accepts a PDF or a
 credential — those are exclusively `tariffkit account ...` and Home
-Assistant's options flow. The REST surface only ever *reads* a profile
-already managed elsewhere. See [Named account profiles](accounts.md) for how
-one is created and kept current.
+Assistant's options flow. The REST surface only ever *reads* an account
+managed elsewhere. See [Your account](accounts.md) for how it is created and
+kept current.

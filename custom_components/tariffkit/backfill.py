@@ -42,12 +42,14 @@ from tariffkit.billing import (
     LedgerEntry,
     LifetimeLedger,
     apply_credits,
+    known_periods,
+    resolve_cycle,
     run_lifetime,
 )
 from tariffkit.errors import TariffKitError
 from tariffkit.timeutil import PACIFIC
 
-from .energy import coverage_warnings, price, resolve_cycle, statement_periods
+from .energy import coverage_warnings, price
 
 if TYPE_CHECKING:
     from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
@@ -251,7 +253,7 @@ def cycles_between(
     the month. Where it has none the configured meter-read day carries it, which
     is the same fallback the running totals use.
     """
-    periods = statement_periods(profile)
+    periods = known_periods(profile)
     found: list[BillingPeriod] = []
     cursor = closes
     while cursor >= opens:
@@ -531,7 +533,7 @@ def _bank_warnings(
     pto = profile.pto_date
     if pto is None:
         return []
-    begins = resolve_cycle(pto, start_day, statement_periods(profile)).start
+    begins = resolve_cycle(pto, start_day, known_periods(profile)).start
     if opens <= begins:
         return []
     return [

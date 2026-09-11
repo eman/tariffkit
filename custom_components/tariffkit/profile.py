@@ -1,4 +1,9 @@
-"""Credential-free account-profile storage for the Home Assistant integration."""
+"""Account storage for the Home Assistant integration.
+
+The integration keeps its account in its own config entry -- it never reads the
+command line's file -- and it never signs in to PG&E, so nothing here holds a
+credential to begin with.
+"""
 
 from __future__ import annotations
 
@@ -15,34 +20,23 @@ from .const import CONF_PROFILE
 LEGACY_EFFECTIVE = date(1970, 1, 1)
 
 
-def sanitize_profile(profile: AccountProfile) -> AccountProfile:
-    """Remove the optional keyring-set reference before HA persists a profile."""
-    return AccountProfile(
-        epochs=profile.epochs,
-        name=profile.name,
-        credential_set=None,
-        observations=profile.observations,
-        meter_sources=profile.meter_sources,
-    )
-
-
 def profile_payload(profile: AccountProfile) -> dict[str, object]:
-    """Return the same schema as the CLI export, without credential metadata."""
-    return sanitize_profile(profile).to_dict()
+    """Return the same schema as the CLI export."""
+    return profile.to_dict()
 
 
 def profile_json(profile: AccountProfile) -> str:
     """Return canonical JSON suitable for a copy/paste export."""
-    return sanitize_profile(profile).to_json()
+    return profile.to_json()
 
 
 def profile_from_entry(data: Mapping[str, Any]) -> AccountProfile:
     """Load a profile from entry data, migrating the old flat config shape."""
     raw = data.get(CONF_PROFILE)
     if isinstance(raw, str):
-        return sanitize_profile(AccountProfile.from_json(raw))
+        return AccountProfile.from_json(raw)
     if isinstance(raw, Mapping):
-        return sanitize_profile(AccountProfile.from_dict(raw))
+        return AccountProfile.from_dict(raw)
     if raw is not None:
         raise TariffKitError("Home Assistant profile must be a JSON object or string")
 

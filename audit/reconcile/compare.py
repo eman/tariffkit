@@ -333,6 +333,15 @@ def reconcile(
             independent = None
             if not matched and metered:
                 independent = _from_metered(rule, metered)
+            # A line whose rates reproduce the printed amount from the
+            # statement's own kWh is *not* thereby excused. Reaching that
+            # conclusion once and downgrading the verdict for it made the check
+            # unable to fail on anything the rate table could reproduce: the
+            # independent figure is `rate x printed kWh` and never passes
+            # through the billing engine, so a hundredfold error in how the
+            # engine applies that rate leaves the two identical. Measured: a
+            # $1,152.36 error on a $295.30 bill reconciled clean. Why the line
+            # differs is printed underneath it; it is still a mismatch.
             comparisons.append(
                 Comparison(
                     label,

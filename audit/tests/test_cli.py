@@ -50,12 +50,39 @@ class TestParser:
         assert caught.value.code == 2
 
     def test_a_check_that_could_not_run_exits_two_not_one(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         # "I could not check" and "your numbers disagree" call for opposite
         # responses. An AuditError escaping to Python gives exit 1, which reads
         # as a billing discrepancy that was never actually found.
-        code = main(["reconcile", str(tmp_path / "nope.pdf"), "--account", "missing-profile"])
+        #
+        # The config home is redirected because this has to be the same answer
+        # on a machine that has an account as on one that does not: pointed at
+        # a real ~/.config, the run got past "no account" and failed later for
+        # an unrelated reason, and the test passed or failed by whose laptop it
+        # was on.
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+        code = main(["reconcile", str(tmp_path / "nope.pdf")])
         assert code == EXIT_ERROR
         assert code != EXIT_MISMATCH
         assert "error:" in capsys.readouterr().out
+
+
+def test_segment_bills_are_netted_like_the_bill_beside_them() -> None:
+    """Both sides of the reconciliation price the same way.
+
+    `netted` only silences the "intervals carry both directions" warning, which
+    every solar cycle raises once its readings are aggregated to an hour. Pricing
+    the per-segment bills without it put that warning on every segment while the
+    merged bill next to them stayed quiet -- the noise the flag exists to stop.
+    """
+    import inspect
+
+    from audit import cli
+
+    source = inspect.getsource(cli._reconcile)
+    assert "price_segments(segments, readings, netted=True)" in source
+    assert "compute_segments(segments, readings, netted=True)" in source

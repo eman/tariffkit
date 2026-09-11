@@ -121,6 +121,59 @@ def test_the_backfill_bills_fold_straight_into_a_bank() -> None:
     assert state.balance.total > 0
 
 
+def test_the_first_year_of_a_new_system_yields_a_spendable_bank() -> None:
+    """The whole point of `BankState.warnings`, pinned end to end.
+
+    `trustworthy` is all-or-nothing on purpose: every entry in that list is a
+    reason the *balance* may be wrong -- a hole in the run, an overlap, a
+    supplier change, rates that could not be priced exactly, a window opened
+    after Permission To Operate, a direction the meter did not measure. A caller
+    cannot rank them, so it refuses the lot, and the amount due is stated before
+    any bank offsets it.
+
+    That contract only works if nothing merely *descriptive* is written there.
+    One thing was: the note that exports before PTO earn nothing, which the
+    cycle containing PTO always has. It disqualified the bank of every new
+    system for its whole first year -- on a real account, $9.59 of delivery
+    credit that no cycle could spend and nothing on the entity said so. The
+    energy is a figure now, and this is the shape that regressed.
+
+    A run beginning at the PTO cycle, with a mid-cycle schedule change through
+    it, must fold to a bank that can actually be spent.
+    """
+    pto = date(2026, 6, 3)
+    profile = AccountProfile(
+        (
+            AccountEpoch(date(2026, 1, 30), Config(tariff="EV2-A", pto_date=pto)),
+            AccountEpoch(pto, Config(tariff="E-ELEC", pto_date=pto)),
+        ),
+        name="probe",
+    )
+    readings = []
+    day = date(2026, 6, 1)
+    while day <= date(2026, 7, 31):
+        readings += [
+            IntervalReading(
+                datetime(day.year, day.month, day.day, hour, tzinfo=PACIFIC),
+                imported=0.2,
+                exported=2.0,
+            )
+            for hour in range(24)
+        ]
+        day += timedelta(days=1)
+
+    result = backfill.build(profile, readings, date(2026, 6, 1), date(2026, 7, 31), 1)
+    state = bank.fold(profile, result.bills)
+    extra = tuple(w for w in (*result.skipped, *result.warnings) if w not in state.warnings)
+
+    assert state.warnings == (), f"the fold itself objected: {state.warnings}"
+    assert extra == (), f"the backfill added a warning the bank would inherit: {extra}"
+    assert state.trustworthy, "a first-year bank must be spendable"
+    assert state.balance.total > 0
+    # The pre-PTO exports are still not credited -- they are reported, not lost.
+    assert result.bills[0].uncompensated_kwh > 0
+
+
 def _cca_profile() -> AccountProfile:
     from tariffkit.config import CcaConfig
     from tariffkit.models import Supplier
@@ -307,13 +360,17 @@ def test_every_annual_settlement_is_applied_not_only_the_last() -> None:
         .entries[-1]
         .closing
     )
-    # The discarded amount is the part of the reversal the bank could cover.
-    # It used to equal the reversal exactly; now that the reversal is computed
-    # at the rate MCE's tariff actually names -- "including Solar Bonus Credit"
-    # -- it can exceed the balance, and the tariff says so: the reversal "will
-    # be charged against any Export Credit Balance available, otherwise it will
-    # be charged against the NSC payment".
-    assert naive.total - correct.total == pytest.approx(reversal, abs=0.01)
+    # The discarded amount is the part of the reversal the bank could cover, and
+    # bounded by the reversal rather than equal to it. The tariff says why: the
+    # reversal "will be charged against any Export Credit Balance available,
+    # otherwise it will be charged against the NSC payment", so a reversal
+    # priced at the rate MCE names -- "including Solar Bonus Credit" -- can
+    # exceed the balance there is to take it from. Asserting equality pinned an
+    # accident of how much happened to be banked, and broke the day an in-cycle
+    # offset stopped banking its overrun.
+    discarded = naive.total - correct.total
+    assert discarded > 0, "the naive fold keeps credit a settlement already took back"
+    assert discarded <= reversal + 0.01, "and never more than the settlement took"
     assert len(state.true_ups) == len(events)
 
 

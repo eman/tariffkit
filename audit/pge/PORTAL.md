@@ -252,8 +252,52 @@ headers: authorization: Bearer <jwt>
 `WUE_GetUsageExportBills` populates `period-bill-select`, whose option values are
 the cycles themselves:
 
-    Dec 30, 2025 - Jan 29, 2026
-      → 2025-12-30T00:00:00-08:00/2026-01-29T23:59:59-08:00
+    Since your last bill: Aug 28, 2026 - Sep 08, 2026
+      → 2026-08-28T00:00:00-07:00/2026-09-08T23:59:59-07:00
+    Jul 29, 2026 - Aug 27, 2026
+      → 2026-07-29T00:00:00-07:00/2026-08-27T23:59:59-07:00
+
+The query is `tariffkit.sources.pge.BILL_PERIODS_QUERY`. **`bills` is a field on
+the account, not on Query** — the operation name is no guide to it, and
+introspection is disabled (`__type` returns, but its subfields are undefined),
+so guessing top-level names finds nothing:
+
+```graphql
+query WUE_GetUsageExportBills($selectedAccount: ID, $timeInterval: TimeInterval,
+                              $forceLegacyData: Boolean, $last: Int) {
+  billingAccountByAuthContext(selectedAccount: $selectedAccount,
+                              forceLegacyData: $forceLegacyData) {
+    bills(during: $timeInterval, last: $last, orderBy: ASCENDING) { timeInterval }
+  }
+}
+```
+
+The intervals it returns are **half-open and mixed in spelling** — the same
+account returns `2026-06-03T00:00:00-07:00/2026-06-30T00:00:00-07:00` and
+`2026-07-29T07:00:00Z/2026-08-28T07:00:00Z` in one reply — so both ends are
+parsed and converted rather than sliced, and the inclusive last day is the day
+before the end. A cycle split by a mid-cycle agreement change is listed as two
+bills (`06-01/06-03` and `06-03/06-30` on an account that interconnected on the
+3rd), because the portal lists a bill per agreement.
+
+**The export stops at the last published read, and the platform will say where
+that is.** `WUE_GetUsageExportAvailableAMIReadsTimeInterval` walks
+`serviceAgreementsConnection → servicePoints → registers` for
+`availableReadsTimeInterval`, which is how the widget offers "Since your last
+bill" ending yesterday rather than today:
+
+    DELIVERED  2024-04-15T00:00:00-07:00/2026-09-09T00:00:00-07:00
+    RECEIVED   2026-05-30T00:00:00-07:00/2026-09-09T00:00:00-07:00
+    NET_USAGE  2023-07-31T00:00:00-07:00/2026-09-09T00:00:00-07:00
+
+Half-open again, so the last day with readings is the 8th. The export register
+begins at interconnection while the import one goes back years, so the days
+every channel covers is the latest start and the earliest end.
+
+**`serviceType` is `ELECTRICITY`, not `ELECTRIC`.** Matching one spelling
+matched nothing and silently disabled the whole clamp, which looked exactly
+like a meter with a missing day. `unitOfMeasure: KWH` is the reliable filter --
+gas is metered in therms whatever the type is called.
 
 **The meter read is at local midnight.** The boundaries above are `T00:00:00`
 and `T23:59:59` in the offset in force at each end. So `--read-hour` defaults to

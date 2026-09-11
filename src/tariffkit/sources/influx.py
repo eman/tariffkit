@@ -36,7 +36,7 @@ from typing import Any
 
 from ..account.model import MeterSource
 from ..billing.models import IntervalReading
-from ..config import default_config_path
+from ..config import default_config_path, default_dotenv_path
 from ..errors import ConfigError, DataError
 from ..secrets import get_secret
 from ..timeutil import to_pacific
@@ -82,7 +82,7 @@ class InfluxSettings:
     def load(
         cls,
         config_path: str | Path | None = None,
-        dotenv_path: str | Path = ".env",
+        dotenv_path: str | Path | None = None,
         profile_source: MeterSource | None = None,
         **overrides: str | None,
     ) -> InfluxSettings:
@@ -127,7 +127,8 @@ class InfluxSettings:
             raise ConfigError(
                 f"InfluxDB {', '.join(missing)} not set; put INFLUXDB3_HOST, "
                 f"INFLUXDB3_DATABASE and INFLUXDB3_AUTH_TOKEN in "
-                f"{Path(dotenv_path)}, the environment, or store influxdb.token with "
+                f"{Path(dotenv_path) if dotenv_path else default_dotenv_path()}, the "
+                f"environment, or store influxdb.token with "
                 f"`tariffkit credentials set`"
             )
         return cls(
@@ -264,10 +265,23 @@ def _samples(
 #: several can.
 SMEARED_GAP = timedelta(hours=1)
 
+#: Below this much smeared energy an interval is not worth doubting, in kWh.
+#:
+#: The doubt is about money: a kilowatt-hour put in the wrong time-of-use band
+#: is mispriced by the spread between the bands, and on this tariff the widest
+#: export spread is about $0.50. Ten watt-hours is therefore half a cent at the
+#: very worst, and no arrangement of it changes a bill.
+#:
+#: Without a floor the warning fired on every interval a wide gap touched at
+#: all, which on a real cycle was 453 of 744 -- 61% of it flagged over 0.83 kWh
+#: whose largest single share was 0.083. A warning that broad is one its reader
+#: learns to skip, and the warnings beside it are not skippable.
+SMEARED_FLOOR = 0.01
+
 
 def _per_interval(
     samples: list[tuple[datetime, float]], start: datetime, end: datetime, step: timedelta
-) -> tuple[dict[datetime, float], set[datetime]]:
+) -> tuple[dict[datetime, float], dict[datetime, float]]:
     """Counter advance per interval, spread across the span it accrued over.
 
     A sample says only that the counter advanced by some amount *since the
@@ -294,10 +308,14 @@ def _per_interval(
         edges.append(cursor)
         cursor += step
     if not edges:
-        return {}, set()
+        return {}, {}
 
     totals = dict.fromkeys(edges, 0.0)
-    smeared: set[datetime] = set()
+    # How much of each interval came out of a gap wider than the interval, not
+    # merely whether one touched it. A boolean overstated the doubt enormously:
+    # an hour taking 0.001 kWh from a wide gap and 5 kWh from dense samples was
+    # flagged the same as one that was entirely guesswork.
+    smeared: dict[datetime, float] = {}
     previous: tuple[datetime, float] | None = None
     for moment, value in samples:
         instant = moment.astimezone(UTC)
@@ -318,9 +336,10 @@ def _per_interval(
             if index >= len(edges):
                 break
             upper = min(instant, edges[index] + step)
-            totals[edges[index]] += advance * (upper - lower).total_seconds() / span
+            share = advance * (upper - lower).total_seconds() / span
+            totals[edges[index]] += share
             if instant - was_at > SMEARED_GAP:
-                smeared.add(edges[index])
+                smeared[edges[index]] = smeared.get(edges[index], 0.0) + share
             lower = upper
     return totals, smeared
 
@@ -360,14 +379,27 @@ def read_counters(
         )
     imported, smeared_in = _per_interval(import_samples, start, end, resolution)
     exported, smeared_out = _per_interval(export_samples, start, end, resolution)
-    smeared = smeared_in | smeared_out
+
+    def spread(edge: datetime) -> float:
+        return max(smeared_in.get(edge, 0.0), 0.0) + max(smeared_out.get(edge, 0.0), 0.0)
+
+    # Flagged on the energy, not on a gap having passed through. Most wide gaps
+    # here are the counter standing still overnight, where spreading nothing
+    # across them guesses nothing -- and calling those intervals reconstructed
+    # put 61% of a cycle under a warning that 0.2% of it deserved.
     return [
         IntervalReading(
             start=to_pacific(edge),
             imported=max(imported.get(edge, 0.0), 0.0),
             exported=max(exported.get(edge, 0.0), 0.0),
             duration=resolution,
-            estimated=edge in smeared,
+            estimated=spread(edge) >= SMEARED_FLOOR,
+            # Recorded whatever its size. The floor decides whether *this*
+            # interval is worth calling reconstructed; it must not decide
+            # whether the energy existed, because a share too small to matter
+            # on its own still adds up across a cycle and the reader is owed
+            # the total. `check_coverage` applies materiality after summing.
+            smeared=spread(edge),
         )
         for edge in sorted(set(imported) | set(exported))
     ]

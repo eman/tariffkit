@@ -67,7 +67,7 @@ DEFAULT_EXPORT_ENTITY = "sensor.eagle_100_energy_received"
 MAX_INTERVAL_KW = 100.0
 
 
-def load_dotenv(path: str | Path = ".env") -> dict[str, str]:
+def load_dotenv(path: str | Path | None = None) -> dict[str, str]:
     """Parse a ``.env`` file leniently, returning what it defines.
 
     Tolerates ``KEY = "value"`` with spaces around the equals and quotes around
@@ -75,6 +75,10 @@ def load_dotenv(path: str | Path = ".env") -> dict[str, str]:
     files yield nothing rather than raising: a token may equally come from the
     environment.
     """
+    if path is None:
+        from ..config import default_dotenv_path
+
+        path = default_dotenv_path()
     found: dict[str, str] = {}
     file = Path(path)
     if not file.is_file():
@@ -109,15 +113,15 @@ class HaSettings:
     def load(
         cls,
         config_path: str | Path | None = None,
-        dotenv_path: str | Path = ".env",
+        dotenv_path: str | Path | None = None,
         profile_source: MeterSource | None = None,
         **overrides: str | None,
     ) -> HaSettings:
         """Resolve settings from config file, ``.env``, environment, and args.
 
         Later wins: ``[home_assistant]`` in the config file, then ``.env``, then
-        real environment variables, then a named profile's grid-import/grid-
-        export mapping, then explicit overrides.
+        real environment variables, then the account's grid-import/grid-export
+        mapping, then explicit overrides.
 
         The token is deliberately not read from the config file. Entity ids are
         configuration and belong somewhere shareable; a long-lived access token
@@ -166,6 +170,69 @@ class HaSettings:
         )
 
 
+def carry(
+    previous: tuple[float, float] | None, slot: float, state: float | None
+) -> tuple[float, float] | None:
+    """The last usable ``(slot, counter)`` pair, given this row.
+
+    A row whose ``state`` is zero or missing is the artefact itself, so it is
+    not what the next row should difference against -- the previous good reading
+    is, and keeping it is what lets a single spoiled interval be repaired rather
+    than propagating.
+    """
+    if state is None:
+        return previous
+    value = float(state)
+    return (slot, value) if value > 0 else previous
+
+
+def interval_energy(
+    change: float | None,
+    state: float | None,
+    previous: tuple[float, float] | None,
+    slot: float,
+    step: float,
+    max_kw: float = MAX_INTERVAL_KW,
+) -> float | None:
+    """One interval's energy, repairing what the recorder spoiled.
+
+    ``change`` is what the recorder believes the counter advanced by, and it is
+    wrong whenever the source dropped to zero: a ``total_increasing`` sensor
+    reading 0.0 is taken for a counter reset, so the next interval's ``change``
+    carries the whole counter -- 1455 kWh on a meter that had moved 0.003. The
+    Rainforest Eagle-100 does this several times a day while it re-establishes
+    its meter session.
+
+    Refusing that row is right and dropping the interval with it is not. The
+    true figure is still in ``state``, which is the counter itself: difference
+    it against the previous interval and the energy comes back. On a real
+    account that recovered 14.1 kWh of a cycle's 68.3 across 56 hours.
+
+    Only across *consecutive* intervals. A gap means the counter also advanced
+    through intervals nobody recorded, and crediting that whole advance to the
+    interval the series resumes would price hours of energy at one interval's
+    time-of-use rate -- worse than the hole, and confidently so.
+
+    ``previous`` is the last usable ``(slot, state)`` pair for this entity, as
+    :func:`carry` maintains it. Slots and ``step`` are in seconds.
+
+    :func:`tariffkit.sources.influx.monotonic` is the same repair one layer
+    down, applied to raw samples rather than to recorded intervals, and its rule
+    is the same: a reading that is zero or below one already seen is a device
+    artefact and not energy.
+    """
+    ceiling = max_kw * step / 3600
+    if change is not None and 0 <= change <= ceiling:
+        return change
+    if state is None or state <= 0 or previous is None:
+        return None
+    was_at, was = previous
+    if abs(slot - was_at - step) > 1.0:
+        return None
+    advance = state - was
+    return advance if 0 <= advance <= ceiling else None
+
+
 def _readings_from(
     series: dict[str, list[dict[str, Any]]],
     settings: HaSettings,
@@ -178,34 +245,85 @@ def _readings_from(
     differencing ``sum`` between points. Both are available, but ``change`` is
     already aligned to its own period, so it needs no off-by-one correction and
     yields a value for the first point instead of discarding it.
-    """
-    imported = {p["start"]: p.get("change") or 0.0 for p in series.get(settings.import_entity, [])}
-    exported = {p["start"]: p.get("change") or 0.0 for p in series.get(settings.export_entity, [])}
 
-    ceiling = max_kw * duration.total_seconds() / 3600
+    **Each direction is judged on its own.** Import and export are separate
+    entities that restart their running ``sum`` independently, and refusing the
+    whole interval when either one did let a single bad series destroy the
+    other's good energy. Measured against an unfiltered Eagle-100 export
+    counter, whose session resets 5.5 times a day: the export series' 56 bad
+    hours took 21.4 kWh of perfectly good *import* with them, 74.5 kWh billed as
+    53.1. The two entities are the reason `check_coverage` sees one series --
+    they are merged into one ``IntervalReading`` here -- but nothing about a
+    restart on one meter says anything about the other.
+
+    A refused direction reads as ``0.0``, because a float cannot say "unknown" --
+    so the interval records which directions it could not measure in
+    ``IntervalReading.unmetered``, and :func:`check_coverage` reports them. That
+    keeps the good half's energy *and* the hole, where dropping the interval
+    kept only the hole and clamping to the ceiling would have kept neither.
+    Only when *both* directions are refused is the interval dropped entirely:
+    nothing is left to preserve, and a row of two zeros would read as a measured
+    hour of no energy.
+    """
+    step = duration.total_seconds()
+
+    def energies(entity: str) -> dict[int, float | None]:
+        """Each interval's energy for one entity, repaired where it can be."""
+        out: dict[int, float | None] = {}
+        previous: tuple[float, float] | None = None
+        for row in series.get(entity, []):
+            slot = float(row["start"]) / 1000
+            state = row.get("state")
+            out[row["start"]] = interval_energy(
+                row.get("change"), state, previous, slot, step, max_kw
+            )
+            previous = carry(previous, slot, state)
+        return out
+
+    imported = energies(settings.import_entity)
+    exported = energies(settings.export_entity)
+
     readings: dict[int, IntervalReading] = {}
     for stamp in sorted(set(imported) | set(exported)):
         start = to_pacific(datetime.fromtimestamp(stamp / 1000, tz=UTC))
-        # A counter that goes backwards is a device or restart artefact, not
-        # energy flowing the other way; clamp rather than raise on it.
-        into = max(imported.get(stamp, 0.0), 0.0)
-        out = max(exported.get(stamp, 0.0), 0.0)
-        if into > ceiling or out > ceiling:
-            # Dropped rather than clamped: the reading is not merely large, it is
-            # not a reading at all, and leaving a hole lets coverage checking
-            # report it instead of quietly inventing a plausible number.
-            log.warning(
-                "discarding %s statistics point: %.3f kWh in / %.3f kWh out over %s "
-                "implies more than %.0f kW, so the running sum restarted here",
-                start.isoformat(),
-                into,
-                out,
-                duration,
-                max_kw,
+        # None means neither the recorder's figure nor the counter could be
+        # trusted for that direction. A negative one is a device or restart
+        # artefact rather than energy flowing the other way; clamp it.
+        into_raw, out_raw = imported.get(stamp), exported.get(stamp)
+        into = max(into_raw, 0.0) if into_raw is not None else 0.0
+        out = max(out_raw, 0.0) if out_raw is not None else 0.0
+        # A row that is absent says as little as one that was refused. The
+        # recorder compiles an hour for any entity with a state, and a flat
+        # counter still yields a change of zero -- so no row at all means the
+        # entity had no state, not that nothing crossed the meter. Reading it
+        # as a measured zero is the claim this branch exists to stop making in
+        # the other direction, and it is the same claim.
+        refused = frozenset(
+            name
+            for name, seen, value in (
+                ("imported", stamp in imported, into_raw),
+                ("exported", stamp in exported, out_raw),
             )
+            if not seen or value is None
+        )
+        if any(value is None for value in (into_raw, out_raw)):
+            log.warning(
+                "discarding the %s half of the %s statistics point: the recorder's "
+                "figure implies more than %.0f kW over %s and the counter could not "
+                "be differenced either",
+                " and ".join(sorted(refused)),
+                start.isoformat(),
+                max_kw,
+                duration,
+            )
+        if len(refused) == 2:
             continue
         readings[stamp] = IntervalReading(
-            start=start, imported=into, exported=out, duration=duration
+            start=start,
+            imported=into,
+            exported=out,
+            duration=duration,
+            unmetered=refused,
         )
     return readings
 
@@ -236,7 +354,11 @@ async def _fetch(
                         "end_time": end.astimezone(UTC).isoformat(),
                         "statistic_ids": [settings.import_entity, settings.export_entity],
                         "period": period,
-                        "types": ["change"],
+                        # `state` is the counter itself, and `interval_energy`
+                        # needs it: a recorder that mistook a dropped-to-zero
+                        # reading for a counter reset reports a ruined `change`
+                        # and an intact `state`.
+                        "types": ["change", "state"],
                     }
                 )
             )
@@ -285,13 +407,34 @@ async def read_statistics_async(
     hourly = _readings_from(fetched.get("hour", {}), settings, PERIODS["hour"], max_kw)
     fine = _readings_from(fetched.get("5minute", {}), settings, PERIODS["5minute"], max_kw)
 
-    # Drop any hour the fine series already accounts for, or the same energy is
-    # counted twice. Tested per hour rather than over the fine series' overall
-    # span, so a hole in it falls back to hourly instead of vanishing.
+    # Drop an hour the fine series accounts for *in full*, or the same energy is
+    # counted twice. Completeness is the whole test: an hour the fine series
+    # only partly covers used to lose its hourly row too, and the uncovered part
+    # of it simply vanished. On a real cycle the five-minute series resumed at
+    # 04:20 after a restart, which deleted the 04:00 hourly row and left
+    # 04:00-04:20 in neither series -- reported as a gap, and short by whatever
+    # crossed the meter in those twenty minutes.
+    #
+    # An hour that is not fully covered therefore keeps its hourly row and gives
+    # up its partial fine rows, which is the trade the coarser figure wins: the
+    # hour's energy is right either way, and only its shape within the hour is
+    # lost.
     hour_ms = int(PERIODS["hour"].total_seconds() * 1000)
-    fine_hours = {stamp - stamp % hour_ms for stamp in fine}
-    readings = {stamp: r for stamp, r in hourly.items() if stamp not in fine_hours}
-    readings.update(fine)
+    covered: dict[int, float] = {}
+    for stamp, reading in fine.items():
+        hour = stamp - stamp % hour_ms
+        covered[hour] = covered.get(hour, 0.0) + reading.duration.total_seconds()
+    whole = {
+        hour for hour, seconds in covered.items() if seconds >= PERIODS["hour"].total_seconds() - 1
+    }
+    # A partial hour gives its fine rows up *to the hourly row that replaces
+    # them* -- and only if there is one. Surrendering them unconditionally threw
+    # away every reading in a window that begins mid-hour, where no hourly row
+    # can exist: an explicit five-minute request for 04:20-05:00 has eight rows
+    # per entity and returned "no statistics" for the period.
+    surrendered = {hour for hour in covered if hour not in whole and hour in hourly}
+    readings = {stamp: r for stamp, r in hourly.items() if stamp not in whole}
+    readings.update({s: r for s, r in fine.items() if s - s % hour_ms not in surrendered})
 
     if not readings:
         raise DataError(

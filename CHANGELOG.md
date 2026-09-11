@@ -5,6 +5,777 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+
+#### Upgrading Home Assistant: re-run the backfill
+
+Nothing has to be migrated. The config entry is still version 3, so
+`async_migrate_entry` does nothing to an existing one; the account stays in the
+entry at `schema_version` 1; and no entity id, unique id, device identifier or
+entity name changed, so nothing is orphaned or renamed. The single-account work
+below is entirely CLI-side -- the integration has always kept its account in its
+own config entry and never read `~/.config/tariffkit`.
+
+**But long-term statistics are written once and kept**, and the arithmetic
+behind them changed: PCIA moved from the bonus bucket to delivery, an in-cycle
+offset overrun is no longer banked, credit spend is floored at zero, the pre-PTO
+note no longer disqualifies the whole bank, and meter hours that used to be
+dropped are recovered (54.2 to 67.0 kWh of export on one real cycle). Rows
+already written keep the old numbers while new hours use the new ones, which
+reads as a step in the Energy dashboard's cost series.
+
+Re-running the backfill rewrites them -- the rows carry the same timestamps, so
+they are replaced rather than added to:
+
+```yaml
+action: tariffkit.backfill_usage
+data:
+  config_entry: <your entry>
+response_variable: backfilled
+```
+
+With no `start` it rebuilds from the billing cycle containing your PTO date,
+which is as far back as a bill means anything.
+
+Expect the live figures to move as well -- amount due, the credit bank,
+cycle-to-date. That is what most of this release is: a bank that was silently
+dropped now applies, and one folded across a warning is no longer discarded
+without a word.
+
+The integration can now have the utility's own cycle boundaries, but they do
+not arrive on their own: it holds no portal credentials by design, so they
+travel with the profile. `tariffkit account periods --apply` records them and
+`account export` carries them into **Configure -> Account history -> Import
+profile**. Without the CLI they can be read off the portal's own bill-period
+dropdown and typed into the exported JSON -- see [Getting the billing periods
+in](docs/home-assistant.md#getting-the-billing-periods-in).
+
+#### One account, and everything it needs in one directory
+
+**Breaking.** Named account profiles are gone. There is one account, and every
+file the CLI and the audit harness read lives in `$XDG_CONFIG_HOME/tariffkit`
+(`~/.config/tariffkit` by default). Real environment variables still win over
+the file, so a container or a systemd unit supplies these without one.
+
+```
+~/.config/tariffkit/
+  config.toml      settings that are true now
+  account.json     the agreement's dated history
+  .env             INFLUXDB3_*, HA_*, PGE_* -- was ./.env, in whatever
+                   directory the command happened to run from
+```
+
+**Migrating.** With one profile, nothing to do: the first command adopts
+`accounts/<name>.json` automatically. With several, pick the one you want and
+move it yourself, because choosing between them is a decision and guessing it
+prices bills from an agreement you did not choose:
+
+```bash
+mv ~/.config/tariffkit/accounts/<the-one-you-want>.json \
+   ~/.config/tariffkit/account.json
+chmod 600 ~/.config/tariffkit/account.json
+rm -r ~/.config/tariffkit/accounts        # once you are happy
+mv .env ~/.config/tariffkit/.env          # if you kept one in a project
+```
+
+**Home Assistant needs no migration**, for this or anything else in this
+release: see [above](#upgrading-home-assistant-re-run-the-backfill). The
+integration stores its account in its own config entry and never read the CLI's
+profiles, so nothing moves. The only visible change here is that a profile no
+longer carries a `credential_set`; the integration never set one.
+
+**Gone from the CLI:** `--account` on every command, `--credential-set`,
+`tariffkit account list`, and the name argument on `account show`, `update`,
+`import-statement`, `sync`, `export` and `source`. `tariffkit credentials
+--set NAME` goes with it -- one account reads one set of credentials.
+
+Why: the multiplicity earned its complexity only for someone billing several
+service agreements under one login, and cost everyone else a name to invent, a
+flag to remember, and a silent wrong answer when the flag was forgotten. A bill
+priced from `config.toml` instead of the agreement's history read a CCA account
+as bundled, which gives it one export credit bank where it has two and prices a
+cycle that crossed a rate change at a single tariff. What is kept is the part
+that earns its keep: the dated history, because a bill prices with the settings
+in force over its own days.
+
+#### Reading the account file is the application's job, not the library's
+
+**Breaking, for embedders only.** `AccountStore` has moved out of the library
+into the command line, at `tariffkit.cli.AccountStore`. Nothing below the CLI
+opens a file to find an account any more: it is handed the
+`AccountProfile` it should price with.
+
+| was | now |
+| --- | --- |
+| `from tariffkit.account import AccountStore` | `from tariffkit.cli import AccountStore` |
+| `tariffkit.account.ProfileNotFoundError`, `ProfileStorageError`, `ProfileConflictError` | `tariffkit.cli.account_store.<same>` |
+| `tariffkit.account.ProfileNameError` | gone; there are no names left to be invalid |
+| `create_app(use_account=True, profile_repository=store)` | `create_app(profile=store.load())` |
+| `MqttPublisher(engine, settings, store=store)` | `MqttPublisher(engine, settings, profile=store.load())` |
+
+`AccountStore(base)` still takes an optional directory to keep its
+`tariffkit/` folder under, which is what the tests use; with no argument it is
+`$XDG_CONFIG_HOME/tariffkit` as before. The on-disk format has not changed, so
+there is nothing to migrate.
+
+Why: `tariffkit.web` and `tariffkit.mqtt` each reached into `~/.config` to load
+an account, which made the file a hidden input to a library call -- two
+processes given the same `Config` priced differently depending on what was on
+the machine that imported them, and an embedder that already held a profile (as
+Home Assistant does, in its config entry) still paid for the lookup. Where the
+account lives, how it is locked, and who may read it are decisions an
+application makes.
+
+**Home Assistant is unaffected.** It has always been handed a profile from its
+own config entry.
+
+#### The audit harness no longer takes `--account`
+
+`audit reconcile`, `audit run` and `audit doctor` accepted a profile name and
+then ignored it: there is one account. Passing one now fails as an unknown
+flag rather than silently auditing a different agreement from the one named.
+
+#### Named credential sets are gone
+
+`tariffkit.secrets.get_named_secret`, `set_named_secret`,
+`delete_named_secret` and `configured_named_secrets` are removed. They existed
+so two profiles could share one PG&E login without storing the password twice,
+and nothing has called them since the profiles went: one account reads one set
+of credentials, stored with `tariffkit credentials set pge.username`. The
+integration's `sanitize_profile` goes with them -- it stripped a field the
+model no longer has, so it claimed a protection it was not performing.
+
+The documentation has been brought in line with all of this: `docs/accounts.md`
+(now "Your account"), `billing.md`, `configuration.md`, `containers.md`,
+`web.md`, `home-assistant.md`, `use-cases.md` and `audit/README.md` no longer
+show `--account NAME`, a profile name argument, `[account] default_profile`, or
+`--credential-set`.
+
+`tariffkit --help` said the `account` command manages "named account profiles";
+it manages your account's dated history. `tariffkit account update --json`
+emitted its result under a `profile` key, now `account`.
+
+#### `account show` and `account history` printed the same thing
+
+`show` listed the epochs, which is what `history` is for -- with no statement
+evidence recorded the two were identical output, and one of them was pointless.
+
+`show` now answers "what is my account?": the settings in force today, fully
+resolved, the date the epoch they came from took effect, and the meter entities.
+`--json` gives `{effective, config, meter_sources, epochs, observations}` rather
+than the whole file, which is what `account export` is for. An account whose
+epochs are all future-dated says so instead of failing.
+
+`history` is unchanged: every epoch, and the statements that established them.
+
+#### `credentials list` printed nothing on a machine that is fully configured
+
+It listed only the names stored in the OS keyring, so a machine keeping its
+credentials in `~/.config/tariffkit/.env` -- which every source reads first --
+got no output at all. Empty is indistinguishable from a broken command, an
+uninstalled `keyring` extra, or a backend that is not being read, and it was
+reported as exactly that doubt.
+
+It now names the backend and every credential with the source it resolves
+from -- `environment (PGE_USERNAME)`, `.env (HA_TOKEN)`, `keyring`, or
+`not set` -- and still never prints a value. A machine with no usable keyring
+(a headless container, or `TARIFFKIT_DISABLE_KEYRING=1`) says
+`keyring: none available here` rather than leaving it to be inferred.
+
+`tariffkit.secrets.SECRET_ENV` is the new mapping behind it, and
+`keyring_backend()` reports the backend in use.
+
+#### `tariffkit bill` fetches the Green Button export itself, and keeps it
+
+It asked for a CSV path -- "give a Green Button CSV path, or use --source ha or
+--source influx" -- on a tool that can download the file. Given `--start` and
+`--end` and no path, it now takes the export from
+`~/.cache/tariffkit/pge/green-button/`, downloading it from the portal only if
+it is not there:
+
+```
+  source: Green Button, downloaded (2880 intervals, ~/.cache/tariffkit/pge/green-button/2026-07-29_2026-08-27.csv)
+  source: Green Button, cached 2026-07-29..2026-08-27 (2880 intervals, ...)
+```
+
+The portal generates each export on demand -- a job, a poll loop, and a signed
+URL, about twenty seconds -- and returns the same readings every time for a
+range that has closed. A **wider file serves a narrower request**, since
+readings outside a billing period are ignored when it is priced, so one
+download of a year prices every cycle in it; the narrowest covering file wins.
+`--refresh` downloads again, for a cycle still open. Files are mode `0600` under
+a mode `0700` directory, beside the session cache: an export carries a name, a
+service address, and every quarter hour of consumption.
+
+Passing a CSV still works and still skips the portal entirely.
+`audit --green-button` reads the same cache, which was re-downloading one export
+per statement.
+
+New in `tariffkit.sources`: `cached_green_button`, `cached_exports`,
+`CachedExport`, and `read_green_button_export`.
+
+#### `tariffkit bill` defaults to the cycle you are in
+
+With no `--start`/`--end` it prices the billing cycle open right now, through
+today -- what you owe so far, which was the one question the command could not
+answer without first looking up when the cycle began. Passing one of the two
+without the other is refused rather than half-guessed.
+
+Where the boundary came from is printed, because it is not always known:
+
+```
+  cycle: 2026-08-28 to 2026-09-09, the boundary your statements print
+  cycle: 2026-09-01 to 2026-09-09, a calendar month, which is a guess -- run
+    'tariffkit account sync --apply' for real boundaries, or set [billing] cycle_start_day
+```
+
+Statements date it exactly, and cycles are contiguous, so the open one begins
+the day after the last statement ended -- no waiting to be billed. `[billing]
+cycle_start_day` in `config.toml` is the fallback meter-read day; with neither,
+the calendar month is used and labelled a guess. PG&E reads on business days,
+so a real account's cycles open on the 29th, the 30th, the 1st and the 3rd in
+consecutive months, which is why a fixed day is only ever close.
+
+The resolution itself is not new -- the Home Assistant integration has used it
+for its cycle-to-date entities all along. It has moved from
+`custom_components.tariffkit.energy` into `tariffkit.billing`
+(`resolve_cycle`, `cycle_start`, `statement_periods`, `Cycle`,
+`STALE_EVIDENCE`), where the CLI can reach it; the integration imports it from
+there now. `Cycle.source` no longer carries prose, only the basis
+(`statement`, `day_of_month`, `calendar_month`), leaving the wording to whoever
+prints it.
+
+The Green Button cache drops ranges a new download wholly contains, so billing
+an open cycle daily leaves one file rather than one a day.
+
+`tariffkit bill FILE --source ha` no longer fails an assertion. A CSV path
+names its own window only for the source that reads a CSV; every other source
+is asked for a period, and had been reaching `assert period is not None` --
+a traceback on a user error, and an `AttributeError` under `python -O`.
+
+#### The cycle boundary comes from PG&E, not from a guess
+
+The portal knows exactly when every cycle it billed opened and closed, and will
+say so: `WUE_GetUsageExportBills` is what fills the export widget's bill-period
+dropdown. `tariffkit bill` with no dates now asks it, so the default window is
+the utility's own boundary rather than a meter-read day or a calendar month:
+
+```
+  cycle: 2026-08-28 to 2026-09-09, the boundary PG&E billed on
+```
+
+No statement import needed and no PDF parsed. `bills` turns out to be a field on
+the *account* rather than on `Query` -- which is why the operation name was no
+guide to it and introspection (disabled here) could not be asked -- so it was
+captured from the widget's own request; `audit/pge/PORTAL.md` has the query and
+the shape of what it returns.
+
+The list is cached at `~/.cache/tariffkit/pge/bill-periods.json` (mode `0600`)
+and refreshed only when it stops covering the present, which is the same
+staleness bound statement evidence uses and means the same thing: a bill has
+been issued that this does not know about. So pricing from InfluxDB or Home
+Assistant does not begin requiring portal credentials or a round trip. A refresh
+that cannot happen keeps what is on disk -- an old boundary reported as old
+beats a command that fails offline.
+
+New in `tariffkit.sources`: `cached_bill_periods` and `read_bill_periods`.
+
+#### An open cycle ends at the last published read
+
+PG&E publishes interval reads a day behind, so pricing a cycle "through today"
+fetched an export that stopped a day short and then reported the shortfall:
+
+```
+  warning: 2026-08-28..2026-09-09 (E-ELEC): readings cover 288.0h of the 312h period (24.0h missing)
+```
+
+Nothing was missing. The reads are not published yet, which is a fact about the
+publishing schedule and not about the meter -- and the day was also charged a
+Base Services Charge it should not have been. The window now ends where the
+utility says its readings do, which the export widget has always done:
+
+```
+  cycle: 2026-08-28 to 2026-09-08, the boundary PG&E billed on
+```
+
+That answer comes from `WUE_GetUsageExportAvailableAMIReadsTimeInterval`, asked
+once a day and kept in `~/.cache/tariffkit/pge/available-reads.json`. It is also
+what makes the export cache work for an open cycle: yesterday's file covers
+today's question, so the same cycle is not re-downloaded every morning. A
+`tariffkit bill` that has already asked today costs no network at all.
+
+New in `tariffkit.sources.pge`: `available_reads` and `cached_available_reads`.
+
+#### The account carries the cycle boundaries it was billed on
+
+**Profile schema 1 -> 2.** `AccountProfile` gains `billing_periods`: the cycles
+the utility says it billed, inclusive at both ends, sorted and non-overlapping.
+Schema 1 files -- every account file and every Home Assistant config entry
+written so far -- are read unchanged and simply have none; saving writes 2.
+
+Boundaries without the statements that print them is the point. Only the CLI
+has portal credentials, and only a statement import previously produced exact
+cycles, which meant parsing PDFs. `tariffkit account periods --apply` now reads
+them from the portal and records them, and `account export` carries them
+wherever the account goes -- above all into Home Assistant, which holds no
+portal credentials by design and was otherwise left approximating with a
+meter-read day. They can also be typed in by hand from the portal's own
+bill-period dropdown; `docs/home-assistant.md` has that path.
+
+`known_periods(profile)` is what every cycle lookup now reads. Where two
+periods overlap the wider one is kept, because cycles tile rather than nest and
+anything inside another period is a partial view of the same cycle. That is
+usually the statement, which is one page -- a cycle whose service agreement
+changed partway is one billing period on it and two entries in the portal's
+list, and a cycle-to-date figure has to follow what was billed. It is
+occasionally the portal, when a statement was only partly read and spans a few
+days inside a cycle the portal has whole. The rule lives once, in
+`tariffkit.billing.merge_periods`.
+
+The label printed beside the window names the source that actually answered,
+found by which period the cycle resolved from. Deciding it from "does the
+account hold any statements" called a portal boundary a statement's on any
+account holding one old PDF.
+
+#### `charges_by_bucket` returns two values, not three
+
+**Breaking, for embedders only.** Its third element was a bucket-to-unspent map
+that has been all zeros since the in-cycle clamp was removed, threaded through
+two call sites whose arithmetic it no longer changed. `offsettable,
+non_offsettable = charges_by_bucket(bill)`.
+
+#### A skipped statement never names the file the sync deleted
+
+`account sync` reports a statement it could not read by the date the utility
+issued it, stripping the source the parser prefixes its messages with -- which
+for a sync is a loop index inside a cache directory the run removes. It stripped
+everything up to the first `": "`, and four of the parser's messages separate
+the source with a space, so those printed the temporary name anyway; a fifth
+contains a later colon of its own and lost the half that said what went wrong,
+keeping only its problem list. It strips the source *name* now.
+
+#### A Home Assistant row that is absent is not a measured zero
+
+`_readings_from` marked a direction unmetered when the recorder's figure was
+refused, and not when the row was missing altogether -- so an hour where only
+one entity reported read as "that direction moved nothing", and coverage
+accepted it. The recorder compiles an hour for any entity that has a state, and
+a flat counter still yields a change of zero, so no row at all means the entity
+had no state. It is unknown now, like a refusal, and an interval with neither
+direction known is dropped rather than counted as two zeros.
+
+The test that would have caught it was asserting the wrong thing under the
+wrong name: `test_a_backwards_counter_is_clamped_not_negated` passed because a
+*refused* value reads as 0.0, on a series whose export half was absent. A
+backwards counter is refused, not clamped, and the test says so now.
+
+#### A partial hour keeps its five-minute rows when nothing replaces them
+
+An hour the fine series only partly covers gives its rows up to the hourly row
+that covers it -- but only if there is one. Surrendering them unconditionally
+discarded every reading in a window that begins mid-hour, where no hourly row
+can exist: an explicit `resolution="5minute"` request for 04:20-05:00 had eight
+rows per entity on a real instance and raised "no statistics for ... between
+...".
+
+#### Coverage says what was reconstructed and what was merely shifted
+
+They were one sentence, and it was wrong either way. Counting only the
+intervals the source could not speak for reported "0 interval(s) covering 0.0h
+and 4.5 kWh"; counting every interval that carried a share said 347 hours of a
+768-hour cycle were "reconstructed across gaps" when all 347 were measured and
+there were no gaps. A reconstructed interval and a shifted kilowatt-hour are
+different claims and now get different sentences.
+
+#### Home Assistant is the default reading source
+
+`tariffkit bill` read Green Button unless told otherwise. It now reads the
+account's own meter through Home Assistant, and a CSV path still selects the
+Green Button reader because that is what a CSV is.
+
+The utility's export is not always complete. On one real cycle it held 0.13 kWh
+of the 71.6 the meter recorded -- PG&E truncated a 32-day request to its last
+two days -- while the meter matched the printed statement to 0.00 kWh. The
+account's own instrument is the safer thing to reach for first; the export
+stays as the independent check, which is the job it does well.
+
+#### The audit's time-of-use check fires above the noise, and nowhere else
+
+**A line the rate table reproduces is still a mismatch.** For a while it was
+not: a line was downgraded to a passing "metering" verdict whenever pricing it
+from the statement's own kWh reproduced the printed amount. That figure is
+`rate x printed kWh` and never passes through the billing engine, so it tests
+the rate table and nothing else -- and a hundredfold error in how the engine
+applies that rate leaves the two identical. Measured on a constructed
+statement: a $1,152.36 error on a $295.30 bill reconciled clean and vanished
+from the report. Reverted, and pinned by a test.
+
+**The split is asserted, above the reference's own noise.** `kwh_ok` allowed
+0.5% of the larger figure with the scale floored at 1 kWh -- an absolute
+five-watt-hour test on any small quantity. Green Button rounds every interval
+to two decimals (measured: all 2,880 values in a cycle's export carry exactly
+two), so its quantisation accumulates about 0.31 kWh over a cycle at two sigma.
+A 0.06 kWh peak difference worth a penny failed a solar cycle while a 0.65 kWh
+one worth thirteen cents passed a winter cycle. A 0.35 kWh floor holds the test
+above that noise, and it still asserts: a cycle's worth of misattributed peak
+energy is real money.
+
+The statement prints the split and would be a better arbiter than a second
+derivation of the meter. Reading those rows is not solved -- an attempt counted
+"Part Peak" as peak on the two schedules this account actually runs, took the
+maximum of a cycle's two seasonal rows instead of their sum, and read exported
+kilowatt-hours as imported -- so it is not in the tree. That is worth doing
+properly, as its own change.
+
+#### A cached export is named for what it holds
+
+The portal does not always honour the range it is given: a 32-day request for
+an older cycle came back with its last two days, and its own archive filename
+said so. Naming the file for the *request* cached two days under a
+thirty-two-day name, so every later lookup inside that span got a hit with
+almost nothing in it, and the pruning would delete a correct narrower file for
+overlapping a range this one only claimed to hold.
+
+The span is read from the readings themselves, the file is named for it, and a
+short answer is logged. An export with no readings at all is refused by the
+period that was asked for rather than by "CSV contained no data rows" -- but
+only a genuinely empty one: an unrecognised header, an unparseable timestamp
+and a non-numeric quantity are the parser failing, and reporting those as "the
+portal sent nothing" pointed the reader at PG&E for a regression of ours.
+
+#### Three commands raised where they should have reported
+
+`account source show` had asked for a `profile` key since the account became
+singular, so it raised `KeyError` rather than printing the mapping. `bill
+missing.csv` and `--config missing.toml` let `FileNotFoundError` through, where
+every other misconfiguration is one line and exit 1.
+
+#### A superseded period does not come back with a label
+
+`tariffkit bill` labelled each boundary with the source it came from by
+recording labels as the merges went along, which kept the periods the merges
+had just discarded -- putting a partial statement back beside the whole cycle
+that supersedes it, and handing the cycle lookup the partial span again. The
+labels are read off the merged list.
+
+#### `credentials set --set NAME` needs re-storing after upgrading
+
+Named credential sets are gone, so secrets kept under one are no longer read:
+the account adopts fine and then portal commands stop authenticating. The
+"credentials not found" error says so, and what to do about it.
+
+#### Copies of an account keep every field it has
+
+`billing_periods` was dropped by six paths that rebuilt `AccountProfile` field
+by field: Home Assistant's **Import profile** (so the documented export ->
+import workflow lost every boundary on arrival), both of its epoch editors,
+`account update`, `account source set`, and applying a reconciliation -- so
+`account sync --apply` erased what `account periods --apply` had just recorded.
+They all use `dataclasses.replace` now, which forwards what it is not told to
+change, so the next field added cannot go the same way.
+
+#### `{"profile": false}` means no, and so does `0`
+
+The REST switch counted any non-null value as "price this from the account", so
+`false` turned it on -- and, alongside a `config`, was then rejected for asking
+for both. Special-casing the boolean left `0`, `""`, `[]` and `{}` still meaning
+yes, which is the same bug with a different literal. Anything falsy is no; a
+legacy profile name still says yes.
+
+#### The fixed charge is prorated, and the documentation said it was not
+
+`BillEngine` has priced the Base Services Charge day by day since before this
+branch, specifically to match the utility's proration -- AB 205's charge began
+mid-cycle and that cycle is billed 30 days at nothing and 2 at the new rate.
+`docs/billing.md` listed the opposite as a known limit and `docs/use-cases.md`
+repeated it as a trap, which would have had an embedder compensating for a
+limitation that does not exist.
+
+#### Smeared energy is counted whether or not it is flagged
+
+The 0.01 kWh floor decided whether a reconstructed share *existed*, not just
+whether its interval was worth flagging, so it could accumulate out of sight:
+five hundred shares of nine watt-hours is 4.5 kWh time-shifted and no warning
+at all. The magnitude is always recorded now and materiality is applied to the
+cycle total, which is the question a reader is actually deciding. Every
+interval that carried a share is counted in the warning, which otherwise read
+"0 interval(s) covering 0.0h and 4.5 kWh" -- a sentence at war with itself.
+
+#### Reading the account no longer writes to the configuration directory
+
+Constructing `AccountStore` created and `chmod`-ed `$XDG_CONFIG_HOME/tariffkit`,
+so merely asking whether an account exists was a write -- on every `now`,
+`forecast`, `bill`, `mqtt` and `serve`, and even with `--config` naming a file
+somewhere else entirely. On a read-only configuration mount, which is how
+`docs/containers.md` says to run `serve`, the chmod failed at startup, and it
+failed as a raw `PermissionError` traceback rather than as `error: ...` and
+exit 1.
+
+Nothing is created until something is written, `--config` short-circuits the
+account lookup entirely, and a directory that cannot be created is reported.
+The legacy-profile adoption path no longer leaves its temporary file behind
+when the write fails partway.
+
+**Reading no longer demands mode 0700 of the directory.** It only ever passed
+that check because construction had just chmod-ed its way there, so making
+creation lazy left the demand without its self-heal: a `~/.config/tariffkit`
+made by the `mkdir -p` in `docs/accounts.md` is 0755 under a default umask,
+and every command that so much as asks whether an account exists refused to
+run -- `account init` included, leaving no way out. A read-only 0500 mount was
+refused for being *more* private than asked. Reads accept the directory and
+check the account file's own 0600, which is what protects it; writes create it
+0700 and tighten it, that being the point at which doing so is ours to do.
+
+
+### Fixed
+- **`tariffkit bill` uses your account profile without being asked.** With one
+  profile it is simply yours; with several it now refuses rather than falling
+  back to `config.toml`, because a bill priced from the wrong agreement is a
+  plausible wrong number and not an error. That fallback had priced a CCA
+  account as bundled without a word, giving it one export credit bank where it
+  has two and pricing a cycle that crossed a rate change at a single tariff.
+  `now` and `forecast` keep the fallback: what the price is this hour is a
+  question about today, which is what a config describes.
+- **`tariffkit bill` prints what a statement would charge.** It printed
+  `Bill.total` under the word TOTAL, which subtracts every export credit from
+  every charge -- something the tariff does not allow, since credits are scoped
+  and credit beyond what its own bucket can absorb banks rather than reducing
+  the bill. On an exporting account the two are nowhere near each other and only
+  one appears on a statement: a 2026-07-29..08-27 cycle printed -73.36 where the
+  statement's electric charges were 14.22, and nothing on the page was -73.36.
+  The command now prints gross charges, credit applied and AMOUNT DUE; that
+  cycle reads 14.20. `docs/use-cases.md` had been saying `Bill.total` was the
+  wrong figure while the command printed it as the headline.
+- **`tariffkit bill` prints each export credit bank, and never their sum.** One
+  closing figure could say neither how the bank moved nor whose it was. It now
+  prints the four columns a statement prints -- opening, earned, applied,
+  remaining -- one row per supplier, because on a CCA account there are two
+  banks on unrelated settlement calendars and adding them gives a number no
+  statement shows. A cycle that announced a single "+94.43" now reads PG&E
+  17.74/5.83/11.92 against a printed 17.78/5.82/11.96, and MCE 86.42 earned and
+  0.00 applied against a printed 86.16 and 0.00.
+- **The PCIA is an Energy Delivered charge.** `SCOPING_VERIFIED` named the
+  evidence it needed -- a cycle whose credits exceed the charges they may offset
+  -- and the 2026-09-03 statement supplies it: PG&E applied $2.94 of Energy
+  Export Credit where the time-of-use delivery rows come to $2.54, and the only
+  charge that closes the difference is the PCIA at $0.40. It had been in the
+  bonus bucket, reachable by the ACC Plus adder and nothing else, so delivery
+  credit stopped forty cents short every cycle and banked what it should have
+  spent. Applied delivery credit now matches the printed $2.94 exactly.
+- **An in-cycle offset larger than its charges is credited, not banked.** The
+  2026-09-03 statement settles a question `SCOPING_VERIFIED` has been open on:
+  MCE's Solar Bonus Credit of -8.33 against smaller generation charges printed
+  "Total MCE Electric Generation Charges  -$6.85", and that -6.85 goes straight
+  into the summary, helping print a -21.96 credit balance. MCE's own bank on the
+  same page shows where it did *not* go -- beginning 12.63, earned 86.16,
+  applied 0.00, remaining 98.79, closing exactly with no room for a remainder.
+  The overrun was being banked instead, overstating the bank by $7.13 on that
+  cycle and understating the credit the customer was given. Every cycle
+  reconciled before this one had generation charges larger than the offset, so
+  the case never arose.
+- **The smeared-gap warning reports what was actually spread.** It summed the
+  whole energy of every interval a wide sample gap merely *touched*, so a cycle
+  with 0.83 kWh genuinely spread across gaps was reported as having 144.6 kWh of
+  guessed time-of-use split -- 172 times over, on a figure whose only job is to
+  say how much to distrust. `IntervalReading.smeared` carries the magnitude, and
+  an interval is flagged on the energy it took from a gap rather than on a gap
+  having passed through it: most wide gaps here are the counter standing still
+  overnight, which guesses nothing. Below ten watt-hours nothing is flagged at
+  all, that being half a cent at the widest export rate spread on this tariff.
+  The same cycle now reports 15 intervals and 0.4 kWh.
+- **The two readers of Home Assistant statistics are one reader.** The
+  integration reads them through the recorder in process and the library reads
+  them through the WebSocket API, and the derivation had been written twice --
+  so the counter repair below existed in one and not the other, and
+  `tariffkit bill --source ha` kept dropping intervals the integration had
+  learned to recover. `interval_energy` and `carry` live in
+  `tariffkit.sources.homeassistant` now and both readers call them, and the
+  library asks the recorder for `state` alongside `change` so it can.
+- **An hour the fine series only partly covers no longer loses the rest of
+  itself.** `resolution="auto"` dropped the hourly row for any hour holding
+  *some* five-minute data, so an hour the fine series resumed inside left its
+  earlier part in neither series: on a real cycle the five-minute statistics
+  resumed at 04:20 after a restart and 04:00-04:20 went missing, reported as a
+  gap. An hour is now only replaced by fine readings that cover it in full.
+- **Meter data is declared as netted where it is read.** `BillEngine.compute`
+  and `compute_segments` take `netted`, and the CLI, the audit harness and the
+  integration all pass it: every source shipped here reads a meter's own import
+  and export registers, which legitimately carry both directions in one interval
+  once aggregated to an hour. Only the integration's own coverage check knew
+  that, so every bill priced anywhere else reported hundreds of intervals as
+  suspect on every solar cycle -- noise that never cleared.
+- **A counter reset the recorder only believed in no longer costs the hour.**
+  A `total_increasing` sensor reading 0.0 is taken for a counter reset, so the
+  recorder reports the whole counter as the next hour's `change` -- 1455 kWh on
+  a meter that had moved 0.42. The Rainforest Eagle-100 does this several times
+  a day while it re-establishes its meter session. Refusing that figure was
+  right and dropping the hour with it was not: the counter itself is in `state`,
+  and differencing it against the previous hour brings the energy back. On the
+  account this came from, a cycle credited 54.206 kWh against the filtered
+  sensor's 67.016 and now reads 66.938 -- a fifth of its exports, recovered from
+  data the integration already had. The repair refuses where it would be
+  guessing: a spurious zero has nothing to difference, and a gap in the series
+  means the counter also advanced through unrecorded hours, so crediting that to
+  the hour the series resumes would price days of energy at one hour's
+  time-of-use rate. `tariffkit.sources.influx.monotonic` is the same rule one
+  layer down, on raw samples rather than hourly rows.
+- **One unreadable statement no longer discards a whole sync.** A
+  `StatementError` from any single PDF propagated out of the loop in
+  `account sync` and `account import-statement`, so an account with years of
+  statements imported none of them because the newest one would not parse --
+  and the command exited non-zero, as though the portal or the credentials were
+  at fault. Reported from a real sync as
+  `error: statement-0000.pdf: no total amount due found`, naming a temporary
+  file inside a cache directory the same function deletes on its way out:
+  nothing the owner could open, and no indication of which statement it meant.
+  Statements that cannot be read are now skipped, reported on stderr as
+  `skipped <date>: <reason>`, and returned in a `skipped` list beside the
+  proposals -- named by the date the utility issued the statement rather than
+  by the loop index.
+- **A statement for an account in credit is read, not refused.** When the
+  balance is negative the utility prints "CREDIT BALANCE - NO PAYMENT DUE" and
+  the figure instead of a "Total Amount Due" line, so the parser refused the
+  statement with `no total amount due found` -- true, and not an error. The
+  credit balance is now the statement's `amount_due`, negative, which is what
+  `self_check` already expected: on 2026-09-04 the detail sections and summary
+  adjustments close on it to the cent (21.07 - 6.85 - 36.18 = -21.96).
+- **Kilowatt-hours were billed as dollars when a rate printed tight against its
+  "@".** `_fields` separates columns on two or more spaces, so whether
+  "@ $0.10867" arrives as one field or two depends on how wide that gap came
+  out. Where it came out as one, the row fell past every "@"-aware branch to the
+  fallback scan -- which takes the first money-shaped field, and a metered
+  quantity prints as "10.122000", which `MONEY` accepts. An Off Peak row was
+  billed at $10.12 instead of $1.10, and one statement's delivery section summed
+  to 51.67 against a printed 21.07. It now sums to 21.07 and every metered row
+  carries its quantity and rate.
+- **Two rows sharing a truncated label are no longer read as overlapping
+  sections.** Recognition widens the gaps inside a label and `_fields` splits on
+  two spaces, so "Current PG&E Electric Monthly Charges" and "Current Gas
+  Charges" both come back labelled "Current" on a combined statement. The
+  duplicate check keyed on the label alone and refused the statement. What it
+  looks for is one row collected twice, and such a row carries the same amount
+  both times, so the amount is part of the key now.
+- **A failed recognition names the reading that came closest.** When no reading
+  checked out, the error reported whichever reading raised -- so a statement
+  blamed "page 3 prints an unsupported tariff", from a reading whose "p.m." had
+  vanished, while the reading that named the tariff correctly had failed its
+  self-check for an unrelated reason. A reading that produced a whole statement
+  and came up short by a row is the closer near-miss and its problems say what
+  to look at, so that is what is reported.
+- **The gas half of a Climate Credit is read.** PG&E issues the California
+  Climate Credit against gas and electricity separately, in April and October,
+  and prints both in the summary. The electric half was read by name and the gas
+  half by nothing, so a combined April statement failed its own check by exactly
+  that credit -- 135.21 electric, -58.23 electric adjustments, 65.71 generation,
+  62.22 gas and -67.03 unread, against a printed 137.88 the five of them reach
+  precisely. `Statement.gas_adjustments` carries it, and `electric_charges` and
+  `self_check` both account for it.
+- **A tariff is recognised from the words when the meridiem is lost too.**
+  Recognition returned "(Peak Pricing 4 9    Every Day)" -- dash and "p.m."
+  alike swallowed by the gaps they sit in -- so no tariff matched and the
+  statement was refused as printing an unsupported one. "Peak Pricing 4 ... 9"
+  is anchor enough on its own.
+- **A dropped hyphen between the peak hours no longer costs a statement.**
+  Recognition loses the mark -- it is small and it sits in a gap, the same
+  reason `_implied_at` exists for the "@" -- so "Peak Pricing 4 - 9 p.m." came
+  back as "4 9 p.m.", matched no tariff, and `_agreements` refused the whole
+  statement as printing an unsupported one. The dash is optional now, made safe
+  by anchoring on the "p.m." after the hours.
+- **A cycle split at a rate change is one agreement, not two.** The utility
+  splits a cycle where a rate change or the June 1 season boundary lands and
+  prints both blocks under one schedule -- 08/28-08/31 then 09/01-09/28, one
+  Time-of-Use agreement. `_agreements` read that as two agreements for one
+  schedule, called it ambiguous, and refused the statement whole. Spans that
+  continue one another now join; spans with a gap between them stay two, which
+  is the case the check exists for.
+- **One period printed twice is one agreement.** `_agreement_spans` deduplicated
+  on the dates *and* the day count, so a span printed twice with two different
+  counts came back as two agreements and `_agreements` refused the statement
+  with "prints 2 date spans for one delivery schedule". The day count is
+  evidence about a span, not part of its identity.
+- **An impossible date from recognition no longer escapes as a `ValueError`.**
+  `read_statement` discards a reading that raises `StatementError` and tries the
+  next, which is how the recognised Type 3 statements are read at all -- but
+  `_parse_date` raised `ValueError`, so a misread digit (`41/12/2026`) escaped
+  that guard and ended the process with a traceback from inside the loop whose
+  purpose is to survive it.
+- **A bank the money entities would not spend, and would not say so.** The
+  amount-due entities refuse an export credit bank they cannot vouch for, which
+  is the safe direction, but the note explaining the refusal was gated behind
+  `bank_pending` -- a field only ever set when the fold produces *no* bank. A
+  fold that succeeded and warned was therefore dropped in silence: a $26.55
+  cycle stated before a $7.73 delivery balance, `warnings` empty and
+  `quality.complete` true, while the bank entity beside it printed nine
+  warnings. `bank_pending` now explains only an absent bank; a bank that exists
+  is judged on its own.
+- **One meter's counter restart no longer discards the other meter's energy.**
+  The Home Assistant statistics source built one reading from both directions
+  and refused the whole interval when either exceeded the plausibility ceiling.
+  Import and export are separate entities whose running sums restart
+  independently, so a bad export series destroyed good import data: against an
+  unfiltered meter counter that resets its session several times a day, 56
+  refused hours took 21.4 kWh of import with them and billed 74.5 kWh as 53.1.
+  Each direction is now judged on its own, and only an interval with no usable
+  half is dropped. A refused direction reads as `0.0`, because a float cannot
+  say "unknown", so the interval records it in `IntervalReading.unmetered` and
+  `check_coverage` reports it -- keeping the good half's energy *and* the hole,
+  where dropping the interval kept only the hole.
+- **Two tests that had stopped running.** `test_a_running_sum_restart_is_discarded`
+  -- the one guarding the plausibility ceiling on meter readings -- was
+  uncollectable: it used `caplog`, which `pytest_homeassistant_custom_component`
+  overrides by requesting, and pytest 9 reads a plugin fixture asking for its own
+  name as a recursive dependency. A `captured_logs` fixture replaces it, formats
+  each record through the logging machinery, and does not collide with the
+  plugin. A suite reporting an error beside its passes still looks green at a
+  glance, which is how this survived.
+
+### Changed
+- **Uncompensated pre-PTO exports are reported as a figure, not a warning.**
+  Net Billing begins at Permission To Operate, so the cycle containing it always
+  holds exports the tariff grants nothing for -- the arrangement starting, not a
+  defect. `Bill.warnings` means "something here may be wrong" and
+  `BankState.trustworthy` disqualifies a bank for any entry in it, so that one
+  note kept a real balance unspendable for its whole first year. The energy is
+  now `Bill.uncompensated_kwh`, and counterfactual rate comparisons can price a
+  pre-PTO month without filtering a warning string to do it.
+
+### Added
+- **`audit reconcile --readings {influx,statistics}`**, so the two derivations
+  of one meter can be compared rather than assumed equal. Both are the same
+  Eagle-100 through different Home Assistant pipelines -- the recorder
+  aggregating an entity's states into hourly buckets, against its InfluxDB
+  integration writing those states as rows that get differenced -- so agreement
+  between them corroborates nothing about the meter; `--green-button` is the
+  option that fetches an independent record. What it is good for is finding a
+  derivation bug: the two agree on a cycle's totals to the kilowatt-hour and
+  disagree about which hours the energy arrived in, 19.9 kWh of export over one
+  720-hour cycle across 189 hours. InfluxDB stays the default because it
+  reconciles two statements of four where the statistics reconcile none, though
+  scored against the time-of-use kilowatt-hours the statement prints itself both
+  reproduce the import split to within 0.03 kWh.
+- **Meter comparisons name the entity they read.** A delta line saying
+  "statement vs influx" left the one thing a reader needs unstated -- both
+  pipelines carry the unfiltered Eagle counters and the filtered pair, so it now
+  reads "statement vs influx:eagle_100_total_energy_received".
+- **The ceiling that caps `credit_applied`, published** (#58). Export credits
+  are scoped, so what a cycle can spend is capped bucket by bucket rather than
+  by the charge total -- a cycle holding $34.78 of charges and $19.94 of credit
+  can apply $8.24, because the credit is nearly all generation credit and the
+  generation charges ran out. Every term of that was published except the one
+  that explained it, leaving a dashboard to infer the cap from a ratio and get
+  the mechanism wrong. The `credit_buckets` attribute now gives, per bucket, the
+  charges it may reach, the credit it had, and what it spent, with
+  `sum(charges) + non_offsettable == gross_charges` and
+  `sum(applied) == credit_applied` on both the cycle and the day. The entity
+  description states the per-bucket ceiling too; it previously covered only the
+  annual-true-up carry.
+- **[Use cases](docs/use-cases.md)**: the four questions the calculator answers
+  -- a cycle without solar, a cycle with a credit bank, realized solar payback,
+  and comparing rate plans on historical data -- organized by how far back each
+  has to remember, with a runnable recipe and the traps for each. Chief among
+  them: `Bill.total` is not what you owe, and ranking rate plans by it picks the
+  wrong plan.
+
 ## [0.7.0] - 2026-09-07
 
 ### Added

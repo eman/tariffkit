@@ -1,22 +1,26 @@
-# Named account profiles
+# Your account
 
 A `Config` is one moment: one tariff, one supplier, one PTO date. A real service
 agreement is not — it changes tariff, moves onto or off a CCA, or gets a new
 baseline territory, and every bill after that change has to price with the
-settings that were actually in force on its own days, not today's. A **named
-account profile** is that history: an ordered set of complete `Config`
-snapshots, each dated with the day it took effect, plus the statement evidence
-that established each transition. Profiles are provider-neutral and stored
-locally; the first way to populate one from evidence is PG&E's own statements.
+settings that were actually in force on its own days, not today's. Your
+**account** is that history: an ordered set of complete `Config` snapshots, each
+dated with the day it took effect, plus the statement evidence that established
+each transition. It is provider-neutral and stored locally; the first way to
+populate one from evidence is PG&E's own statements.
 
-This page is in four parts: a [tutorial](#tutorial-your-first-profile) to get
-one working, [how-to guides](#how-to-guides) for specific tasks, a
+There is one account, in one file, and every command uses it without being
+asked. See [Why there is one account](#why-there-is-one-account) for why it is
+not a set of named profiles you choose between.
+
+This page is in four parts: a [tutorial](#tutorial-your-first-account) to get
+it working, [how-to guides](#how-to-guides) for specific tasks, a
 [reference](#reference) for commands and file formats, and an
 [explanation](#explanation) of the concepts and their boundaries.
 
-## Tutorial: your first profile
+## Tutorial: your first account
 
-This walks through creating a profile from your current settings, then
+This walks through creating your account from your current settings, then
 handing it your first PG&E statement so it can confirm — or correct — what
 you told it.
 
@@ -36,25 +40,42 @@ base_services_charge_tier = 3
 EOF
 ```
 
-### 2. Create a profile from it
+### 2. Create your account from it
 
 ```console
-$ tariffkit account init home --effective 2026-06-03
-name: home
+$ tariffkit account init --effective 2026-06-03
 epochs
   2026-06-03  E-ELEC / bundled
 observations: 0
 ```
 
 `--effective` is the day this snapshot became true — here, the PTO date, since
-that is when NEM 3.0 billing started. `home` is now a file under
-`~/.config/tariffkit/accounts/`; see [Reference](#managed-profile-files) for
-its exact shape and permissions.
+that is when NEM 3.0 billing started. It is now `~/.config/tariffkit/account.json`;
+see [Reference](#the-account-file) for its exact shape and permissions.
+
+Check what it resolved to:
+
+```console
+$ tariffkit account show
+in force since 2026-06-03
+  utility                   pacific_gas_and_electric
+  tariff                    E-ELEC
+  supplier                  bundled
+  interconnection_year      2026
+  pto_date                  2026-06-03
+  ...
+
+1 epoch, 0 statement observations -- see 'tariffkit account history'
+```
+
+`show` answers "what is my account?" — one moment, fully resolved.
+`history` answers "how did it get here?" — every epoch, with the statements
+that established them.
 
 ### 3. Price with it
 
 ```console
-$ tariffkit --account home now
+$ tariffkit now
 2026-08-15 13:00 PDT - 14:00 PDT
   import    0.33358 $/kWh   (summer/off_peak)
   export    0.04579 $/kWh   (NBT26/Weekend)
@@ -62,14 +83,8 @@ $ tariffkit --account home now
 ```
 
 Every command that prices anything (`now`, `forecast`, `info`, `bill`, `mqtt`,
-`serve`) accepts `--account NAME` the same way. Make it the default so you can
-drop the flag:
-
-```toml
-# ~/.config/tariffkit/config.toml
-[account]
-default_profile = "home"
-```
+`serve`) uses the account from here on, with no flag to remember. `--config
+FILE` is how you opt out for one command and price a hypothetical instead.
 
 ### 4. Hand it your first statement
 
@@ -78,7 +93,7 @@ pip install 'tariffkit[statements]'
 ```
 
 ```console
-$ tariffkit account import-statement home ~/Downloads/PGE_20260804.pdf
+$ tariffkit account import-statement ~/Downloads/PGE_20260804.pdf
 PGE_20260804.pdf:
   CONFIRM 2026-06-30 supplier
   CONFIRM 2026-06-30 tariff
@@ -88,19 +103,18 @@ preview only; pass --apply to save
 This is a **preview** — nothing was written. The statement agreed with what
 you already told `init` about, so every fact is `CONFIRM`, dated to the
 statement's own billing-period start (2026-06-30), not the epoch's effective
-date. Apply it so the profile records that this statement is the evidence
+date. Apply it so the account records that this statement is the evidence
 behind that snapshot:
 
 ```console
-$ tariffkit account import-statement home ~/Downloads/PGE_20260804.pdf --apply
+$ tariffkit account import-statement ~/Downloads/PGE_20260804.pdf --apply
 PGE_20260804.pdf:
   CONFIRM 2026-06-30 supplier
   CONFIRM 2026-06-30 tariff
 ```
 
 ```console
-$ tariffkit account history home
-name: home
+$ tariffkit account history
 epochs
   2026-06-03  E-ELEC / bundled
 observations: 1
@@ -110,33 +124,33 @@ evidence 1: 2026-06-30..2026-07-28 E-ELEC
 The PDF itself was never copied anywhere and is not referenced by path; only
 the sanitized facts it printed (schedule, dates, a masked account suffix, and
 the PDF's own SHA-256) were kept. See
-[What a profile stores](#what-a-profile-stores) for exactly what that is.
+[What the account stores](#what-the-account-stores) for exactly what that is.
 
-You now have a profile that prices correctly today and will keep pricing
+You now have an account that prices correctly today and will keep pricing
 correctly the day your tariff, supplier, or baseline territory next changes —
 covered next.
 
-### 5. Attach the meter entities to the profile
+### 5. Attach the meter entities
 
-Meter mappings are profile-scoped, not effective-dated: they identify where
-this account's readings live, while tariff epochs identify which rates were in
+Meter mappings belong to the account as a whole, not to a date: they identify
+where its readings live, while tariff epochs identify which rates were in
 force. Configure each source once, with a pair for grid import
 (energy consumed from the grid, not whole-home load) and grid export:
 
 ```bash
-tariffkit account source home set ha \
+tariffkit account source set ha \
   --grid-import-entity sensor.grid_import \
   --grid-export-entity sensor.grid_export
-tariffkit account source home set influx \
+tariffkit account source set influx \
   --grid-import-entity eagle_100_total_energy_delivered \
   --grid-export-entity eagle_100_total_energy_received \
   --apply
 ```
 
 The first command is a preview; add `--apply` when it is correct. Inspect a
-mapping with `tariffkit account source home show ha --json`. Once saved,
-`tariffkit bill --account home --source ha ...` or `--source influx` uses these
-entities automatically.
+mapping with `tariffkit account source show ha --json`. Once saved,
+`tariffkit bill --source ha ...` or `--source influx` uses these entities
+automatically.
 
 ## How-to guides
 
@@ -147,14 +161,14 @@ your own downloads folder) and just want it reconciled:
 
 ```bash
 pip install 'tariffkit[statements]'
-tariffkit account import-statement home ~/Downloads/PGE_20260804.pdf
+tariffkit account import-statement ~/Downloads/PGE_20260804.pdf
 ```
 
 Import as many at once as you like — order does not matter, each is
-reconciled against the profile in turn:
+reconciled against the account in turn:
 
 ```bash
-tariffkit account import-statement home ~/Downloads/PGE_*.pdf --apply --json
+tariffkit account import-statement ~/Downloads/PGE_*.pdf --apply --json
 ```
 
 Nothing is written without `--apply`. Re-importing the same statement is a
@@ -172,9 +186,9 @@ as provenance. `statement_date` is part of those facts, so a genuinely
 re-issued or corrected statement still counts as its own evidence — only true
 repeats collapse.
 
-A profile that already accumulated duplicates repairs itself: identity is
-computed on load, so the repeats collapse the next time the profile is read and
-the file is rewritten without them.
+An account that already accumulated duplicates repairs itself: identity is
+computed on load, so the repeats collapse the next time it is read and the file
+is rewritten without them.
 
 PG&E statements from before November 2025 contain a text layer whose font maps
 most glyphs to spaces. The parser detects that specific format and falls back
@@ -210,7 +224,7 @@ audit harness:
 ```bash
 tariffkit credentials set pge.username
 tariffkit credentials set pge.password
-tariffkit account sync home --since 2026-01-01
+tariffkit account sync --since 2026-01-01
 ```
 
 This downloads every statement the portal lists since that date into a
@@ -220,20 +234,19 @@ you specifically want to keep them (they carry your name, address, and
 account number, so keeping them is opt-in, not a side effect):
 
 ```bash
-tariffkit account sync home --since 2026-01-01 --apply --json
+tariffkit account sync --since 2026-01-01 --apply --json
 ```
 
-Preview first (the default, without `--apply`) on a profile you care about,
-the same as with local PDFs.
+Preview first (the default, without `--apply`), the same as with local PDFs.
 
 ### Review and apply a conflict
 
-A statement's evidence does not always agree with the profile. When it does
+A statement's evidence does not always agree with the account. When it does
 not, the change comes back typed `CONFLICT` or `MISSING_REQUIRED`, and neither
 can be applied:
 
 ```console
-$ tariffkit account import-statement home ~/Downloads/PGE_20260901.pdf
+$ tariffkit account import-statement ~/Downloads/PGE_20260901.pdf
 PGE_20260901.pdf:
   CONFLICT None account_suffix
   CONFIRM 2026-08-03 supplier
@@ -243,15 +256,14 @@ preview only; pass --apply to save
 
 Each line is `OUTCOME EFFECTIVE FIELD` — `None` for `effective` means the
 change is not tied to a single dated snapshot (an `account_suffix` mismatch
-applies to the whole profile, not one epoch). Use `--json` for the full
+applies to the whole account, not one epoch). Use `--json` for the full
 detail — every change carries `before`, `after`, and `reason`:
 
 ```console
-$ tariffkit account import-statement home ~/Downloads/PGE_20260901.pdf --json
+$ tariffkit account import-statement ~/Downloads/PGE_20260901.pdf --json
 ```
 ```json
 {
-  "profile": "home",
   "applied": false,
   "proposals": [
     {
@@ -263,7 +275,7 @@ $ tariffkit account import-statement home ~/Downloads/PGE_20260901.pdf --json
           "field": "account_suffix",
           "before": ["****4821"],
           "after": ["****9999"],
-          "reason": "statement account suffix differs from established profile evidence"
+          "reason": "statement account suffix differs from established account evidence"
         },
         {
           "outcome": "confirm",
@@ -283,7 +295,8 @@ $ tariffkit account import-statement home ~/Downloads/PGE_20260901.pdf --json
         }
       ]
     }
-  ]
+  ],
+  "skipped": []
 }
 ```
 
@@ -295,42 +308,44 @@ error: account update contains conflicts or missing required values
 
 What to do depends on which outcome you got:
 
-- **`account_suffix` conflict** — the statement is for a different account
-  than the one this profile represents. Create or use a separate profile for
-  it rather than forcing the merge.
+- **`account_suffix` conflict** — the statement is for a different service
+  agreement from the one this account represents. Check that you downloaded
+  the right PDF rather than forcing the merge; if you genuinely bill two
+  agreements, keep them in separate config homes (`XDG_CONFIG_HOME`), because
+  one file is one agreement.
 - **`agreement_overlap` conflict** — two statements' service-agreement spans
   overlap and print contradictory facts for the same days. One of them is
   wrong (or you have mis-dated a manual `account update`); re-check both
   against the actual PDFs.
 - **`missing-required` for `cca` / `cca.rate_card_or_generation_rates`** — the
-  statement shows CCA service starting, but the profile has no generation
+  statement shows CCA service starting, but the account has no generation
   rate card or rates configured yet, and none can be guessed. Add them
   explicitly first:
 
   ```bash
-  tariffkit account update home --effective 2026-08-03 \
+  tariffkit account update --effective 2026-08-03 \
     --supplier cca --cca-json '{"name": "MCE", "rate_card": "mce", "pcia_vintage": 2011}'
   ```
 
   then re-run the import; the statement's CCA facts will now `CONFIRM` or
   `ADD` against a complete snapshot instead of stalling.
 - **`missing-required` for `agreement_period`** — the statement's
-  service-agreement spans are not contiguous with what the profile already
+  service-agreement spans are not contiguous with what the account already
   knows (a gap between them). Import whatever statement fills the gap, or
   establish that snapshot explicitly with `account update`.
 
 None of this ever half-applies: a change set with any conflict or missing
-value cannot be saved at all, so the profile is always either fully caught up
+value cannot be saved at all, so the account is always either fully caught up
 to a statement or untouched by it.
 
 ### Make an account change explicit, without a statement
 
 Not every change needs to wait for a statement — you already know your
 service will change (a scheduled tariff switch, a move to a CCA) and want the
-profile to reflect it starting on a known day:
+account to reflect it starting on a known day:
 
 ```bash
-tariffkit account update home --effective 2027-06-01 \
+tariffkit account update --effective 2027-06-01 \
   --tariff E-TOU-C --baseline-territory X --apply
 ```
 
@@ -340,7 +355,7 @@ leaving off `--apply` — nothing is written until you add it. `--note` records
 why, for your own later reference:
 
 ```bash
-tariffkit account update home --effective 2027-06-01 \
+tariffkit account update --effective 2027-06-01 \
   --tariff E-TOU-C --note "switched off E-ELEC ahead of the winter rate change"
 ```
 
@@ -348,9 +363,9 @@ To replace a whole snapshot at once instead of naming individual fields, give
 a TOML or JSON `Config`:
 
 ```bash
-tariffkit account update home --effective 2027-06-01 --config new-settings.toml
+tariffkit account update --effective 2027-06-01 --config new-settings.toml
 # or
-tariffkit account update home --effective 2027-06-01 --config-json - <<'EOF'
+tariffkit account update --effective 2027-06-01 --config-json - <<'EOF'
 {"tariff": "EV2-A", "supplier": "bundled", "interconnection_year": 2026, "pto_date": "2026-06-03"}
 EOF
 ```
@@ -359,59 +374,60 @@ A later statement that confirms the same facts will just `CONFIRM` them; one
 that disagrees will surface as a conflict, exactly as in the previous guide —
 an explicit update is not exempt from being checked against evidence later.
 
-### Move a profile to Home Assistant
+### Move your account to Home Assistant
 
 The CLI's export is the integration's import format — nothing is re-derived,
-so the profile is unchanged, evidence and all:
+so the history is unchanged, evidence and all:
 
 ```console
-$ tariffkit account export home
+$ tariffkit account export
 ```
 ```json
-{"schema_version": 1, "name": "home", "credential_set": null, "epochs": [...], "observations": [...]}
+{"schema_version": 1, "name": null, "epochs": [...], "observations": [...]}
 ```
 
 In Home Assistant: **Settings → Devices & Services → PG&E Rates →
 Configure → Import profile**, paste that text, submit. To go the other way —
 copy an epoch you built in the Home Assistant options flow back out — use
 **Configure → Export profile** and paste its output into a file for
-`tariffkit account update ... --config-json`, or keep it only in Home
+`tariffkit account update --config-json`, or keep it only in Home
 Assistant if that is where you manage it.
 
-A profile exported this way never carries a `credential_set` — Home Assistant
-strips it, since it never authenticates to PG&E and has nothing to associate
-one with. See [Home Assistant](home-assistant.md#managing-account-history) for
-the rest of the options-flow actions.
+The integration keeps its account in its own config entry, and names it,
+because Home Assistant identifies a config entry by something stable. The CLI
+has one account and no name to give it, so `name` exports as `null` and the
+integration asks you for one on import. See
+[Home Assistant](home-assistant.md#account-history) for the rest of
+the options-flow actions.
 
 ### Recover from an interrupted or concurrent update
 
-**A process killed mid-write cannot corrupt the profile.** A save writes a
+**A process killed mid-write cannot corrupt the account.** A save writes a
 temporary file in the same directory, `fsync`s it, and only then atomically
-replaces `<name>.json` — the replace is one filesystem operation, so the file
+replaces `account.json` — the replace is one filesystem operation, so the file
 you already have is either the version before your edit or the version after
 it, never a partial one. If the process died before the replace, at most a
-stray `.{name}.*.tmp` file is left next to it; it is ignored by every command
-here (`list`, `show`, `export`, ...) and safe to delete:
+stray `.account.*.tmp` file is left next to it; it is ignored by every command
+here (`show`, `history`, `export`, ...) and safe to delete:
 
 ```bash
-rm ~/.config/tariffkit/accounts/.home.*.tmp
+rm ~/.config/tariffkit/.account.*.tmp
 ```
 
-**A genuinely concurrent update — two invocations racing on the same
-profile — fails rather than silently overwriting.** Every save records the
-exact revision it read, and a second writer whose revision has since moved
-gets:
+**A genuinely concurrent update — two invocations racing — fails rather than
+silently overwriting.** Every save records the exact revision it read, and a
+second writer whose revision has since moved gets:
 
 ```
-error: profile 'home' changed; reload it before saving
+error: the account changed on disk; reload it before saving
 ```
 
 with exit code `1`, and nothing is written. Recover by re-reading the current
 state and reapplying your change on top of it:
 
 ```bash
-tariffkit account show home        # see what actually landed
-tariffkit account update home --effective 2027-06-01 --tariff E-TOU-C --apply
+tariffkit account history     # see what actually landed
+tariffkit account update --effective 2027-06-01 --tariff E-TOU-C --apply
 ```
 
 This is the same protection for a scheduled `account sync` racing an
@@ -429,77 +445,75 @@ output instead of the human summary shown above.
 
 | Command | Does |
 |---|---|
-| `account init NAME [--effective DATE] [--config PATH \| --config-json PATH] [--credential-set SET] [--audit-file PATH] [--json]` | Create a profile. `--audit-file` explicitly migrates legacy audit history; otherwise one epoch comes from `--config`, `--config-json`, or the resolved main `Config`. Repository-local audit configuration is never read implicitly. |
-| `account list [--json]` | List profile names. |
-| `account show NAME [--json]` | Print a profile's epochs. |
-| `account history NAME [--json]` | Print epochs and the statement evidence recorded against them. |
-| `account update NAME --effective DATE [field flags...] [--config PATH \| --config-json PATH] [--note TEXT] [--credential-set SET] [--apply] [--json]` | Add or replace one dated snapshot. Field flags (`--tariff`, `--supplier`, `--interconnection-year`, `--pto-date`, `--vintage`, `--acc-plus-segment`, `--discount`, `--base-services-charge-tier`, `--baseline-territory`, `--baseline-code`, `--nsc-rate`, `--cca-json`) change only the named fields against the snapshot in force the day before; `--config`/`--config-json` replace the whole snapshot. |
-| `account import-statement NAME PDF... [--apply] [--json]` | Parse local PDFs and reconcile their evidence. |
-| `account sync NAME [--config PATH] [--since DATE] [--apply] [--keep-statements] [--json]` | Download portal statements since a date and reconcile them. |
-| `account export NAME [--output PATH] [--json]` | Print (or write, mode `0600`) the sanitized profile JSON — the Home Assistant import format. |
-| `account source NAME show {ha,influx} [--json]` | Show the profile's grid-import/grid-export entities for one meter source. |
-| `account source NAME set {ha,influx} --grid-import-entity ID --grid-export-entity ID [--apply] [--json]` | Preview or save a provider-neutral meter mapping. It is not effective-dated. |
+| `account init [--effective DATE] [--config PATH \| --config-json PATH] [--audit-file PATH] [--json]` | Set up your account. `--audit-file` explicitly migrates legacy audit history; otherwise one epoch comes from `--config`, `--config-json`, or the resolved main `Config`. Repository-local audit configuration is never read implicitly. |
+| `account show [--json]` | Print the settings in force today, and where they came from. |
+| `account history [--json]` | Print every epoch and the statement evidence recorded against them. |
+| `account update --effective DATE [field flags...] [--config PATH \| --config-json PATH] [--note TEXT] [--apply] [--json]` | Add or replace one dated snapshot. Field flags (`--tariff`, `--supplier`, `--interconnection-year`, `--pto-date`, `--vintage`, `--acc-plus-segment`, `--discount`, `--base-services-charge-tier`, `--baseline-territory`, `--baseline-code`, `--nsc-rate`, `--cca-json`) change only the named fields against the snapshot in force the day before; `--config`/`--config-json` replace the whole snapshot. |
+| `account import-statement PDF... [--apply] [--json]` | Parse local PDFs and reconcile their evidence. |
+| `account sync [--config PATH] [--since DATE] [--apply] [--keep-statements] [--json]` | Download portal statements since a date and reconcile them. |
+| `account periods [--apply] [--json]` | Read the cycle boundaries PG&E billed on from the portal and record them on the account. |
+| `account export [--output PATH] [--json]` | Print (or write, mode `0600`) the sanitized account JSON — the Home Assistant import format. |
+| `account source show {ha,influx} [--json]` | Show the grid-import/grid-export entities for one meter source. |
+| `account source set {ha,influx} --grid-import-entity ID --grid-export-entity ID [--apply] [--json]` | Preview or save a provider-neutral meter mapping. It is not effective-dated. |
 
 `--config` means two different things above: on `init`/`update` it is a
 `Config` snapshot (TOML or, with `--config-json`, JSON) to load as the
 epoch's settings; on `sync` it is the main `config.toml` to read portal
-connection settings from (irrelevant if the profile has a `--credential-set`,
-in which case those secrets are used instead). `tariffkit account --help` and
+connection settings from. `tariffkit account --help` and
 `tariffkit account <command> --help` are authoritative for exact flags.
 
-### Selecting a profile
+### Pricing from the account
 
-`--account NAME` on `now`, `forecast`, `info`, `bill`, `mqtt`, and `serve`
-selects a profile explicitly (before or after the subcommand name, both
-work). It cannot be combined with `--config` — that combination is rejected
-with `--account cannot be combined with --config`, because `--config` is the
-explicit stateless alternative, not a modifier on a profile.
+`now`, `forecast`, `info`, `bill`, `mqtt`, and `serve` price from the account
+whenever one exists. There is no flag for it and nothing to select.
 
-Without either flag, resolution is:
+`--config FILE` is the way out: it prices that file's single snapshot instead,
+for a hypothetical or for someone who has not set an account up. The two are
+never combined, because a `Config` is one moment and the account is a history
+— a modifier on one is not meaningful to the other.
 
-1. `TARIFFKIT_ACCOUNT` or `TARIFFKIT_PROFILE` (checked in that order).
-2. `[account] default_profile` (or `profile` / `default`) in the main
-   `config.toml` — or a bare `default_profile`/`profile`/`account_profile`
-   key at the top level.
-3. No profile: the stateless `Config.load()` path, exactly as before profiles
-   existed.
+`tariffkit info` always shows what actually resolved, including
+`account_profile` and the resolved `account_effective` snapshot when the
+account is in use.
 
-`tariffkit info` (with or without `--account`) always shows what actually
-resolved, including `account_profile` and the resolved `account_effective`
-snapshot when a profile is active.
+### The REST API and the account
 
-### REST profile selection
-
-`create_app()` accepts `profile_repository=` and starts with a configured
-default profile the same way the CLI does. Every `POST` pricing endpoint
-(`/v1/meta`, `/v1/price/now`, `/v1/price/at`, `/v1/forecast`) accepts a
-`profile` (or `account` — the two must agree if both are given) key selecting
-an existing local profile for that request only, alongside the existing
+`create_app(profile=...)` is handed an account to serve; it never looks for
+one. `tariffkit serve` passes the account it found, and an embedder passes
+whatever it holds. Every `POST` pricing endpoint (`/v1/meta`,
+`/v1/price/now`, `/v1/price/at`, `/v1/forecast`) accepts a `profile` (or
+`account`) key asking for that account for one request, alongside the existing
 `config` key; supplying both is rejected with 422. There is no endpoint to
-list, create, edit, or delete a profile, and none accepts a PDF or a
-credential — those are CLI-only, and a name that does not resolve returns
-`404 {"detail": "profile unavailable"}` regardless of whether it is absent,
-malformed, or unreadable, so a probe cannot learn which. See
-[REST API](web.md#named-account-profiles).
+create, edit, or delete anything, and none accepts a PDF or a credential —
+those are CLI-only. A request that asks for an account the server was not
+given returns `404 {"detail": "profile unavailable"}`, which says nothing
+about whether one exists on that machine. See [REST API](web.md#the-account).
 
-### Managed profile files
+### The account file
 
-Stored at `$XDG_CONFIG_HOME/tariffkit/accounts/<name>.json` (default
-`~/.config/tariffkit/accounts/`), directory mode `0700`, file mode `0600`.
-Names are validated as a lowercase slug (`[a-z0-9][a-z0-9_-]*`, ≤ 64 chars)
-before touching a path, and a symlink anywhere in the path is refused rather
-than followed. A save validates a temporary file in the same directory,
-`fsync`s it, checks the on-disk revision has not moved since it was read, and
-only then atomically replaces the target — see
+Stored at `$XDG_CONFIG_HOME/tariffkit/account.json` (default
+`~/.config/tariffkit/account.json`), directory mode `0700`, file mode `0600`.
+A symlink anywhere in the path is refused rather than followed. A save
+validates a temporary file in the same directory, `fsync`s it, checks the
+on-disk revision has not moved since it was read, and only then atomically
+replaces the target — see
 [Recover from an interrupted or concurrent update](#recover-from-an-interrupted-or-concurrent-update).
+
+Reading and writing it is the command line's own job
+(`tariffkit.cli.AccountStore`), not the library's: nothing under
+`tariffkit.billing`, `tariffkit.web` or `tariffkit.mqtt` opens it, so an
+embedder that already holds an account — Home Assistant, in its config entry
+— never goes near this path.
 
 Top-level shape:
 
 ```json
 {
-  "schema_version": 1,
-  "name": "home",
-  "credential_set": null,
+  "schema_version": 2,
+  "name": null,
+  "billing_periods": [
+    {"start": "2026-07-29", "end": "2026-08-27"}
+  ],
   "meter_sources": {
     "ha": {
       "grid_import_entity": "sensor.grid_import",
@@ -538,14 +552,29 @@ Top-level shape:
 install understands is rejected rather than partially trusted. `epochs[].config`
 is exactly `Config.to_dict()` — the same shape as `--config-json` input and
 `/v1/meta`'s `account_effective`. See
-[What a profile stores](#what-a-profile-stores) for what evidence deliberately
-excludes.
+[What the account stores](#what-the-account-stores) for what evidence
+deliberately excludes.
 
-`meter_sources` is optional when reading older schema-1 profiles, so existing
-profiles (including managed profiles created before meter mappings existed)
-migrate to empty source settings. New files serialize both optional providers.
-The mapping is deliberately outside `epochs`: changing a data source must not
-reprice historical tariff snapshots.
+`name` is `null` from the CLI, which has one account and no name to give it;
+Home Assistant sets it, because a config entry needs something stable to be
+identified by.
+
+`billing_periods` is what `account periods` records: the cycles the utility
+says it billed, inclusive at both ends, sorted and non-overlapping. Boundaries
+without the statements that print them, so anything holding the account can
+price the cycle it is in without a PDF or portal credentials — which is exactly
+Home Assistant's situation. `schema_version` 1 files predate the field and are
+read unchanged; saving one writes 2.
+
+`meter_sources` is optional when reading older schema-1 files, so an account
+written before meter mappings existed migrates to empty source settings. New
+files serialize both optional providers. The mapping is deliberately outside
+`epochs`: changing a data source must not reprice historical tariff snapshots.
+
+A lone `accounts/<name>.json` left by an older install is adopted into
+`account.json` the first time a command reads it. Several are left alone:
+choosing between them is a decision, and guessing it would price bills from an
+agreement you did not choose.
 
 ### Extras
 
@@ -553,7 +582,7 @@ reprice historical tariff snapshots.
 |---|---|
 | `tariffkit[statements]` | `pypdf`, for reading local statement PDFs. |
 | `tariffkit[pge]` | `httpx`, for the authenticated portal session `account sync` uses. |
-| `tariffkit[secrets]` | `keyring`, for `tariffkit credentials` and named credential sets. |
+| `tariffkit[secrets]` | `keyring`, for `tariffkit credentials`. |
 | `tariffkit[all]` | Every extra, including the three above. |
 
 Poppler (`pdftoppm`) and Tesseract are system tools, not Python packages;
@@ -561,23 +590,16 @@ they are only invoked for older PG&E statements whose embedded font maps its
 glyphs to spaces. Their absence is reported with an install hint rather than
 failing silently.
 
-### Credential sets
+### Credentials
 
-A profile's `credential_set` is a name, not a secret — it selects which
-*named keyring entry* `account sync` reads, so more than one profile can
-share one PG&E login without storing the password twice:
-
-```bash
-tariffkit credentials set pge.username --set rentals
-tariffkit credentials set pge.password --set rentals
-tariffkit account init unit_a --credential-set rentals
-tariffkit account init unit_b --credential-set rentals
-```
-
-Without `--credential-set`, `account sync` falls back to the same unnamed
-credential storage other authenticated PG&E portal access (a Green Button
-download, the audit harness) uses. `tariffkit credentials list --set rentals`
-shows which names are populated, never their values.
+`account sync` reads the same credentials every other authenticated PG&E
+access uses — a Green Button download, the audit harness — stored with
+`tariffkit credentials set pge.username` and `pge.password`, or supplied as
+`PGE_USERNAME`/`PGE_PASSWORD` in the environment or `~/.config/tariffkit/.env`,
+which win over the keyring. One account reads one set of credentials, so there
+is nothing to select. `tariffkit credentials list` shows where each name
+resolves from, never its value. See
+[Configuration](configuration.md#credentials).
 
 ## Explanation
 
@@ -603,10 +625,49 @@ answer different questions and come from different places:
   authoritative on its own. `reconcile()` only ever proposes a change to an
   epoch; nothing in a statement writes itself.
 
-A profile can therefore have an epoch with no observation behind it (you
+The account can therefore have an epoch with no observation behind it (you
 told `account update` directly) and an observation that changes nothing
 (a statement that confirms a fact you already knew). Neither case is an
 error, and `account history` prints both so the distinction stays visible.
+
+### Why there is one account
+
+There used to be named profiles and a way to select between them. An account is
+one **service agreement**, not one person, and PG&E bills a service agreement
+per premise — so someone with rental units does have several under one login,
+and that is who the names were for.
+
+Everyone else paid for them: a name to invent, a flag to remember on every
+command, and a wrong answer when the flag was forgotten. Forgetting it did not
+fail; it priced the bill from `config.toml` instead, which reads a CCA account
+as bundled — one export credit bank where it has two — and prices a cycle that
+crossed a rate change at a single tariff. A plausible wrong number is worse
+than an error.
+
+So there is one account, in one file, used without being asked. If you really
+do bill two agreements, give each its own config home:
+
+```bash
+XDG_CONFIG_HOME=~/.config/unit-a tariffkit bill --source influx ...
+```
+
+What is kept from the old design is the part that earned its keep: the dated
+history, because a bill prices with the settings in force over its own days.
+
+### Why the history cannot live in `config.toml`
+
+It is the same reason a bill is not priced at today's rates. `config.toml`
+describes one moment, and a bill from eighteen months ago has to price on the
+tariff that was in force over its own days. On a real account the June 2026
+cycle crossed EV2-A to E-ELEC on the Permission To Operate date, and the two
+answers are $25.47 and $24.21 — neither wrong for its own arrangement, and only
+one of them that cycle's bill.
+
+So `config.toml` keeps what is true now and has no history to carry: the
+forecast horizon, which integrations are on, where the broker is. A complete
+pricing config there is still read, for someone who has not set an account up
+yet, and `--config` forces it — but where an account exists it is the better
+answer and every command prefers it.
 
 ### Why an epoch is inferred only from evidence the statement actually shows
 
@@ -620,7 +681,7 @@ already knew about but this statement does not mention. That is why
 `account update` exists as a separate, explicit path: some facts (this
 CCA's product tier, a PTO year, a discount code) are never printed anywhere
 and have no correct guess, so they require either an established invariant
-elsewhere in the profile or your own input, and `reconcile()` reports them as
+elsewhere in the account or your own input, and `reconcile()` reports them as
 `missing-required` rather than inventing a plausible value.
 
 The same caution applies going the other direction in time. A later bill
@@ -631,18 +692,18 @@ mined for inference past what they show.
 
 ### Why billing-cycle boundaries matter here
 
-`BillEngine` prices one cycle against one `Config`. A profile's
+`BillEngine` prices one cycle against one `Config`. An account's
 `segments_for(period)` is what makes billing a cycle that spans a transition
 correct instead of averaged-out wrong: it tiles the requested period into
 one `Segment` per epoch active during it, each priced with its own snapshot,
-and `tariffkit bill --account NAME` uses this automatically instead of a
-single `Config`. See [Bill calculator](billing.md#named-account-profiles).
+and `tariffkit bill` uses this automatically instead of a single `Config`. See
+[Bill calculator](billing.md#pricing-from-your-account).
 
 This is also why `reconcile()` treats a statement's own cycle boundaries as
 strong evidence in the first place: PG&E's own statement is the one document
 that has to state exactly where a mid-cycle rate or schedule change fell,
 because it prices across that boundary too (see `audit/README.md`'s worked
-example of a cycle split by a rate change). A profile's segmentation and a
+example of a cycle split by a rate change). The account's segmentation and a
 statement's own service-agreement split are answering the same question from
 two directions, which is what makes one a check on the other.
 
@@ -654,7 +715,7 @@ that: `tariffkit account import-statement` and `account sync` read a PDF —
 one already on your disk, or one downloaded straight from your own
 authenticated portal session — parse it in this process, and keep only the
 sanitized facts described in
-[What a profile stores](#what-a-profile-stores). The PDF's bytes are never
+[What the account stores](#what-the-account-stores). The PDF's bytes are never
 sent anywhere by this library; there is no server this project runs, and
 none of this code opens an outbound connection to anything other than PG&E's
 own portal, only in `account sync`, only with your own credentials, only to
@@ -669,17 +730,17 @@ PG&E's line-to-component mapping, attribution rules, run orchestration, and
 portal-protocol research. See
 [Packaging strategy](packaging_strategy.md) for that boundary.
 
-### What a profile stores
+### What the account stores
 
-Deliberately excluded from every managed file and from every observation,
+Deliberately excluded from the account file and from every observation,
 by construction rather than by convention:
 
 - the PDF's text or any line item, amount, or balance it printed;
 - an unmasked account number (`account_suffix` keeps at most the last four
   digits, e.g. `****4821`);
 - PG&E, Home Assistant, InfluxDB, or MQTT credentials, cookies, or tokens —
-  those stay in the OS keyring, referenced only by the profile's
-  `credential_set` *name*;
+  those stay in the OS keyring, and the account file does not reference them at
+  all;
 - anything not printed by the statement itself — an unobserved fact is
   reported as `missing-required`, never filled in with a plausible guess.
 

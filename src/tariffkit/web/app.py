@@ -10,13 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..account import (
-    AccountError,
-    AccountRateEngine,
-    NamedProfileRepository,
-    ProfileNotFoundError,
-    configured_profile_name,
-)
+from ..account import AccountError, AccountProfile, AccountRateEngine
 from ..config import Config
 from ..engine import RateEngine
 from ..errors import ConfigError, DataError, OutOfRangeError
@@ -31,10 +25,20 @@ _PROFILE_UNAVAILABLE = "profile unavailable"
 def create_app(
     config: Config | None = None,
     *,
-    profile_name: str | None = None,
-    profile_repository: NamedProfileRepository | None = None,
+    profile: AccountProfile | None = None,
     config_path: str | Path | None = None,
 ) -> FastAPI:
+    """Serve prices from ``profile`` when given one, and from ``config`` otherwise.
+
+    The account arrives already loaded. Finding and reading it is the caller's
+    job -- ``tariffkit serve`` does it, and an embedder that holds a profile
+    already has nothing to find -- so nothing here goes looking for a file, and
+    a request for an account this server was not given is a plain 404 rather
+    than a report on what does or does not exist on disk.
+
+    Passing both prices the unqualified routes from ``config`` while leaving
+    the account available to a request that asks for it.
+    """
     try:
         from fastapi import Body, FastAPI, HTTPException, Query
     except ImportError as exc:  # pragma: no cover - exercised by packaging
@@ -42,25 +46,20 @@ def create_app(
             "web support requires the 'web' extra: pip install 'tariffkit[web]'"
         ) from exc
 
-    def load_profile(name: str) -> AccountRateEngine:
-        repository = profile_repository or NamedProfileRepository()
-        try:
-            return AccountRateEngine(repository.load(name))
-        except ProfileNotFoundError as exc:
-            # Do not reveal whether a profile exists, nor details from its
-            # managed file, through a request-facing error.
-            raise HTTPException(404, _PROFILE_UNAVAILABLE) from exc
-        except AccountError as exc:
-            raise HTTPException(404, _PROFILE_UNAVAILABLE) from exc
+    def account_engine() -> AccountRateEngine:
+        if profile is None:
+            # Do not reveal whether an account exists anywhere, nor anything
+            # from it, through a request-facing error.
+            raise HTTPException(404, _PROFILE_UNAVAILABLE)
+        return AccountRateEngine(profile)
 
-    selected_profile = profile_name
-    if selected_profile is None and config is None:
-        selected_profile = configured_profile_name(config_path)
-    engine: RateEngine | AccountRateEngine
-    if selected_profile is not None:
-        engine = load_profile(selected_profile)
-    else:
-        engine = RateEngine(config or Config.load(config_path))
+    # An explicit ``config`` still wins for requests that ask for nothing in
+    # particular: passing both means "serve this, and let a client ask for the
+    # account by name when it wants the dated history instead".
+    from_account = profile is not None and config is None
+    engine: RateEngine | AccountRateEngine = (
+        account_engine() if from_account else RateEngine(config or Config.load(config_path))
+    )
 
     def request_engine(
         payload: dict[str, Any], *, allowed: set[str]
@@ -69,29 +68,36 @@ def create_app(
         if unknown:
             raise HTTPException(422, f"unknown request keys: {sorted(unknown)}")
         raw = payload.get("config")
-        requested_profile = payload.get("profile")
-        requested_account = payload.get("account")
-        if requested_profile is not None and requested_account is not None:
-            if requested_profile != requested_account:
-                raise HTTPException(422, "profile and account selections disagree")
-        elif requested_profile is None:
-            requested_profile = requested_account
-        if raw is not None and requested_profile is not None:
-            raise HTTPException(422, "choose either config or profile")
-        if requested_profile is not None:
-            if not isinstance(requested_profile, str):
-                raise HTTPException(404, _PROFILE_UNAVAILABLE)
-            return load_profile(requested_profile)
+        wants_account = _asked_for_the_account(payload)
+        if raw is not None and wants_account:
+            raise HTTPException(422, "choose either config or the account")
+        if wants_account:
+            return account_engine()
         if raw is None:
-            if selected_profile is not None:
+            if from_account:
                 return engine
-            raise HTTPException(422, "config must be a JSON object or profile must be selected")
+            raise HTTPException(422, "config must be a JSON object, or ask for the account")
         if not isinstance(raw, dict):
             raise HTTPException(422, "config must be a JSON object")
         try:
             return RateEngine(Config.from_dict(raw))
         except (ConfigError, DataError) as exc:
             raise HTTPException(422, str(exc)) from exc
+
+    def _asked_for_the_account(payload: dict[str, Any]) -> bool:
+        """Whether this request asked to be priced from the account.
+
+        "Price this from my account" is a switch, not a name: there is one
+        account. Both spellings are accepted because both were, and a client
+        that sent a name gets the account it meant.
+
+        Any non-null value used to count, so ``{"profile": false}`` turned the
+        switch *on* -- and, alongside a `config`, was rejected for asking for
+        both. Special-casing ``bool`` left every other way of writing no --
+        ``0``, ``[]``, ``{}`` -- still meaning yes, which is the same bug with a
+        different literal. Anything falsy is no.
+        """
+        return any(bool(payload.get(key)) for key in ("profile", "account"))
 
     def request_timestamp(raw: object, name: str) -> datetime:
         if not isinstance(raw, str):

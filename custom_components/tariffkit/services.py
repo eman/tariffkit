@@ -15,6 +15,7 @@ from homeassistant.helpers import selector, service
 from homeassistant.util.json import JsonObjectType, JsonValueType
 
 from tariffkit.account import AccountProfile
+from tariffkit.billing import known_periods, resolve_cycle
 from tariffkit.errors import TariffKitError
 from tariffkit.interop import forecast_lists, resample
 from tariffkit.models import PriceCurve, PricePoint
@@ -35,7 +36,6 @@ from .const import (
     SUPPORTED_RESOLUTIONS,
 )
 from .coordinator import TariffKitCoordinator, TariffKitQuality
-from .energy import resolve_cycle, statement_periods
 
 MAX_HOURS = 168
 
@@ -342,7 +342,7 @@ async def _backfill_usage(hass: HomeAssistant, call: ServiceCall) -> ServiceResp
     # cycle can only be decomposed from its own start, so a window opening
     # partway through one would otherwise lose it entirely -- and an epoch date
     # is rarely a cycle boundary, so the default start lands mid-cycle routinely.
-    periods = statement_periods(profile)
+    periods = known_periods(profile)
     opens = min(opens, resolve_cycle(opens, coordinator.meters.cycle_start_day, periods).start)
     closes = now_pacific().date() - timedelta(days=1)
     if opens > closes:
@@ -409,7 +409,7 @@ def _backfill_start(data: Mapping[str, Any], profile: AccountProfile, start_day:
         pto = profile.pto_date
         if pto is None:
             return min(profile.effective_dates)
-        periods = statement_periods(profile)
+        periods = known_periods(profile)
         return max(resolve_cycle(pto, start_day, periods).start, min(profile.effective_dates))
     try:
         return date.fromisoformat(str(raw)[:10])

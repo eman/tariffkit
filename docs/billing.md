@@ -4,6 +4,10 @@ Prices a billing cycle from interval meter data. Pure and dependency-free:
 readings in, decomposed charges out. It does not know or care where the readings
 came from.
 
+For what to *do* with it -- the four questions this answers, how far back each
+one has to remember, and the trap that catches all of them -- see
+[Use cases](use-cases.md).
+
 Tiered E-1/E-TOU-C baseline allowances, Medical Baseline, D-MEDICAL, CARE/FERA,
 and SmartRate are applied as separate bill components. SmartRate requires an
 authoritative list of announced event dates; a missing future event is never
@@ -16,31 +20,44 @@ tariffkit bill - --json < intervals.csv
 
 ## Where readings come from
 
-Three sources, all in `tariffkit.sources`. Green Button is the default and needs
-nothing installed beyond the core package:
+Three sources, all in `tariffkit.sources`. **Home Assistant is the default** —
+your own meter, read through the recorder, with no download step:
+
+```bash
+pip install 'tariffkit[ha]'
+tariffkit bill                       # the cycle open right now, to today
+tariffkit bill --start 2026-07-29 --end 2026-08-27
+```
+
+It is the default because it is the meter, and the utility's own export is not
+always complete: on one real cycle PG&E's Green Button held 0.13 kWh of the
+71.6 the meter recorded, while the meter matched the printed statement to
+0.00 kWh. Reading the account's own instrument first is the safer default; the
+export remains the way to check it.
+
+**Green Button** is what a CSV path selects, and what `--source green-button`
+fetches from the portal:
 
 ```bash
 tariffkit bill pge_electric_usage_interval_data_....csv --start 2026-07-02 --end 2026-07-28
 tariffkit bill - --json < intervals.csv
+tariffkit bill --source green-button --start 2026-07-29 --end 2026-08-27
 ```
+
+With no file, the export comes from
+`~/.cache/tariffkit/pge/green-button/`, and is downloaded from the portal only
+if it is not there — see [The export cache](#the-export-cache).
 
 `--source csv` is still accepted as a spelling of `--source green-button`, but
 "CSV" says nothing about *which* CSV, so the documented name is the format.
 
-Home Assistant reads the meter directly, so there is no download step:
+Configure your account's source once and omit the entity flags:
 
 ```bash
-pip install 'tariffkit[ha]'
-tariffkit bill --source ha --start 2026-07-29 --end 2026-08-09
-```
-
-For a named account, configure its source once and omit entity flags:
-
-```bash
-tariffkit account source home set ha \
+tariffkit account source set ha \
   --grid-import-entity sensor.grid_import \
   --grid-export-entity sensor.grid_export --apply
-tariffkit bill --account home --source ha --start 2026-07-29 --end 2026-08-09
+tariffkit bill --source ha --start 2026-07-29 --end 2026-08-09
 ```
 
 Grid import means energy consumed from the grid, not whole-home load. Grid
@@ -98,12 +115,11 @@ pip install 'tariffkit[influx]'
 tariffkit bill --source influx --start 2026-06-30 --end 2026-07-28
 ```
 
-Set an InfluxDB pair on a named profile with
-`tariffkit account source home set influx --grid-import-entity NAME
---grid-export-entity NAME --apply`, then use
-`tariffkit bill --account home --source influx ...`. These names identify the
-grid-import and grid-export counters; they are not whole-home consumption
-entities.
+Set an InfluxDB pair on your account with
+`tariffkit account source set influx --grid-import-entity NAME
+--grid-export-entity NAME --apply`, then `tariffkit bill --source influx ...`
+uses it. These names identify the grid-import and grid-export counters; they
+are not whole-home consumption entities.
 
 Energy over a window is a cumulative counter's endpoints, so the total does not
 depend on how densely it was sampled in between. Against the July 2026
@@ -149,6 +165,53 @@ Two smaller notes:
   are interpolated into SQL. A `sensor.` prefix is stripped; InfluxDB stores the
   bare name.
 
+## The default window
+
+With no `--start`/`--end`, the period is **the billing cycle open right now,
+through today** — what you owe so far. Half a window is refused: `--start`
+without `--end` is a typo, not a request to guess the rest.
+
+Where that boundary came from is printed, because it is not always known:
+
+```console
+$ tariffkit bill --source influx
+...
+  cycle: 2026-08-28 to 2026-09-09, the boundary PG&E billed on
+```
+
+| basis | when | how close |
+|---|---|---|
+| the portal | PG&E credentials are stored | exact — the utility lists every cycle it billed, with the boundaries it billed them on |
+| statements | the account has imported them | exact |
+| `[billing] cycle_start_day` | you set a meter-read day | approximate |
+| calendar month | none of the above | a guess, and it says so |
+
+Cycles are contiguous, so the open one began the day after the last one closed
+— derivable without waiting to be billed for it.
+
+The portal's list is cached at `~/.cache/tariffkit/pge/bill-periods.json` and
+refreshed only when it stops covering the present, so pricing from InfluxDB or
+Home Assistant does not start needing portal credentials or a network round
+trip. A refresh that cannot happen — offline, an expired session — keeps what
+is on disk rather than failing the bill.
+
+PG&E reads on business days, so a real account's cycles open on the 29th, the
+30th, the 1st and the 3rd in consecutive months — which is why a fixed day is
+only ever close. Store portal credentials (`tariffkit credentials set
+pge.username`) or import statements with `tariffkit account sync --apply` to
+get it exactly; failing both:
+
+```toml
+# ~/.config/tariffkit/config.toml
+[billing]
+cycle_start_day = 29
+```
+
+Evidence older than about a cycle stops being used: a statement has been issued
+that the account never imported, so the next boundary is no longer derivable,
+and trusting the old one would report a 90-day "cycle" with a Base Services
+Charge for every day of it.
+
 ## Green Button input
 
 Green Button is the industry format for handing a customer their own meter data;
@@ -158,6 +221,44 @@ fifteen-minute resolution.
 
 **This reads the CSV form, not the XML one.** Green Button also has an ESPI/XML
 serialisation; that is a different parser and is not implemented.
+
+### The export cache
+
+You do not have to fetch the file yourself. Given `--start` and `--end` and no
+path, `tariffkit bill` downloads the export with your portal credentials (the
+same ones `account sync` uses) and keeps it:
+
+```console
+$ tariffkit bill --start 2026-07-29 --end 2026-08-27
+...
+  source: Green Button, downloaded (2880 intervals, ~/.cache/tariffkit/pge/green-button/2026-07-29_2026-08-27.csv)
+
+$ tariffkit bill --start 2026-08-01 --end 2026-08-20
+...
+  source: Green Button, cached 2026-07-29..2026-08-27 (2880 intervals, ~/.cache/tariffkit/pge/green-button/2026-07-29_2026-08-27.csv)
+```
+
+The portal generates each export on demand — a job, a poll loop, and a signed
+URL, about twenty seconds — and hands back the same readings every time for a
+range that has already closed. So it is fetched once. A **wider file serves a
+narrower request**, because readings outside a billing period are ignored when
+it is priced: download a year, then bill each cycle in it for nothing. When
+several files cover a request the narrowest wins, to parse the least.
+
+**An open cycle ends at the last published read, not at today.** PG&E publishes
+a day behind, so asking for "through today" would fetch a file that stops a day
+short and then report the shortfall as missing coverage — a gap in the
+publishing schedule, not in the meter. The end is pulled back to what the
+utility says it has, which is also what lets yesterday's file answer this
+morning's question instead of downloading the same cycle again. That answer is
+asked for once a day and remembered in
+`~/.cache/tariffkit/pge/available-reads.json`.
+
+`--refresh` downloads again over a cached range — for a cycle that has not
+closed yet, where more readings arrive each day. Files are mode `0600` under a
+mode `0700` directory: an export carries your name, service address, and every
+quarter hour of consumption. Deleting any of them costs only the next
+download.
 
 It is Green Button first rather than Green Button only. The preamble skipping and
 the default column names exist for PG&E's export, but every column is
@@ -221,27 +322,27 @@ Omit the period and it is inferred from the readings' own span. Readings outside
 the period are ignored, so a year of data can be billed one cycle at a time
 without slicing it first.
 
-## Named account profiles
+## Pricing from your account
 
-`--account NAME` prices against a [named account profile](accounts.md)
-instead of a single `Config`:
+Once an account is set up, every `tariffkit bill` prices from it rather than
+from a single `Config` — there is nothing to pass:
 
 ```bash
-tariffkit bill intervals.csv --start 2026-07-02 --end 2026-07-28 --account home
+tariffkit bill intervals.csv --start 2026-07-02 --end 2026-07-28
 ```
 
 For a cycle that stays within one epoch, this produces exactly the figures a
-plain `tariffkit bill` with that epoch's settings would. Its purpose is the
-cycle that does not: when the profile records a tariff, supplier, or
-baseline-territory change effective partway through `[start, end]`,
-`--account` tiles the cycle into one `Segment` per epoch active during it
-(via `AccountProfile.segments_for()`) and prices each stretch under its own
-snapshot, the same way PG&E's own statement prints separate blocks for a
-mid-cycle change rather than blending the two rates. The output shape does
-not change — one `Bill` for the whole period — only how it was computed.
+`--config` run with that epoch's settings would. Its purpose is the cycle that
+does not: when the account records a tariff, supplier, or baseline-territory
+change effective partway through `[start, end]`, the cycle is tiled into one
+`Segment` per epoch active during it (via `AccountProfile.segments_for()`) and
+each stretch is priced under its own snapshot, the same way PG&E's own
+statement prints separate blocks for a mid-cycle change rather than blending
+the two rates. The output shape does not change — one `Bill` for the whole
+period — only how it was computed.
 
-`--account` and `--config` are mutually exclusive here as everywhere else;
-see [Selecting a profile](accounts.md#selecting-a-profile).
+`--config FILE` opts out for that command, pricing a hypothetical from one
+snapshot instead; see [Pricing from the account](accounts.md#pricing-from-the-account).
 
 ## Reading the output
 
@@ -412,12 +513,8 @@ true-up month is still in the future, which it will be for the first cash-out.
 
 ## What this does not do
 
-Two known limits:
+One known limit:
 
-- A **rate change mid-cycle** is not prorated. The Base Services Charge is priced
-  from the tariff in force at the start of the cycle; PG&E prorates. Cycles
-  spanning a rate change (or the June 1 / October 1 season boundary, for the
-  fixed charge specifically) will be slightly off.
 - **PCIA basis is assumed.** Your bill prints PCIA as a dollar amount with no
   rate or kWh, so its `$/kWh` is derived. If the real basis is gross rather than
   netted import, computed bills drift from actual by that difference.

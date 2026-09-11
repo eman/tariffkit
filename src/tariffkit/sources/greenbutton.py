@@ -197,8 +197,11 @@ def read_green_button(
     """Read interval readings from a CSV file or open stream."""
     layout = layout or GreenButtonLayout()
     if isinstance(source, str | Path):
-        with Path(source).open(encoding="utf-8-sig", newline="") as handle:
-            return list(_read(handle, layout))
+        try:
+            with Path(source).open(encoding="utf-8-sig", newline="") as handle:
+                return list(_read(handle, layout))
+        except OSError as exc:
+            raise DataError(f"could not read {source}: {exc}") from exc
     return list(_read(source, layout))
 
 

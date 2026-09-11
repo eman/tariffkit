@@ -25,9 +25,11 @@ from tariffkit.billing import (
     Bill,
     BillingPeriod,
     CreditBalances,
+    CreditBucket,
     LedgerEntry,
     UsageBucket,
     apply_credits,
+    charges_by_bucket,
 )
 from tariffkit.components import (
     EXPORT_GROUPS,
@@ -40,6 +42,7 @@ from tariffkit.timeutil import PACIFIC
 
 from .const import (
     ATTR_BUCKETS,
+    ATTR_CREDIT_BUCKETS,
     ATTR_DESCRIPTION,
     ATTR_GENERATED_AT,
     ATTR_LOAD_COST,
@@ -369,7 +372,14 @@ NET_DESCRIPTION = (
     "here -- it banks, and the bank_change attribute says by how much. Never "
     "negative for a cycle, because a statement charges nothing rather than "
     "paying out; a negative figure for today means today's exports offset "
-    "charges earlier in the cycle had already run up."
+    "charges earlier in the cycle had already run up. What the tariff lets "
+    "reach them is a per-bucket ceiling rather than a share of the total: "
+    "generation credit may only offset generation charges, delivery credit "
+    "only delivery charges, and the ACC Plus bonus anything not "
+    "non-bypassable. So credit_applied can be far below both the charges and "
+    "the credit available, with a bucket that ran out of charges stranding the "
+    "rest. The credit_buckets attribute is that ceiling: per bucket, the "
+    "charges it may reach, the credit it had, and what it spent."
 )
 CYCLE_DESCRIPTION = (
     "Cycle to date. Under Net Billing an export credit carries into the next "
@@ -517,6 +527,65 @@ def _in_cycle_offsets(bill: Bill, entry: LedgerEntry) -> float:
     """
     del bill
     return entry.in_cycle_offsets.total
+
+
+def _bucket_charges(bucket: CreditBucket) -> Reading:
+    """Charges one kind of credit is allowed to reach, after in-cycle offsets.
+
+    The ceiling on what that bucket can spend, and the term that was missing.
+    ``credit_applied`` is capped bucket by bucket rather than by the charge
+    total, so a cycle can hold $34 of charges and $19 of credit and still apply
+    only $8 -- the credit is nearly all generation credit, and generation
+    charges ran out. Nothing published named that, which left a consumer to
+    infer it from a ratio: a real dashboard guessed "8.2366 / 27.824 = 29.6%,
+    a plausible generation share" and was wrong about the mechanism.
+
+    Net of what the statement spent inside the cycle instead of banking -- the
+    same subtraction ``gross_charges`` carries -- so these sum with
+    ``non_offsettable`` to ``gross_charges`` exactly.
+    """
+
+    def read(bill: Bill, entry: LedgerEntry) -> float:
+        del entry
+        offsettable, _ = charges_by_bucket(bill)
+        return offsettable[bucket]
+
+    return read
+
+
+def _bucket_credit(bucket: CreditBucket) -> Reading:
+    """Credit that bucket had to spend: what carried in, plus what it earned.
+
+    Both halves, because either can be the binding one. A bucket with no
+    charges left strands credit it already held; a bucket with charges to spare
+    is limited by the credit instead, and telling those apart is the whole
+    point of publishing this beside ``charges``.
+
+    For a day this is the earned half alone: the opening balance belongs to the
+    cycle, and it is the same in the two cycle-to-date figures a day is the
+    difference of, so it cancels.
+    """
+
+    def read(bill: Bill, entry: LedgerEntry) -> float:
+        del bill
+        return entry.opening[bucket] + entry.earned[bucket]
+
+    return read
+
+
+def _bucket_applied(bucket: CreditBucket) -> Reading:
+    """What that bucket actually spent against this period's charges.
+
+    These sum to ``credit_applied``, which is what makes the breakdown close:
+    a consumer can point at the bucket whose ``applied`` equals its ``charges``
+    and say that is the one that ran out.
+    """
+
+    def read(bill: Bill, entry: LedgerEntry) -> float:
+        del bill
+        return entry.applied[bucket]
+
+    return read
 
 
 def _non_offsettable(bill: Bill, entry: LedgerEntry) -> float:
@@ -724,6 +793,27 @@ def _money_attrs(span: str, description: str) -> Callable[[TariffKitData], dict[
             # it is not called "banked".
             "credit_applied": figure(_applied),
             "bank_change": figure(_bank_change),
+            # Why `credit_applied` is what it is. Export credits are scoped --
+            # generation credit reaches only generation charges, delivery only
+            # delivery -- so the cap is per bucket, not on the charge total, and
+            # a cycle can leave most of its credit unspendable with charges to
+            # spare. Two identities hold on both spans, which is what lets a
+            # consumer render this rather than infer it:
+            #
+            #     sum(charges) + non_offsettable == gross_charges
+            #     sum(applied)                   == credit_applied
+            #
+            # Every leaf comes through `figure`, the same door as the totals, so
+            # a day's split is the difference of two cycle-to-date splits and
+            # sums to the day's own figures rather than the cycle's.
+            ATTR_CREDIT_BUCKETS: {
+                str(bucket): {
+                    "charges": figure(_bucket_charges(bucket)),
+                    "credit": figure(_bucket_credit(bucket)),
+                    "applied": figure(_bucket_applied(bucket)),
+                }
+                for bucket in CreditBucket
+            },
             ATTR_BUCKETS: [bucket.to_dict() for bucket in _buckets(data, span, bill)],
             ATTR_QUALITY: {"complete": usage.complete and not data.opening_note},
             "compensated_kwh": figure(_compensated),
@@ -1059,6 +1149,10 @@ class TariffKitSensor(CoordinatorEntity[TariffKitCoordinator], SensorEntity):
             # the forecast curve: it is rewritten every minute on six entities,
             # and the state that a history graph actually draws is the total.
             ATTR_BUCKETS,
+            # The credit-scoping split, for the same reason: twelve numbers
+            # rewritten every minute on six entities, none of which a history
+            # graph draws.
+            ATTR_CREDIT_BUCKETS,
             # Fixed explanatory prose. The recorder hashes the whole attribute
             # dict, so the numbers beside it changing every minute means this
             # text is re-stored every minute too -- several hundred bytes per

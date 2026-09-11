@@ -35,20 +35,23 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import logging
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from time import sleep
 from typing import Any
 from uuid import uuid4
 
-from ..billing import IntervalReading
+from ..billing import BillingPeriod, IntervalReading
 from ..config import default_config_path
 from ..errors import ConfigError, DataError
 from ..secrets import get_secret
+from ..timeutil import to_pacific
 from .greenbutton import GreenButtonLayout, read_green_button
 from .homeassistant import load_dotenv
 
@@ -109,6 +112,8 @@ OPOWER_URN = re.compile(r"(urn:opower:v1:account:[a-z]+:uuid:[0-9a-f-]+)")
 
 #: How far back the platform will export. Its own answer, not our choice.
 MAX_HISTORY_DAYS = 1095
+
+log = logging.getLogger(__name__)
 #: The export is a job. Roughly two minutes at the default interval, which is
 #: far longer than the few seconds it has taken in practice.
 EXPORT_POLL_LIMIT = 60
@@ -125,6 +130,24 @@ EXPORT_JOB = (
     "  exportJob(jobUuid: $jobUuid) {\n"
     "    uuid\n    result\n    isRunning\n    isFailed\n    isFinished\n    __typename\n  }\n}"
 )
+#: The bill periods the account has been billed on, with their real boundaries.
+#:
+#: `bills` is a field on the *account*, not on Query, which is why the operation
+#: name is no guide to it. Captured from the export widget's own request; see
+#: audit/pge/PORTAL.md.
+BILL_PERIODS_QUERY = (
+    "query WUE_GetUsageExportBills($selectedAccount: ID, $timeInterval: TimeInterval, "
+    "$forceLegacyData: Boolean, $last: Int) {\n"
+    "  billingAccountByAuthContext(\n"
+    "    selectedAccount: $selectedAccount\n"
+    "    forceLegacyData: $forceLegacyData\n"
+    "  ) {\n"
+    "    bills(during: $timeInterval, last: $last, orderBy: ASCENDING) {\n"
+    "      timeInterval\n      __typename\n    }\n    __typename\n  }\n}"
+)
+#: How many cycles to ask for. Three years at one a month, plus the splits a
+#: mid-cycle agreement change adds.
+MAX_BILL_PERIODS = 48
 ACCOUNT_URN_QUERY = (
     "query WUE_GetMetadata($selectedAccount: ID) {\n"
     "  billingAccountByAuthContext(selectedAccount: $selectedAccount) {\n"
@@ -253,7 +276,7 @@ class PgeSettings:
     def load(
         cls,
         config_path: str | Path | None = None,
-        dotenv_path: str | Path = ".env",
+        dotenv_path: str | Path | None = None,
         **overrides: str | None,
     ) -> PgeSettings:
         """Mirrors ``InfluxSettings.load``: config file, then .env, then env.
@@ -287,7 +310,9 @@ class PgeSettings:
         if not username or not password:
             raise ConfigError(
                 "PG&E credentials not found; store pge.username and pge.password with "
-                "`tariffkit credentials set`, or set PGE_USERNAME and PGE_PASSWORD"
+                "`tariffkit credentials set`, or set PGE_USERNAME and PGE_PASSWORD. "
+                "Credentials kept under a named credential set by an older version are "
+                "no longer read -- store them again without one"
             )
         cookie_path = Path(values.get("cookie_path", str(DEFAULT_COOKIE_PATH))).expanduser()
         return cls(
@@ -1233,7 +1258,484 @@ def read_green_button_download(
     Follows the ``read_*(settings, start, end, ...)`` shape the other sources
     use. Dates rather than datetimes: a billing cycle is date-bounded, and the
     portal's own selector is a date range.
+
+    Downloads every time it is called. :func:`cached_green_button` is the one
+    to reach for when the same range may be asked for again.
     """
+    return parse_green_button(read_green_button_export(settings, start, end), layout)
+
+
+def _default_export_cache() -> Path:
+    """Where downloaded interval exports are kept between runs.
+
+    Beside the session cache, under ``XDG_CACHE_HOME``, and private: the export
+    carries the customer's name, service address, and every fifteen minutes of
+    their consumption.
+    """
+    root = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+    return root / "tariffkit" / "pge" / "green-button"
+
+
+@dataclass(frozen=True, slots=True)
+class CachedExport:
+    """A Green Button export on disk, and how it got there."""
+
+    path: Path
+    start: date
+    end: date
+    #: False when an existing file covering the request was reused.
+    downloaded: bool
+
+    @property
+    def covers(self) -> str:
+        return f"{self.start}..{self.end}"
+
+
+_EXPORT_NAME = re.compile(r"^(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})\.csv$")
+
+
+def cached_exports(directory: Path | None = None) -> list[CachedExport]:
+    """Every export already downloaded, oldest range first."""
+    base = directory or _default_export_cache()
+    found: list[CachedExport] = []
+    if not base.is_dir():
+        return found
+    for path in sorted(base.glob("*.csv")):
+        match = _EXPORT_NAME.match(path.name)
+        if match is None or path.is_symlink() or not path.is_file():
+            continue
+        found.append(
+            CachedExport(
+                path=path,
+                start=date.fromisoformat(match.group(1)),
+                end=date.fromisoformat(match.group(2)),
+                downloaded=False,
+            )
+        )
+    return found
+
+
+def cached_green_button(
+    settings: PgeSettings,
+    start: date,
+    end: date,
+    *,
+    directory: Path | None = None,
+    refresh: bool = False,
+) -> CachedExport:
+    """The export covering ``[start, end]``, downloading it only if absent.
+
+    An export is expensive in a way its size does not suggest: the portal
+    generates the file on demand, which takes a job, a poll loop, and a signed
+    URL, and it hands back the same fifteen-minute readings every time for a
+    range that has already closed. Pricing twelve cycles meant twelve
+    downloads of overlapping data.
+
+    A wider file is reused for a narrower request, because readings outside a
+    billing period are ignored when it is priced -- so one download of a year
+    serves every cycle in it. The narrowest covering file wins, to parse the
+    least.
+
+    An end past the utility's last meter read is pulled back to it. Asking for
+    a cycle "through today" otherwise downloads a file that stops a day short
+    and then reports the shortfall as missing coverage, which is not a defect
+    in the meter or the file: the reads are simply not published yet. Pulling
+    it back also means yesterday's cached file usually answers today's
+    question, so the same open cycle is not re-downloaded every morning.
+    """
+    base = directory or _default_export_cache()
+    if not refresh:
+        found = _covering(base, start, end)
+        if found is not None:
+            return found
+
+    available = cached_available_reads(settings, refresh=refresh)
+    if available is not None and available.end < end:
+        end = max(available.end, start)
+        if not refresh:
+            found = _covering(base, start, end)
+            if found is not None:
+                return found
+
+    text = read_green_button_export(settings, start, end)
+    base.mkdir(mode=0o700, parents=True, exist_ok=True)
+    base.chmod(0o700)
+
+    # Named for what came back, not for what was asked. The portal does not
+    # always honour the range: an older cycle requested as 32 days returned its
+    # last two, and the archive it sends says so in its own filename. Trusting
+    # the request wrote a two-day file under a thirty-two-day name, which then
+    # answered every later lookup inside that span with almost nothing -- and
+    # `_drop_superseded` would delete a correct narrower file for overlapping
+    # a range this one only claimed to hold.
+    held = _exported_span(text)
+    if held is None:
+        raise PortalError(
+            f"the export for {start}..{end} holds no readings", endpoint="green_button"
+        )
+    if held.start > start or held.end < end:
+        log.warning(
+            "the portal exported %s..%s for a request of %s..%s; caching what it sent",
+            held.start,
+            held.end,
+            start,
+            end,
+        )
+    path = base / f"{held.start.isoformat()}_{held.end.isoformat()}.csv"
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    path.chmod(0o600)
+    _drop_superseded(base, held.start, held.end)
+    return CachedExport(path=path, start=held.start, end=held.end, downloaded=True)
+
+
+def _exported_span(text: str) -> BillingPeriod | None:
+    """The days an export actually carries, read from the readings themselves.
+
+    From the content rather than the archive's filename, because the filename
+    is the portal's claim about the file and this is the file.
+    """
+    import io
+
+    try:
+        readings = read_green_button(io.StringIO(text))
+    except DataError as exc:
+        if "no data rows" not in str(exc):
+            # A header this reader does not recognise, an unparseable timestamp,
+            # a quantity that is not a number: all of those are the parser
+            # failing, and reporting them as "the portal sent nothing" points
+            # the reader at PG&E for a regression of ours. Only a genuinely
+            # empty export is the portal's to answer for.
+            raise
+        return None
+    if not readings:
+        return None
+    days = [to_pacific(reading.start).date() for reading in readings]
+    return BillingPeriod(min(days), max(days))
+
+
+def _covering(base: Path, start: date, end: date) -> CachedExport | None:
+    """The narrowest cached file that holds every day of ``[start, end]``."""
+    covering = [
+        export for export in cached_exports(base) if export.start <= start and export.end >= end
+    ]
+    if not covering:
+        return None
+    return min(covering, key=lambda export: (export.end - export.start).days)
+
+
+def _drop_superseded(base: Path, start: date, end: date) -> None:
+    """Delete cached ranges the new file wholly contains.
+
+    Billing an open cycle asks for ``cycle start .. today``, so a daily run
+    would leave one file per day, each a prefix of the next. Only ranges
+    strictly inside the new one go: a file holding a day this one does not is
+    not a duplicate, whatever else it overlaps.
+    """
+    for export in cached_exports(base):
+        if export.start == start and export.end == end:
+            continue
+        if start <= export.start and export.end <= end:
+            with suppress(OSError):
+                export.path.unlink()
+
+
+def read_green_button_export(settings: PgeSettings, start: date, end: date) -> str:
+    """The portal's export for ``[start, end]``, as text."""
     with PgeSession(settings) as session:
         session.login()
-        return parse_green_button(download_green_button(session, start, end), layout)
+        return _export_text(session, start, end)
+
+
+def _export_text(session: PgeSession, start: date, end: date) -> str:
+    return download_green_button(session, start, end)
+
+
+def _default_reads_cache() -> Path:
+    """Where the last published read is remembered for the rest of the day."""
+    return _default_export_cache().parent / "available-reads.json"
+
+
+def cached_available_reads(
+    settings: PgeSettings | None,
+    *,
+    path: Path | None = None,
+    today: date | None = None,
+    refresh: bool = False,
+) -> BillingPeriod | None:
+    """What the utility has readings for, asked at most once a day.
+
+    Reads are published daily, so the answer is good until tomorrow -- and
+    asking every time would put a portal round trip in front of a bill the
+    cache could already have answered.
+
+    ``None`` when it is not known: no credentials, no network, or an answer in
+    a shape this does not recognise. A caller that cannot find out asks for
+    what it wanted, which is what it did before this existed.
+    """
+    from ..timeutil import PACIFIC
+
+    store = path or _default_reads_cache()
+    day = today or datetime.now(PACIFIC).date()
+    if not refresh:
+        known = _read_reads(store, day)
+        if known is not None:
+            return known
+    if settings is None:
+        return None
+    try:
+        with PgeSession(settings) as session:
+            session.login()
+            span = available_reads(session)
+    except Exception:
+        # As with the bill periods: a lookup that cannot happen must not fail a
+        # bill. Not knowing means asking for the range that was wanted.
+        log.debug("could not read the available interval; asking for the full range", exc_info=True)
+        return None
+    if span is not None:
+        _write_reads(store, span, day)
+    return span
+
+
+def _read_reads(path: Path, today: date) -> BillingPeriod | None:
+    if not path.is_file() or path.is_symlink():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if date.fromisoformat(raw["as_of"]) != today:
+            return None
+        return BillingPeriod(date.fromisoformat(raw["start"]), date.fromisoformat(raw["end"]))
+    except OSError, UnicodeError, ValueError, KeyError, TypeError:
+        return None
+
+
+def _write_reads(path: Path, span: BillingPeriod, today: date) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    body = json.dumps(
+        {
+            "as_of": today.isoformat(),
+            "start": span.start.isoformat(),
+            "end": span.end.isoformat(),
+        },
+        separators=(",", ":"),
+    )
+    with suppress(OSError):
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(body + "\n")
+        path.chmod(0o600)
+
+
+#: What the usage platform will say it has readings for, per meter channel.
+#: Captured from the export widget, which uses it to offer "Since your last
+#: bill" ending at the last read rather than at today. See audit/pge/PORTAL.md.
+AVAILABLE_READS_QUERY = (
+    "query WUE_GetUsageExportAvailableAMIReadsTimeInterval($selectedAccount: ID, "
+    "$forceLegacyData: Boolean, $first: Int, $aliased: Boolean) {\n"
+    "  billingAccountByAuthContext(\n"
+    "    selectedAccount: $selectedAccount\n"
+    "    forceLegacyData: $forceLegacyData\n"
+    "  ) {\n"
+    "    serviceAgreementsConnection(first: $first, onlyActive: true, aliased: $aliased) {\n"
+    "      edges {\n        node {\n          servicePoints {\n"
+    "            serviceType\n"
+    "            registers {\n"
+    "              availableReadsTimeInterval\n"
+    "              serviceQuantityIdentifier\n"
+    "              unitOfMeasure\n"
+    "              __typename\n            }\n            __typename\n          }\n"
+    "          __typename\n        }\n        __typename\n      }\n"
+    "      __typename\n    }\n    __typename\n  }\n}"
+)
+
+
+def available_reads(session: PgeSession) -> BillingPeriod | None:
+    """The days the utility will actually export readings for, or ``None``.
+
+    Every electric kilowatt-hour channel has to be covered for a day to be, so
+    the answer is the latest start and the earliest end across them. On a solar
+    account the export register begins at interconnection while the import one
+    goes back years, and the export file stops at the last published read --
+    typically yesterday, since the reads land a day behind.
+
+    ``None`` when the platform answers in a shape this does not recognise,
+    which is a reason to leave a requested range alone rather than to fail.
+    """
+    host, token, urn = session.opower()
+    answer = session.graphql(
+        host,
+        token,
+        urn,
+        "WUE_GetUsageExportAvailableAMIReadsTimeInterval",
+        AVAILABLE_READS_QUERY,
+        {"selectedAccount": urn, "forceLegacyData": False, "first": 10, "aliased": True},
+    )
+    spans: list[BillingPeriod] = []
+    account = (answer or {}).get("billingAccountByAuthContext") or {}
+    edges = ((account.get("serviceAgreementsConnection") or {}).get("edges")) or []
+    for edge in edges:
+        for point in ((edge.get("node") or {}).get("servicePoints")) or []:
+            # The unit is the reliable filter: the portal calls this service
+            # type ELECTRICITY, an allow-list of one spelling silently matched
+            # nothing, and gas is metered in therms whatever it is called.
+            if str(point.get("serviceType", "")).upper() in {"GAS", "WATER"}:
+                continue
+            for register in point.get("registers") or []:
+                if str(register.get("unitOfMeasure", "")).upper() != "KWH":
+                    continue
+                interval = register.get("availableReadsTimeInterval")
+                if not interval:
+                    continue
+                with suppress(PortalError):
+                    spans.append(_interval_to_period(str(interval)))
+    if not spans:
+        return None
+    return BillingPeriod(max(span.start for span in spans), min(span.end for span in spans))
+
+
+def _default_period_cache() -> Path:
+    """Where the utility's own cycle boundaries are kept between runs."""
+    return _default_export_cache().parent / "bill-periods.json"
+
+
+def _interval_to_period(interval: str) -> BillingPeriod:
+    """One ``start/end`` from the portal as an inclusive billing period.
+
+    The portal's intervals are half-open and mixed in spelling -- some carry a
+    Pacific offset, some arrive as UTC ``Z`` for the same boundary -- so both
+    ends are converted before the date is taken. The end is exclusive
+    (``2026-07-29T07:00:00Z/2026-08-28T07:00:00Z`` is the cycle the widget
+    labels "Jul 29, 2026 - Aug 27, 2026"), and a billing period here is
+    inclusive, so the last day is the one before it.
+    """
+    from ..timeutil import PACIFIC
+
+    first, _, last = interval.partition("/")
+    try:
+        opens = datetime.fromisoformat(first).astimezone(PACIFIC)
+        closes = datetime.fromisoformat(last).astimezone(PACIFIC)
+    except ValueError as exc:
+        raise PortalError(
+            f"a bill period was not an interval: {interval!r}", endpoint="bill_periods"
+        ) from exc
+    return BillingPeriod(opens.date(), closes.date() - timedelta(days=1))
+
+
+def read_bill_periods(settings: PgeSettings) -> list[BillingPeriod]:
+    """Every cycle the portal will list, oldest first, from the utility itself.
+
+    These are the boundaries PG&E bills on, not a guess from a meter-read day:
+    a real account's cycles open on the 29th, the 30th, the 1st and the 3rd in
+    consecutive months, because the utility reads on business days.
+
+    A cycle split by a mid-cycle agreement change -- interconnecting solar does
+    exactly this -- is listed as two, since the portal lists a bill per
+    agreement. Both are real boundaries; only the statement knows they were
+    printed on one page.
+    """
+    from ..timeutil import PACIFIC
+
+    with PgeSession(settings) as session:
+        session.login()
+        host, token, urn = session.opower()
+        now = datetime.now(PACIFIC)
+        answer = session.graphql(
+            host,
+            token,
+            urn,
+            "WUE_GetUsageExportBills",
+            BILL_PERIODS_QUERY,
+            {
+                "selectedAccount": urn,
+                "timeInterval": (
+                    f"{(now - timedelta(days=MAX_HISTORY_DAYS)).isoformat()}/{now.isoformat()}"
+                ),
+                "forceLegacyData": False,
+                "last": MAX_BILL_PERIODS,
+            },
+        )
+    account = (answer or {}).get("billingAccountByAuthContext") or {}
+    bills = account.get("bills")
+    if not isinstance(bills, list):
+        raise PortalError("the portal listed no bill periods", endpoint="bill_periods")
+    periods = [
+        _interval_to_period(str(bill["timeInterval"])) for bill in bills if bill.get("timeInterval")
+    ]
+    return sorted(periods, key=lambda period: period.start)
+
+
+def cached_bill_periods(
+    settings: PgeSettings | None = None,
+    *,
+    path: Path | None = None,
+    refresh: bool = False,
+    today: date | None = None,
+) -> list[BillingPeriod]:
+    """The utility's cycle boundaries, fetched only when they cannot answer.
+
+    A boundary is worth a network round trip once a month, not once a command,
+    and pricing from InfluxDB or Home Assistant should not start needing portal
+    credentials just to know when the cycle began. So the list is cached, and
+    refreshed only when it has stopped covering the present -- the same
+    staleness bound statement evidence uses, because it means the same thing:
+    a bill has been issued that this does not know about.
+
+    Returns what it has when a refresh is impossible. An out-of-date boundary
+    is reported as one by the caller; a failed command would be worse than a
+    boundary a month old.
+    """
+    from ..billing import STALE_EVIDENCE
+    from ..timeutil import PACIFIC
+
+    store = path or _default_period_cache()
+    day = today or datetime.now(PACIFIC).date()
+    known = _read_periods(store)
+    latest = max((period.end for period in known), default=None)
+    fresh = latest is not None and day - latest <= STALE_EVIDENCE
+    if fresh and not refresh:
+        return known
+    if settings is None:
+        return known
+    try:
+        periods = read_bill_periods(settings)
+    except Exception:
+        # Deliberately everything. This is a cache refresh, and no way for it to
+        # fail is worth failing a bill over: offline, an expired session, a
+        # portal that moved, or a transport error from a layer that does not
+        # speak this package's exceptions. What is on disk is still the
+        # utility's own answer, only older, and the caller says how old.
+        log.debug("could not refresh bill periods; keeping %d cached", len(known), exc_info=True)
+        return known
+    _write_periods(store, periods)
+    return periods
+
+
+def _read_periods(path: Path) -> list[BillingPeriod]:
+    if not path.is_file() or path.is_symlink():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return sorted(
+            (
+                BillingPeriod(date.fromisoformat(entry[0]), date.fromisoformat(entry[1]))
+                for entry in raw["periods"]
+            ),
+            key=lambda period: period.start,
+        )
+    except OSError, UnicodeError, ValueError, KeyError, TypeError:
+        # A cache that cannot be read is a cache miss, not a failure.
+        return []
+
+
+def _write_periods(path: Path, periods: Sequence[BillingPeriod]) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    body = json.dumps(
+        {"periods": [[p.start.isoformat(), p.end.isoformat()] for p in periods]},
+        separators=(",", ":"),
+    )
+    with suppress(OSError):
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(body + "\n")
+        path.chmod(0o600)

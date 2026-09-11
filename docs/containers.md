@@ -117,8 +117,9 @@ services:
 ### Configuration boundaries
 
 Mount the XDG configuration root, not a single file. TariffKit resolves
-`/config/tariffkit/config.toml` and named profiles below
-`/config/tariffkit/accounts/`. Both services only need read access at runtime.
+`/config/tariffkit/config.toml`, `/config/tariffkit/account.json`, and
+`/config/tariffkit/.env` below it. Both services only need read access at
+runtime.
 Do not mount a developer's home directory, repository `.env`, keyring, or audit
 configuration into either container.
 

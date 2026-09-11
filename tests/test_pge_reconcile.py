@@ -412,3 +412,23 @@ def test_a_statement_source_is_not_resolved_against_the_working_directory(
     )
     with pytest.raises(ReconciliationError, match="basename"):
         _validated_digest(statement, pdf=None, pdf_sha256=None)
+
+
+def test_applying_a_statement_keeps_the_boundaries_the_portal_gave() -> None:
+    """`account sync --apply` erased what `account periods --apply` recorded.
+
+    The proposal rebuilt the profile field by field, so the one field it did
+    not know about went every time a statement was imported.
+    """
+    periods = (BillingPeriod(date(2026, 6, 30), date(2026, 7, 28)),)
+    profile = AccountProfile(
+        (AccountEpoch(date(2025, 1, 1), Config(tariff="E-ELEC")),),
+        name="home",
+        billing_periods=periods,
+    )
+    evidence = observation(agreement(start=date(2026, 1, 1), end=date(2026, 1, 31), tariff="EV2-A"))
+
+    applied = reconcile(profile, evidence).apply(profile)
+
+    assert applied.billing_periods == periods
+    assert applied.observations  # and it still did its own job

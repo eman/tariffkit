@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from tariffkit import CcaConfig, Config, RateEngine, Supplier
-from tariffkit.account import AccountEpoch, AccountProfile, NamedProfileRepository
+from tariffkit.account import AccountEpoch, AccountProfile
 from tariffkit.components import EXPORT_GROUPS, IMPORT_GROUPS
 from tariffkit.errors import ConfigError, PublishError
 from tariffkit.mqtt.publisher import OFFLINE, ONLINE, MqttPublisher, MqttSettings
@@ -343,35 +343,20 @@ def test_custom_topic_prefix() -> None:
     assert "energy/pge/import_price" in client_of(publisher).topics()
 
 
-def test_selected_profile_drives_active_rates(tmp_path: Path) -> None:
-    repository = NamedProfileRepository(tmp_path)
-    repository.save(
-        "ev",
-        AccountProfile((AccountEpoch(date(1970, 1, 1), Config(tariff="EV2-A")),)),
-    )
-    settings = MqttSettings(broker="broker.local", profile="ev")
+def test_the_account_drives_active_rates() -> None:
+    """The caller loads the account; the publisher is handed it."""
+    profile = AccountProfile((AccountEpoch(date(1970, 1, 1), Config(tariff="EV2-A")),))
     publisher = MqttPublisher(
         RateEngine(Config()),
-        settings,
+        MqttSettings(broker="broker.local", account=True),
         client=FakeClient(),
-        profile_repository=repository,
+        profile=profile,
     )
 
     publisher.publish_now(datetime(2026, 9, 15, 19, tzinfo=PACIFIC))
 
-    assert publisher.engine.describe()["account_profile"] == "ev"
-
-
-def test_mqtt_settings_read_default_profile_from_shared_config(tmp_path: Path) -> None:
-    config = tmp_path / "config.toml"
-    config.write_text(
-        '[account]\ndefault_profile = "home"\n[mqtt]\nbroker = "broker.local"\n',
-        encoding="utf-8",
-    )
-
-    settings = MqttSettings.load(config, tmp_path / "absent")
-
-    assert settings.profile == "home"
+    # The account's tariff, not the stateless Config's.
+    assert publisher.engine.describe()["tariff"] == "EV2-A"
 
 
 def test_mqtt_settings_loads_insecure_auth_escape_hatch_from_toml(tmp_path: Path) -> None:
@@ -414,45 +399,6 @@ def test_mqtt_settings_rejects_invalid_insecure_auth_environment_value(
             tmp_path / "absent-dotenv",
             broker="broker.local",
         )
-
-
-def test_mqtt_environment_profile_overrides_config_alias(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    config = tmp_path / "config.toml"
-    config.write_text(
-        '[mqtt]\nbroker = "broker.local"\naccount = "old-account"\n',
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("TARIFFKIT_ACCOUNT", "new-account")
-
-    settings = MqttSettings.load(config, tmp_path / "absent")
-
-    assert settings.profile == "new-account"
-    assert settings.account is None
-
-
-def test_mqtt_settings_accepts_account_alias() -> None:
-    assert MqttSettings(broker="broker.local", account="home").profile == "home"
-
-
-def test_mqtt_settings_rejects_conflicting_profile_aliases() -> None:
-    with pytest.raises(ConfigError, match="must select the same profile"):
-        MqttSettings.load(
-            broker="broker.local",
-            account="home",
-            profile_name="other",
-        )
-
-
-def test_mqtt_settings_collapses_matching_profile_aliases() -> None:
-    settings = MqttSettings.load(
-        broker="broker.local",
-        account="home",
-        profile_name="home",
-    )
-
-    assert settings.profile == "home"
 
 
 def test_prices_are_published_at_qos_1() -> None:

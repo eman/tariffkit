@@ -380,8 +380,16 @@ class Config:
 
     @classmethod
     def from_toml(cls, path: str | Path) -> Config:
-        with Path(path).open("rb") as handle:
-            table = tomllib.load(handle)
+        try:
+            with Path(path).open("rb") as handle:
+                table = tomllib.load(handle)
+        except OSError as exc:
+            # A named file that is not there is a thing to report. Letting the
+            # OSError through gave `--config missing.toml` a traceback, where
+            # every other way of misconfiguring this gives one line and exit 1.
+            raise ConfigError(f"could not read the config file {path}: {exc}") from exc
+        except tomllib.TOMLDecodeError as exc:
+            raise ConfigError(f"{path} is not valid TOML: {exc}") from exc
         # The shared user config also carries integration settings such as the
         # default account profile and MQTT broker. They are not pricing fields
         # and must not make a stateless Config unusable.
@@ -459,7 +467,29 @@ class Config:
         return cls.from_env()
 
 
-def default_config_path() -> Path:
+def config_home() -> Path:
+    """Where every file this tool keeps for you lives.
+
+    ``$XDG_CONFIG_HOME/tariffkit``, or ``~/.config/tariffkit``. The config, the
+    account and the environment file are all here rather than scattered between
+    here and whichever directory a command happened to be run from.
+    """
     root = os.environ.get("XDG_CONFIG_HOME")
     base = Path(root) if root else Path.home() / ".config"
-    return base / "tariffkit" / "config.toml"
+    return base / "tariffkit"
+
+
+def default_config_path() -> Path:
+    return config_home() / "config.toml"
+
+
+def default_dotenv_path() -> Path:
+    """The environment file, beside the config rather than in the shell's cwd.
+
+    It used to default to ``.env`` in the working directory, so what a command
+    read depended on where it was run -- the same command answered differently
+    from a project checkout and from a home directory, with nothing said. Real
+    environment variables still win over it, which is how a container or a
+    systemd unit supplies these without a file at all.
+    """
+    return config_home() / ".env"

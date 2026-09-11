@@ -17,13 +17,7 @@ from custom_components.tariffkit.const import (
     CONF_PROFILE,
     DOMAIN,
 )
-from custom_components.tariffkit.energy import (
-    Cycle,
-    MeterSettings,
-    cycle_start,
-    resolve_cycle,
-    statement_periods,
-)
+from custom_components.tariffkit.energy import MeterSettings
 from custom_components.tariffkit.profile import profile_payload
 from custom_components.tariffkit.sensor import TariffKitSensor
 from freezegun.api import FrozenDateTimeFactory
@@ -41,10 +35,8 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
 from tariffkit import Config
 from tariffkit.account import AccountEpoch, AccountProfile
 from tariffkit.account.model import (
-    AccountObservation,
     MeterSource,
     MeterSources,
-    ObservedAgreement,
 )
 from tariffkit.billing import Bill, BillingPeriod
 from tariffkit.timeutil import PACIFIC
@@ -56,10 +48,15 @@ EXPORT_ENTITY = "sensor.grid_energy_received"
 NOW = datetime(2026, 8, 24, 14, 30, tzinfo=PACIFIC)
 
 
-def _entry(options: dict[str, Any] | None = None) -> MockConfigEntry:
+def _entry(
+    options: dict[str, Any] | None = None,
+    *,
+    billing_periods: tuple[BillingPeriod, ...] = (),
+) -> MockConfigEntry:
     profile = AccountProfile(
         (AccountEpoch(date(1970, 1, 1), Config(tariff="E-ELEC", pto_date=date(2026, 1, 1))),),
         name="metered",
+        billing_periods=billing_periods,
     )
     return MockConfigEntry(
         domain=DOMAIN,
@@ -122,24 +119,6 @@ def _state(hass: HomeAssistant, entry: MockConfigEntry, key: str) -> State:
     state = hass.states.get(entity_id)
     assert state is not None
     return state
-
-
-@pytest.mark.parametrize(
-    ("day", "start_day", "expected"),
-    [
-        (date(2026, 8, 24), 0, date(2026, 8, 1)),
-        (date(2026, 8, 24), 12, date(2026, 8, 12)),
-        (date(2026, 8, 3), 12, date(2026, 7, 12)),
-        (date(2026, 8, 12), 12, date(2026, 8, 12)),
-        # A read day past the end of a short month clamps rather than skipping
-        # a cycle or raising.
-        (date(2026, 3, 15), 31, date(2026, 2, 28)),
-        (date(2026, 5, 3), 31, date(2026, 4, 30)),
-    ],
-)
-def test_cycle_start_clamps_to_the_month(day: date, start_day: int, expected: date) -> None:
-    """The fallback, used when no statement evidence exists."""
-    assert cycle_start(day, start_day) == expected
 
 
 def test_meter_settings_fall_back_to_an_imported_profile_mapping() -> None:
@@ -554,71 +533,31 @@ async def test_metered_energy_is_configured_only_after_setup(hass: HomeAssistant
     assert "meters" in result["menu_options"]
 
 
-def _period(start: tuple[int, int, int], end: tuple[int, int, int]) -> BillingPeriod:
-    return BillingPeriod(date(*start), date(*end))
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_billing_periods_in_the_entry_beat_the_configured_read_day(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """The integration holds no portal credentials, so they arrive with the profile.
 
-
-def test_statement_evidence_beats_a_guessed_meter_read_day() -> None:
-    """Real cycles do not open on a fixed day, so evidence wins where it exists.
-
-    PG&E reads on business days, so consecutive cycles on one real account
-    opened on the 29th, the 30th, the 1st and the 3rd. Any fixed day of the
-    month is therefore wrong for most of them.
+    Imported through the options flow, they are the utility's own boundaries
+    without a statement PDF ever being parsed here -- and they beat the
+    meter-read day, which is only ever close.
     """
-    periods = [_period((2026, 6, 1), (2026, 6, 29)), _period((2026, 6, 30), (2026, 7, 28))]
-
-    # Inside a billed cycle: that cycle's own start, exactly.
-    assert resolve_cycle(date(2026, 7, 10), 30, periods) == Cycle(date(2026, 6, 30), "statement")
-
-    # After the last statement: cycles are contiguous, so the open one began
-    # the day after it ended -- derivable without waiting to be billed.
-    assert resolve_cycle(date(2026, 8, 24), 30, periods) == Cycle(date(2026, 7, 29), "statement")
-
-    # The guess would have been a day out, and the calendar month three.
-    assert cycle_start(date(2026, 8, 24), 30) == date(2026, 7, 30)
-    assert cycle_start(date(2026, 8, 24), 0) == date(2026, 8, 1)
-
-
-def test_stale_evidence_falls_back_rather_than_inventing_a_long_cycle() -> None:
-    """Evidence older than a cycle cannot fix the current boundary.
-
-    A statement has been issued that the profile never imported, so the next
-    boundary is not derivable. Trusting the old one would report a 90-day
-    "cycle" and charge Base Services Charge for every day of it.
-    """
-    periods = [_period((2026, 6, 30), (2026, 7, 28))]
-    assert resolve_cycle(date(2026, 8, 24), 30, periods).source == "statement"
-    stale = resolve_cycle(date(2026, 10, 1), 30, periods)
-    assert stale.source == "day_of_month"
-    assert stale.start == date(2026, 9, 30)
-
-
-def test_statement_periods_follow_the_bill_not_the_agreement() -> None:
-    """A cycle split by interconnection is one billing period, not two."""
-    profile = AccountProfile(
-        (AccountEpoch(date(2026, 1, 1), Config(tariff="E-ELEC")),),
-        name="split",
-        observations=(
-            AccountObservation(
-                agreements=(
-                    ObservedAgreement(
-                        provider="pge",
-                        statement_date=date(2026, 7, 7),
-                        period=_period((2026, 6, 1), (2026, 6, 2)),
-                        tariff="EV2-A",
-                    ),
-                    ObservedAgreement(
-                        provider="pge",
-                        statement_date=date(2026, 7, 7),
-                        period=_period((2026, 6, 3), (2026, 6, 29)),
-                        tariff="E-ELEC",
-                    ),
-                ),
-            ),
+    freezer.move_to(NOW)
+    entry = _entry(
+        _meter_options(**{CONF_CYCLE_START_DAY: 30}),
+        billing_periods=(
+            BillingPeriod(date(2026, 6, 30), date(2026, 7, 28)),
+            BillingPeriod(date(2026, 7, 29), date(2026, 8, 27)),
         ),
     )
-    (period,) = statement_periods(profile)
-    assert (period.start, period.end) == (date(2026, 6, 1), date(2026, 6, 29))
+    await _setup(hass, entry)
+
+    cycle = _state(hass, entry, "amount_due_cycle")
+    # NOW is 2026-08-24, inside the cycle that opened on the 29th of July. The
+    # read day would have said the 30th.
+    assert cycle.attributes["period_start"] == "2026-07-29"
+    assert cycle.attributes["cycle_boundary"] == "statement"
 
 
 @pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
@@ -655,20 +594,6 @@ def test_the_fall_back_hour_is_two_distinct_slots() -> None:
     by_epoch = {pdt.timestamp(): 1.0, pst.timestamp(): 1.0}
     assert len(by_datetime) == 1, "datetime keys collide"
     assert len(by_epoch) == 2, "epoch keys must not"
-
-
-def test_evidence_never_implies_a_cycle_longer_than_a_real_one() -> None:
-    """A cycle runs 27-33 days; the staleness bound must refuse before 34."""
-    periods = [_period((2026, 6, 30), (2026, 7, 28))]
-    spans = {}
-    for day in (date(2026, 8, 29), date(2026, 8, 30), date(2026, 8, 31), date(2026, 9, 1)):
-        cycle = resolve_cycle(day, 30, periods)
-        spans[day] = ((day - cycle.start).days + 1, cycle.source)
-    assert spans[date(2026, 8, 29)] == (32, "statement")
-    assert spans[date(2026, 8, 30)] == (33, "statement")
-    # Beyond a real cycle, so the evidence is stale and it says so.
-    assert spans[date(2026, 8, 31)][1] == "day_of_month"
-    assert all(span <= 33 for span, source in spans.values() if source == "statement")
 
 
 def test_one_entity_cannot_be_both_directions() -> None:
@@ -837,6 +762,120 @@ async def test_amount_due_is_what_a_statement_would_charge_not_the_bill_total(
     assert cycle.attributes["export_credits"] == pytest.approx(credit, abs=1e-4)
 
 
+def test_a_counter_reset_the_recorder_believed_is_repaired_from_the_counter() -> None:
+    """The Eagle publishes 0.0 while re-establishing its meter session.
+
+    A `total_increasing` sensor reading zero is taken for a counter reset, so
+    the recorder reports the whole counter as the next hour's `change` -- 1455
+    kWh on a meter that moved 0.42. Refusing that figure is right; dropping the
+    hour with it is not, because the counter itself is in `state` and
+    differencing it against the previous hour brings the energy back.
+
+    Measured on the account this came from: 54.206 kWh credited against the
+    filtered sensor's 67.016, and 66.938 once repaired -- a fifth of a cycle's
+    exports, recovered from data the integration already had in hand.
+    """
+    from tariffkit.sources.homeassistant import interval_energy
+
+    hour = 3600.0
+    previous = (0.0, 1460.58)
+    assert interval_energy(0.42, 1461.0, previous, 3600.0, hour) == pytest.approx(0.42)
+    # The recorder's figure is absurd and the counter is sound.
+    assert interval_energy(1455.109, 1461.0, previous, 3600.0, hour) == pytest.approx(0.42)
+    assert interval_energy(-3.0, 1461.0, previous, 3600.0, hour) == pytest.approx(0.42)
+
+
+def test_the_repair_refuses_where_it_would_be_guessing() -> None:
+    """Each refusal is a case where differencing would invent a figure.
+
+    The gap case is the one that matters most: a hole in the series means the
+    counter also advanced through hours nobody recorded, and crediting that
+    whole advance to the hour the series resumes would price a week of energy
+    at one hour's time-of-use rate. That is worse than the hole, and confident
+    about it.
+    """
+    from tariffkit.sources.homeassistant import interval_energy
+
+    hour = 3600.0
+    previous = (0.0, 1460.58)
+    assert interval_energy(1455.1, 0.0, previous, 3600.0, hour) is None, "the zero is the artefact"
+    assert interval_energy(1455.1, 1461.0, None, 3600.0, hour) is None, "nothing to difference"
+    assert interval_energy(1455.1, 1461.0, (-2 * hour, 1460.58), 3600.0, hour) is None, "a gap"
+    assert interval_energy(1455.1, 1400.0, previous, 3600.0, hour) is None, "counter went back"
+
+
+def test_a_spoiled_hour_does_not_poison_the_next_one() -> None:
+    """The previous *good* counter is what the next hour differences against.
+
+    Carrying the zero forward would make the following hour read the whole
+    counter as its energy -- the same defect one hour later.
+    """
+    from tariffkit.sources.homeassistant import carry as _carry
+
+    good = (0.0, 1460.58)
+    assert _carry(good, 3600.0, 0.0) == good, "a zero state is not a usable baseline"
+    assert _carry(good, 3600.0, None) == good
+    assert _carry(good, 3600.0, 1461.0) == (3600.0, 1461.0)
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_the_credit_split_explains_what_capped_credit_applied(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """The term that was missing, published so nobody has to infer it.
+
+    Export credits are scoped, so `credit_applied` is capped bucket by bucket
+    rather than by the charge total -- a cycle can hold $34.78 of charges and
+    $19.94 of credit and still apply $8.24, because the credit is nearly all
+    generation credit and generation charges ran out. Nothing published named
+    that ceiling, and a dashboard rendering the breakdown guessed at it from a
+    ratio: "8.2366 / 27.824 = 29.6%, a plausible generation share". Wrong
+    mechanism, right instinct, and it had no way to tell.
+
+    Both identities are asserted on both spans, because a day is the difference
+    of two cycle-to-date figures and a split that closed only for the cycle
+    would be worse than none.
+    """
+    freezer.move_to(NOW)
+    seed = datetime(2026, 8, 1, tzinfo=PACIFIC)
+    await _record(hass, IMPORT_ENTITY, [(seed, 1000.0), (NOW.replace(hour=13, minute=0), 1300.0)])
+    await _record(hass, EXPORT_ENTITY, [(seed, 500.0), (NOW.replace(hour=13, minute=0), 900.0)])
+    hass.states.async_set(
+        IMPORT_ENTITY, "1300.0", {"unit_of_measurement": "kWh", "device_class": "energy"}
+    )
+    hass.states.async_set(
+        EXPORT_ENTITY, "900.0", {"unit_of_measurement": "kWh", "device_class": "energy"}
+    )
+    await hass.async_block_till_done()
+
+    entry = _entry(_meter_options())
+    await _setup(hass, entry)
+
+    for span in ("cycle", "today"):
+        state = _state(hass, entry, f"amount_due_{span}")
+        attrs = state.attributes
+        split = attrs["credit_buckets"]
+        assert set(split) == {"generation", "delivery", "bonus", "cca_bonus"}
+
+        charges = sum(b["charges"] for b in split.values())
+        applied = sum(b["applied"] for b in split.values())
+        # Four places out of the published attributes, so the tolerance is
+        # rounding, not slack: a cent would hide a whole misattributed bucket.
+        assert charges + attrs["non_offsettable"] == pytest.approx(
+            attrs["gross_charges"], abs=1e-3
+        ), f"{span}: the charge buckets do not close on gross_charges"
+        assert applied == pytest.approx(attrs["credit_applied"], abs=1e-3), (
+            f"{span}: the applied buckets do not close on credit_applied"
+        )
+        for name, bucket in split.items():
+            assert bucket["applied"] <= bucket["charges"] + 1e-6, (
+                f"{span}/{name}: spent more than that bucket's charges"
+            )
+            assert bucket["applied"] <= bucket["credit"] + 1e-6, (
+                f"{span}/{name}: spent more than that bucket held"
+            )
+
+
 @pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
 async def test_an_untrustworthy_bank_does_not_quietly_set_the_amount_due(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
@@ -885,6 +924,62 @@ async def test_an_untrustworthy_bank_does_not_quietly_set_the_amount_due(
     assert float(cycle.state) == pytest.approx(unbanked), "the doubtful balance was not spent"
     assert cycle.attributes["quality"]["complete"] is False
     assert any("not trustworthy" in w for w in cycle.attributes["warnings"])
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_an_untrustworthy_bank_is_declared_even_when_the_fold_succeeded(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """The shape a real account is actually in: a fold that worked, and warned.
+
+    ``_async_bank`` sets a pending reason only when it returns *no* bank, so a
+    successful fold leaves ``bank_pending`` None. The note then read the pending
+    reason first and returned early on None, which made the untrustworthy branch
+    unreachable in the one case it exists for -- and the money entities dropped
+    the balance with an empty ``warnings`` list. Found on a live account: a
+    $26.55 cycle stated before a $7.73 delivery bank it never mentioned, while
+    the bank entity beside it printed nine warnings.
+    """
+    from custom_components.tariffkit.bank import BankState
+
+    from tariffkit.billing import CreditBalances
+
+    freezer.move_to(NOW)
+    seed = datetime(2026, 8, 1, tzinfo=PACIFIC)
+    await _record(hass, IMPORT_ENTITY, [(seed, 1000.0), (NOW.replace(hour=13, minute=0), 1300.0)])
+    await _record(hass, EXPORT_ENTITY, [(seed, 500.0), (NOW.replace(hour=13, minute=0), 500.0)])
+    hass.states.async_set(
+        IMPORT_ENTITY, "1300.0", {"unit_of_measurement": "kWh", "device_class": "energy"}
+    )
+    hass.states.async_set(
+        EXPORT_ENTITY, "500.0", {"unit_of_measurement": "kWh", "device_class": "energy"}
+    )
+    await hass.async_block_till_done()
+
+    entry = _entry(_meter_options())
+    await _setup(hass, entry)
+    coordinator = entry.runtime_data
+    unbanked = float(_state(hass, entry, "amount_due_cycle").state)
+
+    doubtful = BankState(
+        CreditBalances(delivery=200.0, bonus=160.0),
+        (date(2026, 7, 1), date(2026, 7, 31)),
+        1,
+        warnings=("31 day(s) inside 2026-07-01..2026-07-31 could not be priced",),
+    )
+    assert not doubtful.trustworthy
+    # bank_pending None is the point: the fold produced a balance, so nothing
+    # was pending. Only the bank's own warnings can explain the refusal.
+    coordinator.data = replace(coordinator.data, bank=doubtful, bank_pending=None)
+    coordinator.async_update_listeners()
+    await hass.async_block_till_done()
+
+    cycle = _state(hass, entry, "amount_due_cycle")
+    assert float(cycle.state) == pytest.approx(unbanked), "the doubtful balance was not spent"
+    assert cycle.attributes["quality"]["complete"] is False
+    warnings = cycle.attributes["warnings"]
+    assert any("not trustworthy" in w for w in warnings)
+    assert any("could not be priced" in w for w in warnings), "the bank's own reason travels"
 
 
 @pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
@@ -1099,12 +1194,14 @@ def test_the_charge_components_reach_gross_charges_through_the_offset() -> None:
     assert energy + taxes + fixed - offset == pytest.approx(gross)
     assert energy + taxes + fixed != pytest.approx(gross), "otherwise this proves nothing"
 
-    # Generation charges of $1 cannot absorb a $3.396 bonus: $1 is spent and
-    # the remaining $2.396 banks, where `bank_change` reports it.
+    # Generation charges of $1 do not cap a $3.396 bonus. The supplier lets its
+    # own section go negative rather than stopping at nil -- the 2026-09-03
+    # statement prints "Total MCE Electric Generation Charges  -$6.85" -- so the
+    # whole bonus is spent and the identity still closes on it.
     overrun = bill(1.0)
     energy, taxes, fixed, offset, gross = figures(overrun)
-    assert offset == pytest.approx(1.0)
-    assert in_cycle_offsets(overrun).total == pytest.approx(3.396), "the gross figure overshoots"
+    assert offset == pytest.approx(3.396), "all of it is spent, none of it banks"
+    assert in_cycle_offsets(overrun).total == pytest.approx(3.396)
     assert energy + taxes + fixed - offset == pytest.approx(gross)
 
 
@@ -1139,12 +1236,12 @@ def test_the_offset_is_a_share_of_export_credits_not_a_term_beside_it() -> None:
             fixed_components={"base_services_charge": 25.3898},
         )
 
-    # Both addends post-cap, which is the only form that survives an overrun:
-    # the excess an offset could not spend banks, so it is already inside the
-    # first term, and pairing that with the offset the cycle *earned* rather
-    # than the one it spent counts the excess twice. The absorbed case cannot
-    # tell the two forms apart, which is why the overrun case is here.
-    for label, generation, spent in (("absorbed", 8.0, 3.396), ("overrun", 1.0, 1.0)):
+    # The offset is the whole of what the cycle earned either way, because it is
+    # spent whole: a supplier lets its own section go negative rather than
+    # stopping at nil. Both cases are kept because they used to differ -- the
+    # overrun banked its excess, which put the same dollars in two terms -- and
+    # a test that no longer distinguishes them still pins that they agree.
+    for label, generation, spent in (("absorbed", 8.0, 3.396), ("overrun", 1.0, 3.396)):
         one = bill(generation)
         entry = apply_credits(one)
         earned = _earned(one, entry)

@@ -16,12 +16,7 @@ from time import monotonic
 from types import FrameType
 from typing import Any
 
-from ..account import (
-    AccountProfile,
-    AccountRateEngine,
-    NamedProfileRepository,
-    configured_profile_name,
-)
+from ..account import AccountProfile, AccountRateEngine
 from ..components import EXPORT_GROUPS, IMPORT_GROUPS, split_components
 from ..config import default_config_path
 from ..engine import RateEngine
@@ -59,8 +54,9 @@ class MqttSettings:
     client_id: str = "tariffkit"
     tls: bool = False
     allow_insecure_auth: bool = False
-    profile: str | None = None
-    account: str | None = None
+    #: Whether to price from the stored account. Recorded here, honoured by
+    #: the caller: this module never goes looking for one.
+    account: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.tls, bool):
@@ -78,16 +74,12 @@ class MqttSettings:
                 "MQTT credentials require TLS; enable tls or explicitly set "
                 "allow_insecure_auth for an isolated trusted network"
             )
-        if self.profile is not None and self.account is not None and self.profile != self.account:
-            raise ConfigError("profile and account selections disagree")
-        if self.profile is None:
-            object.__setattr__(self, "profile", self.account)
 
     @classmethod
     def load(
         cls,
         config_path: str | Path | None = None,
-        dotenv_path: str | Path = ".env",
+        dotenv_path: str | Path | None = None,
         **overrides: Any,
     ) -> MqttSettings:
         """Resolve non-secrets from config and credentials from env or keyring."""
@@ -105,17 +97,10 @@ class MqttSettings:
                 "client_id",
                 "tls",
                 "allow_insecure_auth",
-                "profile",
                 "account",
             ):
                 if key in table:
                     values[key] = table[key]
-        configured_aliases = {str(values[key]) for key in ("profile", "account") if values.get(key)}
-        if len(configured_aliases) > 1:
-            raise ConfigError("profile and account selections disagree")
-        values.pop("account", None)
-        if configured_aliases:
-            values["profile"] = configured_aliases.pop()
 
         env = {**load_dotenv(dotenv_path), **os.environ}
         for key, name in (
@@ -138,26 +123,22 @@ class MqttSettings:
                     "TARIFFKIT_MQTT_ALLOW_INSECURE_AUTH must be a boolean "
                     "(true/false, yes/no, on/off, or 1/0)"
                 )
-        for name in ("TARIFFKIT_ACCOUNT", "TARIFFKIT_PROFILE"):
-            if value := env.get(name):
-                values["profile"] = value
-                break
-        if not values.get("profile"):
-            values["profile"] = configured_profile_name(config_path)
         if not values.get("username"):
             values["username"] = get_secret("mqtt.username")
         if not values.get("password"):
             values["password"] = get_secret("mqtt.password")
-        profile_overrides = {
-            key: overrides.pop(key)
-            for key in ("profile", "account", "profile_name")
-            if key in overrides and overrides[key] is not None
-        }
-        selected_profiles = {str(value) for value in profile_overrides.values()}
-        if len(selected_profiles) > 1:
-            raise ConfigError("profile, account, and profile_name must select the same profile")
-        if selected_profiles:
-            overrides["profile"] = selected_profiles.pop()
+        account_override = next(
+            (
+                overrides.pop(key)
+                for key in ("profile", "account", "profile_name")
+                if overrides.get(key) is not None
+            ),
+            None,
+        )
+        for key in ("profile", "account", "profile_name"):
+            overrides.pop(key, None)
+        if account_override is not None:
+            values["account"] = bool(account_override)
         values.update({key: value for key, value in overrides.items() if value is not None})
         if not values.get("broker"):
             raise ConfigError(
@@ -183,17 +164,17 @@ class MqttPublisher:
         client: Any | None = None,
         *,
         profile: AccountProfile | None = None,
-        profile_repository: NamedProfileRepository | None = None,
     ) -> None:
-        if profile is not None and settings.profile is not None:
-            raise ConfigError("choose either an MQTT profile name or an in-memory profile")
-        if profile is not None:
-            self.engine: RateEngine | AccountRateEngine = AccountRateEngine(profile)
-        elif settings.profile is not None:
-            repository = profile_repository or NamedProfileRepository()
-            self.engine = AccountRateEngine(repository.load(settings.profile))
-        else:
-            self.engine = engine
+        """Publish from ``profile`` when given one, and from ``engine`` otherwise.
+
+        ``settings.account`` records what was asked for; honouring it means
+        having an account to honour it with, which is the caller's to find.
+        ``tariffkit mqtt`` resolves it once, for every command, and hands the
+        engine down already built.
+        """
+        self.engine: RateEngine | AccountRateEngine = (
+            AccountRateEngine(profile) if profile is not None else engine
+        )
         self.settings = settings
         self._stop = threading.Event()
         self._connected = threading.Event()

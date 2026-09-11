@@ -149,10 +149,23 @@ CHARGE_BUCKETS: dict[str, CreditBucket] = {
     "conservation_incentive_adjustment": CreditBucket.DELIVERY,
     # Reachable by the ACC Plus bonus and by nothing else. See NON_BYPASSABLE.
     **dict.fromkeys(NON_BYPASSABLE, CreditBucket.BONUS),
+    # The Power Charge Indifference Adjustment is an Energy Delivered charge,
+    # which is the boundary `SCOPING_VERIFIED` was waiting on a statement to
+    # draw. The 2026-09-03 cycle draws it: PG&E applied $2.94 of Energy Export
+    # Credit where the time-of-use delivery rows come to 0.31 + 0.08 + 2.15 =
+    # 2.54, and the only charge that closes the difference is the PCIA at 0.40.
+    # It had been in the bonus bucket -- reachable by the ACC Plus adder and by
+    # nothing else -- so delivery credit stopped 40 cents short every cycle and
+    # banked what it should have spent.
+    #
+    # Being here rather than in BONUS does not put it out of the bonus adder's
+    # reach: the bonus is spent against whatever remains across every bucket.
+    "pcia": CreditBucket.DELIVERY,
     # Not non-bypassable in the tariff's sense, and SC 2.d puts every other
-    # charge within reach of the bonus adder.
+    # charge within reach of the bonus adder. Neither is inside the delivery
+    # boundary: the same statement's $2.94 closes without them, and they are
+    # a cent each.
     "energy_cost_recovery": CreditBucket.BONUS,
-    "pcia": CreditBucket.BONUS,
     "franchise_fee_surcharge": CreditBucket.BONUS,
 }
 
@@ -310,17 +323,6 @@ class LedgerEntry:
         }
 
 
-def _spent_offsets(bill: Bill, unspent: dict[CreditBucket, float]) -> CreditBalances:
-    """In-cycle offsets less the part that overran its bucket and banked."""
-    gross = in_cycle_offsets(bill)
-    return CreditBalances(
-        generation=max(0.0, gross.generation - unspent[CreditBucket.GENERATION]),
-        delivery=max(0.0, gross.delivery - unspent[CreditBucket.DELIVERY]),
-        bonus=max(0.0, gross.bonus - unspent[CreditBucket.BONUS]),
-        cca_bonus=max(0.0, gross.cca_bonus - unspent[CreditBucket.CCA_BONUS]),
-    )
-
-
 def in_cycle_offsets(bill: Bill) -> CreditBalances:
     """Export credits the statement spends this cycle rather than banking.
 
@@ -362,10 +364,8 @@ def credits_earned(bill: Bill) -> CreditBalances:
     )
 
 
-def charges_by_bucket(
-    bill: Bill,
-) -> tuple[dict[CreditBucket, float], float, dict[CreditBucket, float]]:
-    """``({bucket: offsettable charges}, non-offsettable charges, {bucket: unspent})``.
+def charges_by_bucket(bill: Bill) -> tuple[dict[CreditBucket, float], float]:
+    """``({bucket: offsettable charges}, non-offsettable charges)``.
 
     A component that nets out negative -- ``cca_cost_relief_credit``, or the
     recovery bond credit -- reduces its bucket rather than creating charge to
@@ -397,18 +397,26 @@ def charges_by_bucket(
         if bucket is not None:
             offsettable[bucket] -= abs(value)
 
-    # An in-cycle offset can wipe out its bucket's charges but no more. The
-    # excess must not leak into non_offsettable: those are the non-bypassable
-    # charges, the ones nothing is allowed to reduce, and a generation-scoped
-    # offset reaching them would be exactly backwards. It banks instead, which
-    # is the rule the statement gives for any credit it cannot spend --
-    # "saved to help offset future bill charges".
-    unspent: dict[CreditBucket, float] = dict.fromkeys(CreditBucket, 0.0)
-    for bucket, value in offsettable.items():
-        if value < 0.0:
-            unspent[bucket] = -value
-            offsettable[bucket] = 0.0
-    return offsettable, non_offsettable, unspent
+    # An in-cycle offset is allowed to take its bucket below zero, and what it
+    # takes it below by is a credit on the bill rather than a deposit in the
+    # bank. That is the opposite of what this did, and the 2026-09-03 statement
+    # settles it: MCE's Solar Bonus Credit of -8.33 drove the generation section
+    # to "Total MCE Electric Generation Charges  -$6.85", and that -6.85 goes
+    # straight into the summary -- 21.07 electric, -36.18 adjustments, -6.85
+    # generation, printing a -21.96 credit balance. MCE's own bank on the same
+    # page shows where it did *not* go: beginning 12.63, earned 86.16, applied
+    # 0.00, remaining 98.79, which closes exactly and leaves no room for a
+    # banked remainder.
+    #
+    # Banking it instead overstated the bank by the overrun -- $7.13 on that
+    # cycle -- and understated the credit the customer was actually given. It
+    # was the reading the tariff text allowed ("saved to help offset future bill
+    # charges") on statements where the case never arose: every cycle reconciled
+    # before this one had generation charges larger than the offset, so the
+    # question was never asked. This is the cycle ``SCOPING_VERIFIED`` was
+    # waiting for -- credits exceeding the charges they may offset, with the
+    # leftover finally visible -- and the leftover is spent, not saved.
+    return offsettable, non_offsettable
 
 
 def apply_credits(bill: Bill, opening: CreditBalances | None = None) -> LedgerEntry:
@@ -420,14 +428,8 @@ def apply_credits(bill: Bill, opening: CreditBalances | None = None) -> LedgerEn
     one could have covered, and strand the scoped credit.
     """
     opening = opening or CreditBalances()
-    offsettable, non_offsettable, unspent = charges_by_bucket(bill)
-
-    # An in-cycle offset larger than the charges it was meant to cover banks the
-    # remainder rather than being lost or turned into cash owed.
+    offsettable, non_offsettable = charges_by_bucket(bill)
     earned = credits_earned(bill)
-    for bucket, value in unspent.items():
-        if value:
-            earned = earned.with_bucket(bucket, earned[bucket] + value)
 
     available = CreditBalances(
         generation=opening.generation + earned.generation,
@@ -439,7 +441,10 @@ def apply_credits(bill: Bill, opening: CreditBalances | None = None) -> LedgerEn
     remaining = dict(offsettable)
 
     for bucket in (CreditBucket.GENERATION, CreditBucket.DELIVERY):
-        spend = min(available[bucket], remaining[bucket])
+        # Floored at zero: a bucket an in-cycle offset drove negative has no
+        # charges left to spend credit against, and `min` against a negative
+        # would otherwise "apply" a negative amount of credit.
+        spend = min(available[bucket], max(remaining[bucket], 0.0))
         applied = applied.with_bucket(bucket, spend)
         remaining[bucket] -= spend
 
@@ -448,13 +453,13 @@ def apply_credits(bill: Bill, opening: CreditBalances | None = None) -> LedgerEn
     # 2026-08-04 MCE applied $3.63 of Energy Export Credit and $0.00 of Energy
     # Export Bonus Credit against the same $3.63 of net generation charges.
     # Spending it first would drain the bank that the statement shows growing.
-    cca_bonus_spend = min(available.cca_bonus, remaining[CreditBucket.GENERATION])
+    cca_bonus_spend = min(available.cca_bonus, max(remaining[CreditBucket.GENERATION], 0.0))
     applied = applied.with_bucket(CreditBucket.CCA_BONUS, cca_bonus_spend)
     remaining[CreditBucket.GENERATION] -= cca_bonus_spend
 
     # The bonus reaches anything still standing, except charges the tariff makes
     # non-bypassable -- that is what "non-bypassable" means.
-    bonus_spend = min(available.bonus, sum(remaining.values()))
+    bonus_spend = min(available.bonus, max(sum(remaining.values()), 0.0))
     applied = applied.with_bucket(CreditBucket.BONUS, bonus_spend)
 
     closing = CreditBalances(
@@ -495,7 +500,7 @@ def apply_credits(bill: Bill, opening: CreditBalances | None = None) -> LedgerEn
         # the clamp above, so carrying the gross figure here would let the
         # annual reversal count that excess twice -- and it exceeds the charges
         # precisely in the heavy-export months that produce a surplus true-up.
-        in_cycle_offsets=_spent_offsets(bill, unspent),
+        in_cycle_offsets=in_cycle_offsets(bill),
     )
 
 
