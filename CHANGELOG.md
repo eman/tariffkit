@@ -5,8 +5,64 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
-### Changed
+## [0.8.0] - 2026-09-11
 
+### Added
+- **`audit reconcile --readings {influx,statistics}`**, so the two derivations
+  of one meter can be compared rather than assumed equal. Both are the same
+  Eagle-100 through different Home Assistant pipelines -- the recorder
+  aggregating an entity's states into hourly buckets, against its InfluxDB
+  integration writing those states as rows that get differenced -- so agreement
+  between them corroborates nothing about the meter; `--green-button` is the
+  option that fetches an independent record. What it is good for is finding a
+  derivation bug: the two agree on a cycle's totals to the kilowatt-hour and
+  disagree about which hours the energy arrived in, 19.9 kWh of export over one
+  720-hour cycle across 189 hours. InfluxDB stays the default because it
+  reconciles two statements of four where the statistics reconcile none, though
+  scored against the time-of-use kilowatt-hours the statement prints itself both
+  reproduce the import split to within 0.03 kWh.
+- **Meter comparisons name the entity they read.** A delta line saying
+  "statement vs influx" left the one thing a reader needs unstated -- both
+  pipelines carry the unfiltered Eagle counters and the filtered pair, so it now
+  reads "statement vs influx:eagle_100_total_energy_received".
+- **The ceiling that caps `credit_applied`, published** (#58). Export credits
+  are scoped, so what a cycle can spend is capped bucket by bucket rather than
+  by the charge total -- a cycle holding $34.78 of charges and $19.94 of credit
+  can apply $8.24, because the credit is nearly all generation credit and the
+  generation charges ran out. Every term of that was published except the one
+  that explained it, leaving a dashboard to infer the cap from a ratio and get
+  the mechanism wrong. The `credit_buckets` attribute now gives, per bucket, the
+  charges it may reach, the credit it had, and what it spent, with
+  `sum(charges) + non_offsettable == gross_charges` and
+  `sum(applied) == credit_applied` on both the cycle and the day. The entity
+  description states the per-bucket ceiling too; it previously covered only the
+  annual-true-up carry.
+- **[Use cases](docs/use-cases.md)**: the four questions the calculator answers
+  -- a cycle without solar, a cycle with a credit bank, realized solar payback,
+  and comparing rate plans on historical data -- organized by how far back each
+  has to remember, with a runnable recipe and the traps for each. Chief among
+  them: `Bill.total` is not what you owe, and ranking rate plans by it picks the
+  wrong plan.
+- **`uncompensated_kwh` on the money entities**, when a cycle has any. Net
+  Billing begins at Permission To Operate, so the cycle containing PTO exports
+  energy the tariff grants nothing for -- the arrangement starting, not a
+  defect. The library has carried the figure since the pre-PTO note stopped
+  disqualifying the whole credit bank, but nothing published it, so a dashboard
+  reading `compensated_kwh` against the export meter saw a shortfall with no
+  term to explain it. The attribute is absent rather than zero on cycles that
+  have none, which is most of them.
+- **The integration's imports are checked against the library in the tree.**
+  A top-level `from tariffkit...` that the library no longer provides fails
+  collection loudly; a function-local one -- `backfill.py` and `bank.py` each
+  carry one -- does not, and would surface as an `ImportError` in somebody's
+  Home Assistant instead. `test_packaging.py` now walks the integration's ASTs
+  and resolves every imported name. It deliberately checks the tree, not the
+  released distribution the manifest pins: the pin is the last release until a
+  release commit bumps it, so comparing against PyPI would be red between every
+  pair of releases, and the release itself is safe by construction because the
+  wheel and the manifest are built from the same tree.
+
+### Changed
 #### Upgrading Home Assistant: re-run the backfill
 
 Nothing has to be migrated. The config entry is still version 3, so
@@ -526,6 +582,16 @@ refused for being *more* private than asked. Reads accept the directory and
 check the account file's own 0600, which is what protects it; writes create it
 0700 and tighten it, that being the point at which doing so is ours to do.
 
+#### Uncompensated pre-PTO exports are reported as a figure, not a warning
+
+Net Billing begins at Permission To Operate, so the cycle containing it always
+holds exports the tariff grants nothing for -- the arrangement starting, not a
+defect. `Bill.warnings` means "something here may be wrong" and
+`BankState.trustworthy` disqualifies a bank for any entry in it, so that one
+note kept a real balance unspendable for its whole first year. The energy is
+now `Bill.uncompensated_kwh` and is published as an entity attribute, and
+counterfactual rate comparisons can price a pre-PTO month without filtering a
+warning string to do it.
 
 ### Fixed
 - **`tariffkit bill` uses your account profile without being asked.** With one
@@ -728,71 +794,6 @@ check the account file's own 0600, which is what protects it; writes create it
   each record through the logging machinery, and does not collide with the
   plugin. A suite reporting an error beside its passes still looks green at a
   glance, which is how this survived.
-
-### Changed
-- **Uncompensated pre-PTO exports are reported as a figure, not a warning.**
-  Net Billing begins at Permission To Operate, so the cycle containing it always
-  holds exports the tariff grants nothing for -- the arrangement starting, not a
-  defect. `Bill.warnings` means "something here may be wrong" and
-  `BankState.trustworthy` disqualifies a bank for any entry in it, so that one
-  note kept a real balance unspendable for its whole first year. The energy is
-  now `Bill.uncompensated_kwh`, and counterfactual rate comparisons can price a
-  pre-PTO month without filtering a warning string to do it.
-
-### Added
-- **`audit reconcile --readings {influx,statistics}`**, so the two derivations
-  of one meter can be compared rather than assumed equal. Both are the same
-  Eagle-100 through different Home Assistant pipelines -- the recorder
-  aggregating an entity's states into hourly buckets, against its InfluxDB
-  integration writing those states as rows that get differenced -- so agreement
-  between them corroborates nothing about the meter; `--green-button` is the
-  option that fetches an independent record. What it is good for is finding a
-  derivation bug: the two agree on a cycle's totals to the kilowatt-hour and
-  disagree about which hours the energy arrived in, 19.9 kWh of export over one
-  720-hour cycle across 189 hours. InfluxDB stays the default because it
-  reconciles two statements of four where the statistics reconcile none, though
-  scored against the time-of-use kilowatt-hours the statement prints itself both
-  reproduce the import split to within 0.03 kWh.
-- **Meter comparisons name the entity they read.** A delta line saying
-  "statement vs influx" left the one thing a reader needs unstated -- both
-  pipelines carry the unfiltered Eagle counters and the filtered pair, so it now
-  reads "statement vs influx:eagle_100_total_energy_received".
-- **The ceiling that caps `credit_applied`, published** (#58). Export credits
-  are scoped, so what a cycle can spend is capped bucket by bucket rather than
-  by the charge total -- a cycle holding $34.78 of charges and $19.94 of credit
-  can apply $8.24, because the credit is nearly all generation credit and the
-  generation charges ran out. Every term of that was published except the one
-  that explained it, leaving a dashboard to infer the cap from a ratio and get
-  the mechanism wrong. The `credit_buckets` attribute now gives, per bucket, the
-  charges it may reach, the credit it had, and what it spent, with
-  `sum(charges) + non_offsettable == gross_charges` and
-  `sum(applied) == credit_applied` on both the cycle and the day. The entity
-  description states the per-bucket ceiling too; it previously covered only the
-  annual-true-up carry.
-- **[Use cases](docs/use-cases.md)**: the four questions the calculator answers
-  -- a cycle without solar, a cycle with a credit bank, realized solar payback,
-  and comparing rate plans on historical data -- organized by how far back each
-  has to remember, with a runnable recipe and the traps for each. Chief among
-  them: `Bill.total` is not what you owe, and ranking rate plans by it picks the
-  wrong plan.
-- **`uncompensated_kwh` on the money entities**, when a cycle has any. Net
-  Billing begins at Permission To Operate, so the cycle containing PTO exports
-  energy the tariff grants nothing for -- the arrangement starting, not a
-  defect. The library has carried the figure since the pre-PTO note stopped
-  disqualifying the whole credit bank, but nothing published it, so a dashboard
-  reading `compensated_kwh` against the export meter saw a shortfall with no
-  term to explain it. The attribute is absent rather than zero on cycles that
-  have none, which is most of them.
-- **The integration's imports are checked against the library in the tree.**
-  A top-level `from tariffkit...` that the library no longer provides fails
-  collection loudly; a function-local one -- `backfill.py` and `bank.py` each
-  carry one -- does not, and would surface as an `ImportError` in somebody's
-  Home Assistant instead. `test_packaging.py` now walks the integration's ASTs
-  and resolves every imported name. It deliberately checks the tree, not the
-  released distribution the manifest pins: the pin is the last release until a
-  release commit bumps it, so comparing against PyPI would be red between every
-  pair of releases, and the release itself is safe by construction because the
-  wheel and the manifest are built from the same tree.
 
 ## [0.7.0] - 2026-09-07
 
@@ -1557,7 +1558,8 @@ Initial release.
 - Holiday calendars are extracted per vintage from the source data rather than
   recomputed, because the vintage files disagree in far-future years.
 
-[Unreleased]: https://github.com/eman/tariffkit/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/eman/tariffkit/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/eman/tariffkit/releases/tag/v0.8.0
 [0.7.0]: https://github.com/eman/tariffkit/releases/tag/v0.7.0
 [0.6.1]: https://github.com/eman/tariffkit/releases/tag/v0.6.1
 [0.6.0]: https://github.com/eman/tariffkit/releases/tag/v0.6.0
