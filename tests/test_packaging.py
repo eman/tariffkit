@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import importlib
 import json
 import struct
 import tomllib
@@ -79,3 +81,46 @@ def test_brand_assets_match_the_home_assistant_spec() -> None:
         width, height, _depth, color_type = struct.unpack(">IIBB", header[16:26])
         assert (width, height) == (side, side)
         assert color_type == 6, f"{name} must keep its alpha channel"
+
+
+def test_the_integration_imports_only_what_the_library_exports() -> None:
+    """Every `from tariffkit...` name in the integration must resolve.
+
+    The suite imports the integration's modules, so a name missing from a
+    top-level import fails collection loudly. A name imported inside a function
+    does not: `backfill.py` and `bank.py` each carry one, and the branch that
+    runs it may not run in a given test session -- it would surface as an
+    `ImportError` in somebody's Home Assistant instead.
+
+    This is deliberately about the library *in the tree*. The version in the
+    manifest is the last released one until a release commit bumps it, so
+    comparing against the published distribution would be red between every
+    pair of releases and say nothing; the release itself is safe by
+    construction, because the wheel and the manifest are built from the same
+    tree.
+    """
+    missing: list[str] = []
+    for path in sorted((ROOT / "custom_components" / "tariffkit").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            module = node.module or ""
+            if not module.startswith("tariffkit"):
+                continue
+            try:
+                imported = importlib.import_module(module)
+            except ImportError:
+                missing.append(f"{path.name}:{node.lineno} {module}")
+                continue
+            for alias in node.names:
+                if alias.name == "*" or hasattr(imported, alias.name):
+                    continue
+                try:
+                    importlib.import_module(f"{module}.{alias.name}")
+                except ImportError:
+                    missing.append(f"{path.name}:{node.lineno} {module}.{alias.name}")
+
+    assert not missing, "the integration imports names the library does not provide: " + "; ".join(
+        missing
+    )

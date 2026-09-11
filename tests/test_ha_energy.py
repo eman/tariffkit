@@ -52,9 +52,10 @@ def _entry(
     options: dict[str, Any] | None = None,
     *,
     billing_periods: tuple[BillingPeriod, ...] = (),
+    pto_date: date = date(2026, 1, 1),
 ) -> MockConfigEntry:
     profile = AccountProfile(
-        (AccountEpoch(date(1970, 1, 1), Config(tariff="E-ELEC", pto_date=date(2026, 1, 1))),),
+        (AccountEpoch(date(1970, 1, 1), Config(tariff="E-ELEC", pto_date=pto_date)),),
         name="metered",
         billing_periods=billing_periods,
     )
@@ -531,6 +532,65 @@ async def test_metered_energy_is_configured_only_after_setup(hass: HomeAssistant
     # And the options menu is where it does appear.
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert "meters" in result["menu_options"]
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_a_cycle_holding_pto_reports_what_it_earned_nothing_for(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """The pre-PTO exports stopped being a warning; they must not vanish.
+
+    That note left `Bill.warnings` because any entry there disqualifies the
+    whole credit bank, which kept a real balance unspendable for its first
+    year. Nothing then published the figure, so the one cycle in an account's
+    life that contains Permission To Operate said nothing at all about the
+    energy it exported for no credit.
+    """
+    freezer.move_to(NOW)
+    seed = datetime(2026, 8, 1, tzinfo=PACIFIC)
+    await _record(hass, IMPORT_ENTITY, [(seed, 1000.0), (NOW.replace(hour=13, minute=0), 1010.0)])
+    # Exporting on both sides of the fifteenth, in hourly amounts the
+    # plausibility ceiling accepts.
+    await _record(
+        hass,
+        EXPORT_ENTITY,
+        [
+            (seed, 500.0),
+            (datetime(2026, 8, 10, 12, tzinfo=PACIFIC), 530.0),
+            (NOW.replace(hour=13, minute=0), 560.0),
+        ],
+    )
+    entry = _entry(_meter_options(**{CONF_CYCLE_START_DAY: 1}), pto_date=date(2026, 8, 15))
+    await _setup(hass, entry)
+
+    attributes = _state(hass, entry, "amount_due_cycle").attributes
+
+    assert attributes["uncompensated_kwh"] > 0
+    assert attributes["uncompensated_kwh"] <= attributes["exported_kwh"]
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_a_cycle_after_pto_carries_no_uncompensated_attribute(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Every cycle after the first would otherwise print a permanent zero."""
+    freezer.move_to(NOW)
+    seed = datetime(2026, 8, 1, tzinfo=PACIFIC)
+    await _record(hass, IMPORT_ENTITY, [(seed, 1000.0), (NOW.replace(hour=13, minute=0), 1010.0)])
+    await _record(
+        hass,
+        EXPORT_ENTITY,
+        [
+            (seed, 500.0),
+            (datetime(2026, 8, 10, 12, tzinfo=PACIFIC), 530.0),
+            (NOW.replace(hour=13, minute=0), 560.0),
+        ],
+    )
+    # The same readings, with the whole cycle inside the compensated period.
+    entry = _entry(_meter_options(**{CONF_CYCLE_START_DAY: 1}), pto_date=date(2026, 1, 1))
+    await _setup(hass, entry)
+
+    assert "uncompensated_kwh" not in _state(hass, entry, "amount_due_cycle").attributes
 
 
 @pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")

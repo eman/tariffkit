@@ -775,6 +775,24 @@ check the account file's own 0600, which is what protects it; writes create it
   has to remember, with a runnable recipe and the traps for each. Chief among
   them: `Bill.total` is not what you owe, and ranking rate plans by it picks the
   wrong plan.
+- **`uncompensated_kwh` on the money entities**, when a cycle has any. Net
+  Billing begins at Permission To Operate, so the cycle containing PTO exports
+  energy the tariff grants nothing for -- the arrangement starting, not a
+  defect. The library has carried the figure since the pre-PTO note stopped
+  disqualifying the whole credit bank, but nothing published it, so a dashboard
+  reading `compensated_kwh` against the export meter saw a shortfall with no
+  term to explain it. The attribute is absent rather than zero on cycles that
+  have none, which is most of them.
+- **The integration's imports are checked against the library in the tree.**
+  A top-level `from tariffkit...` that the library no longer provides fails
+  collection loudly; a function-local one -- `backfill.py` and `bank.py` each
+  carry one -- does not, and would surface as an `ImportError` in somebody's
+  Home Assistant instead. `test_packaging.py` now walks the integration's ASTs
+  and resolves every imported name. It deliberately checks the tree, not the
+  released distribution the manifest pins: the pin is the last release until a
+  release commit bumps it, so comparing against PyPI would be red between every
+  pair of releases, and the release itself is safe by construction because the
+  wheel and the manifest are built from the same tree.
 
 ## [0.7.0] - 2026-09-07
 
