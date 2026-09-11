@@ -17,9 +17,6 @@ from .. import __version__
 from ..config import Config
 from ..engine import RateEngine
 from ..errors import ConfigError, TariffKitError
-
-if TYPE_CHECKING:
-    from ..sources.meters import MeterReader
 from ..models import PriceCurve, PricePoint
 from ..secrets import (
     SECRET_NAMES,
@@ -620,54 +617,6 @@ def _basis_of(cycle: Any, origins: Mapping[Any, str]) -> str:
     return "statement"
 
 
-def _open_meter(args: argparse.Namespace, profile: object | None) -> MeterReader:
-    """Turn the command line into a reader, choosing one if nobody said.
-
-    The only place in the CLI that knows a source can be more than one thing.
-    Everything downstream asks the reader for readings and prints what the
-    reader calls itself.
-    """
-    from ..sources import HaSettings, InfluxSettings, PgeSettings
-    from ..sources.meters import (
-        GreenButtonExport,
-        GreenButtonFile,
-        HomeAssistantMeter,
-        InfluxMeter,
-    )
-
-    sources = getattr(profile, "meter_sources", None)
-    chosen = args.source or _default_meter_source(args, profile)
-    if chosen in {"green-button", "csv"} and args.csv is not None:
-        return GreenButtonFile(sys.stdin if str(args.csv) == "-" else args.csv)
-    if chosen == "ha":
-        return HomeAssistantMeter(
-            HaSettings.load(
-                config_path=args.config,
-                profile_source=getattr(sources, "ha", None),
-                import_entity=args.ha_import_entity,
-                export_entity=args.ha_export_entity,
-            ),
-            resolution=args.ha_resolution,
-        )
-    if chosen == "influx":
-        return InfluxMeter(
-            InfluxSettings.load(
-                config_path=args.config,
-                profile_source=getattr(sources, "influx", None),
-                import_entity=args.influx_import_entity,
-                export_entity=args.influx_export_entity,
-            ),
-            minutes=args.influx_resolution,
-        )
-    try:
-        pge: Any = PgeSettings.load(config_path=args.config)
-    except TariffKitError:
-        # No login is not fatal: a cached export still prices, and the reader
-        # says what to do when none covers the window.
-        pge = None
-    return GreenButtonExport(pge, refresh=args.refresh)
-
-
 def _check_window_flags(args: argparse.Namespace) -> None:
     """Reject half a window before anything is looked up.
 
@@ -677,35 +626,6 @@ def _check_window_flags(args: argparse.Namespace) -> None:
     """
     if bool(args.start) != bool(args.end):
         raise ConfigError("give both --start and --end, or neither for the current cycle")
-
-
-def _default_meter_source(args: argparse.Namespace, profile: object | None) -> str:
-    """Which source to read when nobody said, preferring one that is set up.
-
-    This used to be the constant "ha", which meant an account that priced its
-    bills from InfluxDB, or from a Green Button export it had already
-    downloaded, was told that HA_TOKEN was not set -- naming the one source it
-    had not configured rather than any of the ones it had.
-    """
-    from ..sources.availability import first_available_meter_source, survey
-
-    if args.csv is not None:
-        return "green-button"
-    statuses = survey(args.config, profile)
-    chosen = first_available_meter_source(statuses)
-    if chosen is not None:
-        return chosen
-    remedies = "\n".join(
-        f"  {status.name:<20}{status.remedy}" for status in statuses if not status.available
-    )
-    raise ConfigError(
-        "no meter source is configured, so there are no readings to price a "
-        "cycle from. Configure one of:\n"
-        f"{remedies}\n"
-        "or price an export you already have with `tariffkit bill --csv <file>`. "
-        "Rates themselves need none of this: `tariffkit now`, `forecast` and "
-        "`info` work as they are."
-    )
 
 
 def _known_periods(args: Any, profile: Any, *, refresh: bool = False) -> dict[Any, str]:
@@ -805,8 +725,7 @@ def _print_credentials() -> None:
     """
     import os
 
-    from ..secrets import SECRET_ENV, keyring_backend
-    from ..sources.homeassistant import load_dotenv
+    from ..secrets import SECRET_ENV, keyring_backend, load_dotenv
 
     backend = keyring_backend()
     print(f"keyring: {backend}" if backend else "keyring: none available here")
@@ -1142,7 +1061,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "sources":
-            from ..sources.availability import first_available_meter_source, survey
+            from .availability import first_available_meter_source, survey
 
             statuses = survey(getattr(args, "config", None), account_profile)
             if args.json:
@@ -1173,9 +1092,10 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "bill":
             from ..billing import BillEngine, BillingPeriod
+            from .meters import open_meter
 
             _check_window_flags(args)
-            meter = _open_meter(args, account_profile)
+            meter = open_meter(args, account_profile)
             # Resolved before the meter is read, because every reader but a
             # file is asked for a window -- and a file names its own only when
             # no dates were given.

@@ -50,10 +50,9 @@ from uuid import uuid4
 from ..billing import BillingPeriod, IntervalReading
 from ..config import default_config_path
 from ..errors import ConfigError, DataError
-from ..secrets import get_secret
+from ..secrets import get_secret, load_dotenv
 from ..timeutil import to_pacific
 from .greenbutton import GreenButtonLayout, read_green_button
-from .homeassistant import load_dotenv
 
 BASE = "https://myaccount.pge.com"
 LOGIN_PATH = "/myaccount/s/login/"
@@ -1263,6 +1262,16 @@ def read_green_button_download(
     to reach for when the same range may be asked for again.
     """
     return parse_green_button(read_green_button_export(settings, start, end), layout)
+
+
+def green_button_cache_dir() -> Path:
+    """Where downloaded exports are kept, for a client that wants to look.
+
+    Public because a front end reporting what it can do offline has to know
+    whether anything is cached, and reaching for a private name to find out is
+    how a boundary stops being one.
+    """
+    return _default_export_cache()
 
 
 def _default_export_cache() -> Path:

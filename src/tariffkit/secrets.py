@@ -1,9 +1,10 @@
-"""Credentials stored in the operating system's keyring."""
+"""Where credentials come from: the OS keyring, and ``.env``."""
 
 from __future__ import annotations
 
 import importlib
 import os
+from pathlib import Path
 from typing import Any, Final, Protocol, cast
 
 from .errors import ConfigError
@@ -39,6 +40,36 @@ SECRET_ENV: Final = {
     "pge.username": "PGE_USERNAME",
     "pge.validation_cookie": "PGE_VALIDATION_COOKIE",
 }
+
+
+def load_dotenv(path: str | Path | None = None) -> dict[str, str]:
+    """Parse a ``.env`` file leniently, returning what it defines.
+
+    Here rather than beside a source client: every settings loader reads the
+    same file, and it lived in the Home Assistant module only because that was
+    the first one to need it -- which meant InfluxDB, PG&E and the MQTT
+    publisher all imported Home Assistant to parse a text file.
+
+    Tolerates ``KEY = "value"`` with spaces around the equals and quotes around
+    the value, which is how these files are usually written by hand. Missing
+    files yield nothing rather than raising: a token may equally come from the
+    environment.
+    """
+    if path is None:
+        from .config import default_dotenv_path
+
+        path = default_dotenv_path()
+    found: dict[str, str] = {}
+    file = Path(path)
+    if not file.is_file():
+        return found
+    for line in file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        found[key.strip()] = value.strip().strip('"').strip("'")
+    return found
 
 
 class _KeyringErrors(Protocol):

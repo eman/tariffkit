@@ -24,8 +24,7 @@ from ..errors import ConfigError, PublishError
 from ..interop import forecast_lists, predbat_group_payload, predbat_payload
 from ..interop.predbat import GroupPayload
 from ..models import PricePoint
-from ..secrets import get_secret
-from ..sources.homeassistant import load_dotenv
+from ..secrets import get_secret, load_dotenv
 from ..timeutil import next_hour, now_pacific
 from .discovery import discovery_payloads
 

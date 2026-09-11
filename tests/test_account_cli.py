@@ -530,7 +530,7 @@ def test_home_assistant_is_still_preferred_when_more_than_one_source_works(
     monkeypatch.setenv("TARIFFKIT_HA_EXPORT_ENTITY", "sensor.out")
     monkeypatch.setattr("tariffkit.sources.cached_bill_periods", lambda *a, **k: [])
 
-    from tariffkit.cli.commands import _default_meter_source
+    from tariffkit.cli.meters import _default_meter_source
 
     args = argparse.Namespace(csv=None, config=None)
     assert _default_meter_source(args, None) == "ha"

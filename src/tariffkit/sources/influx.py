@@ -38,9 +38,9 @@ from ..account.model import MeterSource
 from ..billing.models import IntervalReading
 from ..config import default_config_path, default_dotenv_path
 from ..errors import ConfigError, DataError
-from ..secrets import get_secret
+from ..metering import monotonic
+from ..secrets import get_secret, load_dotenv
 from ..timeutil import to_pacific
-from .homeassistant import load_dotenv
 
 #: No default pair: series names are site-specific, and the one that used to be
 #: here named the hardware this was developed against. Prefer the *raw* counters
@@ -186,44 +186,6 @@ def _sql_name(name: str, what: str) -> str:
     if not _ENTITY_RE.match(name):
         raise ConfigError(f"unsupported {what} {name!r}")
     return name
-
-
-def monotonic(samples: list[tuple[datetime, float]]) -> list[tuple[datetime, float]]:
-    """Drop readings that cannot be a cumulative counter moving forward.
-
-    A meter reader re-establishes its session with the meter several times a
-    day and publishes exactly ``0.0`` while it does -- about one sample in ten
-    on the data this was written against. A reading that is zero, negative, or
-    lower than one already seen is a
-    device artefact, not energy, and differencing across it would invent a huge
-    interval and then a compensating hole.
-
-    This is the same rule the Home Assistant template filter applies, reproduced
-    here so the unfiltered series -- which reaches back nine months further --
-    can be used directly.
-
-    KNOWN LIMITATION, deliberately not papered over: a counter that *restarts*
-    at a lower base -- a meter swap, a firmware reset, a 32-bit wrap -- leaves
-    every later sample below the old maximum, so this discards the remainder of
-    the window and the bill comes out short and plausible. Detecting it here
-    was tried and withdrawn: a rule strong enough to catch a noisy restart also
-    fired on a single spuriously *high* sample, which poisons the maximum and
-    makes every subsequent normal reading look like a restart. Turning that
-    into a hard error broke legitimate reads, which on the Home Assistant side
-    means every entity goes unavailable. Separating the two cases needs
-    upward-outlier rejection this does not have, so the artefact rule stands
-    and the gap is recorded rather than half-closed.
-    """
-    kept: list[tuple[datetime, float]] = []
-    highest: float | None = None
-    for moment, value in samples:
-        if value is None or value <= 0:
-            continue
-        if highest is not None and value < highest:
-            continue
-        highest = value
-        kept.append((moment, value))
-    return kept
 
 
 def _query(settings: InfluxSettings, sql: str) -> list[dict[str, Any]]:

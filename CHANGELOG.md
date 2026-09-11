@@ -42,6 +42,35 @@ All notable changes to this project are documented here. This project follows
   already carries `meter_sources.ha` offers those as the suggested values.
 
 ### Changed
+- **The library no longer decides where consumption data comes from.** Rate
+  data is vendored because a tariff is the same everywhere; a meter is not, and
+  which one to read is the client's answer. The engine boundary was already
+  right -- `tariffkit.billing` has never imported `tariffkit.sources` -- but
+  three things around it were not:
+
+  - `tariffkit.sources.availability`, added earlier in this cycle, was library
+    code whose remedies named `tariffkit` commands. It is now
+    `tariffkit.cli.availability`, beside the front end whose vocabulary it
+    speaks, and reader construction moved with it to `tariffkit.cli.meters`.
+    The Home Assistant integration answers the same question in its own terms,
+    with an entity picker.
+  - **`tariffkit.metering`** is new: `interval_energy`, `carry`, `monotonic`
+    and `MAX_INTERVAL_KW`, the arithmetic that turns a cumulative counter into
+    interval energy and recognises the drop-to-zero artefact. These were inside
+    the Home Assistant client, so the Home Assistant *integration* imported a
+    websocket client to reuse three functions that make no network calls, and
+    the InfluxDB client kept its own half of the same idea. No dependency, no
+    extra, no client.
+  - `load_dotenv` moved from the Home Assistant client to `tariffkit.secrets`,
+    which is where "what is configured" already lives. InfluxDB, PG&E and the
+    MQTT publisher were each importing Home Assistant to parse a text file. It
+    is still importable from its old home.
+
+  `PgeSettings`, `HaSettings` and `InfluxSettings` stay in `tariffkit.sources`
+  behind their existing extras -- they are useful, and the audit harness and
+  CLI both use them -- but nothing in the library builds or chooses one, and
+  importing `tariffkit` pulls in no client and no extra.
+
 - **`bill` no longer knows what a source is.** It carried a branch per source
   -- Home Assistant, InfluxDB, a Green Button export, a CSV -- each loading its
   own settings, doing its own window arithmetic, and formatting its own note,

@@ -39,7 +39,11 @@ from ..account.model import MeterSource
 from ..billing.models import IntervalReading
 from ..config import default_config_path
 from ..errors import ConfigError, DataError
-from ..secrets import get_secret
+
+# `load_dotenv` is re-exported: it lives in `secrets` now, but callers have
+# always imported it from here.
+from ..metering import MAX_INTERVAL_KW, carry, interval_energy
+from ..secrets import get_secret, load_dotenv
 from ..timeutil import to_pacific
 
 log = logging.getLogger(__name__)
@@ -54,41 +58,6 @@ PERIODS: dict[str, timedelta] = {"5minute": timedelta(minutes=5), "hour": timede
 #: meant an unconfigured install quietly asked Home Assistant about somebody
 #: else's sensors. Entity names are site-specific; a wrong guess is not a
 #: better starting point than no guess.
-
-#: Ceiling on implied power for one interval, in kW. Anything above it is a
-#: counter artefact rather than energy.
-#:
-#: Statistics restart their running ``sum`` when recording is interrupted, and
-#: the first point of the new epoch reports the whole accumulated total as its
-#: ``change``. One real instance put 543.663 kWh in a five-minute slot -- about
-#: 6,500 kW, against a 200 A service that tops out near 48 kW. Set well above any
-#: residential service so it only ever catches the impossible.
-MAX_INTERVAL_KW = 100.0
-
-
-def load_dotenv(path: str | Path | None = None) -> dict[str, str]:
-    """Parse a ``.env`` file leniently, returning what it defines.
-
-    Tolerates ``KEY = "value"`` with spaces around the equals and quotes around
-    the value, which is how these files are usually written by hand. Missing
-    files yield nothing rather than raising: a token may equally come from the
-    environment.
-    """
-    if path is None:
-        from ..config import default_dotenv_path
-
-        path = default_dotenv_path()
-    found: dict[str, str] = {}
-    file = Path(path)
-    if not file.is_file():
-        return found
-    for line in file.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        found[key.strip()] = value.strip().strip('"').strip("'")
-    return found
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,69 +160,6 @@ class HaSettings:
             import_entity=values.get("import_entity") or None,
             export_entity=values.get("export_entity") or None,
         )
-
-
-def carry(
-    previous: tuple[float, float] | None, slot: float, state: float | None
-) -> tuple[float, float] | None:
-    """The last usable ``(slot, counter)`` pair, given this row.
-
-    A row whose ``state`` is zero or missing is the artefact itself, so it is
-    not what the next row should difference against -- the previous good reading
-    is, and keeping it is what lets a single spoiled interval be repaired rather
-    than propagating.
-    """
-    if state is None:
-        return previous
-    value = float(state)
-    return (slot, value) if value > 0 else previous
-
-
-def interval_energy(
-    change: float | None,
-    state: float | None,
-    previous: tuple[float, float] | None,
-    slot: float,
-    step: float,
-    max_kw: float = MAX_INTERVAL_KW,
-) -> float | None:
-    """One interval's energy, repairing what the recorder spoiled.
-
-    ``change`` is what the recorder believes the counter advanced by, and it is
-    wrong whenever the source dropped to zero: a ``total_increasing`` sensor
-    reading 0.0 is taken for a counter reset, so the next interval's ``change``
-    carries the whole counter -- 1455 kWh on a meter that had moved 0.003. The
-    A meter reader does this several times a day while it re-establishes
-    its meter session.
-
-    Refusing that row is right and dropping the interval with it is not. The
-    true figure is still in ``state``, which is the counter itself: difference
-    it against the previous interval and the energy comes back. On a real
-    account that recovered 14.1 kWh of a cycle's 68.3 across 56 hours.
-
-    Only across *consecutive* intervals. A gap means the counter also advanced
-    through intervals nobody recorded, and crediting that whole advance to the
-    interval the series resumes would price hours of energy at one interval's
-    time-of-use rate -- worse than the hole, and confidently so.
-
-    ``previous`` is the last usable ``(slot, state)`` pair for this entity, as
-    :func:`carry` maintains it. Slots and ``step`` are in seconds.
-
-    :func:`tariffkit.sources.influx.monotonic` is the same repair one layer
-    down, applied to raw samples rather than to recorded intervals, and its rule
-    is the same: a reading that is zero or below one already seen is a device
-    artefact and not energy.
-    """
-    ceiling = max_kw * step / 3600
-    if change is not None and 0 <= change <= ceiling:
-        return change
-    if state is None or state <= 0 or previous is None:
-        return None
-    was_at, was = previous
-    if abs(slot - was_at - step) > 1.0:
-        return None
-    advance = state - was
-    return advance if 0 <= advance <= ceiling else None
 
 
 def _readings_from(

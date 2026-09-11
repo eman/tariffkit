@@ -46,9 +46,9 @@ from tariffkit.billing import (
 )
 from tariffkit.billing.engine import compute_segments
 from tariffkit.errors import TariffKitError
-from tariffkit.sources.homeassistant import MAX_INTERVAL_KW as _MAX_INTERVAL_KW
-from tariffkit.sources.homeassistant import carry as _carry
-from tariffkit.sources.homeassistant import interval_energy
+from tariffkit.metering import MAX_INTERVAL_KW as _MAX_INTERVAL_KW
+from tariffkit.metering import carry as _carry
+from tariffkit.metering import interval_energy
 from tariffkit.timeutil import PACIFIC, hour_floor, now_pacific, to_pacific
 
 from .const import (

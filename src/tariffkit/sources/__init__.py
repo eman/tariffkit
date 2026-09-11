@@ -31,15 +31,16 @@ what it happens to import, and putting the one file source somewhere else made
 it hard to find.
 """
 
+from ..metering import monotonic
+from ..secrets import load_dotenv
 from .greenbutton import GreenButtonLayout, read_green_button
 from .homeassistant import (
     HaSettings,
     describe_resolution,
-    load_dotenv,
     read_statistics,
     read_statistics_async,
 )
-from .influx import InfluxSettings, monotonic, read_counters
+from .influx import InfluxSettings, read_counters
 from .pge import (
     CachedExport,
     PgeSession,

@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from tariffkit.cli.availability import first_available_meter_source, survey
 from tariffkit.cli.commands import main
-from tariffkit.sources.availability import first_available_meter_source, survey
 
 METER_ENV = (
     "HA_HOST",

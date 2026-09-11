@@ -1,5 +1,11 @@
 """What each data source can answer right now, and what it cannot.
 
+This is CLI code, not library code: the remedies name `tariffkit` commands and
+the environment variables this front end documents, which is knowledge about
+*this* client rather than about tariffs. A different client -- the Home
+Assistant integration -- answers the same question in its own vocabulary, with
+an entity picker and a config entry.
+
 Every source here is optional, and the useful combinations are not a line: an
 account with no utility login still prices a cycle from Home Assistant, one
 with no meter integration still prices a downloaded interval export, and one
@@ -53,7 +59,7 @@ class SourceStatus:
 
 
 def _ha(config_path: str | Path | None, profile: object | None) -> SourceStatus:
-    from .homeassistant import HaSettings
+    from ..sources.homeassistant import HaSettings
 
     features = ("bill --source ha",)
     try:
@@ -81,7 +87,7 @@ def _ha(config_path: str | Path | None, profile: object | None) -> SourceStatus:
 
 
 def _influx(config_path: str | Path | None, profile: object | None) -> SourceStatus:
-    from .influx import InfluxSettings
+    from ..sources.influx import InfluxSettings
 
     features = ("bill --source influx",)
     try:
@@ -108,7 +114,7 @@ def _influx(config_path: str | Path | None, profile: object | None) -> SourceSta
 
 
 def _pge(config_path: str | Path | None) -> SourceStatus:
-    from .pge import PgeSettings
+    from ..sources.pge import PgeSettings
 
     features = (
         "bill --source green-button",
@@ -129,10 +135,10 @@ def _pge(config_path: str | Path | None) -> SourceStatus:
 
 
 def _green_button_cache() -> SourceStatus:
-    from .pge import _default_export_cache
+    from ..sources.pge import green_button_cache_dir
 
     features = ("bill --source green-button, without a login",)
-    base = _default_export_cache()
+    base = green_button_cache_dir()
     held = sorted(base.glob("*.csv")) if base.is_dir() else []
     if not held:
         return SourceStatus(
