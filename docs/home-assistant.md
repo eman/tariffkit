@@ -701,8 +701,8 @@ bundled account only the second reading is exact.
 Every money entity carries its own decomposition as attributes —
 `energy_charges`, `taxes`, `export_credits`, `fixed_charges`, `credit_applied`,
 `bank_change`, `gross_charges`, `in_cycle_offsets`, `non_offsettable`,
-`not_paid_out`, `imported_kwh`, `exported_kwh`, the time-of-use `buckets`,
-`quality`, and any
+`not_paid_out`, `imported_kwh`, `exported_kwh`, `compensated_kwh`, the
+time-of-use `buckets`, `quality`, and any
 pricing `warnings` — so a surprising figure is auditable from the entity:
 
 ```yaml
@@ -714,6 +714,14 @@ The `buckets` on a **today** entity are the cycle's buckets less yesterday's, so
 they decompose the figure they are shown beside. Bucket energy and charge
 accumulate hour by hour, which makes differencing them exact — unlike the
 cycle-cumulative parts the state is careful not to difference.
+
+`compensated_kwh` is the exported energy the tariff pays for, which is less
+than `exported_kwh` whenever a site exported before its PTO date. A cycle with
+any such energy also carries `uncompensated_kwh`, the difference — Net Billing
+begins at Permission To Operate, so the cycle containing that date always has
+some, and it is the arrangement starting rather than a defect. The attribute is
+absent, not zero, on the cycles that have none, which is every cycle after the
+one holding PTO.
 
 **When the bank is not applied.** What a cycle owes depends on the credit
 carried into it, so the integration refuses to guess: if the export credit bank

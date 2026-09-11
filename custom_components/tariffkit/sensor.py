@@ -486,6 +486,19 @@ def _compensated(bill: Bill, entry: LedgerEntry) -> float:
     return entry.exported_kwh
 
 
+def _uncompensated(bill: Bill, entry: LedgerEntry) -> float:
+    """Exported energy the tariff grants nothing for.
+
+    Net Billing begins at Permission To Operate, so the cycle containing PTO
+    always holds exports that earn no credit -- the arrangement starting, not a
+    defect. It used to reach the reader as a `Bill.warnings` entry, which
+    disqualified the whole credit bank for its first year, and moving it to a
+    figure left it reaching the reader not at all.
+    """
+    del entry
+    return bill.uncompensated_kwh
+
+
 def _gross(bill: Bill, entry: LedgerEntry) -> float:
     """Charges as the ledger sees them, before any credit is applied.
 
@@ -817,6 +830,11 @@ def _money_attrs(span: str, description: str) -> Callable[[TariffKitData], dict[
             ATTR_BUCKETS: [bucket.to_dict() for bucket in _buckets(data, span, bill)],
             ATTR_QUALITY: {"complete": usage.complete and not data.opening_note},
             "compensated_kwh": figure(_compensated),
+            **(
+                {"uncompensated_kwh": figure(_uncompensated)}
+                if _figure(data, span, _uncompensated)
+                else {}
+            ),
             "warnings": [
                 *usage.warnings(span),
                 *([data.opening_note] if data.opening_note else []),
