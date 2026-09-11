@@ -7,6 +7,14 @@ All notable changes to this project are documented here. This project follows
 
 ## [0.8.1] - 2026-09-11
 
+### Changed
+- **Home Assistant 2026.8.0 is the minimum**, up from 2026.3.0. The fix below
+  calls `device_registry.async_get_device_by_identifier`, which first ships in
+  2026.8.0, so the floor moves with it; HACS will not offer this update to an
+  older core. The old floor was never a tested one -- it was the first release
+  on the declared Python patch line, which says nothing about whether anything
+  ran there, and the suite has only ever pinned the 2026.8 series.
+
 ### Fixed
 - **The device lookup no longer uses a deprecated registry call.** Running the
   integration in a stock Home Assistant container logged
