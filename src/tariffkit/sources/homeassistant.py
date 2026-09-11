@@ -1,7 +1,7 @@
 """Interval readings from Home Assistant's long-term statistics.
 
-The meter reader -- a Rainforest Eagle-100 on the smart meter -- publishes
-cumulative kWh counters for grid import and export. Home Assistant records those
+The meter reader -- a device paired with the smart meter -- publishes cumulative
+kWh counters for grid import and export. Home Assistant records those
 as long-term statistics, which is the only place a full billing cycle survives:
 the states history behind ``/api/history`` is purged on the recorder's schedule,
 typically ten days, while statistics are kept indefinitely.
@@ -49,7 +49,7 @@ Resolution = Literal["auto", "5minute", "hour"]
 #: Home Assistant's own period names, finest first.
 PERIODS: dict[str, timedelta] = {"5minute": timedelta(minutes=5), "hour": timedelta(hours=1)}
 
-#: The Rainforest Eagle-100 pair, monotonic-filtered. The unfiltered entities are
+#: A smart-meter reader's monotonic-filtered pair. The unfiltered entities are
 #: named ``..._total_energy_delivered`` and drop to zero several times a day when
 #: the device re-establishes its meter session, so they are the wrong default
 #: despite the more official-looking name.
@@ -200,7 +200,7 @@ def interval_energy(
     wrong whenever the source dropped to zero: a ``total_increasing`` sensor
     reading 0.0 is taken for a counter reset, so the next interval's ``change``
     carries the whole counter -- 1455 kWh on a meter that had moved 0.003. The
-    Rainforest Eagle-100 does this several times a day while it re-establishes
+    A meter reader does this several times a day while it re-establishes
     its meter session.
 
     Refusing that row is right and dropping the interval with it is not. The
@@ -249,7 +249,7 @@ def _readings_from(
     **Each direction is judged on its own.** Import and export are separate
     entities that restart their running ``sum`` independently, and refusing the
     whole interval when either one did let a single bad series destroy the
-    other's good energy. Measured against an unfiltered Eagle-100 export
+    other's good energy. Measured against an unfiltered smart-meter export
     counter, whose session resets 5.5 times a day: the export series' 56 bad
     hours took 21.4 kWh of perfectly good *import* with them, 74.5 kWh billed as
     53.1. The two entities are the reason `check_coverage` sees one series --

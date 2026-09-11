@@ -1,7 +1,7 @@
 """Interval readings from raw meter counters in InfluxDB 3.
 
 Home Assistant writes each numeric sensor sample to InfluxDB, so the same
-Rainforest Eagle-100 counters land here as a plain time series of readings
+smart-meter counters land here as a plain time series of readings
 rather than the pre-aggregated buckets :mod:`tariffkit.sources.homeassistant`
 returns. Two consequences, and they point in opposite directions.
 
@@ -42,7 +42,7 @@ from ..secrets import get_secret
 from ..timeutil import to_pacific
 from .homeassistant import load_dotenv
 
-#: The raw Eagle-100 counters. Unfiltered on purpose -- see the module docstring.
+#: The raw meter counters. Unfiltered on purpose -- see the module docstring.
 DEFAULT_IMPORT_ENTITY = "eagle_100_total_energy_delivered"
 DEFAULT_EXPORT_ENTITY = "eagle_100_total_energy_received"
 
@@ -163,9 +163,10 @@ def _sql_name(name: str, what: str) -> str:
 def monotonic(samples: list[tuple[datetime, float]]) -> list[tuple[datetime, float]]:
     """Drop readings that cannot be a cumulative counter moving forward.
 
-    The Eagle-100 re-establishes its meter session several times a day and
-    publishes exactly ``0.0`` while it does -- about one sample in ten on this
-    data. A reading that is zero, negative, or lower than one already seen is a
+    A meter reader re-establishes its session with the meter several times a
+    day and publishes exactly ``0.0`` while it does -- about one sample in ten
+    on the data this was written against. A reading that is zero, negative, or
+    lower than one already seen is a
     device artefact, not energy, and differencing across it would invent a huge
     interval and then a compensating hole.
 

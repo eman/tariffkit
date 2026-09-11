@@ -5,6 +5,22 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+- **The documentation no longer names one brand of meter reader.** Docstrings,
+  guides, changelog entries and the `audit reconcile --readings` help described
+  the hardware this was developed against -- a Rainforest Eagle-100 -- as
+  though every reader were one. The behaviour being described is a class of
+  device, not that model: readers commonly publish a monotonic counter beside a
+  raw feed that drops to zero whenever the reader re-establishes its session
+  with the meter, which is the artefact the filtering exists for. The text now
+  says so.
+
+  The **default entity ids are unchanged** (`sensor.eagle_100_energy_delivered`
+  and its pair, `eagle_100_total_energy_*` for InfluxDB), so nothing to
+  configure and nothing to migrate. They are still one site's entity names
+  rather than anything general, and the configuration guide now says plainly
+  that they will not match yours unless you run the same device.
+
 ## [0.8.1] - 2026-09-11
 
 ### Changed
@@ -32,7 +48,7 @@ All notable changes to this project are documented here. This project follows
 ### Added
 - **`audit reconcile --readings {influx,statistics}`**, so the two derivations
   of one meter can be compared rather than assumed equal. Both are the same
-  Eagle-100 through different Home Assistant pipelines -- the recorder
+  smart meter through different Home Assistant pipelines -- the recorder
   aggregating an entity's states into hourly buckets, against its InfluxDB
   integration writing those states as rows that get differenced -- so agreement
   between them corroborates nothing about the meter; `--green-button` is the
@@ -45,8 +61,8 @@ All notable changes to this project are documented here. This project follows
   reproduce the import split to within 0.03 kWh.
 - **Meter comparisons name the entity they read.** A delta line saying
   "statement vs influx" left the one thing a reader needs unstated -- both
-  pipelines carry the unfiltered Eagle counters and the filtered pair, so it now
-  reads "statement vs influx:eagle_100_total_energy_received".
+  pipelines carry the unfiltered meter counters and the filtered pair, so it
+  now names the entity, as in "statement vs influx:grid_export_total".
 - **The ceiling that caps `credit_applied`, published** (#58). Export credits
   are scoped, so what a cycle can spend is capped bucket by bucket rather than
   by the charge total -- a cycle holding $34.78 of charges and $19.94 of credit
@@ -695,8 +711,8 @@ warning string to do it.
 - **A counter reset the recorder only believed in no longer costs the hour.**
   A `total_increasing` sensor reading 0.0 is taken for a counter reset, so the
   recorder reports the whole counter as the next hour's `change` -- 1455 kWh on
-  a meter that had moved 0.42. The Rainforest Eagle-100 does this several times
-  a day while it re-establishes its meter session. Refusing that figure was
+  a meter that had moved 0.42. A smart-meter reader does this several times a
+  day while it re-establishes its session with the meter. Refusing that figure was
   right and dropping the hour with it was not: the counter itself is in `state`,
   and differencing it against the previous hour brings the energy back. On the
   account this came from, a cycle credited 54.206 kWh against the filtered

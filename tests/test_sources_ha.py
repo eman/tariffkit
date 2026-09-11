@@ -271,7 +271,7 @@ class TestReadings:
         """Import and export restart their sums independently.
 
         Refusing the whole interval when either did let a bad series destroy the
-        good one beside it. Taken from a real account whose unfiltered Eagle-100
+        good one beside it. Taken from a real account whose unfiltered
         export counter resets its meter session 5.5 times a day: the export
         series' 56 bad hours took 21.4 kWh of good import with them, and a
         74.5 kWh cycle was billed as 53.1.

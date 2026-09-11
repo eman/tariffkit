@@ -571,14 +571,13 @@ below only ever compute forward from now.
 
 ### The counters do not have to reset
 
-They usually do not. The Rainforest Eagle-100's
-`sensor.eagle_100_energy_delivered` and `sensor.eagle_100_energy_received` are
-monotonic counters that only ever climb, and today's energy is a *difference*
-between two points on one.
+They usually do not. A smart-meter reader's grid-import and grid-export
+sensors are normally monotonic counters that only ever climb, and today's
+energy is a *difference* between two points on one.
 
 TariffKit does that arithmetic out of the recorder's own long-term statistics,
 which is where it belongs: a statistic's hourly `change` already absorbs
-counter restarts, integration reloads, and the Eagle's meter-session drops.
+counter restarts, integration reloads, and the reader's own session drops.
 Statistics compile at the top of the hour, so the hour in progress is read
 live off the entity state instead — the last completed hour's recorded value
 is a baseline the counter has advanced from. Anything implausible (a negative

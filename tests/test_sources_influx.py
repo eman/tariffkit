@@ -195,7 +195,7 @@ class TestSettings:
 
 class TestMonotonic:
     def test_a_drop_to_zero_is_discarded(self) -> None:
-        # The Eagle-100 republishes 0.0 while re-establishing its meter session,
+        # A meter reader republishes 0.0 while re-establishing its session,
         # about one sample in ten. Differencing across it would invent a huge
         # negative interval and then a compensating spike.
         samples = [(at(0), 100.0), (at(1), 0.0), (at(2), 101.0)]

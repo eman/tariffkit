@@ -142,8 +142,8 @@ tariffkit account source set ha \
   --grid-import-entity sensor.grid_import \
   --grid-export-entity sensor.grid_export
 tariffkit account source set influx \
-  --grid-import-entity eagle_100_total_energy_delivered \
-  --grid-export-entity eagle_100_total_energy_received \
+  --grid-import-entity grid_import_total \
+  --grid-export-entity grid_export_total \
   --apply
 ```
 

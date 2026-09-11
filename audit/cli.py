@@ -74,11 +74,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("influx", "statistics"),
         default="influx",
         help="which derivation of the meter prices the bill: InfluxDB counter samples "
-        "from eagle_100_total_energy_delivered/_received (default), or Home Assistant "
-        "hourly statistics from sensor.eagle_100_energy_delivered/_received. Both are "
-        "the same physical meter through different pipelines, so agreement between "
-        "them says nothing about whether the meter is right -- for that, use "
-        "--green-button, which fetches an independent record from the utility",
+        "(default), or Home Assistant hourly statistics -- both read the grid import "
+        "and export entities named in your configuration. Both are the same physical "
+        "meter through different pipelines, so agreement between them says nothing "
+        "about whether the meter is right -- for that, use --green-button, which "
+        "fetches an independent record from the utility",
     )
 
     run = sub.add_parser("run", help="download every statement the portal lists and reconcile it")
@@ -100,11 +100,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("influx", "statistics"),
         default="influx",
         help="which derivation of the meter prices the bill: InfluxDB counter samples "
-        "from eagle_100_total_energy_delivered/_received (default), or Home Assistant "
-        "hourly statistics from sensor.eagle_100_energy_delivered/_received. Both are "
-        "the same physical meter through different pipelines, so agreement between "
-        "them says nothing about whether the meter is right -- for that, use "
-        "--green-button, which fetches an independent record from the utility",
+        "(default), or Home Assistant hourly statistics -- both read the grid import "
+        "and export entities named in your configuration. Both are the same physical "
+        "meter through different pipelines, so agreement between them says nothing "
+        "about whether the meter is right -- for that, use --green-button, which "
+        "fetches an independent record from the utility",
     )
     run.add_argument(
         "--keep-statements",
@@ -340,7 +340,7 @@ def _reconcile(
         start, end = window(statement.period, read_hour=read_hour)
         # Keyed by the entity each reading came from, not by the store it came
         # out of. "influx" and "ha" name pipelines, and both pipelines carry
-        # several entities -- the unfiltered Eagle counters and the filtered
+        # several entities -- the unfiltered meter counters and the filtered
         # pair -- so a delta line reading "statement vs influx" left the one
         # thing a reader needs unstated: which sensor disagreed.
         influx_key = f"influx:{settings.export_entity}"
@@ -349,7 +349,7 @@ def _reconcile(
 
         # Home Assistant's hourly statistics, when asked for.
         #
-        # Not a second meter. It is the same Eagle-100 through a second
+        # Not a second meter. It is the same physical meter through a second
         # pipeline: Home Assistant's recorder aggregates the entity's states
         # into hourly buckets, while its InfluxDB integration writes the same
         # states as rows that `read_counters` differences. Agreement between

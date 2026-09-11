@@ -254,11 +254,16 @@ import_entity = "sensor.eagle_100_energy_delivered"
 export_entity = "sensor.eagle_100_energy_received"
 ```
 
-Both entities default to the Rainforest Eagle-100 pair above, so a `[home_assistant]`
-section is only needed to point elsewhere. Note the defaults are the
-**monotonic-filtered** entities — the similarly named
-`sensor.eagle_100_total_energy_delivered` is the raw device feed and drops to
-zero several times a day when the meter session restarts.
+Both entities default to the values shown above, so a `[home_assistant]`
+section is only needed to point at your own smart-meter reader. Those defaults
+name one such device and will not match your entity ids unless you happen to
+run the same one.
+
+Whatever you point them at, prefer a **monotonic-filtered** entity. Meter
+readers typically expose both a filtered counter and a raw device feed, and the
+raw one drops to zero several times a day when the reader restarts its session
+with the meter — differencing across that invents a huge interval and then a
+compensating hole.
 
 The access token can come from the OS keyring, `~/.config/tariffkit/.env`, or
 the environment.
@@ -317,7 +322,8 @@ export_entity = "eagle_100_total_energy_received"
 `host` may be a bare name (`https://` is assumed) or a full URL with a scheme
 and port; `/api/v3/query_sql` is appended either way. The entity defaults are
 the **raw** counters, unlike the Home Assistant defaults — they reach back much
-further, and the drop-to-zero artefacts are filtered out on read. A `sensor.`
+further, and the drop-to-zero artefacts are filtered out on read. As above, the
+defaults name one particular meter reader; point them at your own. A `sensor.`
 prefix is accepted and stripped, since InfluxDB stores the bare name. `table`
 defaults to `sensor_numeric`, which is what Home Assistant's InfluxDB
 integration writes.

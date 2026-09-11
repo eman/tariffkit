@@ -823,7 +823,7 @@ async def test_amount_due_is_what_a_statement_would_charge_not_the_bill_total(
 
 
 def test_a_counter_reset_the_recorder_believed_is_repaired_from_the_counter() -> None:
-    """The Eagle publishes 0.0 while re-establishing its meter session.
+    """A meter reader publishes 0.0 while re-establishing its meter session.
 
     A `total_increasing` sensor reading zero is taken for a counter reset, so
     the recorder reports the whole counter as the next hour's `change` -- 1455

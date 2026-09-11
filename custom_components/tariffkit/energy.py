@@ -6,8 +6,8 @@ between two points on a counter, not a state anyone can read directly.
 
 Long-term statistics already do that arithmetic, and they do it better than a
 listener could. The recorder's ``change`` for an hour is the counter's advance
-across it, absorbing counter restarts, integration reloads, and the Rainforest
-Eagle's meter-session drops on its own -- the same artefacts
+across it, absorbing counter restarts, integration reloads, and the meter
+reader's own session drops -- the same artefacts
 :mod:`tariffkit.sources.homeassistant` exists to work around when it reads a
 whole billing cycle back. Statistics, though, only compile at the top of the
 hour, so the current hour is read live off the entity state instead: the last
