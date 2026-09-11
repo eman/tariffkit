@@ -17,6 +17,9 @@ from .. import __version__
 from ..config import Config
 from ..engine import RateEngine
 from ..errors import ConfigError, TariffKitError
+
+if TYPE_CHECKING:
+    from ..sources.meters import MeterReader
 from ..models import PriceCurve, PricePoint
 from ..secrets import (
     SECRET_NAMES,
@@ -617,6 +620,54 @@ def _basis_of(cycle: Any, origins: Mapping[Any, str]) -> str:
     return "statement"
 
 
+def _open_meter(args: argparse.Namespace, profile: object | None) -> MeterReader:
+    """Turn the command line into a reader, choosing one if nobody said.
+
+    The only place in the CLI that knows a source can be more than one thing.
+    Everything downstream asks the reader for readings and prints what the
+    reader calls itself.
+    """
+    from ..sources import HaSettings, InfluxSettings, PgeSettings
+    from ..sources.meters import (
+        GreenButtonExport,
+        GreenButtonFile,
+        HomeAssistantMeter,
+        InfluxMeter,
+    )
+
+    sources = getattr(profile, "meter_sources", None)
+    chosen = args.source or _default_meter_source(args, profile)
+    if chosen in {"green-button", "csv"} and args.csv is not None:
+        return GreenButtonFile(sys.stdin if str(args.csv) == "-" else args.csv)
+    if chosen == "ha":
+        return HomeAssistantMeter(
+            HaSettings.load(
+                config_path=args.config,
+                profile_source=getattr(sources, "ha", None),
+                import_entity=args.ha_import_entity,
+                export_entity=args.ha_export_entity,
+            ),
+            resolution=args.ha_resolution,
+        )
+    if chosen == "influx":
+        return InfluxMeter(
+            InfluxSettings.load(
+                config_path=args.config,
+                profile_source=getattr(sources, "influx", None),
+                import_entity=args.influx_import_entity,
+                export_entity=args.influx_export_entity,
+            ),
+            minutes=args.influx_resolution,
+        )
+    try:
+        pge: Any = PgeSettings.load(config_path=args.config)
+    except TariffKitError:
+        # No login is not fatal: a cached export still prices, and the reader
+        # says what to do when none covers the window.
+        pge = None
+    return GreenButtonExport(pge, refresh=args.refresh)
+
+
 def _check_window_flags(args: argparse.Namespace) -> None:
     """Reject half a window before anything is looked up.
 
@@ -1122,108 +1173,25 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "bill":
             from ..billing import BillEngine, BillingPeriod
-            from ..sources import read_green_button
 
-            # Resolved before any source is read, because every one of them is
-            # asked for a window and a CSV on stdin is the only case where the
-            # readings themselves can supply it.
-            # A CSV names its own window when no dates are given -- but only
-            # for the source that reads a CSV. Every other source is asked for
-            # a period, so it has to be resolved even when a path was passed.
-            # Home Assistant first among those configured: it is the account's
-            # own meter, read through the recorder, and the one source measured
-            # against the statement to 0.00 kWh where the utility's own export
-            # was missing 30 days of a cycle. A CSV path names the Green Button
-            # reader, since that is what a CSV is.
             _check_window_flags(args)
-            if args.source is None:
-                args.source = _default_meter_source(args, account_profile)
-            reads_csv = args.source in {"green-button", "csv"} and args.csv is not None
+            meter = _open_meter(args, account_profile)
+            # Resolved before the meter is read, because every reader but a
+            # file is asked for a window -- and a file names its own only when
+            # no dates were given.
             period, cycle_basis = (
                 (None, "")
-                if reads_csv and not (args.start or args.end)
+                if not meter.needs_period and not (args.start or args.end)
                 else _billing_window(args, account_profile)
             )
-            note = ""
-            if args.source == "ha":
-                from ..sources import HaSettings, describe_resolution, read_statistics
-
-                assert period is not None  # every source but the CSV resolves one
-                ha_settings = HaSettings.load(
-                    config_path=args.config,
-                    profile_source=(
-                        account_profile.meter_sources.ha if account_profile is not None else None
-                    ),
-                    import_entity=args.ha_import_entity,
-                    export_entity=args.ha_export_entity,
-                )
-                readings = read_statistics(
-                    ha_settings,
-                    _midnight(period.start),
-                    _midnight(period.end) + timedelta(days=1),
-                    resolution=args.ha_resolution,
-                )
-                note = f"  source: Home Assistant statistics ({describe_resolution(readings)})"
-            elif args.source == "influx":
-                from ..sources import InfluxSettings, describe_resolution, read_counters
-
-                assert period is not None
-                influx_settings = InfluxSettings.load(
-                    config_path=args.config,
-                    profile_source=(
-                        account_profile.meter_sources.influx
-                        if account_profile is not None
-                        else None
-                    ),
-                    import_entity=args.influx_import_entity,
-                    export_entity=args.influx_export_entity,
-                )
-                step = timedelta(minutes=args.influx_resolution)
-                readings = read_counters(
-                    influx_settings,
-                    _midnight(period.start),
-                    _midnight(period.end) + timedelta(days=1),
-                    step,
-                )
-                # Described the same way the Home Assistant source describes
-                # itself. The two report the same interval in different words
-                # otherwise -- "744 x 60min" against "744 x hour" -- which reads
-                # as the sources disagreeing about something when they do not.
-                note = (
-                    f"  source: InfluxDB counters ({describe_resolution(readings)}; "
-                    f"totals are exact, distribution follows sample density)"
-                )
-            elif args.csv is not None:
-                readings = read_green_button(sys.stdin if str(args.csv) == "-" else args.csv)
-                note = f"  source: Green Button CSV ({len(readings)} intervals)"
-            else:
-                from ..sources import PgeSettings, cached_green_button
-
-                assert period is not None
-                try:
-                    pge: Any = PgeSettings.load(config_path=args.config)
-                except TariffKitError:
-                    # No login is not fatal: a cached export still prices, and
-                    # `cached_green_button` says what to do when none covers it.
-                    pge = None
-                export = cached_green_button(
-                    pge,
-                    period.start,
-                    period.end,
-                    refresh=args.refresh,
-                )
-                if cycle_basis and export.end < period.end:
-                    # The utility publishes a day behind, so an open cycle asked
-                    # for "through today" ends at the last read instead. Pricing
-                    # days it has no readings for would charge the Base Services
-                    # Charge for each and call the shortfall a gap in the meter.
-                    period = BillingPeriod(period.start, export.end)
-                readings = read_green_button(export.path)
-                origin = "downloaded" if export.downloaded else f"cached {export.covers}"
-                note = (
-                    f"  source: Green Button, {origin} "
-                    f"({len(readings)} intervals, {_short_path(export.path)})"
-                )
+            data = meter.read(period)
+            readings, note = data.readings, data.description
+            # A reader may know the window is shorter than it was asked for --
+            # the utility publishes a day behind, so an open cycle really ends
+            # at the last published read. Only an open cycle may be narrowed:
+            # explicit dates are the caller's answer, not a guess to refine.
+            if data.period is not None and cycle_basis:
+                period = data.period
 
             if period is None:
                 period = BillingPeriod.from_readings(readings)

@@ -163,7 +163,7 @@ def test_bill_without_dates_prices_the_open_cycle_from_statement_evidence(
             path=_export_csv(tmp_path), start=start, end=end, downloaded=False, covers="cached"
         )
 
-    monkeypatch.setattr("tariffkit.sources.cached_green_button", fake)
+    monkeypatch.setattr("tariffkit.sources.pge.cached_green_button", fake)
 
     assert main(["bill", "--source", "green-button"]) == 0
 
@@ -271,7 +271,7 @@ def _stub_export(
         "tariffkit.sources.cached_bill_periods", lambda *a, **k: portal_periods or []
     )
     monkeypatch.setattr(
-        "tariffkit.sources.cached_green_button",
+        "tariffkit.sources.pge.cached_green_button",
         lambda settings, start, end, **k: SimpleNamespace(
             path=_export_csv(tmp_path),
             start=start,
@@ -817,9 +817,13 @@ def test_bill_passes_profile_entities_and_cli_overrides(
         "HaSettings" if source == "ha" else "InfluxSettings",
         FakeSettings,
     )
+    # Patched where the reader looks it up, not on the package namespace: the
+    # readers import from their own module, so `tariffkit.sources.X` is a name
+    # nothing reads at call time.
     monkeypatch.setattr(
-        sources,
-        "read_statistics" if source == "ha" else "read_counters",
+        "tariffkit.sources.homeassistant.read_statistics"
+        if source == "ha"
+        else "tariffkit.sources.influx.read_counters",
         readings,
     )
 

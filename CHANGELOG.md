@@ -42,6 +42,23 @@ All notable changes to this project are documented here. This project follows
   already carries `meter_sources.ha` offers those as the suggested values.
 
 ### Changed
+- **`bill` no longer knows what a source is.** It carried a branch per source
+  -- Home Assistant, InfluxDB, a Green Button export, a CSV -- each loading its
+  own settings, doing its own window arithmetic, and formatting its own note,
+  so adding a source meant editing the code that prices bills, and the code
+  that prices bills had opinions about credentials.
+
+  `tariffkit.sources.meters` defines a `MeterReader`: given a window, it
+  answers `MeterData` -- readings, one line naming itself, and optionally a
+  narrower window it knows about. The command opens a reader, resolves a
+  window, reads, and prices. Its body went from 145 lines to 62 and mentions no
+  source at all. A reader that ships outside the library satisfies the same
+  protocol.
+
+  The library's billing was already source-agnostic -- `BillEngine` and
+  `compute_segments` have only ever taken `IntervalReading`s -- so nothing
+  about a computed bill changes.
+
 - **A utility login is optional too, and `bill` picks a source that exists.**
   `--source` defaulted to the constant `ha`, so an account pricing from
   InfluxDB, or from a Green Button export it had already downloaded, was told
