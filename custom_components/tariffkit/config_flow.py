@@ -396,20 +396,18 @@ def _meters_schema(defaults: dict[str, Any]) -> vol.Schema:
     only useful answer here is a cumulative kWh counter -- the thing the
     recorder keeps long-term statistics for.
     """
-    # The `filter` form, not the flat `domain=`/`device_class=` keywords: those
-    # are `_LegacyEntityFilterSelectorConfig`, kept for backwards compatibility
-    # and explicitly feature frozen upstream.
+    # A statistic picker, not an entity picker. What this integration reads is
+    # long-term statistics, and not every statistic belongs to an entity: an
+    # integration that imports history rather than publishing live sensors
+    # writes `source:object` ids, which an `EntitySelector` refuses outright
+    # even though everything downstream prices them.
     #
-    # No selector can filter on state_class, and a `device_class: energy` sensor
-    # may well be a `measurement` reading rather than a cumulative counter, so
-    # `_meter_problem` rejects those after the fact.
-    energy = selector.EntitySelector(
-        selector.EntitySelectorConfig(
-            filter=selector.EntityWithDeviceFilterSelectorConfig(
-                domain="sensor", device_class="energy"
-            )
-        )
-    )
+    # The cost is that this lists every statistic rather than only energy
+    # sensors, because `StatisticSelectorConfig` has no filter. `_meter_problem`
+    # makes up for it after the fact, and can be stricter than a picker anyway:
+    # no selector can filter on state_class, and a `device_class: energy` sensor
+    # may still be a `measurement` reading with no cumulative change.
+    energy = selector.StatisticSelector()
     return vol.Schema(
         {
             vol.Optional(
@@ -465,10 +463,16 @@ COUNTER_STATE_CLASSES = frozenset({"total", "total_increasing"})
 def _meter_problem(hass: HomeAssistant, values: dict[str, Any]) -> str:
     """Why these meter entities cannot drive a running total, or an empty string.
 
-    Both checks catch a configuration that would otherwise produce confident
-    nonsense rather than an error: one entity named twice bills every hour as
+    The checks catch a configuration that would otherwise produce confident
+    nonsense rather than an error: one counter named twice bills every hour as
     an import *and* credits it as an export, and a `measurement` sensor has no
     meaningful cumulative `change` for the recorder to difference.
+
+    A statistic with no entity behind it -- `source:object`, written by an
+    integration that imports history -- has no state to inspect, so only its
+    shape is checked here. Whether it exists and carries a sum is a recorder
+    question, and answering it needs the recorder's executor; the coordinator
+    already logs what it could not read.
     """
     grid_import = values.get(CONF_GRID_IMPORT_ENTITY) or ""
     grid_export = values.get(CONF_GRID_EXPORT_ENTITY) or ""
@@ -481,8 +485,15 @@ def _meter_problem(hass: HomeAssistant, values: dict[str, Any]) -> str:
     for entity_id in (grid_import, grid_export):
         if not entity_id:
             continue
+        if "." not in entity_id and ":" not in entity_id:
+            return (
+                f"{entity_id} is neither an entity id (domain.object) nor a "
+                "statistic id (source:object), so the recorder has nothing to "
+                "look up."
+            )
         state = hass.states.get(entity_id)
         if state is None:
+            # An external statistic, or an entity that has not reported yet.
             continue
         state_class = str(state.attributes.get("state_class") or "")
         if state_class and state_class not in COUNTER_STATE_CLASSES:

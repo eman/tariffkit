@@ -1,11 +1,11 @@
-"""Nothing in the reading path assumes a statistic belongs to an entity.
+"""Nothing assumes a statistic belongs to an entity.
 
 Integrations that import history rather than publish live sensors -- a utility
 feed such as opower is the obvious one -- write *external* statistics, whose
 ids are `source:object` rather than `domain.object`. There is no support for
-any particular one of those here and none is planned. This pins the weaker
-thing worth keeping: that the code reads a statistic id, not an entity, so
-such a feed is not structurally shut out.
+any particular one of those here and none is planned. What is pinned is that
+none is shut out: the reading path takes statistic ids, and so do both of the
+ways an id gets configured.
 """
 
 from __future__ import annotations
@@ -14,12 +14,10 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import pytest
-import voluptuous as vol
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.components.recorder.models import StatisticMeanType
 from homeassistant.components.recorder.statistics import async_add_external_statistics
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import selector
 from pytest_homeassistant_custom_component.components.recorder.common import (
     async_wait_recording_done,
 )
@@ -80,24 +78,33 @@ async def test_a_statistic_with_no_entity_behind_it_still_prices(
     assert float(_state(hass, entry, "amount_due_cycle").state) > 0
 
 
-def test_the_options_picker_is_what_would_stand_in_the_way() -> None:
-    """The reading path is open; the configuration path is not.
+def test_the_options_form_accepts_a_statistic_id() -> None:
+    """The form is a statistic picker, so it takes ids with no entity behind them.
 
-    `EntitySelector` validates an entity id, and `source:object` is not one, so
-    an external statistic cannot be typed into the meters form even though
-    everything downstream would handle it. Recorded rather than fixed: no such
-    feed is supported today, and the fix is a decision about the form, not an
-    accident to be patched.
+    It was an `EntitySelector`, which validates `domain.object` and refused
+    `source:object` outright -- so the reading path handled a statistic the
+    form could not be told about. The cost of the swap is that the picker lists
+    every statistic rather than only energy sensors; `_meter_problem` is what
+    keeps the answer honest.
     """
-    energy = selector.EntitySelector(
-        selector.EntitySelectorConfig(
-            filter=selector.EntityWithDeviceFilterSelectorConfig(
-                domain="sensor", device_class="energy"
-            )
-        )
-    )
-    schema = vol.Schema({vol.Optional("grid_import_entity"): energy})
+    from custom_components.tariffkit.config_flow import _meters_schema
 
+    schema = _meters_schema({})
     assert schema({"grid_import_entity": "sensor.grid_import_total"})
-    with pytest.raises(vol.Invalid):
-        schema({"grid_import_entity": IMPORT_STAT})
+    assert schema({"grid_import_entity": IMPORT_STAT})
+
+
+def test_an_id_that_is_neither_shape_is_refused() -> None:
+    """Widening the validator must not make it accept a typo."""
+    from custom_components.tariffkit.config_flow import _meter_problem
+
+    problem = _meter_problem(None, {"grid_import_entity": "grid_import_total"})  # type: ignore[arg-type]
+    assert "neither an entity id" in problem
+
+
+def test_the_profile_carries_a_statistic_id_too() -> None:
+    """The CLI-side mapping is the other way these ids reach the integration."""
+    from tariffkit.account.model import MeterSource
+
+    source = MeterSource(IMPORT_STAT, EXPORT_STAT)
+    assert source.grid_import_entity == IMPORT_STAT

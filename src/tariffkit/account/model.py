@@ -29,7 +29,11 @@ _DIGEST = re.compile(r"^[0-9a-fA-F]{64}$")
 _SAFE_TEXT = re.compile(r"^[^\x00-\x1f\x7f]+$")
 _MASKED_ACCOUNT = re.compile(r"^\*{4}\d{1,4}$")
 _EXTRACTION_MODE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
-_METER_ENTITY = re.compile(r"^[A-Za-z0-9_.]+$")
+#: An entity id (``domain.object``) or a statistic id (``source:object``).
+#: The colon is not decoration: an integration that imports history rather
+#: than publishing live sensors writes statistics under a source prefix, and
+#: those price exactly as an entity's own do.
+_METER_ENTITY = re.compile(r"^[A-Za-z0-9_.:]+$")
 
 
 def _as_date(value: object, *, field_name: str) -> date:
@@ -89,8 +93,8 @@ def _validate_config_snapshot(config: Config) -> None:
 def _meter_entity(value: object, *, field_name: str) -> str:
     if not isinstance(value, str) or _METER_ENTITY.fullmatch(value) is None:
         raise AccountError(
-            f"{field_name} must be a non-empty entity identifier containing only "
-            "letters, digits, underscores, and dots"
+            f"{field_name} must be a non-empty entity or statistic identifier "
+            "containing only letters, digits, underscores, dots, and colons"
         )
     return value
 

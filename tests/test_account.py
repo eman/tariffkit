@@ -65,7 +65,7 @@ class TestAccountProfile:
     def test_meter_sources_are_strict_and_provider_neutral(self) -> None:
         with pytest.raises(AccountError, match="both grid_import_entity"):
             MeterSource.from_dict({"grid_import_entity": "sensor.grid_in"})
-        with pytest.raises(AccountError, match="entity identifier"):
+        with pytest.raises(AccountError, match="entity or statistic identifier"):
             MeterSource("sensor.grid in", "sensor.grid_out")
         with pytest.raises(AccountError, match=r"meter_sources\.ha"):
             MeterSources.from_dict({"ha": "sensor.grid_in", "influx": None})

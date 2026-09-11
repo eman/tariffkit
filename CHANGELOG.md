@@ -42,19 +42,24 @@ All notable changes to this project are documented here. This project follows
   already carries `meter_sources.ha` offers those as the suggested values.
 
 ### Changed
-- **A statistic does not have to belong to an entity.** Nothing in the reading
-  path assumed it did, and there is now a test saying so: the integration
-  prices `source:object` statistic ids -- what an integration that imports
-  history rather than publishing live sensors writes -- as readily as
-  `domain.object` ones, because the recorder query takes statistic ids either
-  way. No such feed is supported and none is planned; this only pins that one
-  is not structurally shut out.
+- **A statistic does not have to belong to an entity.** The reading path never
+  assumed it did -- the recorder query takes statistic ids -- but both ways of
+  *configuring* one rejected the `source:object` form that an integration
+  importing history writes, so a feed that priced perfectly could not be
+  entered. Both are widened:
 
-  The **options form is** the thing that would stand in the way:
-  `EntitySelector` validates an entity id, so an external statistic cannot be
-  typed into the meters step even though everything downstream handles it.
-  Recorded as a test rather than fixed, because opening that form is a decision
-  about the form and not an accident to patch.
+  - the meters form is a `StatisticSelector` rather than an `EntitySelector`,
+    which validates an entity id and refused the colon outright. The cost is
+    that it lists every statistic instead of only energy sensors, since that
+    selector takes no filter; `_meter_problem` makes up for it afterwards and
+    was already stricter than a picker can be, because no selector can filter
+    on `state_class`.
+  - the account profile's meter mapping accepts a colon, having allowed only
+    letters, digits, underscores and dots.
+
+  An id that is neither shape is still refused, so widening did not turn the
+  check off. No particular feed is supported and none is planned; what is
+  pinned by test is that none is shut out.
 
 - **The library no longer decides where consumption data comes from.** Rate
   data is vendored because a tariff is the same everywhere; a meter is not, and
