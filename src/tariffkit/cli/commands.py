@@ -146,6 +146,12 @@ def build_parser() -> argparse.ArgumentParser:
     info_parser = sub.add_parser("info", help="which data is loaded, and from where")
     info_parser.add_argument("--config", type=Path, default=argparse.SUPPRESS)
 
+    sources_parser = sub.add_parser(
+        "sources", help="which data sources are configured, and what each one enables"
+    )
+    sources_parser.add_argument("--config", type=Path, default=argparse.SUPPRESS)
+    sources_parser.add_argument("--json", action="store_true")
+
     bill = sub.add_parser("bill", help="compute a bill from interval meter data")
     bill.add_argument("--config", type=Path, default=argparse.SUPPRESS)
     bill.add_argument(
@@ -578,10 +584,9 @@ def _billing_window(args: Any, profile: Any) -> tuple[Any, str]:
     """
     from ..billing import BillingPeriod, resolve_cycle
 
+    _check_window_flags(args)
     if args.start and args.end:
         return BillingPeriod(args.start, args.end), ""
-    if args.start or args.end:
-        raise ConfigError("give both --start and --end, or neither for the current cycle")
     if profile is None:
         raise ConfigError(
             "give --start and --end; without an account there is nothing to "
@@ -610,6 +615,46 @@ def _basis_of(cycle: Any, origins: Mapping[Any, str]) -> str:
         if period.start == cycle.start or period.end + timedelta(days=1) == cycle.start:
             return origin
     return "statement"
+
+
+def _check_window_flags(args: argparse.Namespace) -> None:
+    """Reject half a window before anything is looked up.
+
+    Runs ahead of source resolution: a mistyped invocation should be answered
+    with what is wrong about it, not with a survey of the data sources that
+    would have been needed had it been right.
+    """
+    if bool(args.start) != bool(args.end):
+        raise ConfigError("give both --start and --end, or neither for the current cycle")
+
+
+def _default_meter_source(args: argparse.Namespace, profile: object | None) -> str:
+    """Which source to read when nobody said, preferring one that is set up.
+
+    This used to be the constant "ha", which meant an account that priced its
+    bills from InfluxDB, or from a Green Button export it had already
+    downloaded, was told that HA_TOKEN was not set -- naming the one source it
+    had not configured rather than any of the ones it had.
+    """
+    from ..sources.availability import first_available_meter_source, survey
+
+    if args.csv is not None:
+        return "green-button"
+    statuses = survey(args.config, profile)
+    chosen = first_available_meter_source(statuses)
+    if chosen is not None:
+        return chosen
+    remedies = "\n".join(
+        f"  {status.name:<20}{status.remedy}" for status in statuses if not status.available
+    )
+    raise ConfigError(
+        "no meter source is configured, so there are no readings to price a "
+        "cycle from. Configure one of:\n"
+        f"{remedies}\n"
+        "or price an export you already have with `tariffkit bill --csv <file>`. "
+        "Rates themselves need none of this: `tariffkit now`, `forecast` and "
+        "`info` work as they are."
+    )
 
 
 def _known_periods(args: Any, profile: Any, *, refresh: bool = False) -> dict[Any, str]:
@@ -1045,6 +1090,36 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(info, indent=2, default=str))
             return 0
 
+        if args.command == "sources":
+            from ..sources.availability import first_available_meter_source, survey
+
+            statuses = survey(getattr(args, "config", None), account_profile)
+            if args.json:
+                print(
+                    json.dumps(
+                        {
+                            "sources": [status.to_dict() for status in statuses],
+                            "default_meter_source": first_available_meter_source(statuses),
+                        },
+                        indent=2,
+                    )
+                )
+                return 0
+            for status in statuses:
+                mark = "yes" if status.available else "no "
+                print(f"  {mark}  {status.name}")
+                for feature in status.features:
+                    print(f"          {feature}")
+                if status.remedy:
+                    print(f"          -> {status.remedy}")
+            chosen = first_available_meter_source(statuses)
+            print()
+            if chosen is None:
+                print("`bill` has no meter source to read; anything above would give it one.")
+            else:
+                print(f"`bill` reads --source {chosen} unless told otherwise.")
+            return 0
+
         if args.command == "bill":
             from ..billing import BillEngine, BillingPeriod
             from ..sources import read_green_button
@@ -1055,13 +1130,14 @@ def main(argv: list[str] | None = None) -> int:
             # A CSV names its own window when no dates are given -- but only
             # for the source that reads a CSV. Every other source is asked for
             # a period, so it has to be resolved even when a path was passed.
-            # Home Assistant by default: it is the account's own meter, read
-            # through the recorder, and the one source measured against the
-            # statement to 0.00 kWh where the utility's own export was missing
-            # 30 days of a cycle. A CSV path names the Green Button reader,
-            # since that is what a CSV is.
+            # Home Assistant first among those configured: it is the account's
+            # own meter, read through the recorder, and the one source measured
+            # against the statement to 0.00 kWh where the utility's own export
+            # was missing 30 days of a cycle. A CSV path names the Green Button
+            # reader, since that is what a CSV is.
+            _check_window_flags(args)
             if args.source is None:
-                args.source = "green-button" if args.csv is not None else "ha"
+                args.source = _default_meter_source(args, account_profile)
             reads_csv = args.source in {"green-button", "csv"} and args.csv is not None
             period, cycle_basis = (
                 (None, "")
@@ -1124,8 +1200,14 @@ def main(argv: list[str] | None = None) -> int:
                 from ..sources import PgeSettings, cached_green_button
 
                 assert period is not None
+                try:
+                    pge: Any = PgeSettings.load(config_path=args.config)
+                except TariffKitError:
+                    # No login is not fatal: a cached export still prices, and
+                    # `cached_green_button` says what to do when none covers it.
+                    pge = None
                 export = cached_green_button(
-                    PgeSettings.load(config_path=args.config),
+                    pge,
                     period.start,
                     period.end,
                     refresh=args.refresh,

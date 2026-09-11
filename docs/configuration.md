@@ -3,6 +3,31 @@
 Every entry point (library, CLI, MQTT, web, Home Assistant) prices from the
 same `Config` object. Get this right once and all of them agree.
 
+## Everything below is optional
+
+The only thing TariffKit cannot run without is its rate data, and that ships
+in the wheel. A utility login, a Home Assistant connection, an InfluxDB
+connection and the grid counters are each independent: configure any
+combination, or none, and the tools use what is there and say what the rest
+would buy.
+
+```console
+$ tariffkit sources
+  yes  rates
+          now, forecast, info, serve, mqtt
+  no   home_assistant
+          bill --source ha
+          -> set HA_HOST and HA_TOKEN, or store home_assistant.token with ...
+  ...
+`bill` has no meter source to read; anything above would give it one.
+```
+
+With nothing configured, `tariffkit now`, `forecast` and `info` work as they
+are. `tariffkit bill` is the one command that needs readings, and it reads
+whichever source is set up — preferring Home Assistant, then InfluxDB, then a
+Green Button export. A login is needed only to *download* an export; one
+already in the cache, or passed with `bill --csv`, prices without one.
+
 ## Where settings come from
 
 `Config.load()` resolves in this order, later winning:

@@ -6,6 +6,26 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **`tariffkit sources`**, which reports what is configured, what each source
+  would enable, and what to do about the ones that are not:
+
+  ```
+    yes  rates
+            now, forecast, info, serve, mqtt
+    no   home_assistant
+            bill --source ha
+            -> set HA_HOST and HA_TOKEN, or store home_assistant.token with ...
+    no   pge_portal
+            bill --source green-button, statement download, billing periods
+            -> store pge.username and pge.password with ...
+  ```
+
+  Every source is optional and the useful combinations are not a line: an
+  account with no utility login still prices a cycle from Home Assistant, one
+  with no meter integration still prices a downloaded export, and one with
+  neither still answers what a kilowatt-hour costs. Only rate pricing is
+  unconditional, because the rate data ships in the wheel.
+
 - **Setup asks for the grid counters**, instead of creating the entry and
   leaving the meters to be found later under Configure. A site whose counters
   are already in Home Assistant now gets its running cost, credit and net
@@ -22,6 +42,28 @@ All notable changes to this project are documented here. This project follows
   already carries `meter_sources.ha` offers those as the suggested values.
 
 ### Changed
+- **A utility login is optional too, and `bill` picks a source that exists.**
+  `--source` defaulted to the constant `ha`, so an account pricing from
+  InfluxDB, or from a Green Button export it had already downloaded, was told
+  that `HA_TOKEN` was not set -- naming the one source it had not configured
+  rather than any of the ones it had. The default is now the first *available*
+  source, still preferring Home Assistant when it is set up, because the
+  account's own meter matched a statement to 0.00 kWh on a cycle where the
+  utility's export was missing 30 days. With nothing configured at all, the
+  error lists every source that would work and what to do for each, and says
+  that rates need none of it.
+
+  `cached_green_button` now takes `None` for its settings and serves whatever
+  the cache already holds. A login is what *downloads* an export; it is not
+  what reads one, and requiring it to read one meant an account that had
+  fetched a year of intervals could not price any of them offline. When no
+  cached file covers the window and there is no login, the error says both --
+  and points at `bill --csv` for an export you already have.
+
+  Half a window (`--start` without `--end`) is now rejected before any of this,
+  so a mistyped invocation is answered with what is wrong about it rather than
+  with a survey of the sources it would have needed.
+
 - **The grid counters are optional everywhere, with no default.** The library
   used to default `import_entity`/`export_entity` to one site's hardware, so an
   install that had named no meter was indistinguishable from one configured as

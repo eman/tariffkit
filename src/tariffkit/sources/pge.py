@@ -1316,7 +1316,7 @@ def cached_exports(directory: Path | None = None) -> list[CachedExport]:
 
 
 def cached_green_button(
-    settings: PgeSettings,
+    settings: PgeSettings | None,
     start: date,
     end: date,
     *,
@@ -1342,12 +1342,26 @@ def cached_green_button(
     in the meter or the file: the reads are simply not published yet. Pulling
     it back also means yesterday's cached file usually answers today's
     question, so the same open cycle is not re-downloaded every morning.
+
+    ``settings`` may be ``None``, which restricts this to what is already
+    cached. A utility login is what *downloads* an export; it is not what reads
+    one, and requiring it to read one would mean an account that has already
+    fetched a year of intervals could not price any of them offline.
     """
     base = directory or _default_export_cache()
     if not refresh:
         found = _covering(base, start, end)
         if found is not None:
             return found
+
+    if settings is None:
+        raise ConfigError(
+            f"no cached Green Button export covers {start.isoformat()}..{end.isoformat()}, "
+            f"and downloading one needs a utility login: store pge.username and "
+            f"pge.password with `tariffkit credentials set`, or set PGE_USERNAME and "
+            f"PGE_PASSWORD. An export you already have can be priced with "
+            f"`tariffkit bill --csv <file>`."
+        )
 
     available = cached_available_reads(settings, refresh=refresh)
     if available is not None and available.end < end:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib
 import json
 from datetime import date, datetime
@@ -467,25 +468,32 @@ def test_naming_a_config_file_never_reaches_for_the_account(
 @pytest.mark.parametrize(
     ("argv", "expected"),
     [
-        (["bill"], "Home Assistant"),
-        (["bill", "--start", "2026-08-01", "--end", "2026-08-10"], "Home Assistant"),
+        # Nothing is configured, so there is nothing to default to. The answer
+        # names every source that would work rather than the first one tried.
+        (["bill"], "no meter source is configured"),
+        (
+            ["bill", "--start", "2026-08-01", "--end", "2026-08-10"],
+            "no meter source is configured",
+        ),
         (["bill", "readings.csv"], "could not read"),
+        # Asking for one by name still asks that one, and it still says what is
+        # missing for it in particular.
         (["bill", "--source", "influx"], "InfluxDB"),
-        (["bill", "--source", "green-button"], "PG&E credentials"),
+        (["bill", "--source", "green-button"], "needs a utility login"),
     ],
 )
-def test_the_default_source_is_home_assistant_unless_a_csv_says_otherwise(
+def test_bill_without_any_source_names_every_source_that_would_work(
     argv: list[str],
     expected: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The account's own meter, not the utility's export.
+    """An unconfigured account is told its options, not the first one tried.
 
-    PG&E's export was missing thirty days of one cycle where the meter matched
-    the statement to 0.00 kWh, and it was the source `bill` reached for first.
-    A CSV path still names the Green Button reader, since that is what a CSV is.
+    The default used to be the constant "ha", so an account pricing from
+    InfluxDB or from an export it had already downloaded was told that HA_TOKEN
+    was not set -- naming the one source it had not set up.
 
     Asserted through what each invocation actually goes and asks for -- naming
     the source in the failure it produces -- because the same test written
@@ -499,6 +507,33 @@ def test_the_default_source_is_home_assistant_unless_a_csv_says_otherwise(
     assert main(argv) == 1
 
     assert expected in capsys.readouterr().err
+
+
+def test_home_assistant_is_still_preferred_when_more_than_one_source_works(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The account's own meter, not the utility's export.
+
+    PG&E's export was missing thirty days of one cycle where the meter matched
+    the statement to 0.00 kWh, so the order matters and is not alphabetical.
+    Configuring everything must still reach for Home Assistant first.
+    """
+    _account_with_statement(tmp_path, monkeypatch)
+    monkeypatch.setenv("HA_HOST", "http://ha.invalid")
+    monkeypatch.setenv("HA_TOKEN", "tok")
+    monkeypatch.setenv("INFLUXDB3_HOST", "influx.invalid")
+    monkeypatch.setenv("INFLUXDB3_DATABASE", "db")
+    monkeypatch.setenv("INFLUXDB3_AUTH_TOKEN", "tok")
+    monkeypatch.setenv("PGE_USERNAME", "u")
+    monkeypatch.setenv("PGE_PASSWORD", "p")
+    monkeypatch.setenv("TARIFFKIT_HA_IMPORT_ENTITY", "sensor.in")
+    monkeypatch.setenv("TARIFFKIT_HA_EXPORT_ENTITY", "sensor.out")
+    monkeypatch.setattr("tariffkit.sources.cached_bill_periods", lambda *a, **k: [])
+
+    from tariffkit.cli.commands import _default_meter_source
+
+    args = argparse.Namespace(csv=None, config=None)
+    assert _default_meter_source(args, None) == "ha"
 
 
 def test_a_csv_path_with_another_source_still_resolves_a_window(
