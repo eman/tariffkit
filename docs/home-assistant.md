@@ -78,7 +78,7 @@ anyway, because two of them are about *ordering* rather than about repair.
 
 ### From a release, without metered energy configured
 
-There is nothing to migrate. [Metered energy](#metered-energy) is opt-in and
+There is nothing to migrate. [Metered energy](#metered-energy) is optional and
 creates no entities until you name a meter, so an instance that never used it
 has none of the entities the notes below discuss. Update, restart, carry on.
 
@@ -162,17 +162,18 @@ Every field is validated against the library before the entry is created, so
 an invalid combination is rejected in the form with the same error the CLI
 would raise, not discovered later at runtime.
 
-Forecast horizon, Predbat compatibility mode, and metered energy are **not**
-asked during setup — they default to sensible values (48 hours, Predbat off,
-no meters) and live under **Configure → Forecast and Predbat** and
-**Configure → Metered energy** afterward, as their own menu items rather than
-mixed into pricing settings. Keeping them out of initial setup means the two
-or three questions most people need to answer are the only ones on screen.
+Setup ends by offering [Metered energy](#metered-energy) — the grid import and
+export counters, and the billing cycle start day. Leave them blank and setup
+finishes exactly as it would have: pricing an account does not require a meter,
+and the counters are often integrated after the tariff rather than before. The
+step is there so that anyone who *does* already have them gets the running
+totals immediately, instead of finishing setup and having to discover the same
+form under Configure.
 
-Metered energy in particular is deliberately not a setup question: pricing an
-account does not require a meter, and the counters are usually integrated
-after the tariff rather than before, so asking during setup would put a
-question in front of every new user that most of them cannot answer yet.
+Forecast horizon and Predbat compatibility mode are **not** asked during setup
+— they default to sensible values (48 hours, Predbat off) and live under
+**Configure → Forecast and Predbat** afterward, as their own menu item rather
+than mixed into pricing settings.
 
 Once you *have* named the meters, run
 [Backfilling history](#backfilling-history) straight away rather than waiting
@@ -543,9 +544,9 @@ Optional. Point TariffKit at the two cumulative kWh counters your meter or
 meter reader publishes and it prices what actually moved, not just what a kWh
 would have cost:
 
-**Configure → Metered energy** — it is not part of initial setup, so an entry
-created before you integrated a meter picks it up later without being
-recreated:
+Offered at the end of initial setup, and always available afterward at
+**Configure → Metered energy** — so an entry created before you integrated a
+meter picks it up later without being recreated:
 
 | Field | What it is |
 |---|---|

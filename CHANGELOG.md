@@ -5,6 +5,22 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+- **Setup asks for the grid counters**, instead of creating the entry and
+  leaving the meters to be found later under Configure. A site whose counters
+  are already in Home Assistant now gets its running cost, credit and net
+  entities from the first screen rather than after a second trip through the
+  options menu -- 30 entities against 19 on a fresh entry.
+
+  The step is optional and skipping it is a real answer, which is what the
+  earlier decision to leave meters out of setup was protecting: the counters
+  are often integrated after the tariff, and a question a new user cannot
+  answer yet is worse than no question. Leaving both blank creates exactly the
+  entry it used to. The same validation applies as under Configure -- one
+  entity named for both directions, or a `measurement` sensor with no
+  cumulative change, is refused with the reason. An imported profile that
+  already carries `meter_sources.ha` offers those as the suggested values.
+
 ### Changed
 - **The documentation no longer names one brand of meter reader.** Docstrings,
   guides, changelog entries and the `audit reconcile --readings` help described

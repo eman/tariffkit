@@ -652,20 +652,59 @@ def _manual_config_data(
 class TariffKitConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 3
 
-    async def _create_profile(self, data: dict[str, Any]) -> ConfigFlowResult:
+    #: Set once the profile is built and its unique id claimed, and read by the
+    #: meter step that follows.
+    _profile: AccountProfile
+
+    async def _claim_profile(self, data: dict[str, Any]) -> None:
+        """Build the profile and take its unique id, or abort if it is taken.
+
+        Building happens here rather than at the end of the flow so that a
+        profile the library rejects is reported on the form that described it,
+        not on the meter step two screens later.
+        """
         config = config_from_entry(data)
         name = _profile_name(data.get(CONF_PROFILE_NAME, ""))
         if not name:
             raise AccountError("profile name is required")
-        profile = AccountProfile(
+        self._profile = AccountProfile(
             epochs=(AccountEpoch(LEGACY_EFFECTIVE, config),),
             name=name,
         )
         await self.async_set_unique_id(f"profile:{name}")
         self._abort_if_unique_id_configured()
+
+    def _create_entry(self, options: dict[str, Any] | None = None) -> ConfigFlowResult:
+        profile = self._profile
         return self.async_create_entry(
             title=_entry_title(profile),
             data={CONF_PROFILE: profile_payload(profile)},
+            options=options or {},
+        )
+
+    async def async_step_meters(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Name the grid counters while setting up, rather than only afterwards.
+
+        Optional, and skipping it is a real answer: a site that names neither
+        entity gets the rate entities and no running totals, which is what the
+        integration did for everyone before this step existed. The point is
+        that a new user is asked once, here, instead of finishing setup and
+        having to discover the same form under Configure.
+        """
+        if user_input is not None:
+            problem = _meter_problem(self.hass, user_input)
+            if problem:
+                return self.async_show_form(
+                    step_id="meters",
+                    data_schema=_meters_schema(_meter_defaults(user_input, None)),
+                    errors={"base": "invalid_meters"},
+                    description_placeholders={"detail": problem},
+                )
+            return self._create_entry(_meter_values(user_input))
+        return self.async_show_form(
+            step_id="meters",
+            data_schema=_meters_schema(_meter_defaults({}, self._profile)),
+            description_placeholders={"detail": ""},
         )
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
@@ -710,9 +749,10 @@ class TariffKitConfigFlow(ConfigFlow, domain=DOMAIN):
                     description_placeholders={"detail": errors["detail"]},
                 )
             try:
-                return await self._create_profile(
+                await self._claim_profile(
                     {**data, CONF_PROFILE_NAME: identity.get(CONF_PROFILE_NAME, "")}
                 )
+                return await self.async_step_meters()
             except (AccountError, TariffKitError) as err:
                 return self.async_show_form(
                     step_id="manual_delivery",
@@ -749,9 +789,10 @@ class TariffKitConfigFlow(ConfigFlow, domain=DOMAIN):
                     description_placeholders={"detail": errors["detail"]},
                 )
             try:
-                return await self._create_profile(
+                await self._claim_profile(
                     {**data, CONF_PROFILE_NAME: identity.get(CONF_PROFILE_NAME, "")}
                 )
+                return await self.async_step_meters()
             except (AccountError, TariffKitError) as err:
                 return self.async_show_form(
                     step_id="manual_cca",
@@ -773,10 +814,8 @@ class TariffKitConfigFlow(ConfigFlow, domain=DOMAIN):
                     raise AccountError("imported profile must have a name")
                 await self.async_set_unique_id(f"profile:{imported.name}")
                 self._abort_if_unique_id_configured()
-                return self.async_create_entry(
-                    title=_entry_title(imported),
-                    data={CONF_PROFILE: profile_payload(imported)},
-                )
+                self._profile = imported
+                return await self.async_step_meters()
             except (AccountError, json.JSONDecodeError, TypeError, ValueError) as err:
                 errors = {"base": "invalid_profile", "detail": str(err)}
         return self.async_show_form(
