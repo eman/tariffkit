@@ -42,6 +42,20 @@ All notable changes to this project are documented here. This project follows
   already carries `meter_sources.ha` offers those as the suggested values.
 
 ### Changed
+- **A statistic does not have to belong to an entity.** Nothing in the reading
+  path assumed it did, and there is now a test saying so: the integration
+  prices `source:object` statistic ids -- what an integration that imports
+  history rather than publishing live sensors writes -- as readily as
+  `domain.object` ones, because the recorder query takes statistic ids either
+  way. No such feed is supported and none is planned; this only pins that one
+  is not structurally shut out.
+
+  The **options form is** the thing that would stand in the way:
+  `EntitySelector` validates an entity id, so an external statistic cannot be
+  typed into the meters step even though everything downstream handles it.
+  Recorded as a test rather than fixed, because opening that form is a decision
+  about the form and not an accident to patch.
+
 - **The library no longer decides where consumption data comes from.** Rate
   data is vendored because a tariff is the same everywhere; a meter is not, and
   which one to read is the client's answer. The engine boundary was already
