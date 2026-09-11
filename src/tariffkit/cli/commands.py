@@ -168,7 +168,9 @@ def build_parser() -> argparse.ArgumentParser:
         # not the documented spelling: it says nothing about which CSV.
         choices=("green-button", "csv", "ha", "influx"),
         default=None,
-        help="where the readings come from (default: ha, or green-button when a CSV path is given)",
+        help="where the readings come from (default: whichever is configured, "
+        "preferring Home Assistant, then InfluxDB, then a Green Button export; "
+        "green-button when a CSV path is given). `tariffkit sources` lists them",
     )
     bill.add_argument("--start", type=date.fromisoformat, help="cycle start (meter read date)")
     bill.add_argument("--end", type=date.fromisoformat, help="cycle end, inclusive")
@@ -226,19 +228,6 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--port", type=int, default=8000)
 
     return parser
-
-
-def _midnight(day: date) -> datetime:
-    """Local midnight starting ``day`` -- where a billing cycle boundary falls.
-
-    Callers add ``timedelta(days=1)`` to get the end of a cycle, and that is
-    deliberately wall-clock arithmetic: a cycle closes at the next local
-    midnight, 23 real hours later across the spring transition and 25 across the
-    autumn one. Converting to absolute time first would hold the window at 24
-    hours and land it an hour off on those two days -- the opposite of what
-    coverage checking needs, where elapsed time is the right measure.
-    """
-    return datetime(day.year, day.month, day.day, tzinfo=PACIFIC)
 
 
 def _format_point(point: PricePoint) -> str:
@@ -704,14 +693,6 @@ def _cycle_start_day(args: Any) -> int:
     if not isinstance(day, int) or isinstance(day, bool) or not 0 <= day <= 31:
         raise ConfigError("[billing] cycle_start_day must be a day of the month, 1 to 31")
     return day
-
-
-def _short_path(path: Path) -> str:
-    """A path with the home directory collapsed, for printing."""
-    try:
-        return f"~/{path.relative_to(Path.home())}"
-    except ValueError:
-        return str(path)
 
 
 def _print_credentials() -> None:

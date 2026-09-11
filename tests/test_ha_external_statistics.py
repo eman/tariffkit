@@ -108,3 +108,54 @@ def test_the_profile_carries_a_statistic_id_too() -> None:
 
     source = MeterSource(IMPORT_STAT, EXPORT_STAT)
     assert source.grid_import_entity == IMPORT_STAT
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_a_statistic_that_is_not_energy_is_refused(hass: HomeAssistant) -> None:
+    """A picker that lists every statistic can offer a gas meter.
+
+    The recorder converts only within a unit class, so asking for kWh yields no
+    converter for cubic metres and the raw volume is billed as energy: 26 m3 of
+    gas priced as a $26.59 electricity bill before this check existed.
+    """
+    from custom_components.tariffkit.config_flow import _async_meter_problem
+
+    gas = "opower:utility_gas_probe_volume"
+    async_add_external_statistics(
+        hass,
+        {
+            "mean_type": StatisticMeanType.NONE,
+            "has_mean": False,
+            "has_sum": True,
+            "name": None,
+            "source": "opower",
+            "statistic_id": gas,
+            "unit_class": "volume",
+            "unit_of_measurement": "m³",
+        },
+        [{"start": NOW.replace(hour=0, minute=0), "state": 1.0, "sum": 1.0}],
+    )
+    await async_wait_recording_done(hass)
+
+    problem = await _async_meter_problem(hass, {"grid_import_entity": gas})
+    assert "not energy" in problem
+    assert "volume" in problem
+
+    # An energy statistic in a different energy unit is fine: the recorder does
+    # convert within the class, so Wh is not a problem to refuse.
+    await _record_external(hass, IMPORT_STAT, [(NOW.replace(hour=0, minute=0), 1.0)])
+    assert await _async_meter_problem(hass, {"grid_import_entity": IMPORT_STAT}) == ""
+
+
+def test_a_statistic_id_is_refused_for_influxdb() -> None:
+    """Statistic ids are a Home Assistant idea; InfluxDB is queried by series name.
+
+    The series name goes into SQL and is checked against a stricter pattern at
+    query time, so accepting a colon on the profile only stored something that
+    failed later with a message about the wrong thing.
+    """
+    from tariffkit.account.model import MeterSource, MeterSources
+
+    assert MeterSources(ha=MeterSource(IMPORT_STAT, EXPORT_STAT)).ha is not None
+    with pytest.raises(Exception, match="may not contain a colon"):
+        MeterSources(influx=MeterSource(IMPORT_STAT, EXPORT_STAT))

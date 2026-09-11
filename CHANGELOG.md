@@ -41,6 +41,34 @@ All notable changes to this project are documented here. This project follows
   cumulative change, is refused with the reason. An imported profile that
   already carries `meter_sources.ha` offers those as the suggested values.
 
+### Fixed
+- **`bill --ha-import-entity ... --ha-export-entity ...` reads Home Assistant
+  again.** Choosing the default source consulted only the config file and the
+  account profile, so naming the counters as flags left Home Assistant looking
+  unconfigured -- and the run either priced from a Green Button download
+  instead (saying so, but only after a network round trip) or refused outright
+  while telling the user to name the very counters they had just named. Naming
+  a pair on the command line now selects that source, the way a CSV path
+  already did. Found by adversarial review of this branch; no test covered it,
+  because every existing case passed `--source` explicitly.
+- **A cached Green Button export prices an open cycle without a login.** The
+  guard that requires credentials sat in front of the lookup that pulls the
+  window back to the last published read -- and the utility publishes a day
+  behind, so a cache holding every published day never covered "through today"
+  and was refused. This defeated the offline case the cache exists for; only
+  explicit `--start/--end` windows ending on an already-cached day worked.
+- **A non-energy statistic is refused instead of billed as kWh.** The meters
+  form lists every statistic, and the recorder converts only within a unit
+  class -- so a gas series in cubic metres arrived unconverted and 26 m3 priced
+  as a $26.59 electricity bill. The form now asks the recorder for the
+  statistic's unit class and refuses anything that is not energy. Energy in
+  other units (Wh, MJ) was always converted correctly and still is.
+- **`audit reconcile` reads the series named on the account profile.** It
+  loaded `InfluxSettings` without the profile's mapping, which the library's
+  since-removed default entity names had been masking; the default
+  `--readings influx` path then failed for any account whose series live only
+  on the profile.
+
 ### Changed
 - **A statistic does not have to belong to an entity.** The reading path never
   assumed it did -- the recorder query takes statistic ids -- but both ways of
@@ -159,11 +187,9 @@ All notable changes to this project are documented here. This project follows
   with the meter, which is the artefact the filtering exists for. The text now
   says so.
 
-  The **default entity ids are unchanged** (`sensor.eagle_100_energy_delivered`
-  and its pair, `eagle_100_total_energy_*` for InfluxDB), so nothing to
-  configure and nothing to migrate. They are still one site's entity names
-  rather than anything general, and the configuration guide now says plainly
-  that they will not match yours unless you run the same device.
+  The default entity ids went with them -- see the entry above: there are no
+  defaults now, and the configuration guide says outright that the entities
+  are yours to name.
 
 ## [0.8.1] - 2026-09-11
 

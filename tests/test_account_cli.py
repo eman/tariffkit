@@ -509,6 +509,48 @@ def test_bill_without_any_source_names_every_source_that_would_work(
     assert expected in capsys.readouterr().err
 
 
+def test_naming_entities_on_the_command_line_chooses_that_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--ha-import-entity` is a choice of source, not just a value.
+
+    The survey only reads the config file and the profile, so a run that named
+    its counters as flags reported Home Assistant unconfigured -- and then
+    either priced from a portal download instead, or refused while telling the
+    user to name the very counters they had just named.
+    """
+    from tariffkit.cli.meters import _default_meter_source
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    for variable in ("HA_HOST", "HA_TOKEN", "INFLUXDB3_HOST", "PGE_USERNAME", "PGE_PASSWORD"):
+        monkeypatch.delenv(variable, raising=False)
+
+    def args(**overrides: object) -> argparse.Namespace:
+        base = {
+            "csv": None,
+            "config": None,
+            "ha_import_entity": None,
+            "ha_export_entity": None,
+            "influx_import_entity": None,
+            "influx_export_entity": None,
+        }
+        return argparse.Namespace(**{**base, **overrides})
+
+    assert (
+        _default_meter_source(
+            args(ha_import_entity="sensor.in", ha_export_entity="sensor.out"), None
+        )
+        == "ha"
+    )
+    assert (
+        _default_meter_source(args(influx_import_entity="in", influx_export_entity="out"), None)
+        == "influx"
+    )
+    # One half is not a choice: it cannot read a direction it was not given.
+    with pytest.raises(ConfigError):
+        _default_meter_source(args(ha_import_entity="sensor.in"), None)
+
+
 def test_home_assistant_is_still_preferred_when_more_than_one_source_works(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -532,7 +574,17 @@ def test_home_assistant_is_still_preferred_when_more_than_one_source_works(
 
     from tariffkit.cli.meters import _default_meter_source
 
-    args = argparse.Namespace(csv=None, config=None)
+    # The flags `bill` always supplies. Naming a pair on the command line is
+    # itself a choice of source, so they have to be absent for this to be
+    # testing the preference order.
+    args = argparse.Namespace(
+        csv=None,
+        config=None,
+        ha_import_entity=None,
+        ha_export_entity=None,
+        influx_import_entity=None,
+        influx_export_entity=None,
+    )
     assert _default_meter_source(args, None) == "ha"
 
 

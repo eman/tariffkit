@@ -106,9 +106,11 @@ async def _past_meters(hass: HomeAssistant, flow_id: str, result: Any) -> Any:
     the extra screen; `test_setup_asks_about_meters_and_takes_no_for_an_answer`
     in test_ha_energy.py is the one that asserts the step itself.
     """
-    if result.get("step_id") == "meters":
-        result = await hass.config_entries.flow.async_configure(flow_id, {})
-    return result
+    assert result.get("step_id") == "meters", (
+        "setup should end at the meters step; a caller that no longer reaches it "
+        "has lost the step rather than skipped it"
+    )
+    return await hass.config_entries.flow.async_configure(flow_id, {})
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
@@ -296,9 +298,10 @@ async def test_duplicate_profile_name_is_rejected(hass: HomeAssistant) -> None:
             flow_id,
             {"profile_json": json.dumps(profile.to_dict())},
         )
-        # The duplicate aborts in the import step, before the meters form; the
-        # first pass has to step past it to reach the entry.
-        result = await _past_meters(hass, flow_id, result)
+        # The duplicate aborts in the import step, before the meters form, so
+        # only the first pass has one to step past.
+        if expected_type == "create_entry":
+            result = await _past_meters(hass, flow_id, result)
         assert result["type"] == expected_type
 
 

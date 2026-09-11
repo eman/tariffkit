@@ -103,8 +103,8 @@ class BillEngine:
             # there is no Net Billing arrangement, whatever the meter saw. The
             # two data sources disagree about that on purpose -- PG&E's own
             # export reports zero exported kWh for the December 2025 cycle
-            # because there was no export channel to meter, while the Rainforest
-            # counter behind it recorded real energy leaving the house. Pricing
+            # because there was no export channel to meter, while the site's own
+            # counter recorded real energy leaving the house. Pricing
             # the counter's view would invent credits the tariff does not grant.
             export_price = None
             if reading.exported and self._compensated(moment):

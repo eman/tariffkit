@@ -57,9 +57,9 @@ def interval_energy(
     ``change`` is what the recorder believes the counter advanced by, and it is
     wrong whenever the source dropped to zero: a ``total_increasing`` sensor
     reading 0.0 is taken for a counter reset, so the next interval's ``change``
-    carries the whole counter -- 1455 kWh on a meter that had moved 0.003. The
-    A meter reader does this several times a day while it re-establishes
-    its meter session.
+    carries the whole counter -- 1455 kWh on a meter that had moved 0.003. A
+    meter reader does this several times a day while it re-establishes its
+    session with the meter.
 
     Refusing that row is right and dropping the interval with it is not. The
     true figure is still in ``state``, which is the counter itself: difference

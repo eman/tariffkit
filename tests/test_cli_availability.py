@@ -25,9 +25,13 @@ METER_ENV = (
 
 
 @pytest.fixture
-def bare(monkeypatch: pytest.MonkeyPatch) -> None:
+def bare(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     for variable in METER_ENV:
         monkeypatch.delenv(variable, raising=False)
+    # The Green Button cache is a source too, and it is found through
+    # XDG_CACHE_HOME, which the shared config isolation does not cover. Without
+    # this a developer with a real cache sees a different survey than CI does.
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
 
 
 @pytest.mark.usefixtures("bare")

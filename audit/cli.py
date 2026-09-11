@@ -289,7 +289,11 @@ def _reconcile(
         profile = AccountStore().load()
     except TariffKitError as exc:
         raise AccountError(f"could not load the account: {exc}") from exc
-    settings = InfluxSettings.load()
+    # The profile's own mapping, the way the statistics branch below already
+    # reads it. This was masked while the library defaulted the series names;
+    # with those gone, an account whose series live only on the profile could
+    # not run the default `--readings influx` path at all.
+    settings = InfluxSettings.load(profile_source=profile.meter_sources.influx)
 
     results = []
     skipped: list[str] = []

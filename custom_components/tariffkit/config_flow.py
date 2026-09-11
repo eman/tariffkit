@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import suppress
 from dataclasses import replace
 from datetime import date
@@ -83,6 +84,9 @@ def _select(options: list[str], translation_key: str | None = None) -> selector.
     return selector.SelectSelector(
         selector.SelectSelectorConfig(options=options, translation_key=translation_key)
     )
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _profile_schema(defaults: dict[str, Any], *, include_name: bool = True) -> vol.Schema:
@@ -505,6 +509,58 @@ def _meter_problem(hass: HomeAssistant, values: dict[str, Any]) -> str:
     return ""
 
 
+async def _async_meter_problem(hass: HomeAssistant, values: dict[str, Any]) -> str:
+    """`_meter_problem`, plus the questions only the recorder can answer.
+
+    A picker that lists every statistic cannot stop someone choosing a gas
+    meter, and the recorder will not convert it: asking for kWh yields a
+    converter only when the statistic's own unit class is already energy, so a
+    volume series arrives as raw cubic metres and is billed as kilowatt-hours.
+    26 m3 of gas became a $26.59 electricity bill before this check existed.
+    """
+    problem = _meter_problem(hass, values)
+    if problem:
+        return problem
+
+    from homeassistant.components.recorder.statistics import list_statistic_ids
+    from homeassistant.helpers.recorder import get_instance
+
+    wanted = {
+        values.get(CONF_GRID_IMPORT_ENTITY) or "",
+        values.get(CONF_GRID_EXPORT_ENTITY) or "",
+    } - {""}
+    if not wanted:
+        return ""
+    try:
+        # `statistic_ids` is mutually exclusive with `statistic_type`; passing
+        # both raises, and this swallowed that as "nothing to report" until a
+        # test asked for a refusal and got silence.
+        found = await get_instance(hass).async_add_executor_job(list_statistic_ids, hass, wanted)
+    except Exception:
+        # Unreachable recorder is not the user's configuration being wrong, and
+        # refusing the form over it would be worse than letting the coordinator
+        # report it later. Logged so it is not silent.
+        _LOGGER.debug("could not read statistic metadata for %s", sorted(wanted), exc_info=True)
+        return ""
+
+    known = {row["statistic_id"]: row for row in found}
+    for statistic_id in sorted(wanted):
+        row = known.get(statistic_id)
+        if row is None:
+            # Not recorded yet. A freshly created counter is legitimately here,
+            # and the coordinator names what it could not read.
+            continue
+        unit_class = row.get("unit_class")
+        if unit_class is not None and unit_class != "energy":
+            unit = row.get("unit_of_measurement") or "?"
+            return (
+                f"{statistic_id} measures {unit_class} ({unit}), not energy. The "
+                "recorder only converts within a unit class, so its readings "
+                f"would be billed as though {unit} were kWh."
+            )
+    return ""
+
+
 def _normalize(user_input: dict[str, Any]) -> dict[str, Any]:
     data = dict(user_input)
     year = data.get(CONF_INTERCONNECTION_YEAR)
@@ -703,7 +759,7 @@ class TariffKitConfigFlow(ConfigFlow, domain=DOMAIN):
         having to discover the same form under Configure.
         """
         if user_input is not None:
-            problem = _meter_problem(self.hass, user_input)
+            problem = await _async_meter_problem(self.hass, user_input)
             if problem:
                 return self.async_show_form(
                     step_id="meters",
@@ -1010,7 +1066,7 @@ class TariffKitOptionsFlow(OptionsFlow):
     async def async_step_meters(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Change which entities feed the running totals, or stop feeding them."""
         if user_input is not None:
-            problem = _meter_problem(self.hass, user_input)
+            problem = await _async_meter_problem(self.hass, user_input)
             if not problem:
                 return self._save_profile(self._profile(), **_meter_values(user_input))
             return self.async_show_form(

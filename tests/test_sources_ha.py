@@ -157,9 +157,14 @@ class TestSettings:
         """argparse hands through None for a flag nobody passed."""
         env = tmp_path / ".env"
         env.write_text('HA_HOST = "http://env"\nHA_TOKEN = "tok"\n')
-        s = ha.HaSettings.load(dotenv_path=env, import_entity="sensor.real", export_entity=None)
-        assert s.import_entity == "sensor.real"
-        assert s.export_entity is None
+        env2 = tmp_path / "cfg.toml"
+        env2.write_text(
+            '[home_assistant]\nimport_entity = "sensor.from_config"\n', encoding="utf-8"
+        )
+        s = ha.HaSettings.load(config_path=env2, dotenv_path=env, import_entity=None)
+        # The override is absent, not empty: dropping the `if v` filter would
+        # write None over the configured value and lose it.
+        assert s.import_entity == "sensor.from_config"
 
     def test_missing_token_says_what_to_set(self, tmp_path: Path) -> None:
         env = tmp_path / ".env"

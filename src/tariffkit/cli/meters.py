@@ -34,6 +34,15 @@ def _default_meter_source(args: argparse.Namespace, profile: object | None) -> s
 
     if args.csv is not None:
         return "green-button"
+    # Naming a source's entities on the command line is asking for that source.
+    # The survey only sees the config file and the profile, so without this a
+    # `--ha-import-entity` run reported Home Assistant unconfigured and quietly
+    # priced from somewhere else -- or refused, while telling the user to name
+    # the very counters they had just named.
+    if args.ha_import_entity and args.ha_export_entity:
+        return "ha"
+    if args.influx_import_entity and args.influx_export_entity:
+        return "influx"
     statuses = survey(args.config, profile)
     chosen = first_available_meter_source(statuses)
     if chosen is not None:

@@ -153,6 +153,19 @@ class MeterSources:
             value = getattr(self, name)
             if value is not None and not isinstance(value, MeterSource):
                 raise AccountError(f"meter_sources.{name} must be a MeterSource")
+        # A statistic id is a Home Assistant idea. InfluxDB series names go into
+        # SQL and are checked against a stricter pattern at query time, so
+        # accepting one here only meant storing something that failed later with
+        # a message about the wrong thing.
+        if self.influx is not None:
+            for field_name in ("grid_import_entity", "grid_export_entity"):
+                entity = getattr(self.influx, field_name)
+                if ":" in entity:
+                    raise AccountError(
+                        f"meter_sources.influx.{field_name} may not contain a colon: "
+                        f"{entity!r} is a statistic id, and InfluxDB is queried by "
+                        "series name"
+                    )
 
     @property
     def home_assistant(self) -> MeterSource | None:

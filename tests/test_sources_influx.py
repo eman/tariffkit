@@ -519,3 +519,32 @@ def test_a_real_gap_is_still_reported_as_reconstructed() -> None:
         "6 interval(s) covering 6.0h were reconstructed across gaps" in w and "3.0 kWh" in w
         for w in warnings
     ), warnings
+
+
+class TestOptionalEntities:
+    """Naming the series is optional; reading them without is an error."""
+
+    def test_settings_load_without_any_series(self, tmp_path: Path) -> None:
+        env = tmp_path / ".env"
+        env.write_text(
+            'INFLUXDB3_HOST="h"\nINFLUXDB3_DATABASE="d"\nINFLUXDB3_AUTH_TOKEN="t"\n',
+            encoding="utf-8",
+        )
+        s = influx.InfluxSettings.load(tmp_path / "none.toml", env)
+        assert (s.import_entity, s.export_entity) == (None, None)
+
+    def test_reading_without_series_says_how_to_set_them(self) -> None:
+        s = influx.InfluxSettings(host="h", database="d", token="t")
+        with pytest.raises(ConfigError) as err:
+            influx.read_counters(
+                s,
+                datetime(2026, 7, 1, tzinfo=PACIFIC),
+                datetime(2026, 7, 2, tzinfo=PACIFIC),
+                timedelta(hours=1),
+            )
+        message = str(err.value)
+        assert "import_entity and export_entity not set" in message
+        assert "tariffkit account source set influx" in message
+        # And what still works without them, so the answer is not "configure a
+        # meter or get nothing".
+        assert "needs neither" in message

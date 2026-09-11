@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from tariffkit.billing import BillingPeriod, IntervalReading
 from tariffkit.sources.meters import (
@@ -65,13 +69,34 @@ def test_every_shipped_reader_satisfies_the_protocol() -> None:
     assert [reader.needs_period for reader in readers] == [True, True, False, True]
 
 
-def test_narrowing_is_reported_not_applied() -> None:
-    """A reader says the window was short; whether that matters is the caller's.
+def test_narrowing_is_reported_not_applied(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A short export reports the window it really covers; applying it is the caller's.
 
-    The utility publishes a day behind, so an open cycle really ends at the
-    last published read -- but explicit dates are an answer, not a guess to
-    refine, and only the caller knows which it asked with.
+    The utility publishes a day behind, so an open cycle asked for "through
+    today" really ends at the last published read -- pricing the days past it
+    would charge a Base Services Charge for each and call the shortfall a gap
+    in the meter. Explicit dates are an answer, not a guess to refine, so the
+    reader says what it covered and `bill` decides.
     """
-    narrowed = MeterData([], "", BillingPeriod(date(2026, 8, 1), date(2026, 8, 30)))
-    assert narrowed.period == BillingPeriod(date(2026, 8, 1), date(2026, 8, 30))
-    assert MeterData([], "").period is None
+    export = tmp_path / "export.csv"
+    export.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        "tariffkit.sources.pge.cached_green_button",
+        lambda settings, start, end, **kw: SimpleNamespace(
+            path=export, end=date(2026, 8, 30), downloaded=False, covers="cached"
+        ),
+    )
+    monkeypatch.setattr("tariffkit.sources.greenbutton.read_green_button", lambda *a, **k: [])
+
+    asked = BillingPeriod(date(2026, 8, 1), date(2026, 9, 1))
+    data = GreenButtonExport(settings=None).read(asked)
+    assert data.period == BillingPeriod(date(2026, 8, 1), date(2026, 8, 30))
+
+    # An export reaching the end of the window narrows nothing.
+    monkeypatch.setattr(
+        "tariffkit.sources.pge.cached_green_button",
+        lambda settings, start, end, **kw: SimpleNamespace(
+            path=export, end=date(2026, 9, 1), downloaded=False, covers="cached"
+        ),
+    )
+    assert GreenButtonExport(settings=None).read(asked).period is None

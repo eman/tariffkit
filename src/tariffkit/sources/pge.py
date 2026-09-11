@@ -1363,15 +1363,11 @@ def cached_green_button(
         if found is not None:
             return found
 
-    if settings is None:
-        raise ConfigError(
-            f"no cached Green Button export covers {start.isoformat()}..{end.isoformat()}, "
-            f"and downloading one needs a utility login: store pge.username and "
-            f"pge.password with `tariffkit credentials set`, or set PGE_USERNAME and "
-            f"PGE_PASSWORD. An export you already have can be priced with "
-            f"`tariffkit bill --csv <file>`."
-        )
-
+    # Asked before the login is required, because it answers from its own cache
+    # when there is none. An open cycle runs to today and the utility publishes
+    # a day behind, so a cache holding every published day covers the window
+    # only after this pulls the end back -- which is exactly the case a login
+    # should not be needed for.
     available = cached_available_reads(settings, refresh=refresh)
     if available is not None and available.end < end:
         end = max(available.end, start)
@@ -1379,6 +1375,16 @@ def cached_green_button(
             found = _covering(base, start, end)
             if found is not None:
                 return found
+
+    if settings is None:
+        want = "re-downloading it" if refresh else "downloading one"
+        raise ConfigError(
+            f"no cached Green Button export covers {start.isoformat()}..{end.isoformat()}, "
+            f"and {want} needs a utility login: store pge.username and "
+            f"pge.password with `tariffkit credentials set`, or set PGE_USERNAME and "
+            f"PGE_PASSWORD. An export you already have can be priced with "
+            f"`tariffkit bill --csv <file>`."
+        )
 
     text = read_green_button_export(settings, start, end)
     base.mkdir(mode=0o700, parents=True, exist_ok=True)

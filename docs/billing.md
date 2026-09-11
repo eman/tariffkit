@@ -20,8 +20,10 @@ tariffkit bill - --json < intervals.csv
 
 ## Where readings come from
 
-Three sources, all in `tariffkit.sources`. **Home Assistant is the default** —
-your own meter, read through the recorder, with no download step:
+Three sources, all in `tariffkit.sources`, and all optional. `bill` reads
+**whichever is configured**, preferring Home Assistant — your own meter, read
+through the recorder, with no download step. `tariffkit sources` lists what is
+set up and what each one would enable:
 
 ```bash
 pip install 'tariffkit[ha]'
