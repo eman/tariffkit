@@ -5,8 +5,9 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
-### Fixed
+## [0.8.1] - 2026-09-11
 
+### Fixed
 - **The device lookup no longer uses a deprecated registry call.** Running the
   integration in a stock Home Assistant container logged
   `Detected that custom integration 'tariffkit' calls device_registry.async_get_device,
@@ -1571,7 +1572,8 @@ Initial release.
 - Holiday calendars are extracted per vintage from the source data rather than
   recomputed, because the vintage files disagree in far-future years.
 
-[Unreleased]: https://github.com/eman/tariffkit/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/eman/tariffkit/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/eman/tariffkit/releases/tag/v0.8.1
 [0.8.0]: https://github.com/eman/tariffkit/releases/tag/v0.8.0
 [0.7.0]: https://github.com/eman/tariffkit/releases/tag/v0.7.0
 [0.6.1]: https://github.com/eman/tariffkit/releases/tag/v0.6.1
