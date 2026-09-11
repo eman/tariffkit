@@ -677,7 +677,13 @@ class TariffKitCoordinator(DataUpdateCoordinator[TariffKitData]):
         if model == self._device_model:
             return
         registry = dr.async_get(self.hass)
-        device = registry.async_get_device(identifiers={(DOMAIN, self.entry.entry_id)})
+        # Scoped to this entry. `async_get_device(identifiers=...)` is deprecated
+        # for 2027.8.0 because an identifier is no longer unique across config
+        # entries -- and ours is the entry id, so the lookup was asking a
+        # question whose answer it already had to qualify.
+        device = registry.async_get_device_by_identifier(
+            (DOMAIN, self.entry.entry_id), self.entry.entry_id
+        )
         if device is not None:
             registry.async_update_device(device.id, model=model)
         self._device_model = model

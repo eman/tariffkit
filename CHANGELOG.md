@@ -5,6 +5,19 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The device lookup no longer uses a deprecated registry call.** Running the
+  integration in a stock Home Assistant container logged
+  `Detected that custom integration 'tariffkit' calls device_registry.async_get_device,
+  which is deprecated because device identifiers and connections are no longer
+  unique across config entries ... This will stop working in Home Assistant
+  2027.8.0`. Our identifier *is* the entry id, so the lookup was asking a
+  question it already had to qualify;
+  `async_get_device_by_identifier(identifier, entry_id)` asks it once. Nothing
+  in the test suite could see this -- the warning comes from Home Assistant's
+  own frame helper at runtime.
+
 ## [0.8.0] - 2026-09-11
 
 ### Added
