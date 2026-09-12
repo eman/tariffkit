@@ -565,7 +565,16 @@ would have cost:
 
 Offered at the end of initial setup, and always available afterward at
 **Configure → Metered energy** — so an entry created before you integrated a
-meter picks it up later without being recreated:
+meter picks it up later without being recreated.
+
+An entry with no counters named also raises a **repair**, and the repair is the
+same form: open it from **Settings → System → Repairs** and fill it in there.
+That exists because setup runs once — an entry created before the setup step
+existed would otherwise never be offered the form, and would have to be found
+under Configure by someone who already knew it was there. It is a warning rather
+than an error, because pricing rates without a meter is a legitimate
+configuration: name the counters any way you like and the repair clears itself,
+or ignore it and nothing changes.
 
 | Field | What it is |
 |---|---|

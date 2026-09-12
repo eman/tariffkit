@@ -21,7 +21,7 @@ tariffkit info
 
 ```bash
 # publish once and exit, to check it works
-tariffkit mqtt --broker 192.168.1.100 --once -v
+tariffkit -v mqtt --broker 192.168.1.100 --once
 
 # run continuously
 tariffkit mqtt --broker 192.168.1.100
@@ -178,7 +178,7 @@ Wants=network-online.target
 Type=simple
 User=tariffkit
 Environment=XDG_CONFIG_HOME=/etc/tariffkit
-ExecStart=/opt/tariffkit/.venv/bin/tariffkit mqtt --broker 192.168.1.100 -v
+ExecStart=/opt/tariffkit/.venv/bin/tariffkit -v mqtt --broker 192.168.1.100
 Restart=on-failure
 RestartSec=30
 

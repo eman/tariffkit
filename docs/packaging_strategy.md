@@ -74,9 +74,13 @@ The distribution contains:
 - billing, netting, ledgers, and true-up behavior;
 - pure interoperability adapters;
 - source adapters;
-- named account profiles and their local persistence (`account/`), and the
-  generic PG&E statement importer and reconciler that populates them
+- the account model and its dated history (`account/`), with local persistence
+  owned by the CLI (`cli/account_store.py`) rather than the library, and the
+  generic PG&E statement importer and reconciler that populates it
   (`providers/pge/`), each gated behind its own extra;
+- counter arithmetic that is not tied to any source (`metering.py`): turning a
+  cumulative meter reading into interval energy, reused by the Home Assistant
+  integration without it importing a client;
 - the CLI, MQTT publisher, and web application.
 
 The default install remains dependency-free. MQTT, web, portal, Home Assistant

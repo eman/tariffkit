@@ -271,6 +271,14 @@ existing config entry keeps the entities it was given.
   to pass something was left correcting history through `--config-json`. `init`
   now accepts the same fields `update` does, from one shared definition so the
   two cannot drift, and every one of them has help text.
+- **Two documented commands put a global flag after the subcommand.**
+  `docs/mqtt.md` showed `tariffkit mqtt --broker ... -v`, in a code block and
+  again inside a systemd unit; `-v` is a top-level flag and argparse rejects it
+  there. Both are now `tariffkit -v mqtt ...`.
+- **`docs/billing.md` promised a source default** that this release removes, and
+  `docs/packaging_strategy.md` still described "named account profiles" and put
+  account persistence in the library rather than the CLI. The repair added for
+  an entry with no counters was documented nowhere.
 - **The README showed two commands that do not exist.** `tariffkit account init
   home` and `tariffkit account source home show ha` both carried a profile name
   positionally, which has not been accepted since named profiles were removed in
@@ -278,8 +286,10 @@ existing config entry keeps the entities it was given.
   error. It also listed five of the eight extras, omitting `ha`, `influx` and
   `pge`: exactly the three the meter and statement paths need, so following the
   README left `bill --source ha` uninstallable. `test_packaging.py` now parses
-  every command the README prints against the real parser and checks the extras
-  against `pyproject.toml`, so neither can drift again.
+  **every** `tariffkit` invocation in the README, `audit/README.md` and every
+  page under `docs/` against the real parser -- 86 of them, with `\`
+  continuations joined and systemd/cron prefixes included -- and checks the
+  extras against `pyproject.toml`, so none of this can drift again.
 - **`account source show` no longer promises a default.** It printed "not
   configured; the source default will be used", describing a fallback this
   release removes.

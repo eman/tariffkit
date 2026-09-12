@@ -66,7 +66,10 @@ Grid import means energy consumed from the grid, not whole-home load. Grid
 export is energy returned to the grid. A one-off
 `--ha-import-entity`/`--ha-export-entity` (or Influx equivalents) flag takes
 precedence over the profile, which takes precedence over environment and
-global configuration; otherwise the source default is used.
+global configuration. There is **no default**: entity names are site-specific,
+so a source with none named refuses to read rather than guess, and names the
+command that records them. Naming a pair on the command line also selects that
+source, so `--source` is not needed alongside them.
 
 It pulls **long-term statistics**, not state history. That is the only place a
 whole cycle survives — the history behind `/api/history` is purged on the
