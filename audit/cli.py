@@ -266,6 +266,40 @@ def _doctor(*, since: date | None = None, offline: bool = False) -> int:
     return EXIT_OK
 
 
+def optional_counters(
+    settings: Any,
+    start: Any,
+    end: Any,
+    *,
+    readings_from: str,
+    label: str,
+    skipped: list[str],
+) -> Any:
+    """InfluxDB readings for the comparison, or ``None`` when it could not be read.
+
+    `optional_influx` makes *missing configuration* optional; this makes a failed
+    *read* optional too. On the statistics path InfluxDB is not the source being
+    audited, so a refused connection or a malformed response there must not abort
+    a run that never needed it -- and `main` does not catch the HTTP client's own
+    errors, so it surfaced as a traceback rather than a message.
+
+    The skip is named rather than swallowed: the summary prints it as
+    ``not checked``, because a comparison that was not made is not a comparison
+    that agreed.
+    """
+    from tariffkit.sources.influx import read_counters
+
+    try:
+        return read_counters(settings, start, end)
+    except Exception as err:
+        # Deliberately broad: this reaches the network through httpx, which the
+        # audit harness does not declare and must not import in order to name.
+        if readings_from == "influx":
+            raise
+        skipped.append(f"influx comparison for {label}: {err}")
+        return None
+
+
 def optional_influx(profile: Any, readings_from: str) -> Any:
     """InfluxDB settings for the comparison, or ``None`` when it cannot happen.
 
@@ -307,7 +341,6 @@ def _reconcile(
     from tariffkit.cli import AccountStore
     from tariffkit.engine import RateEngine
     from tariffkit.providers.pge.statements import read_statement
-    from tariffkit.sources.influx import read_counters
 
     from .errors import AccountError
     from .reconcile import reconcile, render_all, render_summary
@@ -385,8 +418,17 @@ def _reconcile(
         primary = ""
         if settings is not None:
             influx_key = f"influx:{settings.export_entity}"
-            sources[influx_key] = read_counters(settings, start, end)
-            primary = influx_key
+            readings_or_none = optional_counters(
+                settings,
+                start,
+                end,
+                readings_from=readings_from,
+                label=statement.source or "statement",
+                skipped=skipped,
+            )
+            if readings_or_none is not None:
+                sources[influx_key] = readings_or_none
+                primary = influx_key
 
         # Home Assistant's hourly statistics, when asked for.
         #

@@ -1412,3 +1412,35 @@ def test_one_entity_flag_completes_a_half_configured_source(
     # Home Assistant was chosen, and both halves reached it.
     assert seen == {"import": "sensor.cli_in", "export": "sensor.from_config_out"}
     assert "could not reach the host" in capsys.readouterr().err
+
+
+class TestCcaFromStatement:
+    """A bill prints a marketing name; a rate card is keyed by identity."""
+
+    def test_the_marketing_name_resolves_to_the_vendored_card(self) -> None:
+        """`Marin Clean Energy` lowercased gave `marin clean energy`.
+
+        That rate_card can never load -- the vendored card is `mce` -- so
+        statement-based setup produced an account that could not price its own
+        generation.
+        """
+        from tariffkit.cli.account_commands import config_from_statement
+
+        for printed in ("MCE", "Marin Clean Energy", "marin  clean  energy"):
+            changes, _ = config_from_statement(_statement(cca_name=printed))
+            assert changes["cca"] == {
+                "name": "MCE",
+                "rate_card": "mce",
+            }, f"{printed!r} did not resolve"
+
+    def test_an_unvendored_cca_gets_no_rate_card(self) -> None:
+        """Naming a card that does not exist is worse than naming none.
+
+        `CcaConfig` reports an incomplete CCA and the caller can supply
+        `generation_rates`; a bad `rate_card` only fails to load.
+        """
+        from tariffkit.cli.account_commands import config_from_statement
+
+        changes, _ = config_from_statement(_statement(cca_name="Sonoma Clean Power"))
+        assert changes["cca"] == {"name": "SONOMA CLEAN POWER"}
+        assert "rate_card" not in changes["cca"]  # type: ignore[operator]

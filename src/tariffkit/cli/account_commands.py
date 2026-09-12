@@ -178,6 +178,18 @@ def downloaded_statement(*, config_path: str | Path | None = None) -> Iterator[P
         shutil.rmtree(cache, ignore_errors=True)
 
 
+def _vendored_rate_card(identity: str, on: date) -> bool:
+    """Whether a rate card ships for this CCA on that date."""
+    from ..cca import load_rate_card
+    from ..errors import TariffKitError
+
+    try:
+        load_rate_card(identity, on)
+    except TariffKitError:
+        return False
+    return True
+
+
 def config_from_statement(statement: Any) -> tuple[dict[str, object], tuple[str, ...]]:
     """What one statement establishes about the account, and what it cannot.
 
@@ -204,12 +216,22 @@ def config_from_statement(statement: Any) -> tuple[dict[str, object], tuple[str,
         changes["tariff"] = tariff
 
     if statement.cca_name:
+        from ..providers.pge.reconcile import normalize_cca_identity
+
         changes["supplier"] = "cca"
-        cca: dict[str, object] = {"name": statement.cca_name}
-        # The rate card is the CCA's name lowercased where one is vendored; the
-        # option is a product tier a bill does not print, so it keeps its
-        # default and is named in the gaps.
-        cca["rate_card"] = statement.cca_name.lower()
+        # Through the same normaliser the statement importer uses. A bill prints
+        # the marketing name -- "Marin Clean Energy" -- and lowercasing that gave
+        # a rate_card of "marin clean energy", which can never load: the vendored
+        # card is "mce". The normaliser knows the identity behind the name.
+        identity = normalize_cca_identity(statement.cca_name)
+        cca: dict[str, object] = {"name": identity}
+        # Only when a card is actually vendored. Naming one that does not exist
+        # is worse than naming none: CcaConfig reports an incomplete CCA and the
+        # caller can supply generation_rates, where a bad rate_card just fails to
+        # load. The option is a product tier a bill does not print, so it keeps
+        # its default and is named in the gaps.
+        if _vendored_rate_card(identity, statement.period.start):
+            cca["rate_card"] = identity.lower().replace(" ", "_")
         if statement.pcia_vintage is not None:
             cca["pcia_vintage"] = statement.pcia_vintage
         changes["cca"] = cca

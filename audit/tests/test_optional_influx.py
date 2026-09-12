@@ -49,3 +49,52 @@ def test_a_configured_profile_is_used_on_both_paths() -> None:
         settings = optional_influx(profile, readings_from)
         assert settings is not None
         assert settings.require_entities() == ("grid_in", "grid_out")
+
+
+class TestOptionalCounters:
+    """A failed comparison read is a comparison not made, not a failed run."""
+
+    def test_a_read_failure_is_skipped_on_the_statistics_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from audit.cli import optional_counters
+
+        def refuse(*_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("connection refused")
+
+        monkeypatch.setattr("tariffkit.sources.influx.read_counters", refuse)
+        skipped: list[str] = []
+        got = optional_counters(
+            object(), None, None, readings_from="statistics", label="PGE.pdf", skipped=skipped
+        )
+        assert got is None
+        # Named rather than swallowed: the summary prints it as "not checked".
+        assert skipped == ["influx comparison for PGE.pdf: connection refused"]
+
+    def test_the_same_failure_still_aborts_when_influx_is_the_source(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from audit.cli import optional_counters
+
+        def refuse(*_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("connection refused")
+
+        monkeypatch.setattr("tariffkit.sources.influx.read_counters", refuse)
+        with pytest.raises(RuntimeError, match="connection refused"):
+            optional_counters(
+                object(), None, None, readings_from="influx", label="PGE.pdf", skipped=[]
+            )
+
+    def test_a_successful_read_is_returned_untouched(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from audit.cli import optional_counters
+
+        sentinel = ["readings"]
+        monkeypatch.setattr("tariffkit.sources.influx.read_counters", lambda *a, **k: sentinel)
+        skipped: list[str] = []
+        assert (
+            optional_counters(
+                object(), None, None, readings_from="statistics", label="x", skipped=skipped
+            )
+            is sentinel
+        )
+        assert skipped == []

@@ -24,6 +24,14 @@ All notable changes to this project are documented here. This project follows
   tariffs as the account actually changed them -- a cycle split by a rate change
   takes the schedule it *ended* on, since that is what the account now is.
 
+  The CCA identity goes through the same normaliser the statement importer uses.
+  A bill prints the marketing name -- `Marin Clean Energy` -- and lowercasing
+  that gave a `rate_card` of `marin clean energy`, which can never load: the
+  vendored card is `mce`. A CCA with no vendored card now gets no `rate_card` at
+  all, because naming one that does not exist is worse than naming none --
+  `CcaConfig` reports an incomplete CCA and the caller can supply
+  `generation_rates`, where a bad card only fails to load.
+
   One statement, not a history: `account sync` is the tool for the history and
   better at it. And the command names what a bill cannot say -- Permission To
   Operate, the interconnection application year, ACC Plus segment, CARE or FERA
@@ -305,6 +313,14 @@ existing config entry keeps the entities it was given.
   host, database and token and *not* the series names, so credentials present
   with series absent returned a settings object and the read raised anyway.
   Now one named `optional_influx`, with tests that fail if either half goes.
+
+  A failed *read* is optional on that path too, not only missing
+  configuration: a refused connection or a malformed response from the
+  comparison source aborted a run that never needed it, and as a traceback
+  rather than a message, since the harness does not catch the HTTP client's own
+  errors. `optional_counters` skips it and the summary prints it as
+  `not checked`, because a comparison that was not made is not one that agreed.
+  `--readings influx` still fails hard.
 - **One entity flag is enough to choose a source.** `--ha-import-entity` alone
   was ignored: the settings loader merges an override with the other entity from
   the profile or the config file, so a config file naming the export counter and
