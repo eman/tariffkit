@@ -1269,6 +1269,20 @@ def main(argv: list[str] | None = None) -> int:
     except TariffKitError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    except OSError as exc:
+        # A host that cannot be reached is a configuration problem, not a bug.
+        # Home Assistant, InfluxDB and the portal all reach the network through
+        # libraries that raise OSError subclasses -- `socket.gaierror` for a
+        # typo'd host, `ConnectionRefusedError` for a wrong port -- and none of
+        # them is a TariffKitError, so fixing an entity name and running `bill`
+        # again answered with a Python traceback.
+        print(f"error: could not reach the host: {exc}", file=sys.stderr)
+        print(
+            "Check the host and port in your configuration, and that the service "
+            "is up. `tariffkit sources` shows what is configured.",
+            file=sys.stderr,
+        )
+        return 1
     except KeyboardInterrupt:  # pragma: no cover
         return 130
 

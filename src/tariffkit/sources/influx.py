@@ -42,6 +42,14 @@ from ..metering import monotonic
 from ..secrets import get_secret, load_dotenv
 from ..timeutil import to_pacific
 
+#: What 0.8.1 and earlier read when nothing named the series. Kept only to make
+#: that upgrade a copy-paste; nothing reads them, and they can go once 0.8.x is
+#: far enough behind.
+_RETIRED_DEFAULTS: tuple[str, str] = (
+    "eagle_100_total_energy_delivered",
+    "eagle_100_total_energy_received",
+)
+
 #: No default pair: series names are site-specific, and the one that used to be
 #: here named the hardware this was developed against. Prefer the *raw* counters
 #: when you name them -- unfiltered on purpose, see the module docstring.
@@ -87,12 +95,17 @@ class InfluxSettings:
         ]
         if missing:
             raise ConfigError(
-                f"InfluxDB {' and '.join(missing)} not set; name the grid "
-                f"counters with `tariffkit account source set influx "
-                f"--grid-import-entity ... --grid-export-entity ...`, or put "
-                f"import_entity/export_entity under [influxdb] in the config "
-                f"file. Rate pricing (`tariffkit now`, `forecast`, `info`) "
-                f"needs neither."
+                f"InfluxDB {' and '.join(missing)} not set. Name your grid series:\n"
+                f"  tariffkit account source set influx \\\n"
+                f"    --grid-import-entity YOUR_IMPORT_SERIES \\\n"
+                f"    --grid-export-entity YOUR_EXPORT_SERIES --apply\n"
+                f"or put import_entity/export_entity under [influxdb] in the config "
+                f"file.\n\n"
+                f"Upgrading from 0.8.1 or earlier? Those versions read "
+                f"{_RETIRED_DEFAULTS[0]} and {_RETIRED_DEFAULTS[1]} when nothing "
+                f"named them, so if you never configured these, that is what you "
+                f"were using.\n\n"
+                f"Rate pricing (`tariffkit now`, `forecast`, `info`) needs neither."
             )
         assert self.import_entity is not None and self.export_entity is not None
         return self.import_entity, self.export_entity

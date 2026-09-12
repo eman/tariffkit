@@ -53,6 +53,15 @@ Resolution = Literal["auto", "5minute", "hour"]
 #: Home Assistant's own period names, finest first.
 PERIODS: dict[str, timedelta] = {"5minute": timedelta(minutes=5), "hour": timedelta(hours=1)}
 
+#: What 0.8.1 and earlier read when nothing named the counters. Kept only to
+#: make that upgrade a copy-paste rather than a guess -- these are a fact about
+#: what the previous version did, not a default, and nothing reads them. Drop
+#: them once 0.8.x is far enough behind.
+_RETIRED_DEFAULTS: tuple[str, str] = (
+    "sensor.eagle_100_energy_delivered",
+    "sensor.eagle_100_energy_received",
+)
+
 #: Nothing is assumed about which entities carry grid exchange. There used to be
 #: a default pair here, named for the hardware this was developed against, which
 #: meant an unconfigured install quietly asked Home Assistant about somebody
@@ -85,12 +94,18 @@ class HaSettings:
         ]
         if missing:
             raise ConfigError(
-                f"Home Assistant {' and '.join(missing)} not set; name the grid "
-                f"counters with `tariffkit account source set ha "
-                f"--grid-import-entity ... --grid-export-entity ...`, or put "
-                f"import_entity/export_entity under [home_assistant] in the "
-                f"config file. Rate pricing (`tariffkit now`, `forecast`, "
-                f"`info`) needs neither."
+                f"Home Assistant {' and '.join(missing)} not set. Name your grid "
+                f"counters:\n"
+                f"  tariffkit account source set ha \\\n"
+                f"    --grid-import-entity sensor.YOUR_IMPORT_COUNTER \\\n"
+                f"    --grid-export-entity sensor.YOUR_EXPORT_COUNTER --apply\n"
+                f"or put import_entity/export_entity under [home_assistant] in the "
+                f"config file.\n\n"
+                f"Upgrading from 0.8.1 or earlier? Those versions read "
+                f"{_RETIRED_DEFAULTS[0]} and {_RETIRED_DEFAULTS[1]} when nothing "
+                f"named them, so if you never configured these, that is what you "
+                f"were using.\n\n"
+                f"Rate pricing (`tariffkit now`, `forecast`, `info`) needs neither."
             )
         assert self.import_entity is not None and self.export_entity is not None
         return self.import_entity, self.export_entity

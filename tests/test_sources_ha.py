@@ -585,3 +585,24 @@ class TestOptionalEntities:
         # And it says what still works, so the answer is not "configure a meter
         # or get nothing".
         assert "needs neither" in message
+
+
+class TestUpgradingFrom081:
+    """What 0.8.1 read by default is a fact about the user's past, not a guess."""
+
+    def test_the_error_names_what_the_previous_version_used(self) -> None:
+        """Anyone who never configured these was relying on those two names.
+
+        Telling them to pass `--grid-import-entity ...` left a reader who never
+        knew there were defaults with nothing to type.
+        """
+        settings = ha.HaSettings(host="https://ha.example", token="tok")
+        with pytest.raises(ConfigError) as err:
+            settings.require_entities()
+        message = str(err.value)
+        assert "sensor.eagle_100_energy_delivered" in message
+        assert "sensor.eagle_100_energy_received" in message
+        assert "0.8.1 or earlier" in message
+        # And a command that can be pasted, not a placeholder.
+        assert "tariffkit account source set ha" in message
+        assert "--grid-import-entity ..." not in message

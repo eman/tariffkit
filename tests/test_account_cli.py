@@ -1278,3 +1278,34 @@ class TestBareInitReadsRatherThanInvents:
         monkeypatch.setattr(account_commands, "newest_portal_statement", refuse)
 
         assert main(["account", "init", "--tariff", "EV2-A"]) == 0
+
+
+def test_an_unreachable_host_is_an_error_not_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Fixing an entity name and running `bill` again answered with a traceback.
+
+    Home Assistant, InfluxDB and the portal all reach the network through
+    libraries that raise `OSError` subclasses, and none of those is a
+    `TariffKitError`, so nothing caught them.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    store = AccountStore(tmp_path)
+    store.save(
+        AccountProfile(
+            (AccountEpoch(date(2025, 1, 1), Config()),),
+            meter_sources=MeterSources(ha=MeterSource("sensor.in", "sensor.out")),
+        )
+    )
+    monkeypatch.setenv("HA_HOST", "http://ha.invalid")
+    monkeypatch.setenv("HA_TOKEN", "tok")
+
+    def refuse(*_args: object, **_kwargs: object) -> object:
+        raise OSError(8, "nodename nor servname provided, or not known")
+
+    monkeypatch.setattr("tariffkit.sources.homeassistant.read_statistics", refuse)
+
+    assert main(["bill", "--source", "ha", "--start", "2026-08-01", "--end", "2026-08-31"]) == 1
+    err = capsys.readouterr().err
+    assert "could not reach the host" in err
+    assert "Traceback" not in err

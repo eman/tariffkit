@@ -5,6 +5,41 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+
+#### Upgrading the CLI from 0.8.1: one command, and only if you relied on a default
+
+`bill --source ha` and `--source influx` used to fall back to a hardcoded pair
+of entity names when nothing else named them. Those defaults are gone, so if
+you **never** configured your counters, record them once:
+
+```bash
+tariffkit account source set ha \
+  --grid-import-entity sensor.eagle_100_energy_delivered \
+  --grid-export-entity sensor.eagle_100_energy_received --apply
+```
+
+```bash
+tariffkit account source set influx \
+  --grid-import-entity eagle_100_total_energy_delivered \
+  --grid-export-entity eagle_100_total_energy_received --apply
+```
+
+Those are exactly the names 0.8.1 read. Substitute your own if they are
+different -- they were one site's device and almost certainly never matched
+yours, in which case `bill --source ha` was already failing to find them.
+
+**Nothing to do** if you set `import_entity`/`export_entity` under
+`[home_assistant]` or `[influxdb]` in `config.toml`, or ever ran
+`tariffkit account source set`, or pass `--ha-import-entity` on the command
+line, or only use `--csv` / `--source green-button`. Rate pricing -- `now`,
+`forecast`, `info`, `serve`, `mqtt` -- never read a meter and is unaffected.
+
+The error says all of this if you hit it, including the retired names, so this
+note is a convenience rather than something you have to have read first. The
+**Home Assistant integration needs nothing**: it never had defaults, and an
+existing config entry keeps the entities it was given.
+
 ### Added
 - **`tariffkit account init` reads your latest bill instead of guessing.** With
   a PG&E login already stored it fetches the newest statement and sets the
@@ -85,6 +120,12 @@ All notable changes to this project are documented here. This project follows
   to pass something was left correcting history through `--config-json`. `init`
   now accepts the same fields `update` does, from one shared definition so the
   two cannot drift, and every one of them has help text.
+- **An unreachable host is an error, not a traceback.** Home Assistant,
+  InfluxDB and the portal all reach the network through libraries that raise
+  `OSError` subclasses -- `socket.gaierror` for a typo'd host,
+  `ConnectionRefusedError` for a wrong port -- and none of those is a
+  `TariffKitError`, so nothing caught them. Fixing an entity name and running
+  `bill` again answered with a Python stack trace.
 - **Reading a statement no longer floods the terminal.** pypdf logs a warning
   per over-long whitespace run and a PG&E bill trips it dozens of times, so
   forty lines of library noise buried whatever the command was saying. Nothing
