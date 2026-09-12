@@ -271,6 +271,18 @@ existing config entry keeps the entities it was given.
   to pass something was left correcting history through `--config-json`. `init`
   now accepts the same fields `update` does, from one shared definition so the
   two cannot drift, and every one of them has help text.
+- **The README showed two commands that do not exist.** `tariffkit account init
+  home` and `tariffkit account source home show ha` both carried a profile name
+  positionally, which has not been accepted since named profiles were removed in
+  0.8.0 -- the released 0.8.1 README has them, and both fail with an argparse
+  error. It also listed five of the eight extras, omitting `ha`, `influx` and
+  `pge`: exactly the three the meter and statement paths need, so following the
+  README left `bill --source ha` uninstallable. `test_packaging.py` now parses
+  every command the README prints against the real parser and checks the extras
+  against `pyproject.toml`, so neither can drift again.
+- **`account source show` no longer promises a default.** It printed "not
+  configured; the source default will be used", describing a fallback this
+  release removes.
 - **An unreachable host is an error, not a traceback.** Home Assistant,
   InfluxDB and the portal all reach the network through libraries that raise
   `OSError` subclasses -- `socket.gaierror` for a typo'd host,

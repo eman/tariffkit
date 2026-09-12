@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import importlib
 import json
+import re
 import struct
 import tomllib
 from pathlib import Path
@@ -131,3 +132,52 @@ def test_the_integration_imports_only_what_the_library_exports() -> None:
     assert not missing, "the integration imports names the library does not provide: " + "; ".join(
         missing
     )
+
+
+def test_the_readme_names_every_extra_and_no_others() -> None:
+    """An install line for an extra that does not exist, or a missing one.
+
+    The README listed five extras when eight were declared, and the three it
+    omitted -- `ha`, `influx`, `pge` -- are exactly the ones the meter and
+    statement paths need, so following the README left `bill --source ha`
+    uninstallable.
+    """
+    declared = set(
+        tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"][
+            "optional-dependencies"
+        ]
+    )
+    shown = re.findall(r"tariffkit\[([a-z,]+)\]", (ROOT / "README.md").read_text(encoding="utf-8"))
+    named = {extra for group in shown for extra in group.split(",")}
+
+    assert not named - declared, f"README names extras that do not exist: {named - declared}"
+    assert not declared - named, f"README omits declared extras: {declared - named}"
+
+
+def test_the_readme_only_shows_commands_the_cli_has() -> None:
+    """Two of its examples had not existed since named profiles were removed.
+
+    `tariffkit account init home` and `tariffkit account source home show ha`
+    were in the released 0.8.1 README, and both failed with an argparse error.
+    Checked against the parser rather than by running anything.
+    """
+    import argparse
+
+    from tariffkit.cli import build_parser
+
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    parser = build_parser()
+    broken: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("tariffkit ") or "#" not in stripped:
+            continue
+        argv = stripped.split("#", 1)[0].split()[1:]
+        try:
+            parser.parse_args(argv)
+        except SystemExit:
+            broken.append(" ".join(argv))
+        except argparse.ArgumentError:  # pragma: no cover - argparse exits instead
+            broken.append(" ".join(argv))
+
+    assert not broken, f"README shows commands the CLI rejects: {broken}"

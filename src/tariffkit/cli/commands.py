@@ -997,8 +997,10 @@ def _run_account_command(args: Any) -> int:
                 print(f"grid import: {summary['grid_import_entity']}")
                 print(f"grid export: {summary['grid_export_entity']}")
             else:
+                # There is no source default any more, so saying one would be
+                # used described a fallback that has been gone since 0.9.0.
                 print(f"source: {summary['source']}")
-                print("not configured; the source default will be used")
+                print("not configured; `tariffkit account source set` names the counters")
             return 0
 
         updated = set_meter_source(

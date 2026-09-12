@@ -62,7 +62,7 @@ Nothing here touches the network at runtime.
 | [Use cases](https://github.com/eman/tariffkit/blob/main/docs/use-cases.md) | The four questions the calculator answers, what memory each one needs, and the traps in each |
 | [Configuration](https://github.com/eman/tariffkit/blob/main/docs/configuration.md) | Settings, CCA setup, reading your bill |
 | [Library](https://github.com/eman/tariffkit/blob/main/docs/library.md) | Embedding in Python |
-| [Named account profiles](https://github.com/eman/tariffkit/blob/main/docs/accounts.md) | Tracking a changing service agreement over time, importing PG&E statements |
+| [Your account](https://github.com/eman/tariffkit/blob/main/docs/accounts.md) | Setting up from a bill, tracking a changing service agreement over time, importing PG&E statements |
 | [Bill calculator](https://github.com/eman/tariffkit/blob/main/docs/billing.md) | Computing a cycle from interval meter data |
 | [MQTT](https://github.com/eman/tariffkit/blob/main/docs/mqtt.md) | Publishing, with Home Assistant discovery |
 | [REST API](https://github.com/eman/tariffkit/blob/main/docs/web.md) | HTTP service |
@@ -95,13 +95,19 @@ See [docs/home-assistant.md](https://github.com/eman/tariffkit/blob/main/docs/ho
 ## Install
 
 ```bash
-pip install tariffkit              # core, zero dependencies
-pip install 'tariffkit[mqtt]'      # + MQTT publisher with Home Assistant discovery
-pip install 'tariffkit[web]'       # + FastAPI service
-pip install 'tariffkit[secrets]'   # + OS keyring credential storage
-pip install 'tariffkit[statements]' # + reading local PG&E statement PDFs
+pip install tariffkit               # core, zero dependencies
+pip install 'tariffkit[ha]'         # + reading meters from Home Assistant
+pip install 'tariffkit[influx]'     # + reading meters from InfluxDB 3
+pip install 'tariffkit[pge]'        # + downloading statements and Green Button exports
+pip install 'tariffkit[statements]' # + reading PG&E statement PDFs
+pip install 'tariffkit[mqtt]'       # + MQTT publisher with Home Assistant discovery
+pip install 'tariffkit[web]'        # + FastAPI service
+pip install 'tariffkit[secrets]'    # + OS keyring credential storage
 pip install 'tariffkit[all]'
 ```
+
+Setting an account up from your latest bill wants `[pge,statements]` and, to
+keep the login out of a plain file, `[secrets]`.
 
 The Home Assistant integration has been
 [submitted to the default HACS store](https://github.com/hacs/default/pull/10019),
@@ -126,18 +132,37 @@ Or add it manually:
 tariffkit now                          # current import/export price
 tariffkit forecast --hours 48          # the upcoming curve
 tariffkit forecast --format json       # machine-readable
+tariffkit sources                      # what is configured, and what each enables
 tariffkit mqtt --broker 192.168.1.100  # publish hourly, with HA discovery
 tariffkit serve                        # REST API on :8000
 tariffkit bill intervals.csv           # compute a cycle from meter data
 tariffkit info                         # which data is loaded, and from where
-tariffkit account init home            # track a service agreement's history
-tariffkit account source home show ha  # inspect profile grid-import/export entities
+tariffkit account init --from-statement bill.pdf   # set up from your latest bill
+tariffkit account source show ha       # which grid counters the account reads
 ```
+
+`now`, `forecast` and `info` need no configuration at all. `bill` is the one
+command that needs readings, and it reads whichever source you have set up —
+Home Assistant, InfluxDB, or a Green Button export. `tariffkit sources` lists
+what is configured and what turning each one on would buy.
 
 ## Configuration
 
-Defaults target a PG&E-bundled residential customer. Point it at your own
-service agreement via `~/.config/tariffkit/config.toml`:
+The quickest way to describe your own service agreement is to let a bill do it:
+
+```bash
+tariffkit account init --from-statement ~/Downloads/statement.pdf
+```
+
+That reads the tariff, whether generation comes from a CCA and which one, the
+baseline territory and the PCIA vintage, and tells you the handful of things a
+bill does not print — Permission To Operate, the interconnection application
+year, ACC Plus segment, CARE or FERA enrolment, and the Base Services Charge
+tier. With a PG&E login stored, `tariffkit account init` fetches the statement
+itself. See [Your account](https://github.com/eman/tariffkit/blob/main/docs/accounts.md).
+
+Failing that, defaults target a PG&E-bundled residential customer and can be
+pointed at your own agreement via `~/.config/tariffkit/config.toml`:
 
 ```toml
 supplier = "bundled"              # or "cca"
