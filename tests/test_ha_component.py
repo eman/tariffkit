@@ -652,6 +652,60 @@ async def test_legacy_entry_migration_preserves_pricing(hass: HomeAssistant) -> 
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
+async def test_legacy_entry_migration_keeps_the_meters(hass: HomeAssistant) -> None:
+    """Migration rebuilt options from a fixed list and dropped the meters.
+
+    A version 1 or 2 entry that named its grid counters came out the other side
+    pricing rates only: the running-total entities stopped existing, silently,
+    because the keys were simply not copied.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Legacy metered account",
+        version=1,
+        data={
+            "tariff": "E-ELEC",
+            "supplier": "bundled",
+            "interconnection_year": 2026,
+            CONF_FORECAST_HOURS: 6,
+        },
+        options={
+            "grid_import_entity": "sensor.grid_in",
+            "grid_export_entity": "sensor.grid_out",
+            "billing_cycle_start_day": 15,
+        },
+    )
+    entry.add_to_hass(hass)
+
+    assert await async_migrate_entry(hass, entry)
+    assert entry.options["grid_import_entity"] == "sensor.grid_in"
+    assert entry.options["grid_export_entity"] == "sensor.grid_out"
+    assert entry.options["billing_cycle_start_day"] == 15
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_migration_does_not_invent_empty_meter_keys(hass: HomeAssistant) -> None:
+    """An entry that never named meters must not come out having refused them.
+
+    `MeterSettings.from_entry` reads a key that is present and empty as a
+    deliberate "no entity", which suppresses the profile's own
+    `meter_sources.ha`. Writing "" while migrating would lose the meters of
+    anyone whose mapping lives on the profile -- the CLI import case.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Legacy account",
+        version=1,
+        data={"tariff": "E-ELEC", "supplier": "bundled", "interconnection_year": 2026},
+    )
+    entry.add_to_hass(hass)
+
+    assert await async_migrate_entry(hass, entry)
+    assert "grid_import_entity" not in entry.options
+    assert "grid_export_entity" not in entry.options
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_options_menu_groups_account_history(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:

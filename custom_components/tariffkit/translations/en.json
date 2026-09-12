@@ -61,7 +61,7 @@
         "data_description": {
           "grid_import_entity": "Cumulative kWh the grid has delivered to the site. Leave blank to skip cost tracking.",
           "grid_export_entity": "Cumulative kWh the site has sent to the grid. Leave blank if the site does not export.",
-          "billing_cycle_start_day": "Day of the month your meter is read, from a recent statement. 0 uses the calendar month."
+          "billing_cycle_start_day": "Fallback only, and you can leave it alone. The day of the month your meter is read, from a recent statement; 0 uses the calendar month, which will not line up with a bill. Ignored once the account carries statement evidence, which `tariffkit account sync` or Configure -> Account history supplies."
         }
       }
     },

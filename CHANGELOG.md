@@ -26,6 +26,10 @@ All notable changes to this project are documented here. This project follows
   neither still answers what a kilowatt-hour costs. Only rate pricing is
   unconditional, because the rate data ships in the wheel.
 
+- **The billing cycle start day is optional on the meters step**, and says so:
+  it was the one required field on a step titled "Optional", and its help said
+  `0 uses the calendar month` without mentioning that statement evidence
+  supersedes it entirely.
 - **Setup asks for the grid counters**, instead of creating the entry and
   leaving the meters to be found later under Configure. A site whose counters
   are already in Home Assistant now gets its running cost, credit and net
@@ -42,6 +46,19 @@ All notable changes to this project are documented here. This project follows
   already carries `meter_sources.ha` offers those as the suggested values.
 
 ### Fixed
+- **Migrating a version 1 or 2 config entry keeps its meters.** The migration
+  rebuilt `options` from a fixed list of two keys, so an entry that named its
+  grid counters came out the other side pricing rates only -- the running-total
+  entities silently stopped existing. The meter keys travel now, and only when
+  they were there: writing `""` for an entry that never had them would lose the
+  meters a second way, because a key present and empty is how the integration
+  records a deliberate "no entity" and that suppresses an imported profile's own
+  `meter_sources.ha`. Verified by migrating a real version 1 entry in a
+  container: 30 entities including all twelve running totals.
+- **A statistic with no running sum is refused.** The statistic equivalent of
+  the `state_class` check the entity path has always had: an hourly `change`
+  exists only for a summed statistic, so a mean-only one has nothing to
+  difference and would price every hour as zero.
 - **`bill --ha-import-entity ... --ha-export-entity ...` reads Home Assistant
   again.** Choosing the default source consulted only the config file and the
   account profile, so naming the counters as flags left Home Assistant looking

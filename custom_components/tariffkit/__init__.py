@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
@@ -11,7 +12,10 @@ from homeassistant.helpers import config_validation as cv
 from tariffkit.errors import TariffKitError
 
 from .const import (
+    CONF_CYCLE_START_DAY,
     CONF_FORECAST_HOURS,
+    CONF_GRID_EXPORT_ENTITY,
+    CONF_GRID_IMPORT_ENTITY,
     CONF_PREDBAT_ENABLED,
     CONF_PROFILE,
     DEFAULT_FORECAST_HOURS,
@@ -44,7 +48,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: TariffKitConfigEntry) 
         # does not already contain one.
         merged = {**entry.options, **entry.data}
         profile = profile_from_entry(merged)
-        options = {
+        options: dict[str, Any] = {
             CONF_FORECAST_HOURS: int(
                 entry.options.get(
                     CONF_FORECAST_HOURS,
@@ -58,6 +62,21 @@ async def async_migrate_entry(hass: HomeAssistant, entry: TariffKitConfigEntry) 
                 )
             ),
         }
+        # The meter settings travel too. Rebuilding options from a fixed list of
+        # keys dropped them, so an entry migrated from version 1 or 2 lost its
+        # running-total entities: the account still priced rates, and the
+        # metered figures simply stopped existing.
+        #
+        # Copied only when present, never defaulted. `MeterSettings.from_entry`
+        # reads a key that is present and empty as a deliberate "no entity" that
+        # suppresses the profile's own `meter_sources.ha` -- so writing `""` for
+        # an entry that never had the key would lose the meters a second way,
+        # for anyone whose mapping lives on the profile.
+        for key in (CONF_GRID_IMPORT_ENTITY, CONF_GRID_EXPORT_ENTITY, CONF_CYCLE_START_DAY):
+            if key in entry.options:
+                options[key] = entry.options[key]
+            elif key in entry.data:
+                options[key] = entry.data[key]
         hass.config_entries.async_update_entry(
             entry,
             data={CONF_PROFILE: profile_payload(profile)},

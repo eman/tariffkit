@@ -422,7 +422,7 @@ def _meters_schema(defaults: dict[str, Any]) -> vol.Schema:
                 CONF_GRID_EXPORT_ENTITY,
                 description={"suggested_value": defaults.get(CONF_GRID_EXPORT_ENTITY) or None},
             ): energy,
-            vol.Required(
+            vol.Optional(
                 CONF_CYCLE_START_DAY,
                 default=int(defaults.get(CONF_CYCLE_START_DAY, DEFAULT_CYCLE_START_DAY) or 0),
             ): selector.NumberSelector(
@@ -557,6 +557,14 @@ async def _async_meter_problem(hass: HomeAssistant, values: dict[str, Any]) -> s
                 f"{statistic_id} measures {unit_class} ({unit}), not energy. The "
                 "recorder only converts within a unit class, so its readings "
                 f"would be billed as though {unit} were kWh."
+            )
+        if not row.get("has_sum"):
+            # The statistic equivalent of the `state_class` check below: an
+            # hourly `change` only exists for a summed statistic, so a mean-only
+            # one has nothing to difference and would price every hour as zero.
+            return (
+                f"{statistic_id} keeps no running sum, so it has no hourly change "
+                "to difference. Running totals need a cumulative counter."
             )
     return ""
 

@@ -159,3 +159,35 @@ def test_a_statistic_id_is_refused_for_influxdb() -> None:
     assert MeterSources(ha=MeterSource(IMPORT_STAT, EXPORT_STAT)).ha is not None
     with pytest.raises(Exception, match="may not contain a colon"):
         MeterSources(influx=MeterSource(IMPORT_STAT, EXPORT_STAT))
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_a_statistic_with_no_running_sum_is_refused(hass: HomeAssistant) -> None:
+    """The statistic equivalent of the state_class check.
+
+    An hourly `change` only exists for a summed statistic, so a mean-only one
+    has nothing to difference and would price every hour as zero -- the same
+    confident nonsense a `measurement` sensor produces, which the entity path
+    has always refused.
+    """
+    from custom_components.tariffkit.config_flow import _async_meter_problem
+
+    mean_only = "opower:utility_elec_probe_demand"
+    async_add_external_statistics(
+        hass,
+        {
+            "mean_type": StatisticMeanType.ARITHMETIC,
+            "has_mean": True,
+            "has_sum": False,
+            "name": None,
+            "source": "opower",
+            "statistic_id": mean_only,
+            "unit_class": "energy",
+            "unit_of_measurement": "kWh",
+        },
+        [{"start": NOW.replace(hour=0, minute=0), "mean": 1.0, "min": 1.0, "max": 1.0}],
+    )
+    await async_wait_recording_done(hass)
+
+    problem = await _async_meter_problem(hass, {"grid_import_entity": mean_only})
+    assert "no running sum" in problem
