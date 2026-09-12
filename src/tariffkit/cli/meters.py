@@ -30,7 +30,7 @@ def _default_meter_source(args: argparse.Namespace, profile: object | None) -> s
     downloaded, was told that HA_TOKEN was not set -- naming the one source it
     had not configured rather than any of the ones it had.
     """
-    from .availability import first_available_meter_source, survey
+    from .availability import choose_meter_source
 
     if args.csv is not None:
         return "green-button"
@@ -43,12 +43,11 @@ def _default_meter_source(args: argparse.Namespace, profile: object | None) -> s
         return "ha"
     if args.influx_import_entity and args.influx_export_entity:
         return "influx"
-    statuses = survey(args.config, profile)
-    chosen = first_available_meter_source(statuses)
+    chosen, looked = choose_meter_source(args.config, profile)
     if chosen is not None:
         return chosen
     remedies = "\n".join(
-        f"  {status.name:<20}{status.remedy}" for status in statuses if not status.available
+        f"  {status.name:<20}{status.remedy}" for status in looked if not status.available
     )
     raise ConfigError(
         "no meter source is configured, so there are no readings to price a "

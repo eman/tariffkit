@@ -6,7 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from tariffkit.cli.availability import first_available_meter_source, survey
+from tariffkit.cli.availability import (
+    choose_meter_source,
+    first_available_meter_source,
+    survey,
+)
 from tariffkit.cli.commands import main
 
 METER_ENV = (
@@ -123,3 +127,50 @@ def test_the_sources_command_reports_what_works(capsys: pytest.CaptureFixture[st
     assert "yes  rates" in out
     assert "no   pge_portal" in out
     assert "no meter source to read" in out
+
+
+@pytest.mark.usefixtures("bare")
+def test_choosing_a_source_stops_at_the_first_one_that_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Choosing probes in preference order; it does not survey everything.
+
+    Every probe loads a settings object, and loading one consults the keyring.
+    On a macOS Keychain that is an access record -- potentially a prompt --
+    against a utility password, on a machine that only ever reads Home
+    Assistant. Measured out of band, this took `bill` from three keyring
+    lookups to none; asserted here is the mechanism, which is what can be
+    pinned without reaching into how each source module bound `get_secret`.
+    """
+    monkeypatch.setenv("HA_HOST", "http://ha.example")
+    monkeypatch.setenv("HA_TOKEN", "tok")
+    monkeypatch.setenv("TARIFFKIT_HA_IMPORT_ENTITY", "sensor.in")
+    monkeypatch.setenv("TARIFFKIT_HA_EXPORT_ENTITY", "sensor.out")
+
+    chosen, looked = choose_meter_source()
+    assert chosen == "ha"
+    assert [status.name for status in looked] == ["home_assistant"]
+
+    # Nothing is lost when it has to look further: a run with no meter source
+    # reports every source it tried, which is what the error message lists.
+    for variable in ("HA_HOST", "HA_TOKEN"):
+        monkeypatch.delenv(variable)
+    chosen, looked = choose_meter_source()
+    assert chosen is None
+    assert [status.name for status in looked] == [
+        "home_assistant",
+        "influxdb",
+        "pge_portal",
+        "green_button_cache",
+    ]
+
+    # And the full survey still asks everything -- that is what it is for.
+    assert len(survey()) == 5
+
+
+@pytest.mark.usefixtures("bare")
+def test_the_cache_remedy_does_not_print_a_home_directory() -> None:
+    """These lines get pasted into bug reports; an absolute path carries a name."""
+    status = next(s for s in survey() if s.name == "green_button_cache")
+    assert status.available is False
+    assert str(Path.home()) not in status.remedy

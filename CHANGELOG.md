@@ -70,6 +70,19 @@ All notable changes to this project are documented here. This project follows
   on the profile.
 
 ### Changed
+- **Choosing a source probes only as far as it has to.** `bill` asked every
+  source before picking one, and each question loads a settings object that
+  consults the keyring -- so a machine that only ever reads Home Assistant was
+  touching the stored utility password on every run, which on a macOS Keychain
+  is an access record and possibly a prompt. Choosing now stops at the first
+  source that answers: three keyring lookups became none on an account
+  configured for Home Assistant. `tariffkit sources` still asks everything,
+  which is its whole purpose, and an unconfigured run still reports every
+  source it tried.
+- **`tariffkit sources` collapses the home directory** in the one path it
+  prints. These lines get pasted into bug reports, and an absolute path under a
+  home directory carries the account name with it.
+
 - **A statistic does not have to belong to an entity.** The reading path never
   assumed it did -- the recorder query takes statistic ids -- but both ways of
   *configuring* one rejected the `source:object` form that an integration

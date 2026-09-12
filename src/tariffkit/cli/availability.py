@@ -134,6 +134,18 @@ def _pge(config_path: str | Path | None) -> SourceStatus:
     return SourceStatus("pge_portal", True, features)
 
 
+def _short_path(path: Path) -> str:
+    """A path with the home directory collapsed.
+
+    These lines get pasted into bug reports, and an absolute path under a home
+    directory carries the account name with it.
+    """
+    try:
+        return f"~/{path.relative_to(Path.home())}"
+    except ValueError:
+        return str(path)
+
+
 def _green_button_cache() -> SourceStatus:
     from ..sources.pge import green_button_cache_dir
 
@@ -145,8 +157,8 @@ def _green_button_cache() -> SourceStatus:
             "green_button_cache",
             False,
             features,
-            f"nothing cached under {base}; a download with credentials fills it, "
-            "or pass an export with `bill --csv`",
+            f"nothing cached under {_short_path(base)}; a download with credentials "
+            "fills it, or pass an export with `bill --csv`",
         )
     return SourceStatus("green_button_cache", True, features)
 
@@ -169,19 +181,51 @@ def survey(
     )
 
 
+#: Which status answers for each `--source`, in preference order. The cache is
+#: last because it only answers for windows it already holds.
+_SOURCE_STATUS = (
+    ("ha", "home_assistant"),
+    ("influx", "influxdb"),
+    ("green-button", "pge_portal"),
+    ("green-button", "green_button_cache"),
+)
+
+
 def first_available_meter_source(
     statuses: tuple[SourceStatus, ...],
 ) -> str | None:
     """The `--source` to use when the caller did not name one, or ``None``."""
     by_name = {status.name: status for status in statuses}
-    for source in METER_SOURCES:
-        key = {
-            "ha": "home_assistant",
-            "influx": "influxdb",
-            "green-button": "pge_portal",
-        }[source]
+    for source, key in _SOURCE_STATUS:
         if by_name[key].available:
             return source
-    if by_name["green_button_cache"].available:
-        return "green-button"
     return None
+
+
+def choose_meter_source(
+    config_path: str | Path | None = None, profile: object | None = None
+) -> tuple[str | None, tuple[SourceStatus, ...]]:
+    """The first available source, probing only as far as it has to.
+
+    `survey` asks every source, and asking costs a keyring lookup each: on a
+    macOS Keychain that is an access record, and potentially a prompt, for a
+    utility password on a machine that only ever reads Home Assistant. Choosing
+    needs the *first* answer, so it stops there and reports only what it looked
+    at. The full survey is for `tariffkit sources`, where the point is the whole
+    picture.
+    """
+    probes = {
+        "home_assistant": lambda: _ha(config_path, profile),
+        "influxdb": lambda: _influx(config_path, profile),
+        "pge_portal": lambda: _pge(config_path),
+        "green_button_cache": _green_button_cache,
+    }
+    looked: list[SourceStatus] = []
+    for source, key in _SOURCE_STATUS:
+        status = next((s for s in looked if s.name == key), None)
+        if status is None:
+            status = probes[key]()
+            looked.append(status)
+        if status.available:
+            return source, tuple(looked)
+    return None, tuple(looked)
