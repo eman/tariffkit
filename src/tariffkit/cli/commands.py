@@ -30,6 +30,28 @@ if TYPE_CHECKING:
     from ..account import AccountProfile
 
 
+def _told_how_to_set_up(args: argparse.Namespace) -> bool:
+    """Whether the caller already said what the account is."""
+    # `--config` exists as an attribute whether or not it was passed, so test
+    # the value. Testing `hasattr` made this always true and the branch dead.
+    if getattr(args, "config_json", None) is not None or getattr(args, "config", None) is not None:
+        return True
+    from .account_commands import config_changes
+
+    return bool(config_changes(args))
+
+
+def _have_pge_credentials(config_path: str | Path | None) -> bool:
+    """Whether a portal login is already stored. Never prompts for one."""
+    from ..sources.pge import PgeSettings
+
+    try:
+        PgeSettings.load(config_path=config_path)
+    except TariffKitError:
+        return False
+    return True
+
+
 def _add_epoch_fields(parser: argparse.ArgumentParser) -> None:
     """The fields that describe one epoch, on whichever command sets them.
 
@@ -90,6 +112,21 @@ def build_parser() -> argparse.ArgumentParser:
     account_init.add_argument("--effective", type=date.fromisoformat)
     account_init.add_argument("--config-json", type=Path)
     account_init.add_argument("--audit-file", type=Path)
+    account_init.add_argument(
+        "--from-statement",
+        type=Path,
+        dest="from_statement",
+        metavar="PDF",
+        help="read the tariff, supplier, CCA and baseline territory off your "
+        "latest PG&E statement instead of typing them",
+    )
+    account_init.add_argument(
+        "--from-portal",
+        action="store_true",
+        dest="from_portal",
+        help="download the newest statement with your stored PG&E credentials "
+        "and read it, as --from-statement does",
+    )
     _add_epoch_fields(account_init)
     account_init.add_argument("--json", action="store_true")
     account_show = account_commands.add_parser("show", help="show the settings in force today")
@@ -771,6 +808,7 @@ def _run_account_command(args: Any) -> int:
         config_changes,
         import_statements,
         init_profile,
+        newest_portal_statement,
         sync_profile,
         update_profile,
     )
@@ -778,15 +816,56 @@ def _run_account_command(args: Any) -> int:
     store = _account_store()
     command = args.account_command
     if command == "init":
-        profile = init_profile(
+        statement = args.from_statement
+        if args.from_portal:
+            if statement is not None:
+                raise ConfigError("choose either --from-statement or --from-portal")
+            statement = newest_portal_statement(config_path=args.config)
+        elif statement is None and not _told_how_to_set_up(args):
+            # Nobody said where the account comes from, so read it rather than
+            # invent it: the alternative was a confident set of built-in
+            # defaults, and correcting an epoch earlier than the first one means
+            # restating the whole config. Only when a login is already stored --
+            # this never prompts for one.
+            if _have_pge_credentials(getattr(args, "config", None)):
+                print("reading your latest PG&E statement...", file=sys.stderr)
+                statement = newest_portal_statement(config_path=args.config)
+            else:
+                print(
+                    "No statement and no stored PG&E login, so this is built from "
+                    "config.toml and built-in defaults -- check `tariffkit account "
+                    "show` before trusting a figure. `tariffkit account init "
+                    "--from-statement <pdf>` reads it off a bill instead.",
+                    file=sys.stderr,
+                )
+        profile, gaps = init_profile(
             store,
             config_path=args.config,
             config_json=args.config_json,
             effective=args.effective,
             audit_path=args.audit_file,
             changes=config_changes(args),
+            from_statement=statement,
         )
         _print_profile(profile, json_output=args.json)
+        if gaps and not args.json:
+            from .account_commands import UNDERIVABLE
+
+            # The summary is the answer and goes to stdout; this is a footnote on
+            # stderr so `--json` stays pipeable. Flushed first, or the footnote
+            # races ahead of what it is a footnote to.
+            sys.stdout.flush()
+            print(
+                "\nA bill does not say everything. Still at its default:",
+                file=sys.stderr,
+            )
+            for field in gaps:
+                print(f"  {field:<28}{UNDERIVABLE[field]}", file=sys.stderr)
+            print(
+                "Set any of them with `tariffkit account update --effective "
+                "<date> --<field> <value> --apply`.",
+                file=sys.stderr,
+            )
         return 0
 
     profile = store.load()

@@ -20,38 +20,64 @@ it working, [how-to guides](#how-to-guides) for specific tasks, a
 
 ## Tutorial: your first account
 
-This walks through creating your account from your current settings, then
-handing it your first PG&E statement so it can confirm — or correct — what
-you told it.
+### 1. Let your latest bill set it up
 
-### 1. Set your current settings once
-
-If you have not already, write what you know today to the main config file
-(see [Configuration](configuration.md) for every key):
-
-```bash
-mkdir -p ~/.config/tariffkit
-cat > ~/.config/tariffkit/config.toml <<'EOF'
-supplier = "bundled"
-interconnection_year = 2026
-pto_date = "2026-06-03"
-acc_plus_segment = "residential"
-base_services_charge_tier = 3
-EOF
-```
-
-### 2. Create your account from it
+Most of what an account is, a bill already prints. Point `init` at your latest
+PG&E statement and it reads the tariff, whether generation comes from a CCA and
+which one, the baseline territory, and the PCIA vintage — and dates the epoch
+from the cycle the bill covers, not from today:
 
 ```console
-$ tariffkit account init --effective 2026-06-03
+$ tariffkit account init --from-statement ~/Downloads/statement.pdf
+epochs
+  2025-07-30  E-TOU-C / cca
+observations: 1
+
+A bill does not say everything. Still at its default:
+  acc_plus_segment            your ACC Plus segment
+  base_services_charge_tier   your Base Services Charge income tier
+  discount                    CARE or FERA enrolment
+  interconnection_year        the year your interconnection application was filed
+  pto_date                    the date Permission To Operate was granted
+Set any of them with `tariffkit account update --effective <date> --<field> <value> --apply`.
+```
+
+Those five are not on a bill: Permission To Operate and the application year are
+facts about interconnecting your solar, and an income tier or CARE enrolment is
+not printed. The command names them rather than leaving a default to look like an
+answer.
+
+With credentials stored, `--from-portal` fetches the latest statement for you
+instead:
+
+```console
+$ tariffkit credentials set pge.username
+$ tariffkit credentials set pge.password
+$ tariffkit account init --from-portal
+```
+
+One statement is all `init` wants. [Step 4](#4-hand-it-your-first-statement) is where the
+history comes from.
+
+### 2. Or type it, if you have no bill to hand
+
+Every field `update` takes, `init` takes:
+
+```console
+$ tariffkit account init --effective 2026-06-03 --tariff E-ELEC --supplier bundled \
+    --interconnection-year 2026 --pto-date 2026-06-03 --base-services-charge-tier 3
 epochs
   2026-06-03  E-ELEC / bundled
 observations: 0
 ```
 
-`--effective` is the day this snapshot became true — here, the PTO date, since
-that is when NEM 3.0 billing started. It is now `~/.config/tariffkit/account.json`;
-see [Reference](#the-account-file) for its exact shape and permissions.
+`--effective` is the day this snapshot became true — here the PTO date, since
+that is when NEM 3.0 billing started. Passing nothing at all is allowed and
+resolves from `config.toml` plus built-in defaults, which is rarely what you
+want: check it with `account show` before trusting a figure.
+
+Either way the account is now at `~/.config/tariffkit/account.json`; see
+[Reference](#the-account-file) for its exact shape and permissions.
 
 Check what it resolved to:
 
@@ -86,7 +112,7 @@ Every command that prices anything (`now`, `forecast`, `info`, `bill`, `mqtt`,
 `serve`) uses the account from here on, with no flag to remember. `--config
 FILE` is how you opt out for one command and price a hypothetical instead.
 
-### 4. Hand it your first statement
+### 4. Build the history from your statements
 
 ```bash
 pip install 'tariffkit[statements]'
@@ -100,11 +126,13 @@ PGE_20260804.pdf:
 preview only; pass --apply to save
 ```
 
-This is a **preview** — nothing was written. The statement agreed with what
-you already told `init` about, so every fact is `CONFIRM`, dated to the
-statement's own billing-period start (2026-06-30), not the epoch's effective
-date. Apply it so the account records that this statement is the evidence
-behind that snapshot:
+This is a **preview** — nothing was written. Step 1 already read your *latest*
+statement, so that one is recorded; this is how you add the earlier ones, and
+how the account learns what it was before today. A statement matching what it
+already knows reads `CONFIRM`, dated to the statement's own billing-period
+start (2026-06-30) rather than to the epoch's effective date; one that
+disagrees proposes a new epoch there instead. Apply it to record the statement
+as the evidence behind that snapshot:
 
 ```console
 $ tariffkit account import-statement ~/Downloads/PGE_20260804.pdf --apply
@@ -125,6 +153,9 @@ The PDF itself was never copied anywhere and is not referenced by path; only
 the sanitized facts it printed (schedule, dates, a masked account suffix, and
 the PDF's own SHA-256) were kept. See
 [What the account stores](#what-the-account-stores) for exactly what that is.
+
+`tariffkit account sync` does the same thing for every statement the portal
+lists, in one command, which is the usual way to fill this in.
 
 You now have an account that prices correctly today and will keep pricing
 correctly the day your tariff, supplier, or baseline territory next changes —

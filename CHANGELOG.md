@@ -6,6 +6,28 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **`tariffkit account init` reads your latest bill instead of guessing.** With
+  a PG&E login already stored it fetches the newest statement and sets the
+  account up from it; `--from-statement <pdf>` takes a file you have, and
+  `--from-portal` forces the download. With no login and no statement it still
+  falls back to `config.toml` plus built-in defaults, and now says so rather
+  than presenting a guess as an answer. Naming any field yourself keeps the
+  download from happening at all -- a flag is an answer. A bill prints most of what an
+  account is, and they are the fields most likely to be typed wrong: the tariff,
+  whether generation comes from a CCA and which one, the baseline territory, and
+  the PCIA vintage. The epoch is dated from the cycle the bill covers rather
+  than from today, because an epoch dated today claims the account only became
+  this on setup day and nothing earlier can be priced.
+
+  Validated against 47 of this project's 48 real statements, which span three
+  tariffs as the account actually changed them -- a cycle split by a rate change
+  takes the schedule it *ended* on, since that is what the account now is.
+
+  One statement, not a history: `account sync` is the tool for the history and
+  better at it. And the command names what a bill cannot say -- Permission To
+  Operate, the interconnection application year, ACC Plus segment, CARE or FERA
+  enrolment, Base Services Charge tier -- rather than letting a default look
+  like an answer.
 - **`tariffkit sources`**, which reports what is configured -- including the
   account itself, which most commands need and which listing only the meters
   left off the page -- what each one would enable, and what to do about the ones
@@ -56,6 +78,10 @@ All notable changes to this project are documented here. This project follows
   to pass something was left correcting history through `--config-json`. `init`
   now accepts the same fields `update` does, from one shared definition so the
   two cannot drift, and every one of them has help text.
+- **Reading a statement no longer floods the terminal.** pypdf logs a warning
+  per over-long whitespace run and a PG&E bill trips it dozens of times, so
+  forty lines of library noise buried whatever the command was saying. Nothing
+  here acts on those warnings.
 - **`--supplier cca` names the flag it needs.** It failed with the library's
   `supplier='cca' requires a CcaConfig`, which is true and does not say that
   `--cca-json` is what supplies one. The error now shows the flag and an

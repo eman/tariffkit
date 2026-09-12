@@ -1112,3 +1112,169 @@ def test_a_cca_account_is_told_which_flag_supplies_the_cca_config(
 
     assert main(["account", "init", "--supplier", "cca"]) == 1
     assert "--cca-json" in capsys.readouterr().err
+
+
+def _statement(**overrides: object) -> SimpleNamespace:
+    """Just enough of a parsed statement for the derivation."""
+    base = {
+        "statement_date": date(2026, 9, 1),
+        "period": BillingPeriod(date(2026, 7, 29), date(2026, 8, 27)),
+        "rate_schedule": "E-ELEC",
+        "agreements": (),
+        "cca_name": "",
+        "cca_rate_schedule": "",
+        "baseline_territory": "",
+        "pcia_vintage": None,
+    }
+    return SimpleNamespace(**{**base, **overrides})
+
+
+class TestConfigFromStatement:
+    """A bill establishes the fields most likely to be typed wrong."""
+
+    def test_a_bundled_statement_gives_the_tariff(self) -> None:
+        from tariffkit.cli.account_commands import config_from_statement
+
+        changes, gaps = config_from_statement(_statement())
+        assert changes["tariff"] == "E-ELEC"
+        assert changes["supplier"] == "bundled"
+        assert "pto_date" in gaps
+
+    def test_a_cca_statement_gives_the_supplier_and_the_cca(self) -> None:
+        from tariffkit.cli.account_commands import config_from_statement
+
+        changes, _ = config_from_statement(
+            _statement(cca_name="MCE", pcia_vintage=2011, baseline_territory="X")
+        )
+        assert changes["supplier"] == "cca"
+        assert changes["cca"] == {"name": "MCE", "rate_card": "mce", "pcia_vintage": 2011}
+        assert changes["baseline_territory"] == "X"
+
+    def test_a_split_cycle_takes_the_schedule_it_ended_on(self) -> None:
+        """A rate change mid-cycle prints the old schedule before the new one.
+
+        What the account *is* now is the one it ended on; taking the first would
+        set the account up as whatever it just stopped being.
+        """
+        from tariffkit.cli.account_commands import config_from_statement
+
+        agreements = (
+            SimpleNamespace(
+                tariff="E-TOU-C", period=BillingPeriod(date(2026, 6, 1), date(2026, 6, 2))
+            ),
+            SimpleNamespace(
+                tariff="E-ELEC", period=BillingPeriod(date(2026, 6, 3), date(2026, 6, 29))
+            ),
+        )
+        changes, _ = config_from_statement(_statement(agreements=agreements))
+        assert changes["tariff"] == "E-ELEC"
+
+    def test_the_gaps_are_the_fields_a_bill_cannot_know(self) -> None:
+        from tariffkit.cli.account_commands import UNDERIVABLE, config_from_statement
+
+        _, gaps = config_from_statement(_statement())
+        assert set(gaps) == set(UNDERIVABLE)
+        # Every one has a plain-English explanation, not just a field name.
+        assert all(UNDERIVABLE[field] for field in gaps)
+
+
+def test_account_init_from_a_statement_dates_the_epoch_from_the_bill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The cycle the bill covers, not the day the account was set up.
+
+    An epoch dated today claims the account only became this on setup day, and
+    nothing earlier can be priced -- which is the whole reason `init` needed to
+    be right the first time.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF synthetic")
+
+    parse = importlib.import_module("tariffkit.providers.pge.statements.parse")
+    reconcile = importlib.import_module("tariffkit.providers.pge.reconcile")
+    monkeypatch.setattr(
+        parse, "read_statement", lambda _p: _statement(cca_name="MCE", pcia_vintage=2011)
+    )
+    monkeypatch.setattr(
+        reconcile, "import_statement", lambda _p: observation(tariff="E-ELEC", digest="b" * 64)
+    )
+
+    assert main(["account", "init", "--from-statement", str(pdf)]) == 0
+    out, err = capsys.readouterr()
+    assert "2026-07-29" in out
+    assert "E-ELEC / cca" in out
+    # And it says what a bill could not tell it.
+    assert "pto_date" in err
+    assert "interconnection_year" in err
+
+
+class TestBareInitReadsRatherThanInvents:
+    """With a login stored, setting up should fetch the bill, not guess.
+
+    Inventing an account from built-in defaults is the one outcome that looks
+    like success and is wrong, and the epoch it writes cannot be corrected
+    without restating the whole config.
+    """
+
+    def test_a_stored_login_is_used_to_read_the_latest_statement(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        monkeypatch.setenv("PGE_USERNAME", "person@example.invalid")
+        monkeypatch.setenv("PGE_PASSWORD", "secret")
+        pdf = tmp_path / "statement.pdf"
+        pdf.write_bytes(b"%PDF synthetic")
+
+        asked: list[str] = []
+        account_commands = importlib.import_module("tariffkit.cli.account_commands")
+        monkeypatch.setattr(
+            account_commands,
+            "newest_portal_statement",
+            lambda **_kw: (asked.append("portal"), pdf)[1],
+        )
+        parse = importlib.import_module("tariffkit.providers.pge.statements.parse")
+        reconcile = importlib.import_module("tariffkit.providers.pge.reconcile")
+        monkeypatch.setattr(parse, "read_statement", lambda _p: _statement())
+        monkeypatch.setattr(
+            reconcile,
+            "import_statement",
+            lambda _p: observation(tariff="E-ELEC", digest="c" * 64),
+        )
+
+        assert main(["account", "init"]) == 0
+        assert asked == ["portal"]
+
+    def test_without_a_login_it_says_what_it_fell_back_to(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        for variable in ("PGE_USERNAME", "PGE_PASSWORD"):
+            monkeypatch.delenv(variable, raising=False)
+
+        account_commands = importlib.import_module("tariffkit.cli.account_commands")
+
+        def refuse(**_kw: object) -> object:
+            raise AssertionError("the portal was consulted with no login stored")
+
+        monkeypatch.setattr(account_commands, "newest_portal_statement", refuse)
+
+        assert main(["account", "init"]) == 0
+        assert "built-in defaults" in capsys.readouterr().err
+
+    def test_naming_a_field_means_the_caller_said_what_it_is(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A flag is an answer, so it must not be overridden by a download."""
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        monkeypatch.setenv("PGE_USERNAME", "person@example.invalid")
+        monkeypatch.setenv("PGE_PASSWORD", "secret")
+
+        account_commands = importlib.import_module("tariffkit.cli.account_commands")
+
+        def refuse(**_kw: object) -> object:
+            raise AssertionError("the portal was consulted despite an explicit tariff")
+
+        monkeypatch.setattr(account_commands, "newest_portal_statement", refuse)
+
+        assert main(["account", "init", "--tariff", "EV2-A"]) == 0
