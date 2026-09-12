@@ -129,8 +129,17 @@ def init_profile(
     config_json: Path | None = None,
     effective: date | None = None,
     audit_path: str | Path | None = None,
+    changes: Mapping[str, object] | None = None,
 ) -> AccountProfile:
-    """Create the account from explicit inputs or the resolved public configuration."""
+    """Create the account from explicit inputs or the resolved public configuration.
+
+    ``changes`` are the per-field flags, applied over whatever base was
+    resolved. Without them the first epoch is built from the built-in defaults
+    -- E-ELEC, bundled, a PTO date that belongs to one site -- which is a
+    plausible account rather than the caller's, and correcting it afterwards is
+    awkward: an epoch dated before the first one cannot be added without
+    restating the whole config, so `init` needs to be right the first time.
+    """
     if store.exists():
         raise ConfigError(
             f"an account already exists at {store.path}; 'tariffkit account update' changes it"
@@ -146,6 +155,23 @@ def init_profile(
             audit_path=audit_path,
             effective=effective,
         )
+    if changes:
+        if changes.get("supplier") == "cca" and "cca" not in changes:
+            # The library says "requires a CcaConfig", which is true and does not
+            # name the flag that supplies one.
+            raise ConfigError(
+                "--supplier cca also needs --cca-json, e.g. "
+                '--cca-json \'{"name": "MCE", "option": "light_green", '
+                '"pcia_vintage": "2025"}\''
+            )
+        epochs = list(profile.epochs)
+        merged = epochs[0].config.to_dict()
+        merged.update(dict(changes))
+        try:
+            epochs[0] = AccountEpoch(epochs[0].effective, Config.from_dict(merged), epochs[0].note)
+        except (ConfigError, TypeError, ValueError) as exc:
+            raise ConfigError(f"invalid account: {exc}") from exc
+        profile = replace(profile, epochs=tuple(epochs))
     return store.save(profile)
 
 

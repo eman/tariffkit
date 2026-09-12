@@ -1061,3 +1061,54 @@ def test_mqtt_cli_accepts_insecure_auth_escape_hatch() -> None:
     settings = _mqtt_settings(args, from_account=False)
 
     assert settings.allow_insecure_auth is True
+
+
+def test_account_init_can_express_the_account_in_one_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`init` took no field flags, so the first epoch was always the defaults.
+
+    That matters more than it sounds: an epoch dated before the first one cannot
+    be added without restating the whole config, so an `init` run before the
+    user knew to pass anything left them correcting history through
+    `--config-json`. The fields `update` accepts are the fields `init` accepts.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+    assert (
+        main(
+            [
+                "account",
+                "init",
+                "--effective",
+                "2025-06-15",
+                "--tariff",
+                "EV2-A",
+                "--supplier",
+                "bundled",
+                "--pto-date",
+                "2025-06-15",
+                "--interconnection-year",
+                "2025",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    assert main(["account", "show", "--json"]) == 0
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["effective"] == "2025-06-15"
+    assert shown["config"]["tariff"] == "EV2-A"
+    assert shown["config"]["pto_date"] == "2025-06-15"
+    assert shown["config"]["interconnection_year"] == 2025
+
+
+def test_a_cca_account_is_told_which_flag_supplies_the_cca_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The library says "requires a CcaConfig"; only the CLI knows the flag."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+    assert main(["account", "init", "--supplier", "cca"]) == 1
+    assert "--cca-json" in capsys.readouterr().err

@@ -146,6 +146,36 @@ def _short_path(path: Path) -> str:
         return str(path)
 
 
+def _account() -> SourceStatus:
+    """The account itself is evidence, and most commands need it.
+
+    Listing only the meters left the one prerequisite off the page: without an
+    account there is no tariff history, no statement evidence, and nothing that
+    knows when the current cycle began -- so `bill` needs explicit dates and
+    `account periods` has nothing to record against.
+    """
+    from .account_store import AccountStore
+
+    features = (
+        "bill without --start/--end",
+        "cycle boundaries from statements",
+        "dated tariff history",
+    )
+    try:
+        store = AccountStore()
+        if not store.exists():
+            raise FileNotFoundError
+        store.load()
+    except Exception:
+        return SourceStatus(
+            "account",
+            False,
+            features,
+            "run `tariffkit account init --tariff ... --supplier ... --pto-date ...`",
+        )
+    return SourceStatus("account", True, features)
+
+
 def _green_button_cache() -> SourceStatus:
     from ..sources.pge import green_button_cache_dir
 
@@ -174,6 +204,7 @@ def survey(
     """
     return (
         SourceStatus("rates", True, ("now", "forecast", "info", "serve", "mqtt")),
+        _account(),
         _ha(config_path, profile),
         _influx(config_path, profile),
         _pge(config_path),

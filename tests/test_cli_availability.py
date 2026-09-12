@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -56,7 +57,9 @@ def test_nothing_configured_means_no_meter_source_and_a_remedy_each() -> None:
     statuses = survey()
     assert first_available_meter_source(statuses) is None
     for status in statuses:
-        if status.name == "rates":
+        # Rates always answer; the account is not a meter source and is checked
+        # by its own test.
+        if status.name in {"rates", "account"}:
             continue
         assert status.available is False
         # Every unavailable source says what would turn it on. An audit that
@@ -165,7 +168,7 @@ def test_choosing_a_source_stops_at_the_first_one_that_answers(
     ]
 
     # And the full survey still asks everything -- that is what it is for.
-    assert len(survey()) == 5
+    assert len(survey()) == 6
 
 
 @pytest.mark.usefixtures("bare")
@@ -174,3 +177,32 @@ def test_the_cache_remedy_does_not_print_a_home_directory() -> None:
     status = next(s for s in survey() if s.name == "green_button_cache")
     assert status.available is False
     assert str(Path.home()) not in status.remedy
+
+
+@pytest.mark.usefixtures("bare")
+def test_the_account_is_listed_as_a_prerequisite() -> None:
+    """Most commands need an account; listing only meters left that off the page.
+
+    Without one there is no tariff history, no statement evidence, and nothing
+    that knows when the current cycle began -- so `bill` needs explicit dates
+    and `account periods` has nothing to record against.
+    """
+    status = next(s for s in survey() if s.name == "account")
+    assert status.available is False
+    assert "account init" in status.remedy
+    assert "bill without --start/--end" in status.features
+
+
+@pytest.mark.usefixtures("bare")
+def test_an_existing_account_reports_available() -> None:
+    from tariffkit.account import AccountEpoch, AccountProfile
+    from tariffkit.cli.account_store import AccountStore
+    from tariffkit.config import Config
+
+    # The same default directory `survey` resolves, not a guess at its layout.
+    store = AccountStore()
+    store.save(AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),), name="home"))
+
+    status = next(s for s in survey() if s.name == "account")
+    assert status.available is True
+    assert status.remedy == ""

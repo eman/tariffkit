@@ -30,6 +30,38 @@ if TYPE_CHECKING:
     from ..account import AccountProfile
 
 
+def _add_epoch_fields(parser: argparse.ArgumentParser) -> None:
+    """The fields that describe one epoch, on whichever command sets them.
+
+    Shared so `init` and `update` cannot drift: an `init` that could not express
+    a tariff left the first epoch built from built-in defaults, and an epoch
+    dated before that one cannot be added without restating the whole config.
+    """
+    parser.add_argument("--tariff", help="rate schedule, e.g. E-ELEC, EV2-A, E-TOU-C")
+    parser.add_argument("--supplier", help="bundled or cca")
+    parser.add_argument(
+        "--interconnection-year",
+        type=int,
+        dest="interconnection_year",
+        help="year the interconnection application was filed; sets the NBT vintage",
+    )
+    parser.add_argument("--pto-date", type=date.fromisoformat, help="Permission To Operate date")
+    parser.add_argument("--vintage", help="override the NBT vintage the year implies")
+    parser.add_argument(
+        "--acc-plus-segment",
+        dest="acc_plus_segment",
+        help="residential, residential_low_income, or none",
+    )
+    parser.add_argument("--discount", help="none, care, or fera")
+    parser.add_argument(
+        "--base-services-charge-tier", type=int, help="Base Services Charge income tier, 1-3"
+    )
+    parser.add_argument("--baseline-territory", dest="baseline_territory")
+    parser.add_argument("--baseline-code", dest="baseline_code", help="basic or all_electric")
+    parser.add_argument("--nsc-rate", type=float, dest="nsc_rate")
+    parser.add_argument("--cca-json", help="CCA settings as a JSON object")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tariffkit",
@@ -58,6 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
     account_init.add_argument("--effective", type=date.fromisoformat)
     account_init.add_argument("--config-json", type=Path)
     account_init.add_argument("--audit-file", type=Path)
+    _add_epoch_fields(account_init)
     account_init.add_argument("--json", action="store_true")
     account_show = account_commands.add_parser("show", help="show the settings in force today")
     account_show.add_argument("--json", action="store_true")
@@ -69,18 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
     account_update.add_argument("--config", type=Path, default=argparse.SUPPRESS)
     account_update.add_argument("--effective", required=True, type=date.fromisoformat)
     account_update.add_argument("--config-json", type=Path)
-    account_update.add_argument("--tariff")
-    account_update.add_argument("--supplier")
-    account_update.add_argument("--interconnection-year", type=int, dest="interconnection_year")
-    account_update.add_argument("--pto-date", type=date.fromisoformat)
-    account_update.add_argument("--vintage")
-    account_update.add_argument("--acc-plus-segment", dest="acc_plus_segment")
-    account_update.add_argument("--discount")
-    account_update.add_argument("--base-services-charge-tier", type=int)
-    account_update.add_argument("--baseline-territory", dest="baseline_territory")
-    account_update.add_argument("--baseline-code", dest="baseline_code")
-    account_update.add_argument("--nsc-rate", type=float, dest="nsc_rate")
-    account_update.add_argument("--cca-json")
+    _add_epoch_fields(account_update)
     account_update.add_argument("--note")
     account_update.add_argument("--apply", action="store_true")
     account_update.add_argument("--json", action="store_true")
@@ -762,6 +784,7 @@ def _run_account_command(args: Any) -> int:
             config_json=args.config_json,
             effective=args.effective,
             audit_path=args.audit_file,
+            changes=config_changes(args),
         )
         _print_profile(profile, json_output=args.json)
         return 0

@@ -6,8 +6,10 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Added
-- **`tariffkit sources`**, which reports what is configured, what each source
-  would enable, and what to do about the ones that are not:
+- **`tariffkit sources`**, which reports what is configured -- including the
+  account itself, which most commands need and which listing only the meters
+  left off the page -- what each one would enable, and what to do about the ones
+  that are not:
 
   ```
     yes  rates
@@ -46,6 +48,18 @@ All notable changes to this project are documented here. This project follows
   already carries `meter_sources.ha` offers those as the suggested values.
 
 ### Fixed
+- **`tariffkit account init` can express your account.** It took no field flags,
+  so the first epoch was always built from the built-in defaults -- E-ELEC,
+  bundled, a PTO date belonging to one site -- and dated today. That is not a
+  cosmetic default: an epoch dated *before* the first one cannot be added
+  without restating the whole config, so anyone who ran `init` before knowing
+  to pass something was left correcting history through `--config-json`. `init`
+  now accepts the same fields `update` does, from one shared definition so the
+  two cannot drift, and every one of them has help text.
+- **`--supplier cca` names the flag it needs.** It failed with the library's
+  `supplier='cca' requires a CcaConfig`, which is true and does not say that
+  `--cca-json` is what supplies one. The error now shows the flag and an
+  example.
 - **Migrating a version 1 or 2 config entry keeps its meters.** The migration
   rebuilt `options` from a fixed list of two keys, so an entry that named its
   grid counters came out the other side pricing rates only -- the running-total
