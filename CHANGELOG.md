@@ -62,6 +62,22 @@ All notable changes to this project are documented here. This project follows
   it was the one required field on a step titled "Optional", and its help said
   `0 uses the calendar month` without mentioning that statement evidence
   supersedes it entirely.
+- **A repair that names the grid counters for an existing entry.** Naming them
+  became part of setting up, but setup runs once: an entry created before that
+  step existed never sees it, and the form lives under Configure where nobody
+  looks unless they already know it is there -- so the improvement reached new
+  installs only.
+
+  Home Assistant now raises a fixable issue on any entry with no counters
+  named, and the repair *is* the form: fill it in from the Repairs panel and the
+  running-total entities appear, with the same validation the options flow uses.
+  Naming them any other way clears the issue without anything to dismiss, and
+  clearing them raises it again. Leaving both blank is still a valid answer, so
+  the issue is a warning rather than an error.
+
+  Verified against an entry created by the released 0.8.1 integration: 19
+  entities and an open issue before, 30 entities and no issue after, with the
+  options written where the coordinator reads them.
 - **Setup asks for the grid counters**, instead of creating the entry and
   leaving the meters to be found later under Configure. A site whose counters
   are already in Home Assistant now gets its running cost, credit and net

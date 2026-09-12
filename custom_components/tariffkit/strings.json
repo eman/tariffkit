@@ -404,5 +404,34 @@
         }
       }
     }
+  },
+  "issues": {
+    "no_meters": {
+      "title": "TariffKit has no grid counters for {account}",
+      "fix_flow": {
+        "step": {
+          "meters": {
+            "title": "Metered energy",
+            "description": "Name the cumulative kWh counters for grid import and grid export and TariffKit adds running cost, credit, and net entities for today and for the billing cycle. Right now it prices rates only.\n\nThese counters do not have to reset daily; the recorder's own statistics supply each hour's change. Leave both blank and nothing changes.\n\n{detail}",
+            "data": {
+              "grid_import_entity": "Grid import (energy delivered)",
+              "grid_export_entity": "Grid export (energy received)",
+              "billing_cycle_start_day": "Billing cycle start day"
+            },
+            "data_description": {
+              "grid_import_entity": "Cumulative kWh the grid has delivered to the site.",
+              "grid_export_entity": "Cumulative kWh the site has sent to the grid. Leave blank if the site does not export.",
+              "billing_cycle_start_day": "Fallback only. The day of the month your meter is read; 0 uses the calendar month. Ignored once the account carries statement evidence."
+            }
+          }
+        },
+        "error": {
+          "invalid_meters": "That meter configuration cannot work: {detail}"
+        },
+        "abort": {
+          "entry_gone": "That TariffKit account no longer exists."
+        }
+      }
+    }
   }
 }
