@@ -300,6 +300,19 @@ existing config entry keeps the entities it was given.
   them. InfluxDB is a *comparison* on that path, and a comparison that cannot
   happen must not fail the run; asking for `--readings influx` without it still
   fails, with the same message as before.
+
+  The check has to be `require_entities`, not just `load`: `load` validates the
+  host, database and token and *not* the series names, so credentials present
+  with series absent returned a settings object and the read raised anyway.
+  Now one named `optional_influx`, with tests that fail if either half goes.
+- **One entity flag is enough to choose a source.** `--ha-import-entity` alone
+  was ignored: the settings loader merges an override with the other entity from
+  the profile or the config file, so a config file naming the export counter and
+  a flag naming the import counter is a complete pair -- but requiring *both*
+  flags meant the run reported Home Assistant unconfigured, silently picked
+  another source, and told the user to name counters they had just named. Either
+  flag now selects that source, and a genuinely incomplete pair is reported by
+  name (`Home Assistant export_entity not set`) rather than by switching.
 - **A statement downloaded by `account init` does not outlive the command.**
   `--from-portal` wrote the PDF into the sync cache and left it there, on
   success and on failure alike -- which is why `sync_profile` removes its own

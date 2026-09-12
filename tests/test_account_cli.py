@@ -548,9 +548,13 @@ def test_naming_entities_on_the_command_line_chooses_that_source(
         _default_meter_source(args(influx_import_entity="in", influx_export_entity="out"), None)
         == "influx"
     )
-    # One half is not a choice: it cannot read a direction it was not given.
-    with pytest.raises(ConfigError):
-        _default_meter_source(args(ha_import_entity="sensor.in"), None)
+    # One half is still a choice of source: the settings loader merges the other
+    # entity from the profile or the config file, so a single flag can complete a
+    # half-configured source. Requiring both silently ignored the flag and
+    # switched source; if the merged pair is still incomplete,
+    # `require_entities` names the missing half at read time.
+    assert _default_meter_source(args(ha_import_entity="sensor.in"), None) == "ha"
+    assert _default_meter_source(args(influx_export_entity="out"), None) == "influx"
 
 
 def test_home_assistant_is_still_preferred_when_more_than_one_source_works(
@@ -1361,3 +1365,50 @@ def test_a_downloaded_statement_does_not_outlive_the_command(
     except RuntimeError:
         pass
     assert not held.exists(), "a failed run left the bill on disk"
+
+
+def test_one_entity_flag_completes_a_half_configured_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A config file naming one counter plus a flag naming the other is complete.
+
+    Requiring both flags meant this ignored the flag, reported Home Assistant
+    unconfigured, and told the user to name counters they had just named.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    (tmp_path / "tariffkit").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "tariffkit" / "config.toml").write_text(
+        '[home_assistant]\nexport_entity = "sensor.from_config_out"\n', encoding="utf-8"
+    )
+    AccountStore(tmp_path).save(AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),)))
+    monkeypatch.setenv("HA_HOST", "http://ha.invalid")
+    monkeypatch.setenv("HA_TOKEN", "tok")
+    for variable in ("TARIFFKIT_HA_IMPORT_ENTITY", "TARIFFKIT_HA_EXPORT_ENTITY"):
+        monkeypatch.delenv(variable, raising=False)
+
+    seen: dict[str, object] = {}
+
+    def capture(settings: object, *_args: object, **_kwargs: object) -> list[IntervalReading]:
+        seen["import"] = settings.import_entity  # type: ignore[attr-defined]
+        seen["export"] = settings.export_entity  # type: ignore[attr-defined]
+        raise OSError(8, "unreachable")
+
+    monkeypatch.setattr("tariffkit.sources.homeassistant.read_statistics", capture)
+
+    assert (
+        main(
+            [
+                "bill",
+                "--ha-import-entity",
+                "sensor.cli_in",
+                "--start",
+                "2026-08-01",
+                "--end",
+                "2026-08-02",
+            ]
+        )
+        == 1
+    )
+    # Home Assistant was chosen, and both halves reached it.
+    assert seen == {"import": "sensor.cli_in", "export": "sensor.from_config_out"}
+    assert "could not reach the host" in capsys.readouterr().err

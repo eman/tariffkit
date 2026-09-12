@@ -266,6 +266,34 @@ def _doctor(*, since: date | None = None, offline: bool = False) -> int:
     return EXIT_OK
 
 
+def optional_influx(profile: Any, readings_from: str) -> Any:
+    """InfluxDB settings for the comparison, or ``None`` when it cannot happen.
+
+    InfluxDB is read as a *comparison* on the statistics path, and a comparison
+    that cannot happen must not fail the run: an account configured only for
+    Home Assistant was told its InfluxDB series were unset while asking for the
+    path that does not use them.
+
+    `require_entities` as well as `load`, because `load` validates host,
+    database and token and not the series names -- so credentials present and
+    series absent returned an object and the read raised anyway, which is the
+    shape the first version of this missed.
+
+    Asking for ``--readings influx`` without it still raises, with that source's
+    own message.
+    """
+    from tariffkit.sources.influx import InfluxSettings
+
+    try:
+        settings = InfluxSettings.load(profile_source=profile.meter_sources.influx)
+        settings.require_entities()
+    except TariffKitError:
+        if readings_from == "influx":
+            raise
+        return None
+    return settings
+
+
 def _reconcile(
     paths: Sequence[Path],
     *,
@@ -279,7 +307,7 @@ def _reconcile(
     from tariffkit.cli import AccountStore
     from tariffkit.engine import RateEngine
     from tariffkit.providers.pge.statements import read_statement
-    from tariffkit.sources.influx import InfluxSettings, read_counters
+    from tariffkit.sources.influx import read_counters
 
     from .errors import AccountError
     from .reconcile import reconcile, render_all, render_summary
@@ -299,12 +327,7 @@ def _reconcile(
     # *comparison* on the statistics path, and a comparison that cannot happen
     # must not fail the run: an account with only Home Assistant configured was
     # told its InfluxDB series were unset while asking for statistics.
-    settings: Any = None
-    try:
-        settings = InfluxSettings.load(profile_source=profile.meter_sources.influx)
-    except TariffKitError:
-        if readings_from == "influx":
-            raise
+    settings = optional_influx(profile, readings_from)
 
     results = []
     skipped: list[str] = []
