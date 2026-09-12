@@ -5,8 +5,9 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
-### Added
+## [0.9.0] - 2026-09-12
 
+### Added
 - **`tariffkit account init` reads your latest bill instead of guessing.** With
   a PG&E login already stored it fetches the newest statement and sets the
   account up from it; `--from-statement <pdf>` takes a file you have, and
@@ -102,7 +103,6 @@ All notable changes to this project are documented here. This project follows
   already carries `meter_sources.ha` offers those as the suggested values.
 
 ### Changed
-
 #### Upgrading the CLI from 0.8.1: one command, and only if you relied on a default
 
 `bill --source ha` and `--source influx` used to fall back to a hardcoded pair
@@ -270,7 +270,6 @@ existing config entry keeps the entities it was given.
   are yours to name.
 
 ### Fixed
-
 - **`tariffkit account init` can express your account.** It took no field flags,
   so the first epoch was always built from the built-in defaults -- E-ELEC,
   bundled, a PTO date belonging to one site -- and dated today. That is not a
@@ -1974,7 +1973,8 @@ Initial release.
 - Holiday calendars are extracted per vintage from the source data rather than
   recomputed, because the vintage files disagree in far-future years.
 
-[Unreleased]: https://github.com/eman/tariffkit/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/eman/tariffkit/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/eman/tariffkit/releases/tag/v0.9.0
 [0.8.1]: https://github.com/eman/tariffkit/releases/tag/v0.8.1
 [0.8.0]: https://github.com/eman/tariffkit/releases/tag/v0.8.0
 [0.7.0]: https://github.com/eman/tariffkit/releases/tag/v0.7.0
