@@ -487,19 +487,23 @@ async def test_a_cycle_the_account_history_predates_says_why_it_is_unknown(
 
 
 @pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
-async def test_metered_energy_is_configured_only_after_setup(hass: HomeAssistant) -> None:
-    """Setup never asks about meters; Configure is the only way in.
+async def test_setup_asks_about_meters_and_takes_no_for_an_answer(hass: HomeAssistant) -> None:
+    """Setup offers the meters; skipping the step still finishes.
 
-    Pricing an account does not require a meter, so making setup mention one
-    puts a question in front of every new user that most of them cannot answer
-    yet -- the counters are often integrated after the tariff, not before.
+    This reverses an earlier decision that setup should never mention meters,
+    on the reasoning that the counters are often integrated after the tariff
+    and a question most new users cannot answer is worse than no question. The
+    half of that which still holds is that the answer must be optional: the
+    step is skippable, blank is a real answer, and Configure still reaches it
+    afterwards. What does not hold is hiding the question entirely, which left
+    the running totals undiscoverable for anyone who did have the counters.
     """
     from custom_components.tariffkit.config_flow import (
         TariffKitConfigFlow,
         TariffKitOptionsFlow,
     )
 
-    assert not hasattr(TariffKitConfigFlow, "async_step_meters")
+    assert hasattr(TariffKitConfigFlow, "async_step_meters")
     assert hasattr(TariffKitOptionsFlow, "async_step_meters")
 
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
@@ -518,10 +522,16 @@ async def test_metered_energy_is_configured_only_after_setup(hass: HomeAssistant
     result = await hass.config_entries.flow.async_configure(
         flow_id, {"base_services_charge_tier": 3}
     )
-    # Straight to the entry: no meters step, and nothing written that would
-    # make the running-total entities appear.
+    assert result["step_id"] == "meters"
+    schema = result["data_schema"].schema
+    assert {str(key) for key in schema} >= {"grid_import_entity", "grid_export_entity"}
+
+    # Answering nothing is answering: the entry is created, and nothing that
+    # would make the running-total entities appear is written.
+    result = await hass.config_entries.flow.async_configure(flow_id, {})
     assert result["type"] == "create_entry"
-    assert result.get("options", {}) == {}
+    assert result["options"]["grid_import_entity"] == ""
+    assert result["options"]["grid_export_entity"] == ""
     await hass.async_block_till_done()
 
     entry = hass.config_entries.async_entries(DOMAIN)[0]
@@ -529,7 +539,7 @@ async def test_metered_energy_is_configured_only_after_setup(hass: HomeAssistant
     for key in ("grid_import_today", "amount_due_today", "amount_due_cycle"):
         assert _entity_id(hass, entry, key) is None
 
-    # And the options menu is where it does appear.
+    # And Configure still reaches the same form later.
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert "meters" in result["menu_options"]
 
@@ -823,7 +833,7 @@ async def test_amount_due_is_what_a_statement_would_charge_not_the_bill_total(
 
 
 def test_a_counter_reset_the_recorder_believed_is_repaired_from_the_counter() -> None:
-    """The Eagle publishes 0.0 while re-establishing its meter session.
+    """A meter reader publishes 0.0 while re-establishing its meter session.
 
     A `total_increasing` sensor reading zero is taken for a counter reset, so
     the recorder reports the whole counter as the next hour's `change` -- 1455

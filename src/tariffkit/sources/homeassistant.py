@@ -1,7 +1,7 @@
 """Interval readings from Home Assistant's long-term statistics.
 
-The meter reader -- a Rainforest Eagle-100 on the smart meter -- publishes
-cumulative kWh counters for grid import and export. Home Assistant records those
+The meter reader -- a device paired with the smart meter -- publishes cumulative
+kWh counters for grid import and export. Home Assistant records those
 as long-term statistics, which is the only place a full billing cycle survives:
 the states history behind ``/api/history`` is purged on the recorder's schedule,
 typically ten days, while statistics are kept indefinitely.
@@ -39,7 +39,11 @@ from ..account.model import MeterSource
 from ..billing.models import IntervalReading
 from ..config import default_config_path
 from ..errors import ConfigError, DataError
-from ..secrets import get_secret
+
+# `load_dotenv` is re-exported: it lives in `secrets` now, but callers have
+# always imported it from here.
+from ..metering import MAX_INTERVAL_KW, carry, interval_energy
+from ..secrets import get_secret, load_dotenv
 from ..timeutil import to_pacific
 
 log = logging.getLogger(__name__)
@@ -49,47 +53,20 @@ Resolution = Literal["auto", "5minute", "hour"]
 #: Home Assistant's own period names, finest first.
 PERIODS: dict[str, timedelta] = {"5minute": timedelta(minutes=5), "hour": timedelta(hours=1)}
 
-#: The Rainforest Eagle-100 pair, monotonic-filtered. The unfiltered entities are
-#: named ``..._total_energy_delivered`` and drop to zero several times a day when
-#: the device re-establishes its meter session, so they are the wrong default
-#: despite the more official-looking name.
-DEFAULT_IMPORT_ENTITY = "sensor.eagle_100_energy_delivered"
-DEFAULT_EXPORT_ENTITY = "sensor.eagle_100_energy_received"
+#: What 0.8.1 and earlier read when nothing named the counters. Kept only to
+#: make that upgrade a copy-paste rather than a guess -- these are a fact about
+#: what the previous version did, not a default, and nothing reads them. Drop
+#: them once 0.8.x is far enough behind.
+_RETIRED_DEFAULTS: tuple[str, str] = (
+    "sensor.eagle_100_energy_delivered",
+    "sensor.eagle_100_energy_received",
+)
 
-#: Ceiling on implied power for one interval, in kW. Anything above it is a
-#: counter artefact rather than energy.
-#:
-#: Statistics restart their running ``sum`` when recording is interrupted, and
-#: the first point of the new epoch reports the whole accumulated total as its
-#: ``change``. One real instance put 543.663 kWh in a five-minute slot -- about
-#: 6,500 kW, against a 200 A service that tops out near 48 kW. Set well above any
-#: residential service so it only ever catches the impossible.
-MAX_INTERVAL_KW = 100.0
-
-
-def load_dotenv(path: str | Path | None = None) -> dict[str, str]:
-    """Parse a ``.env`` file leniently, returning what it defines.
-
-    Tolerates ``KEY = "value"`` with spaces around the equals and quotes around
-    the value, which is how these files are usually written by hand. Missing
-    files yield nothing rather than raising: a token may equally come from the
-    environment.
-    """
-    if path is None:
-        from ..config import default_dotenv_path
-
-        path = default_dotenv_path()
-    found: dict[str, str] = {}
-    file = Path(path)
-    if not file.is_file():
-        return found
-    for line in file.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        found[key.strip()] = value.strip().strip('"').strip("'")
-    return found
+#: Nothing is assumed about which entities carry grid exchange. There used to be
+#: a default pair here, named for the hardware this was developed against, which
+#: meant an unconfigured install quietly asked Home Assistant about somebody
+#: else's sensors. Entity names are site-specific; a wrong guess is not a
+#: better starting point than no guess.
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,8 +77,38 @@ class HaSettings:
     #: Never printed. `repr=False` keeps it out of tracebacks, which render
     #: dataclass frames -- the same reason PgeSettings marks its own.
     token: str = field(repr=False)
-    import_entity: str = DEFAULT_IMPORT_ENTITY
-    export_entity: str = DEFAULT_EXPORT_ENTITY
+    #: Optional: rate pricing needs neither. ``None`` means "not configured",
+    #: which is answered when a read is attempted, not at load time.
+    import_entity: str | None = None
+    export_entity: str | None = None
+
+    def require_entities(self) -> tuple[str, str]:
+        """The two entity ids, or a ConfigError naming how to set them."""
+        missing = [
+            name
+            for name, value in (
+                ("import_entity", self.import_entity),
+                ("export_entity", self.export_entity),
+            )
+            if not value
+        ]
+        if missing:
+            raise ConfigError(
+                f"Home Assistant {' and '.join(missing)} not set. Name your grid "
+                f"counters:\n"
+                f"  tariffkit account source set ha \\\n"
+                f"    --grid-import-entity sensor.YOUR_IMPORT_COUNTER \\\n"
+                f"    --grid-export-entity sensor.YOUR_EXPORT_COUNTER --apply\n"
+                f"or put import_entity/export_entity under [home_assistant] in the "
+                f"config file.\n\n"
+                f"Upgrading from 0.8.1 or earlier? Those versions read "
+                f"{_RETIRED_DEFAULTS[0]} and {_RETIRED_DEFAULTS[1]} when nothing "
+                f"named them, so if you never configured these, that is what you "
+                f"were using.\n\n"
+                f"Rate pricing (`tariffkit now`, `forecast`, `info`) needs neither."
+            )
+        assert self.import_entity is not None and self.export_entity is not None
+        return self.import_entity, self.export_entity
 
     @property
     def websocket_url(self) -> str:
@@ -165,72 +172,9 @@ class HaSettings:
         return cls(
             host=values["host"],
             token=values["token"],
-            import_entity=values.get("import_entity", DEFAULT_IMPORT_ENTITY),
-            export_entity=values.get("export_entity", DEFAULT_EXPORT_ENTITY),
+            import_entity=values.get("import_entity") or None,
+            export_entity=values.get("export_entity") or None,
         )
-
-
-def carry(
-    previous: tuple[float, float] | None, slot: float, state: float | None
-) -> tuple[float, float] | None:
-    """The last usable ``(slot, counter)`` pair, given this row.
-
-    A row whose ``state`` is zero or missing is the artefact itself, so it is
-    not what the next row should difference against -- the previous good reading
-    is, and keeping it is what lets a single spoiled interval be repaired rather
-    than propagating.
-    """
-    if state is None:
-        return previous
-    value = float(state)
-    return (slot, value) if value > 0 else previous
-
-
-def interval_energy(
-    change: float | None,
-    state: float | None,
-    previous: tuple[float, float] | None,
-    slot: float,
-    step: float,
-    max_kw: float = MAX_INTERVAL_KW,
-) -> float | None:
-    """One interval's energy, repairing what the recorder spoiled.
-
-    ``change`` is what the recorder believes the counter advanced by, and it is
-    wrong whenever the source dropped to zero: a ``total_increasing`` sensor
-    reading 0.0 is taken for a counter reset, so the next interval's ``change``
-    carries the whole counter -- 1455 kWh on a meter that had moved 0.003. The
-    Rainforest Eagle-100 does this several times a day while it re-establishes
-    its meter session.
-
-    Refusing that row is right and dropping the interval with it is not. The
-    true figure is still in ``state``, which is the counter itself: difference
-    it against the previous interval and the energy comes back. On a real
-    account that recovered 14.1 kWh of a cycle's 68.3 across 56 hours.
-
-    Only across *consecutive* intervals. A gap means the counter also advanced
-    through intervals nobody recorded, and crediting that whole advance to the
-    interval the series resumes would price hours of energy at one interval's
-    time-of-use rate -- worse than the hole, and confidently so.
-
-    ``previous`` is the last usable ``(slot, state)`` pair for this entity, as
-    :func:`carry` maintains it. Slots and ``step`` are in seconds.
-
-    :func:`tariffkit.sources.influx.monotonic` is the same repair one layer
-    down, applied to raw samples rather than to recorded intervals, and its rule
-    is the same: a reading that is zero or below one already seen is a device
-    artefact and not energy.
-    """
-    ceiling = max_kw * step / 3600
-    if change is not None and 0 <= change <= ceiling:
-        return change
-    if state is None or state <= 0 or previous is None:
-        return None
-    was_at, was = previous
-    if abs(slot - was_at - step) > 1.0:
-        return None
-    advance = state - was
-    return advance if 0 <= advance <= ceiling else None
 
 
 def _readings_from(
@@ -249,7 +193,7 @@ def _readings_from(
     **Each direction is judged on its own.** Import and export are separate
     entities that restart their running ``sum`` independently, and refusing the
     whole interval when either one did let a single bad series destroy the
-    other's good energy. Measured against an unfiltered Eagle-100 export
+    other's good energy. Measured against an unfiltered smart-meter export
     counter, whose session resets 5.5 times a day: the export series' 56 bad
     hours took 21.4 kWh of perfectly good *import* with them, 74.5 kWh billed as
     53.1. The two entities are the reason `check_coverage` sees one series --
@@ -280,8 +224,9 @@ def _readings_from(
             previous = carry(previous, slot, state)
         return out
 
-    imported = energies(settings.import_entity)
-    exported = energies(settings.export_entity)
+    import_entity, export_entity = settings.require_entities()
+    imported = energies(import_entity)
+    exported = energies(export_entity)
 
     readings: dict[int, IntervalReading] = {}
     for stamp in sorted(set(imported) | set(exported)):
@@ -352,7 +297,7 @@ async def _fetch(
                         "type": "recorder/statistics_during_period",
                         "start_time": start.astimezone(UTC).isoformat(),
                         "end_time": end.astimezone(UTC).isoformat(),
-                        "statistic_ids": [settings.import_entity, settings.export_entity],
+                        "statistic_ids": list(settings.require_entities()),
                         "period": period,
                         # `state` is the counter itself, and `interval_energy`
                         # needs it: a recorder that mistook a dropped-to-zero
@@ -390,6 +335,7 @@ async def read_statistics_async(
     therefore mix the two; :func:`describe_resolution` reports what was used, so
     a caller can say so rather than implying uniformity.
     """
+    settings.require_entities()
     if resolution not in ("auto", *PERIODS):
         raise ConfigError(f"unknown resolution {resolution!r}; use auto, 5minute or hour")
     for name, moment in (("start", start), ("end", end)):
@@ -437,8 +383,9 @@ async def read_statistics_async(
     readings.update({s: r for s, r in fine.items() if s - s % hour_ms not in surrendered})
 
     if not readings:
+        import_entity, export_entity = settings.require_entities()
         raise DataError(
-            f"no statistics for {settings.import_entity} / {settings.export_entity} "
+            f"no statistics for {import_entity} / {export_entity} "
             f"between {start.isoformat()} and {end.isoformat()}"
         )
     return [readings[stamp] for stamp in sorted(readings)]

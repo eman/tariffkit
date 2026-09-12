@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import suppress
 from dataclasses import replace
 from datetime import date
@@ -83,6 +84,9 @@ def _select(options: list[str], translation_key: str | None = None) -> selector.
     return selector.SelectSelector(
         selector.SelectSelectorConfig(options=options, translation_key=translation_key)
     )
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _profile_schema(defaults: dict[str, Any], *, include_name: bool = True) -> vol.Schema:
@@ -392,24 +396,25 @@ def _meters_schema(defaults: dict[str, Any]) -> vol.Schema:
     for export; a site whose export counter is the only one integrated can still
     say so. Naming neither leaves the running-total entities out entirely.
 
-    The selector filters to energy sensors rather than all of them, because the
-    only useful answer here is a cumulative kWh counter -- the thing the
-    recorder keeps long-term statistics for.
+    The picker lists every statistic, not only energy sensors: what this reads is
+    long-term statistics, and not all of those belong to an entity, so filtering
+    by entity would shut out a feed that imports history. `_meter_problem` and
+    `_async_meter_problem` are what keep the answer honest -- they refuse a
+    series that is not energy, one that keeps no running sum, and one entity
+    named for both directions, which is stricter than any picker can be.
     """
-    # The `filter` form, not the flat `domain=`/`device_class=` keywords: those
-    # are `_LegacyEntityFilterSelectorConfig`, kept for backwards compatibility
-    # and explicitly feature frozen upstream.
+    # A statistic picker, not an entity picker. What this integration reads is
+    # long-term statistics, and not every statistic belongs to an entity: an
+    # integration that imports history rather than publishing live sensors
+    # writes `source:object` ids, which an `EntitySelector` refuses outright
+    # even though everything downstream prices them.
     #
-    # No selector can filter on state_class, and a `device_class: energy` sensor
-    # may well be a `measurement` reading rather than a cumulative counter, so
-    # `_meter_problem` rejects those after the fact.
-    energy = selector.EntitySelector(
-        selector.EntitySelectorConfig(
-            filter=selector.EntityWithDeviceFilterSelectorConfig(
-                domain="sensor", device_class="energy"
-            )
-        )
-    )
+    # The cost is that this lists every statistic rather than only energy
+    # sensors, because `StatisticSelectorConfig` has no filter. `_meter_problem`
+    # makes up for it after the fact, and can be stricter than a picker anyway:
+    # no selector can filter on state_class, and a `device_class: energy` sensor
+    # may still be a `measurement` reading with no cumulative change.
+    energy = selector.StatisticSelector()
     return vol.Schema(
         {
             vol.Optional(
@@ -420,7 +425,7 @@ def _meters_schema(defaults: dict[str, Any]) -> vol.Schema:
                 CONF_GRID_EXPORT_ENTITY,
                 description={"suggested_value": defaults.get(CONF_GRID_EXPORT_ENTITY) or None},
             ): energy,
-            vol.Required(
+            vol.Optional(
                 CONF_CYCLE_START_DAY,
                 default=int(defaults.get(CONF_CYCLE_START_DAY, DEFAULT_CYCLE_START_DAY) or 0),
             ): selector.NumberSelector(
@@ -465,10 +470,16 @@ COUNTER_STATE_CLASSES = frozenset({"total", "total_increasing"})
 def _meter_problem(hass: HomeAssistant, values: dict[str, Any]) -> str:
     """Why these meter entities cannot drive a running total, or an empty string.
 
-    Both checks catch a configuration that would otherwise produce confident
-    nonsense rather than an error: one entity named twice bills every hour as
+    The checks catch a configuration that would otherwise produce confident
+    nonsense rather than an error: one counter named twice bills every hour as
     an import *and* credits it as an export, and a `measurement` sensor has no
     meaningful cumulative `change` for the recorder to difference.
+
+    A statistic with no entity behind it -- `source:object`, written by an
+    integration that imports history -- has no state to inspect, so only its
+    shape is checked here. Whether it exists and carries a sum is a recorder
+    question, and answering it needs the recorder's executor; the coordinator
+    already logs what it could not read.
     """
     grid_import = values.get(CONF_GRID_IMPORT_ENTITY) or ""
     grid_export = values.get(CONF_GRID_EXPORT_ENTITY) or ""
@@ -481,8 +492,15 @@ def _meter_problem(hass: HomeAssistant, values: dict[str, Any]) -> str:
     for entity_id in (grid_import, grid_export):
         if not entity_id:
             continue
+        if "." not in entity_id and ":" not in entity_id:
+            return (
+                f"{entity_id} is neither an entity id (domain.object) nor a "
+                "statistic id (source:object), so the recorder has nothing to "
+                "look up."
+            )
         state = hass.states.get(entity_id)
         if state is None:
+            # An external statistic, or an entity that has not reported yet.
             continue
         state_class = str(state.attributes.get("state_class") or "")
         if state_class and state_class not in COUNTER_STATE_CLASSES:
@@ -490,6 +508,66 @@ def _meter_problem(hass: HomeAssistant, values: dict[str, Any]) -> str:
                 f"{entity_id} has state_class '{state_class}'. Running totals need a "
                 "cumulative counter ('total' or 'total_increasing'); a measurement "
                 "sensor has no hourly change for the recorder to difference."
+            )
+    return ""
+
+
+async def _async_meter_problem(hass: HomeAssistant, values: dict[str, Any]) -> str:
+    """`_meter_problem`, plus the questions only the recorder can answer.
+
+    A picker that lists every statistic cannot stop someone choosing a gas
+    meter, and the recorder will not convert it: asking for kWh yields a
+    converter only when the statistic's own unit class is already energy, so a
+    volume series arrives as raw cubic metres and is billed as kilowatt-hours.
+    26 m3 of gas became a $26.59 electricity bill before this check existed.
+    """
+    problem = _meter_problem(hass, values)
+    if problem:
+        return problem
+
+    from homeassistant.components.recorder.statistics import list_statistic_ids
+    from homeassistant.helpers.recorder import get_instance
+
+    wanted = {
+        values.get(CONF_GRID_IMPORT_ENTITY) or "",
+        values.get(CONF_GRID_EXPORT_ENTITY) or "",
+    } - {""}
+    if not wanted:
+        return ""
+    try:
+        # `statistic_ids` is mutually exclusive with `statistic_type`; passing
+        # both raises, and this swallowed that as "nothing to report" until a
+        # test asked for a refusal and got silence.
+        found = await get_instance(hass).async_add_executor_job(list_statistic_ids, hass, wanted)
+    except Exception:
+        # Unreachable recorder is not the user's configuration being wrong, and
+        # refusing the form over it would be worse than letting the coordinator
+        # report it later. Logged so it is not silent.
+        _LOGGER.debug("could not read statistic metadata for %s", sorted(wanted), exc_info=True)
+        return ""
+
+    known = {row["statistic_id"]: row for row in found}
+    for statistic_id in sorted(wanted):
+        row = known.get(statistic_id)
+        if row is None:
+            # Not recorded yet. A freshly created counter is legitimately here,
+            # and the coordinator names what it could not read.
+            continue
+        unit_class = row.get("unit_class")
+        if unit_class is not None and unit_class != "energy":
+            unit = row.get("unit_of_measurement") or "?"
+            return (
+                f"{statistic_id} measures {unit_class} ({unit}), not energy. The "
+                "recorder only converts within a unit class, so its readings "
+                f"would be billed as though {unit} were kWh."
+            )
+        if not row.get("has_sum"):
+            # The statistic equivalent of the `state_class` check below: an
+            # hourly `change` only exists for a summed statistic, so a mean-only
+            # one has nothing to difference and would price every hour as zero.
+            return (
+                f"{statistic_id} keeps no running sum, so it has no hourly change "
+                "to difference. Running totals need a cumulative counter."
             )
     return ""
 
@@ -652,20 +730,59 @@ def _manual_config_data(
 class TariffKitConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 3
 
-    async def _create_profile(self, data: dict[str, Any]) -> ConfigFlowResult:
+    #: Set once the profile is built and its unique id claimed, and read by the
+    #: meter step that follows.
+    _profile: AccountProfile
+
+    async def _claim_profile(self, data: dict[str, Any]) -> None:
+        """Build the profile and take its unique id, or abort if it is taken.
+
+        Building happens here rather than at the end of the flow so that a
+        profile the library rejects is reported on the form that described it,
+        not on the meter step two screens later.
+        """
         config = config_from_entry(data)
         name = _profile_name(data.get(CONF_PROFILE_NAME, ""))
         if not name:
             raise AccountError("profile name is required")
-        profile = AccountProfile(
+        self._profile = AccountProfile(
             epochs=(AccountEpoch(LEGACY_EFFECTIVE, config),),
             name=name,
         )
         await self.async_set_unique_id(f"profile:{name}")
         self._abort_if_unique_id_configured()
+
+    def _create_entry(self, options: dict[str, Any] | None = None) -> ConfigFlowResult:
+        profile = self._profile
         return self.async_create_entry(
             title=_entry_title(profile),
             data={CONF_PROFILE: profile_payload(profile)},
+            options=options or {},
+        )
+
+    async def async_step_meters(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Name the grid counters while setting up, rather than only afterwards.
+
+        Optional, and skipping it is a real answer: a site that names neither
+        entity gets the rate entities and no running totals, which is what the
+        integration did for everyone before this step existed. The point is
+        that a new user is asked once, here, instead of finishing setup and
+        having to discover the same form under Configure.
+        """
+        if user_input is not None:
+            problem = await _async_meter_problem(self.hass, user_input)
+            if problem:
+                return self.async_show_form(
+                    step_id="meters",
+                    data_schema=_meters_schema(_meter_defaults(user_input, None)),
+                    errors={"base": "invalid_meters"},
+                    description_placeholders={"detail": problem},
+                )
+            return self._create_entry(_meter_values(user_input))
+        return self.async_show_form(
+            step_id="meters",
+            data_schema=_meters_schema(_meter_defaults({}, self._profile)),
+            description_placeholders={"detail": ""},
         )
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
@@ -710,9 +827,10 @@ class TariffKitConfigFlow(ConfigFlow, domain=DOMAIN):
                     description_placeholders={"detail": errors["detail"]},
                 )
             try:
-                return await self._create_profile(
+                await self._claim_profile(
                     {**data, CONF_PROFILE_NAME: identity.get(CONF_PROFILE_NAME, "")}
                 )
+                return await self.async_step_meters()
             except (AccountError, TariffKitError) as err:
                 return self.async_show_form(
                     step_id="manual_delivery",
@@ -749,9 +867,10 @@ class TariffKitConfigFlow(ConfigFlow, domain=DOMAIN):
                     description_placeholders={"detail": errors["detail"]},
                 )
             try:
-                return await self._create_profile(
+                await self._claim_profile(
                     {**data, CONF_PROFILE_NAME: identity.get(CONF_PROFILE_NAME, "")}
                 )
+                return await self.async_step_meters()
             except (AccountError, TariffKitError) as err:
                 return self.async_show_form(
                     step_id="manual_cca",
@@ -773,10 +892,8 @@ class TariffKitConfigFlow(ConfigFlow, domain=DOMAIN):
                     raise AccountError("imported profile must have a name")
                 await self.async_set_unique_id(f"profile:{imported.name}")
                 self._abort_if_unique_id_configured()
-                return self.async_create_entry(
-                    title=_entry_title(imported),
-                    data={CONF_PROFILE: profile_payload(imported)},
-                )
+                self._profile = imported
+                return await self.async_step_meters()
             except (AccountError, json.JSONDecodeError, TypeError, ValueError) as err:
                 errors = {"base": "invalid_profile", "detail": str(err)}
         return self.async_show_form(
@@ -960,7 +1077,7 @@ class TariffKitOptionsFlow(OptionsFlow):
     async def async_step_meters(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Change which entities feed the running totals, or stop feeding them."""
         if user_input is not None:
-            problem = _meter_problem(self.hass, user_input)
+            problem = await _async_meter_problem(self.hass, user_input)
             if not problem:
                 return self._save_profile(self._profile(), **_meter_values(user_input))
             return self.async_show_form(

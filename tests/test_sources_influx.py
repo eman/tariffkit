@@ -24,8 +24,8 @@ from tariffkit.errors import ConfigError, DataError
 from tariffkit.sources import influx
 from tariffkit.timeutil import PACIFIC
 
-IMPORT_ID = influx.DEFAULT_IMPORT_ENTITY
-EXPORT_ID = influx.DEFAULT_EXPORT_ENTITY
+IMPORT_ID = "grid_import_total"
+EXPORT_ID = "grid_export_total"
 
 
 class FakeResponse:
@@ -70,7 +70,15 @@ class FakePost:
 
 @pytest.fixture
 def settings() -> influx.InfluxSettings:
-    return influx.InfluxSettings(host="influx.example", database="homedb", token="secret")
+    # The series are no longer defaulted, so a fixture that reads counters has
+    # to name them, the same as a real configuration does.
+    return influx.InfluxSettings(
+        host="influx.example",
+        database="homedb",
+        token="secret",
+        import_entity=IMPORT_ID,
+        export_entity=EXPORT_ID,
+    )
 
 
 @pytest.fixture
@@ -98,7 +106,9 @@ class TestSettings:
         )
         got = influx.InfluxSettings.load(config, tmp_path / "none", token="t")
         assert got.import_entity == "meter_in"
-        assert got.export_entity == EXPORT_ID
+        # Naming one and not the other leaves the other unset rather than
+        # substituting a guess.
+        assert got.export_entity is None
 
     def test_dotenv_supplies_host_and_token(self, tmp_path: Path) -> None:
         env = tmp_path / ".env"
@@ -195,7 +205,7 @@ class TestSettings:
 
 class TestMonotonic:
     def test_a_drop_to_zero_is_discarded(self) -> None:
-        # The Eagle-100 republishes 0.0 while re-establishing its meter session,
+        # A meter reader republishes 0.0 while re-establishing its session,
         # about one sample in ten. Differencing across it would invent a huge
         # negative interval and then a compensating spike.
         samples = [(at(0), 100.0), (at(1), 0.0), (at(2), 101.0)]
@@ -509,3 +519,32 @@ def test_a_real_gap_is_still_reported_as_reconstructed() -> None:
         "6 interval(s) covering 6.0h were reconstructed across gaps" in w and "3.0 kWh" in w
         for w in warnings
     ), warnings
+
+
+class TestOptionalEntities:
+    """Naming the series is optional; reading them without is an error."""
+
+    def test_settings_load_without_any_series(self, tmp_path: Path) -> None:
+        env = tmp_path / ".env"
+        env.write_text(
+            'INFLUXDB3_HOST="h"\nINFLUXDB3_DATABASE="d"\nINFLUXDB3_AUTH_TOKEN="t"\n',
+            encoding="utf-8",
+        )
+        s = influx.InfluxSettings.load(tmp_path / "none.toml", env)
+        assert (s.import_entity, s.export_entity) == (None, None)
+
+    def test_reading_without_series_says_how_to_set_them(self) -> None:
+        s = influx.InfluxSettings(host="h", database="d", token="t")
+        with pytest.raises(ConfigError) as err:
+            influx.read_counters(
+                s,
+                datetime(2026, 7, 1, tzinfo=PACIFIC),
+                datetime(2026, 7, 2, tzinfo=PACIFIC),
+                timedelta(hours=1),
+            )
+        message = str(err.value)
+        assert "import_entity and export_entity not set" in message
+        assert "tariffkit account source set influx" in message
+        # And what still works without them, so the answer is not "configure a
+        # meter or get nothing".
+        assert "needs neither" in message

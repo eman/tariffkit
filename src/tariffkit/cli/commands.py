@@ -9,6 +9,7 @@ import json
 import logging
 import sys
 from collections.abc import Mapping, Sequence
+from contextlib import ExitStack
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -28,6 +29,60 @@ from ..timeutil import PACIFIC, to_pacific
 
 if TYPE_CHECKING:
     from ..account import AccountProfile
+
+
+def _told_how_to_set_up(args: argparse.Namespace) -> bool:
+    """Whether the caller already said what the account is."""
+    # `--config` exists as an attribute whether or not it was passed, so test
+    # the value. Testing `hasattr` made this always true and the branch dead.
+    if getattr(args, "config_json", None) is not None or getattr(args, "config", None) is not None:
+        return True
+    from .account_commands import config_changes
+
+    return bool(config_changes(args))
+
+
+def _have_pge_credentials(config_path: str | Path | None) -> bool:
+    """Whether a portal login is already stored. Never prompts for one."""
+    from ..sources.pge import PgeSettings
+
+    try:
+        PgeSettings.load(config_path=config_path)
+    except TariffKitError:
+        return False
+    return True
+
+
+def _add_epoch_fields(parser: argparse.ArgumentParser) -> None:
+    """The fields that describe one epoch, on whichever command sets them.
+
+    Shared so `init` and `update` cannot drift: an `init` that could not express
+    a tariff left the first epoch built from built-in defaults, and an epoch
+    dated before that one cannot be added without restating the whole config.
+    """
+    parser.add_argument("--tariff", help="rate schedule, e.g. E-ELEC, EV2-A, E-TOU-C")
+    parser.add_argument("--supplier", help="bundled or cca")
+    parser.add_argument(
+        "--interconnection-year",
+        type=int,
+        dest="interconnection_year",
+        help="year the interconnection application was filed; sets the NBT vintage",
+    )
+    parser.add_argument("--pto-date", type=date.fromisoformat, help="Permission To Operate date")
+    parser.add_argument("--vintage", help="override the NBT vintage the year implies")
+    parser.add_argument(
+        "--acc-plus-segment",
+        dest="acc_plus_segment",
+        help="residential, residential_low_income, or none",
+    )
+    parser.add_argument("--discount", help="none, care, or fera")
+    parser.add_argument(
+        "--base-services-charge-tier", type=int, help="Base Services Charge income tier, 1-3"
+    )
+    parser.add_argument("--baseline-territory", dest="baseline_territory")
+    parser.add_argument("--baseline-code", dest="baseline_code", help="basic or all_electric")
+    parser.add_argument("--nsc-rate", type=float, dest="nsc_rate")
+    parser.add_argument("--cca-json", help="CCA settings as a JSON object")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -58,6 +113,22 @@ def build_parser() -> argparse.ArgumentParser:
     account_init.add_argument("--effective", type=date.fromisoformat)
     account_init.add_argument("--config-json", type=Path)
     account_init.add_argument("--audit-file", type=Path)
+    account_init.add_argument(
+        "--from-statement",
+        type=Path,
+        dest="from_statement",
+        metavar="PDF",
+        help="read the tariff, supplier, CCA and baseline territory off your "
+        "latest PG&E statement instead of typing them",
+    )
+    account_init.add_argument(
+        "--from-portal",
+        action="store_true",
+        dest="from_portal",
+        help="download the newest statement with your stored PG&E credentials "
+        "and read it, as --from-statement does",
+    )
+    _add_epoch_fields(account_init)
     account_init.add_argument("--json", action="store_true")
     account_show = account_commands.add_parser("show", help="show the settings in force today")
     account_show.add_argument("--json", action="store_true")
@@ -69,18 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
     account_update.add_argument("--config", type=Path, default=argparse.SUPPRESS)
     account_update.add_argument("--effective", required=True, type=date.fromisoformat)
     account_update.add_argument("--config-json", type=Path)
-    account_update.add_argument("--tariff")
-    account_update.add_argument("--supplier")
-    account_update.add_argument("--interconnection-year", type=int, dest="interconnection_year")
-    account_update.add_argument("--pto-date", type=date.fromisoformat)
-    account_update.add_argument("--vintage")
-    account_update.add_argument("--acc-plus-segment", dest="acc_plus_segment")
-    account_update.add_argument("--discount")
-    account_update.add_argument("--base-services-charge-tier", type=int)
-    account_update.add_argument("--baseline-territory", dest="baseline_territory")
-    account_update.add_argument("--baseline-code", dest="baseline_code")
-    account_update.add_argument("--nsc-rate", type=float, dest="nsc_rate")
-    account_update.add_argument("--cca-json")
+    _add_epoch_fields(account_update)
     account_update.add_argument("--note")
     account_update.add_argument("--apply", action="store_true")
     account_update.add_argument("--json", action="store_true")
@@ -146,6 +206,12 @@ def build_parser() -> argparse.ArgumentParser:
     info_parser = sub.add_parser("info", help="which data is loaded, and from where")
     info_parser.add_argument("--config", type=Path, default=argparse.SUPPRESS)
 
+    sources_parser = sub.add_parser(
+        "sources", help="which data sources are configured, and what each one enables"
+    )
+    sources_parser.add_argument("--config", type=Path, default=argparse.SUPPRESS)
+    sources_parser.add_argument("--json", action="store_true")
+
     bill = sub.add_parser("bill", help="compute a bill from interval meter data")
     bill.add_argument("--config", type=Path, default=argparse.SUPPRESS)
     bill.add_argument(
@@ -162,7 +228,9 @@ def build_parser() -> argparse.ArgumentParser:
         # not the documented spelling: it says nothing about which CSV.
         choices=("green-button", "csv", "ha", "influx"),
         default=None,
-        help="where the readings come from (default: ha, or green-button when a CSV path is given)",
+        help="where the readings come from (default: whichever is configured, "
+        "preferring Home Assistant, then InfluxDB, then a Green Button export; "
+        "green-button when a CSV path is given). `tariffkit sources` lists them",
     )
     bill.add_argument("--start", type=date.fromisoformat, help="cycle start (meter read date)")
     bill.add_argument("--end", type=date.fromisoformat, help="cycle end, inclusive")
@@ -220,19 +288,6 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--port", type=int, default=8000)
 
     return parser
-
-
-def _midnight(day: date) -> datetime:
-    """Local midnight starting ``day`` -- where a billing cycle boundary falls.
-
-    Callers add ``timedelta(days=1)`` to get the end of a cycle, and that is
-    deliberately wall-clock arithmetic: a cycle closes at the next local
-    midnight, 23 real hours later across the spring transition and 25 across the
-    autumn one. Converting to absolute time first would hold the window at 24
-    hours and land it an hour off on those two days -- the opposite of what
-    coverage checking needs, where elapsed time is the right measure.
-    """
-    return datetime(day.year, day.month, day.day, tzinfo=PACIFIC)
 
 
 def _format_point(point: PricePoint) -> str:
@@ -578,10 +633,9 @@ def _billing_window(args: Any, profile: Any) -> tuple[Any, str]:
     """
     from ..billing import BillingPeriod, resolve_cycle
 
+    _check_window_flags(args)
     if args.start and args.end:
         return BillingPeriod(args.start, args.end), ""
-    if args.start or args.end:
-        raise ConfigError("give both --start and --end, or neither for the current cycle")
     if profile is None:
         raise ConfigError(
             "give --start and --end; without an account there is nothing to "
@@ -610,6 +664,17 @@ def _basis_of(cycle: Any, origins: Mapping[Any, str]) -> str:
         if period.start == cycle.start or period.end + timedelta(days=1) == cycle.start:
             return origin
     return "statement"
+
+
+def _check_window_flags(args: argparse.Namespace) -> None:
+    """Reject half a window before anything is looked up.
+
+    Runs ahead of source resolution: a mistyped invocation should be answered
+    with what is wrong about it, not with a survey of the data sources that
+    would have been needed had it been right.
+    """
+    if bool(args.start) != bool(args.end):
+        raise ConfigError("give both --start and --end, or neither for the current cycle")
 
 
 def _known_periods(args: Any, profile: Any, *, refresh: bool = False) -> dict[Any, str]:
@@ -690,14 +755,6 @@ def _cycle_start_day(args: Any) -> int:
     return day
 
 
-def _short_path(path: Path) -> str:
-    """A path with the home directory collapsed, for printing."""
-    try:
-        return f"~/{path.relative_to(Path.home())}"
-    except ValueError:
-        return str(path)
-
-
 def _print_credentials() -> None:
     """Where each credential resolves from -- never what it is.
 
@@ -709,8 +766,7 @@ def _print_credentials() -> None:
     """
     import os
 
-    from ..secrets import SECRET_ENV, keyring_backend
-    from ..sources.homeassistant import load_dotenv
+    from ..secrets import SECRET_ENV, keyring_backend, load_dotenv
 
     backend = keyring_backend()
     print(f"keyring: {backend}" if backend else "keyring: none available here")
@@ -751,6 +807,7 @@ def _print_skipped(skipped: Sequence[Mapping[str, str]]) -> None:
 def _run_account_command(args: Any) -> int:
     from .account_commands import (
         config_changes,
+        downloaded_statement,
         import_statements,
         init_profile,
         sync_profile,
@@ -760,14 +817,63 @@ def _run_account_command(args: Any) -> int:
     store = _account_store()
     command = args.account_command
     if command == "init":
-        profile = init_profile(
-            store,
-            config_path=args.config,
-            config_json=args.config_json,
-            effective=args.effective,
-            audit_path=args.audit_file,
-        )
+        stack = ExitStack()
+        statement = args.from_statement
+        if args.from_portal:
+            if statement is not None:
+                raise ConfigError("choose either --from-statement or --from-portal")
+            # Entered on a stack so the downloaded bill is removed whether or not
+            # the rest of this succeeds. A file the caller named is theirs and is
+            # never touched.
+            statement = stack.enter_context(downloaded_statement(config_path=args.config))
+        elif statement is None and not _told_how_to_set_up(args):
+            # Nobody said where the account comes from, so read it rather than
+            # invent it: the alternative was a confident set of built-in
+            # defaults, and correcting an epoch earlier than the first one means
+            # restating the whole config. Only when a login is already stored --
+            # this never prompts for one.
+            if _have_pge_credentials(getattr(args, "config", None)):
+                print("reading your latest PG&E statement...", file=sys.stderr)
+                statement = stack.enter_context(
+                    downloaded_statement(config_path=getattr(args, "config", None))
+                )
+            else:
+                print(
+                    "No statement and no stored PG&E login, so this is built from "
+                    "config.toml and built-in defaults -- check `tariffkit account "
+                    "show` before trusting a figure. `tariffkit account init "
+                    "--from-statement <pdf>` reads it off a bill instead.",
+                    file=sys.stderr,
+                )
+        with stack:
+            profile, gaps = init_profile(
+                store,
+                config_path=args.config,
+                config_json=args.config_json,
+                effective=args.effective,
+                audit_path=args.audit_file,
+                changes=config_changes(args),
+                from_statement=statement,
+            )
         _print_profile(profile, json_output=args.json)
+        if gaps and not args.json:
+            from .account_commands import UNDERIVABLE
+
+            # The summary is the answer and goes to stdout; this is a footnote on
+            # stderr so `--json` stays pipeable. Flushed first, or the footnote
+            # races ahead of what it is a footnote to.
+            sys.stdout.flush()
+            print(
+                "\nA bill does not say everything. Still at its default:",
+                file=sys.stderr,
+            )
+            for field in gaps:
+                print(f"  {field:<28}{UNDERIVABLE[field]}", file=sys.stderr)
+            print(
+                "Set any of them with `tariffkit account update --effective "
+                "<date> --<field> <value> --apply`.",
+                file=sys.stderr,
+            )
         return 0
 
     profile = store.load()
@@ -899,8 +1005,10 @@ def _run_account_command(args: Any) -> int:
                 print(f"grid import: {summary['grid_import_entity']}")
                 print(f"grid export: {summary['grid_export_entity']}")
             else:
+                # There is no source default any more, so saying one would be
+                # used described a fallback that has been gone since 0.9.0.
                 print(f"source: {summary['source']}")
-                print("not configured; the source default will be used")
+                print("not configured; `tariffkit account source set` names the counters")
             return 0
 
         updated = set_meter_source(
@@ -1045,103 +1153,58 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(info, indent=2, default=str))
             return 0
 
+        if args.command == "sources":
+            from .availability import first_available_meter_source, survey
+
+            statuses = survey(getattr(args, "config", None), account_profile)
+            if args.json:
+                print(
+                    json.dumps(
+                        {
+                            "sources": [status.to_dict() for status in statuses],
+                            "default_meter_source": first_available_meter_source(statuses),
+                        },
+                        indent=2,
+                    )
+                )
+                return 0
+            for status in statuses:
+                mark = "yes" if status.available else "no "
+                print(f"  {mark}  {status.name}")
+                for feature in status.features:
+                    print(f"          {feature}")
+                if status.remedy:
+                    print(f"          -> {status.remedy}")
+            chosen = first_available_meter_source(statuses)
+            print()
+            if chosen is None:
+                print("`bill` has no meter source to read; anything above would give it one.")
+            else:
+                print(f"`bill` reads --source {chosen} unless told otherwise.")
+            return 0
+
         if args.command == "bill":
             from ..billing import BillEngine, BillingPeriod
-            from ..sources import read_green_button
+            from .meters import open_meter
 
-            # Resolved before any source is read, because every one of them is
-            # asked for a window and a CSV on stdin is the only case where the
-            # readings themselves can supply it.
-            # A CSV names its own window when no dates are given -- but only
-            # for the source that reads a CSV. Every other source is asked for
-            # a period, so it has to be resolved even when a path was passed.
-            # Home Assistant by default: it is the account's own meter, read
-            # through the recorder, and the one source measured against the
-            # statement to 0.00 kWh where the utility's own export was missing
-            # 30 days of a cycle. A CSV path names the Green Button reader,
-            # since that is what a CSV is.
-            if args.source is None:
-                args.source = "green-button" if args.csv is not None else "ha"
-            reads_csv = args.source in {"green-button", "csv"} and args.csv is not None
+            _check_window_flags(args)
+            meter = open_meter(args, account_profile)
+            # Resolved before the meter is read, because every reader but a
+            # file is asked for a window -- and a file names its own only when
+            # no dates were given.
             period, cycle_basis = (
                 (None, "")
-                if reads_csv and not (args.start or args.end)
+                if not meter.needs_period and not (args.start or args.end)
                 else _billing_window(args, account_profile)
             )
-            note = ""
-            if args.source == "ha":
-                from ..sources import HaSettings, describe_resolution, read_statistics
-
-                assert period is not None  # every source but the CSV resolves one
-                ha_settings = HaSettings.load(
-                    config_path=args.config,
-                    profile_source=(
-                        account_profile.meter_sources.ha if account_profile is not None else None
-                    ),
-                    import_entity=args.ha_import_entity,
-                    export_entity=args.ha_export_entity,
-                )
-                readings = read_statistics(
-                    ha_settings,
-                    _midnight(period.start),
-                    _midnight(period.end) + timedelta(days=1),
-                    resolution=args.ha_resolution,
-                )
-                note = f"  source: Home Assistant statistics ({describe_resolution(readings)})"
-            elif args.source == "influx":
-                from ..sources import InfluxSettings, describe_resolution, read_counters
-
-                assert period is not None
-                influx_settings = InfluxSettings.load(
-                    config_path=args.config,
-                    profile_source=(
-                        account_profile.meter_sources.influx
-                        if account_profile is not None
-                        else None
-                    ),
-                    import_entity=args.influx_import_entity,
-                    export_entity=args.influx_export_entity,
-                )
-                step = timedelta(minutes=args.influx_resolution)
-                readings = read_counters(
-                    influx_settings,
-                    _midnight(period.start),
-                    _midnight(period.end) + timedelta(days=1),
-                    step,
-                )
-                # Described the same way the Home Assistant source describes
-                # itself. The two report the same interval in different words
-                # otherwise -- "744 x 60min" against "744 x hour" -- which reads
-                # as the sources disagreeing about something when they do not.
-                note = (
-                    f"  source: InfluxDB counters ({describe_resolution(readings)}; "
-                    f"totals are exact, distribution follows sample density)"
-                )
-            elif args.csv is not None:
-                readings = read_green_button(sys.stdin if str(args.csv) == "-" else args.csv)
-                note = f"  source: Green Button CSV ({len(readings)} intervals)"
-            else:
-                from ..sources import PgeSettings, cached_green_button
-
-                assert period is not None
-                export = cached_green_button(
-                    PgeSettings.load(config_path=args.config),
-                    period.start,
-                    period.end,
-                    refresh=args.refresh,
-                )
-                if cycle_basis and export.end < period.end:
-                    # The utility publishes a day behind, so an open cycle asked
-                    # for "through today" ends at the last read instead. Pricing
-                    # days it has no readings for would charge the Base Services
-                    # Charge for each and call the shortfall a gap in the meter.
-                    period = BillingPeriod(period.start, export.end)
-                readings = read_green_button(export.path)
-                origin = "downloaded" if export.downloaded else f"cached {export.covers}"
-                note = (
-                    f"  source: Green Button, {origin} "
-                    f"({len(readings)} intervals, {_short_path(export.path)})"
-                )
+            data = meter.read(period)
+            readings, note = data.readings, data.description
+            # A reader may know the window is shorter than it was asked for --
+            # the utility publishes a day behind, so an open cycle really ends
+            # at the last published read. Only an open cycle may be narrowed:
+            # explicit dates are the caller's answer, not a guess to refine.
+            if data.period is not None and cycle_basis:
+                period = data.period
 
             if period is None:
                 period = BillingPeriod.from_readings(readings)
@@ -1215,6 +1278,20 @@ def main(argv: list[str] | None = None) -> int:
 
     except TariffKitError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        # A host that cannot be reached is a configuration problem, not a bug.
+        # Home Assistant, InfluxDB and the portal all reach the network through
+        # libraries that raise OSError subclasses -- `socket.gaierror` for a
+        # typo'd host, `ConnectionRefusedError` for a wrong port -- and none of
+        # them is a TariffKitError, so fixing an entity name and running `bill`
+        # again answered with a Python traceback.
+        print(f"error: could not reach the host: {exc}", file=sys.stderr)
+        print(
+            "Check the host and port in your configuration, and that the service "
+            "is up. `tariffkit sources` shows what is configured.",
+            file=sys.stderr,
+        )
         return 1
     except KeyboardInterrupt:  # pragma: no cover
         return 130

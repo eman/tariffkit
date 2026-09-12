@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -162,7 +165,7 @@ def test_bill_without_dates_prices_the_open_cycle_from_statement_evidence(
             path=_export_csv(tmp_path), start=start, end=end, downloaded=False, covers="cached"
         )
 
-    monkeypatch.setattr("tariffkit.sources.cached_green_button", fake)
+    monkeypatch.setattr("tariffkit.sources.pge.cached_green_button", fake)
 
     assert main(["bill", "--source", "green-button"]) == 0
 
@@ -270,7 +273,7 @@ def _stub_export(
         "tariffkit.sources.cached_bill_periods", lambda *a, **k: portal_periods or []
     )
     monkeypatch.setattr(
-        "tariffkit.sources.cached_green_button",
+        "tariffkit.sources.pge.cached_green_button",
         lambda settings, start, end, **k: SimpleNamespace(
             path=_export_csv(tmp_path),
             start=start,
@@ -467,25 +470,32 @@ def test_naming_a_config_file_never_reaches_for_the_account(
 @pytest.mark.parametrize(
     ("argv", "expected"),
     [
-        (["bill"], "Home Assistant"),
-        (["bill", "--start", "2026-08-01", "--end", "2026-08-10"], "Home Assistant"),
+        # Nothing is configured, so there is nothing to default to. The answer
+        # names every source that would work rather than the first one tried.
+        (["bill"], "no meter source is configured"),
+        (
+            ["bill", "--start", "2026-08-01", "--end", "2026-08-10"],
+            "no meter source is configured",
+        ),
         (["bill", "readings.csv"], "could not read"),
+        # Asking for one by name still asks that one, and it still says what is
+        # missing for it in particular.
         (["bill", "--source", "influx"], "InfluxDB"),
-        (["bill", "--source", "green-button"], "PG&E credentials"),
+        (["bill", "--source", "green-button"], "needs a utility login"),
     ],
 )
-def test_the_default_source_is_home_assistant_unless_a_csv_says_otherwise(
+def test_bill_without_any_source_names_every_source_that_would_work(
     argv: list[str],
     expected: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The account's own meter, not the utility's export.
+    """An unconfigured account is told its options, not the first one tried.
 
-    PG&E's export was missing thirty days of one cycle where the meter matched
-    the statement to 0.00 kWh, and it was the source `bill` reached for first.
-    A CSV path still names the Green Button reader, since that is what a CSV is.
+    The default used to be the constant "ha", so an account pricing from
+    InfluxDB or from an export it had already downloaded was told that HA_TOKEN
+    was not set -- naming the one source it had not set up.
 
     Asserted through what each invocation actually goes and asks for -- naming
     the source in the failure it produces -- because the same test written
@@ -499,6 +509,89 @@ def test_the_default_source_is_home_assistant_unless_a_csv_says_otherwise(
     assert main(argv) == 1
 
     assert expected in capsys.readouterr().err
+
+
+def test_naming_entities_on_the_command_line_chooses_that_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--ha-import-entity` is a choice of source, not just a value.
+
+    The survey only reads the config file and the profile, so a run that named
+    its counters as flags reported Home Assistant unconfigured -- and then
+    either priced from a portal download instead, or refused while telling the
+    user to name the very counters they had just named.
+    """
+    from tariffkit.cli.meters import _default_meter_source
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    for variable in ("HA_HOST", "HA_TOKEN", "INFLUXDB3_HOST", "PGE_USERNAME", "PGE_PASSWORD"):
+        monkeypatch.delenv(variable, raising=False)
+
+    def args(**overrides: object) -> argparse.Namespace:
+        base = {
+            "csv": None,
+            "config": None,
+            "ha_import_entity": None,
+            "ha_export_entity": None,
+            "influx_import_entity": None,
+            "influx_export_entity": None,
+        }
+        return argparse.Namespace(**{**base, **overrides})
+
+    assert (
+        _default_meter_source(
+            args(ha_import_entity="sensor.in", ha_export_entity="sensor.out"), None
+        )
+        == "ha"
+    )
+    assert (
+        _default_meter_source(args(influx_import_entity="in", influx_export_entity="out"), None)
+        == "influx"
+    )
+    # One half is still a choice of source: the settings loader merges the other
+    # entity from the profile or the config file, so a single flag can complete a
+    # half-configured source. Requiring both silently ignored the flag and
+    # switched source; if the merged pair is still incomplete,
+    # `require_entities` names the missing half at read time.
+    assert _default_meter_source(args(ha_import_entity="sensor.in"), None) == "ha"
+    assert _default_meter_source(args(influx_export_entity="out"), None) == "influx"
+
+
+def test_home_assistant_is_still_preferred_when_more_than_one_source_works(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The account's own meter, not the utility's export.
+
+    PG&E's export was missing thirty days of one cycle where the meter matched
+    the statement to 0.00 kWh, so the order matters and is not alphabetical.
+    Configuring everything must still reach for Home Assistant first.
+    """
+    _account_with_statement(tmp_path, monkeypatch)
+    monkeypatch.setenv("HA_HOST", "http://ha.invalid")
+    monkeypatch.setenv("HA_TOKEN", "tok")
+    monkeypatch.setenv("INFLUXDB3_HOST", "influx.invalid")
+    monkeypatch.setenv("INFLUXDB3_DATABASE", "db")
+    monkeypatch.setenv("INFLUXDB3_AUTH_TOKEN", "tok")
+    monkeypatch.setenv("PGE_USERNAME", "u")
+    monkeypatch.setenv("PGE_PASSWORD", "p")
+    monkeypatch.setenv("TARIFFKIT_HA_IMPORT_ENTITY", "sensor.in")
+    monkeypatch.setenv("TARIFFKIT_HA_EXPORT_ENTITY", "sensor.out")
+    monkeypatch.setattr("tariffkit.sources.cached_bill_periods", lambda *a, **k: [])
+
+    from tariffkit.cli.meters import _default_meter_source
+
+    # The flags `bill` always supplies. Naming a pair on the command line is
+    # itself a choice of source, so they have to be absent for this to be
+    # testing the preference order.
+    args = argparse.Namespace(
+        csv=None,
+        config=None,
+        ha_import_entity=None,
+        ha_export_entity=None,
+        influx_import_entity=None,
+        influx_export_entity=None,
+    )
+    assert _default_meter_source(args, None) == "ha"
 
 
 def test_a_csv_path_with_another_source_still_resolves_a_window(
@@ -782,9 +875,13 @@ def test_bill_passes_profile_entities_and_cli_overrides(
         "HaSettings" if source == "ha" else "InfluxSettings",
         FakeSettings,
     )
+    # Patched where the reader looks it up, not on the package namespace: the
+    # readers import from their own module, so `tariffkit.sources.X` is a name
+    # nothing reads at call time.
     monkeypatch.setattr(
-        sources,
-        "read_statistics" if source == "ha" else "read_counters",
+        "tariffkit.sources.homeassistant.read_statistics"
+        if source == "ha"
+        else "tariffkit.sources.influx.read_counters",
         readings,
     )
 
@@ -970,3 +1067,380 @@ def test_mqtt_cli_accepts_insecure_auth_escape_hatch() -> None:
     settings = _mqtt_settings(args, from_account=False)
 
     assert settings.allow_insecure_auth is True
+
+
+def test_account_init_can_express_the_account_in_one_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`init` took no field flags, so the first epoch was always the defaults.
+
+    That matters more than it sounds: an epoch dated before the first one cannot
+    be added without restating the whole config, so an `init` run before the
+    user knew to pass anything left them correcting history through
+    `--config-json`. The fields `update` accepts are the fields `init` accepts.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+    assert (
+        main(
+            [
+                "account",
+                "init",
+                "--effective",
+                "2025-06-15",
+                "--tariff",
+                "EV2-A",
+                "--supplier",
+                "bundled",
+                "--pto-date",
+                "2025-06-15",
+                "--interconnection-year",
+                "2025",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    assert main(["account", "show", "--json"]) == 0
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["effective"] == "2025-06-15"
+    assert shown["config"]["tariff"] == "EV2-A"
+    assert shown["config"]["pto_date"] == "2025-06-15"
+    assert shown["config"]["interconnection_year"] == 2025
+
+
+def test_a_cca_account_is_told_which_flag_supplies_the_cca_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The library says "requires a CcaConfig"; only the CLI knows the flag."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+    assert main(["account", "init", "--supplier", "cca"]) == 1
+    assert "--cca-json" in capsys.readouterr().err
+
+
+def _statement(**overrides: object) -> SimpleNamespace:
+    """Just enough of a parsed statement for the derivation."""
+    base = {
+        "statement_date": date(2026, 9, 1),
+        "period": BillingPeriod(date(2026, 7, 29), date(2026, 8, 27)),
+        "rate_schedule": "E-ELEC",
+        "agreements": (),
+        "cca_name": "",
+        "cca_rate_schedule": "",
+        "baseline_territory": "",
+        "pcia_vintage": None,
+    }
+    return SimpleNamespace(**{**base, **overrides})
+
+
+class TestConfigFromStatement:
+    """A bill establishes the fields most likely to be typed wrong."""
+
+    def test_a_bundled_statement_gives_the_tariff(self) -> None:
+        from tariffkit.cli.account_commands import config_from_statement
+
+        changes, gaps = config_from_statement(_statement())
+        assert changes["tariff"] == "E-ELEC"
+        assert changes["supplier"] == "bundled"
+        assert "pto_date" in gaps
+
+    def test_a_cca_statement_gives_the_supplier_and_the_cca(self) -> None:
+        from tariffkit.cli.account_commands import config_from_statement
+
+        changes, _ = config_from_statement(
+            _statement(cca_name="MCE", pcia_vintage=2011, baseline_territory="X")
+        )
+        assert changes["supplier"] == "cca"
+        assert changes["cca"] == {"name": "MCE", "rate_card": "mce", "pcia_vintage": 2011}
+        assert changes["baseline_territory"] == "X"
+
+    def test_a_split_cycle_takes_the_schedule_it_ended_on(self) -> None:
+        """A rate change mid-cycle prints the old schedule before the new one.
+
+        What the account *is* now is the one it ended on; taking the first would
+        set the account up as whatever it just stopped being.
+        """
+        from tariffkit.cli.account_commands import config_from_statement
+
+        agreements = (
+            SimpleNamespace(
+                tariff="E-TOU-C", period=BillingPeriod(date(2026, 6, 1), date(2026, 6, 2))
+            ),
+            SimpleNamespace(
+                tariff="E-ELEC", period=BillingPeriod(date(2026, 6, 3), date(2026, 6, 29))
+            ),
+        )
+        changes, _ = config_from_statement(_statement(agreements=agreements))
+        assert changes["tariff"] == "E-ELEC"
+
+    def test_the_gaps_are_the_fields_a_bill_cannot_know(self) -> None:
+        from tariffkit.cli.account_commands import UNDERIVABLE, config_from_statement
+
+        _, gaps = config_from_statement(_statement())
+        assert set(gaps) == set(UNDERIVABLE)
+        # Every one has a plain-English explanation, not just a field name.
+        assert all(UNDERIVABLE[field] for field in gaps)
+
+
+def test_account_init_from_a_statement_dates_the_epoch_from_the_bill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The cycle the bill covers, not the day the account was set up.
+
+    An epoch dated today claims the account only became this on setup day, and
+    nothing earlier can be priced -- which is the whole reason `init` needed to
+    be right the first time.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF synthetic")
+
+    parse = importlib.import_module("tariffkit.providers.pge.statements.parse")
+    reconcile = importlib.import_module("tariffkit.providers.pge.reconcile")
+    monkeypatch.setattr(
+        parse, "read_statement", lambda _p: _statement(cca_name="MCE", pcia_vintage=2011)
+    )
+    monkeypatch.setattr(
+        reconcile, "import_statement", lambda _p: observation(tariff="E-ELEC", digest="b" * 64)
+    )
+
+    assert main(["account", "init", "--from-statement", str(pdf)]) == 0
+    out, err = capsys.readouterr()
+    assert "2026-07-29" in out
+    assert "E-ELEC / cca" in out
+    # And it says what a bill could not tell it.
+    assert "pto_date" in err
+    assert "interconnection_year" in err
+
+
+class TestBareInitReadsRatherThanInvents:
+    """With a login stored, setting up should fetch the bill, not guess.
+
+    Inventing an account from built-in defaults is the one outcome that looks
+    like success and is wrong, and the epoch it writes cannot be corrected
+    without restating the whole config.
+    """
+
+    def test_a_stored_login_is_used_to_read_the_latest_statement(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        monkeypatch.setenv("PGE_USERNAME", "person@example.invalid")
+        monkeypatch.setenv("PGE_PASSWORD", "secret")
+        pdf = tmp_path / "statement.pdf"
+        pdf.write_bytes(b"%PDF synthetic")
+
+        asked: list[str] = []
+        account_commands = importlib.import_module("tariffkit.cli.account_commands")
+
+        @contextmanager
+        def fake(**_kw: object) -> Iterator[Path]:
+            asked.append("portal")
+            yield pdf
+
+        monkeypatch.setattr(account_commands, "downloaded_statement", fake)
+        parse = importlib.import_module("tariffkit.providers.pge.statements.parse")
+        reconcile = importlib.import_module("tariffkit.providers.pge.reconcile")
+        monkeypatch.setattr(parse, "read_statement", lambda _p: _statement())
+        monkeypatch.setattr(
+            reconcile,
+            "import_statement",
+            lambda _p: observation(tariff="E-ELEC", digest="c" * 64),
+        )
+
+        assert main(["account", "init"]) == 0
+        assert asked == ["portal"]
+
+    def test_without_a_login_it_says_what_it_fell_back_to(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        for variable in ("PGE_USERNAME", "PGE_PASSWORD"):
+            monkeypatch.delenv(variable, raising=False)
+
+        account_commands = importlib.import_module("tariffkit.cli.account_commands")
+
+        def refuse(**_kw: object) -> object:
+            raise AssertionError("the portal was consulted with no login stored")
+
+        monkeypatch.setattr(account_commands, "downloaded_statement", refuse)
+
+        assert main(["account", "init"]) == 0
+        assert "built-in defaults" in capsys.readouterr().err
+
+    def test_naming_a_field_means_the_caller_said_what_it_is(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A flag is an answer, so it must not be overridden by a download."""
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        monkeypatch.setenv("PGE_USERNAME", "person@example.invalid")
+        monkeypatch.setenv("PGE_PASSWORD", "secret")
+
+        account_commands = importlib.import_module("tariffkit.cli.account_commands")
+
+        def refuse(**_kw: object) -> object:
+            raise AssertionError("the portal was consulted despite an explicit tariff")
+
+        monkeypatch.setattr(account_commands, "downloaded_statement", refuse)
+
+        assert main(["account", "init", "--tariff", "EV2-A"]) == 0
+
+
+def test_an_unreachable_host_is_an_error_not_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Fixing an entity name and running `bill` again answered with a traceback.
+
+    Home Assistant, InfluxDB and the portal all reach the network through
+    libraries that raise `OSError` subclasses, and none of those is a
+    `TariffKitError`, so nothing caught them.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    store = AccountStore(tmp_path)
+    store.save(
+        AccountProfile(
+            (AccountEpoch(date(2025, 1, 1), Config()),),
+            meter_sources=MeterSources(ha=MeterSource("sensor.in", "sensor.out")),
+        )
+    )
+    monkeypatch.setenv("HA_HOST", "http://ha.invalid")
+    monkeypatch.setenv("HA_TOKEN", "tok")
+
+    def refuse(*_args: object, **_kwargs: object) -> object:
+        raise OSError(8, "nodename nor servname provided, or not known")
+
+    monkeypatch.setattr("tariffkit.sources.homeassistant.read_statistics", refuse)
+
+    assert main(["bill", "--source", "ha", "--start", "2026-08-01", "--end", "2026-08-31"]) == 1
+    err = capsys.readouterr().err
+    assert "could not reach the host" in err
+    assert "Traceback" not in err
+
+
+def test_a_downloaded_statement_does_not_outlive_the_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It is a bill. `sync_profile` removes its cache for that reason.
+
+    The first version of `--from-portal` wrote the PDF into the sync cache and
+    left it there, on success and on failure alike.
+    """
+    from tariffkit.cli.account_commands import downloaded_statement
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    class FakeSession:
+        def __enter__(self) -> FakeSession:
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def login(self) -> None:
+            return None
+
+        def bill_history(self) -> list[dict[str, str]]:
+            return [{"billpdf": "abc", "billdate": "08/04/2026"}]
+
+        def download_bill(self, _identifier: str) -> bytes:
+            return b"%PDF synthetic"
+
+    pge = importlib.import_module("tariffkit.sources.pge")
+    monkeypatch.setattr(pge, "PgeSession", lambda _settings: FakeSession())
+    monkeypatch.setattr(pge.PgeSettings, "load", classmethod(lambda _cls, *a, **k: object()))
+
+    with downloaded_statement() as path:
+        assert path.is_file()
+        assert path.stat().st_mode & 0o777 == 0o600
+        held = path
+    assert not held.exists(), "the downloaded bill outlived the command"
+
+    # And a failure while it is open still removes it.
+    try:
+        with downloaded_statement() as path:
+            held = path
+            raise RuntimeError("boom")
+    except RuntimeError:
+        pass
+    assert not held.exists(), "a failed run left the bill on disk"
+
+
+def test_one_entity_flag_completes_a_half_configured_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A config file naming one counter plus a flag naming the other is complete.
+
+    Requiring both flags meant this ignored the flag, reported Home Assistant
+    unconfigured, and told the user to name counters they had just named.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    (tmp_path / "tariffkit").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "tariffkit" / "config.toml").write_text(
+        '[home_assistant]\nexport_entity = "sensor.from_config_out"\n', encoding="utf-8"
+    )
+    AccountStore(tmp_path).save(AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),)))
+    monkeypatch.setenv("HA_HOST", "http://ha.invalid")
+    monkeypatch.setenv("HA_TOKEN", "tok")
+    for variable in ("TARIFFKIT_HA_IMPORT_ENTITY", "TARIFFKIT_HA_EXPORT_ENTITY"):
+        monkeypatch.delenv(variable, raising=False)
+
+    seen: dict[str, object] = {}
+
+    def capture(settings: object, *_args: object, **_kwargs: object) -> list[IntervalReading]:
+        seen["import"] = settings.import_entity  # type: ignore[attr-defined]
+        seen["export"] = settings.export_entity  # type: ignore[attr-defined]
+        raise OSError(8, "unreachable")
+
+    monkeypatch.setattr("tariffkit.sources.homeassistant.read_statistics", capture)
+
+    assert (
+        main(
+            [
+                "bill",
+                "--ha-import-entity",
+                "sensor.cli_in",
+                "--start",
+                "2026-08-01",
+                "--end",
+                "2026-08-02",
+            ]
+        )
+        == 1
+    )
+    # Home Assistant was chosen, and both halves reached it.
+    assert seen == {"import": "sensor.cli_in", "export": "sensor.from_config_out"}
+    assert "could not reach the host" in capsys.readouterr().err
+
+
+class TestCcaFromStatement:
+    """A bill prints a marketing name; a rate card is keyed by identity."""
+
+    def test_the_marketing_name_resolves_to_the_vendored_card(self) -> None:
+        """`Marin Clean Energy` lowercased gave `marin clean energy`.
+
+        That rate_card can never load -- the vendored card is `mce` -- so
+        statement-based setup produced an account that could not price its own
+        generation.
+        """
+        from tariffkit.cli.account_commands import config_from_statement
+
+        for printed in ("MCE", "Marin Clean Energy", "marin  clean  energy"):
+            changes, _ = config_from_statement(_statement(cca_name=printed))
+            assert changes["cca"] == {
+                "name": "MCE",
+                "rate_card": "mce",
+            }, f"{printed!r} did not resolve"
+
+    def test_an_unvendored_cca_gets_no_rate_card(self) -> None:
+        """Naming a card that does not exist is worse than naming none.
+
+        `CcaConfig` reports an incomplete CCA and the caller can supply
+        `generation_rates`; a bad `rate_card` only fails to load.
+        """
+        from tariffkit.cli.account_commands import config_from_statement
+
+        changes, _ = config_from_statement(_statement(cca_name="Sonoma Clean Power"))
+        assert changes["cca"] == {"name": "SONOMA CLEAN POWER"}
+        assert "rate_card" not in changes["cca"]  # type: ignore[operator]

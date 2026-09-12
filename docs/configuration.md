@@ -3,6 +3,31 @@
 Every entry point (library, CLI, MQTT, web, Home Assistant) prices from the
 same `Config` object. Get this right once and all of them agree.
 
+## Everything below is optional
+
+The only thing TariffKit cannot run without is its rate data, and that ships
+in the wheel. A utility login, a Home Assistant connection, an InfluxDB
+connection and the grid counters are each independent: configure any
+combination, or none, and the tools use what is there and say what the rest
+would buy.
+
+```console
+$ tariffkit sources
+  yes  rates
+          now, forecast, info, serve, mqtt
+  no   home_assistant
+          bill --source ha
+          -> set HA_HOST and HA_TOKEN, or store home_assistant.token with ...
+  ...
+`bill` has no meter source to read; anything above would give it one.
+```
+
+With nothing configured, `tariffkit now`, `forecast` and `info` work as they
+are. `tariffkit bill` is the one command that needs readings, and it reads
+whichever source is set up — preferring Home Assistant, then InfluxDB, then a
+Green Button export. A login is needed only to *download* an export; one
+already in the cache, or passed with `bill --csv`, prices without one.
+
 ## Where settings come from
 
 `Config.load()` resolves in this order, later winning:
@@ -250,15 +275,21 @@ live in the config file; the access token is not and does not.
 ```toml
 [home_assistant]
 host = "https://homeassistant.example:8123"
-import_entity = "sensor.eagle_100_energy_delivered"
-export_entity = "sensor.eagle_100_energy_received"
+import_entity = "sensor.grid_import_total"
+export_entity = "sensor.grid_export_total"
 ```
 
-Both entities default to the Rainforest Eagle-100 pair above, so a `[home_assistant]`
-section is only needed to point elsewhere. Note the defaults are the
-**monotonic-filtered** entities — the similarly named
-`sensor.eagle_100_total_energy_delivered` is the raw device feed and drops to
-zero several times a day when the meter session restarts.
+Both entities are **optional and have no default** — entity names are
+site-specific, and a guess is not a better starting point than no guess. Leave
+them unset and rate pricing (`tariffkit now`, `forecast`, `info`) works
+unchanged; only `tariffkit bill --source ha` needs them, and it says so by name
+if they are missing.
+
+When you do name them, prefer a **monotonic-filtered** entity. Meter readers
+typically expose both a filtered counter and a raw device feed, and the raw one
+drops to zero several times a day when the reader restarts its session with the
+meter — differencing across that invents a huge interval and then a
+compensating hole.
 
 The access token can come from the OS keyring, `~/.config/tariffkit/.env`, or
 the environment.
@@ -310,14 +341,16 @@ names are configuration, while the token comes from keyring or environment.
 [influxdb]
 host = "influxdb.example"
 database = "homedb"
-import_entity = "eagle_100_total_energy_delivered"
-export_entity = "eagle_100_total_energy_received"
+import_entity = "grid_import_total"
+export_entity = "grid_export_total"
 ```
 
 `host` may be a bare name (`https://` is assumed) or a full URL with a scheme
-and port; `/api/v3/query_sql` is appended either way. The entity defaults are
-the **raw** counters, unlike the Home Assistant defaults — they reach back much
-further, and the drop-to-zero artefacts are filtered out on read. A `sensor.`
+and port; `/api/v3/query_sql` is appended either way. As above the two series
+are optional and have no default, and only `tariffkit bill --source influx`
+needs them. Prefer the **raw** counters here, unlike the Home Assistant side —
+they reach back much further, and the drop-to-zero artefacts are filtered out
+on read. A `sensor.`
 prefix is accepted and stripped, since InfluxDB stores the bare name. `table`
 defaults to `sensor_numeric`, which is what Home Assistant's InfluxDB
 integration writes.

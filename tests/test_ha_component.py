@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 from datetime import date, datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -98,6 +99,20 @@ def _entity_id(hass: HomeAssistant, entry: MockConfigEntry, key: str) -> str:
     return entity_id
 
 
+async def _past_meters(hass: HomeAssistant, flow_id: str, result: Any) -> Any:
+    """Step past the optional meters form that setup now ends with.
+
+    Tests about the profile, not about the counters, should not have to carry
+    the extra screen; `test_setup_asks_about_meters_and_takes_no_for_an_answer`
+    in test_ha_energy.py is the one that asserts the step itself.
+    """
+    assert result.get("step_id") == "meters", (
+        "setup should end at the meters step; a caller that no longer reaches it "
+        "has lost the step rather than skipped it"
+    )
+    return await hass.config_entries.flow.async_configure(flow_id, {})
+
+
 @pytest.mark.usefixtures("enable_custom_integrations")
 async def test_setup_exposes_energy_price_entities_and_service_device(
     hass: HomeAssistant, entry: MockConfigEntry, device_registry: DeviceRegistry
@@ -156,11 +171,17 @@ async def test_initial_flow_branches_to_manual_import_and_conditional_delivery(
         flow_id,
         {"base_services_charge_tier": 3},
     )
+    # Setup asks for the meters itself rather than leaving them to be found
+    # under Configure afterwards.
+    assert result["step_id"] == "meters"
+
+    result = await hass.config_entries.flow.async_configure(flow_id, {})
     assert result["type"] == "create_entry"
     assert result["data"][CONF_PROFILE]["name"] == "import-only"
-    # Metered energy is not asked during setup; it lives under Configure only,
-    # so a fresh entry carries no meter options at all.
-    assert result.get("options", {}) == {}
+    # Naming neither entity is a real answer: the entry is created with no
+    # meters, which is what every entry looked like before the step existed.
+    assert result["options"]["grid_import_entity"] == ""
+    assert result["options"]["grid_export_entity"] == ""
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
@@ -191,6 +212,7 @@ async def test_manual_export_setup_allows_blank_pto_date(hass: HomeAssistant) ->
             "base_services_charge_tier": 3,
         },
     )
+    result = await _past_meters(hass, flow_id, result)
     assert result["type"] == "create_entry"
 
 
@@ -254,6 +276,7 @@ async def test_initial_import_and_multiple_entries_are_supported(
             flow_id,
             {"profile_json": json.dumps(profile.to_dict())},
         )
+        result = await _past_meters(hass, flow_id, result)
         assert result["type"] == "create_entry"
         assert result["title"] == name
 
@@ -275,6 +298,10 @@ async def test_duplicate_profile_name_is_rejected(hass: HomeAssistant) -> None:
             flow_id,
             {"profile_json": json.dumps(profile.to_dict())},
         )
+        # The duplicate aborts in the import step, before the meters form, so
+        # only the first pass has one to step past.
+        if expected_type == "create_entry":
+            result = await _past_meters(hass, flow_id, result)
         assert result["type"] == expected_type
 
 
@@ -622,6 +649,60 @@ async def test_legacy_entry_migration_preserves_pricing(hass: HomeAssistant) -> 
     assert entry.version == CONFIG_VERSION
     assert CONF_PROFILE in entry.data
     assert entry.options[CONF_FORECAST_HOURS] == 6
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_legacy_entry_migration_keeps_the_meters(hass: HomeAssistant) -> None:
+    """Migration rebuilt options from a fixed list and dropped the meters.
+
+    A version 1 or 2 entry that named its grid counters came out the other side
+    pricing rates only: the running-total entities stopped existing, silently,
+    because the keys were simply not copied.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Legacy metered account",
+        version=1,
+        data={
+            "tariff": "E-ELEC",
+            "supplier": "bundled",
+            "interconnection_year": 2026,
+            CONF_FORECAST_HOURS: 6,
+        },
+        options={
+            "grid_import_entity": "sensor.grid_in",
+            "grid_export_entity": "sensor.grid_out",
+            "billing_cycle_start_day": 15,
+        },
+    )
+    entry.add_to_hass(hass)
+
+    assert await async_migrate_entry(hass, entry)
+    assert entry.options["grid_import_entity"] == "sensor.grid_in"
+    assert entry.options["grid_export_entity"] == "sensor.grid_out"
+    assert entry.options["billing_cycle_start_day"] == 15
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_migration_does_not_invent_empty_meter_keys(hass: HomeAssistant) -> None:
+    """An entry that never named meters must not come out having refused them.
+
+    `MeterSettings.from_entry` reads a key that is present and empty as a
+    deliberate "no entity", which suppresses the profile's own
+    `meter_sources.ha`. Writing "" while migrating would lose the meters of
+    anyone whose mapping lives on the profile -- the CLI import case.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Legacy account",
+        version=1,
+        data={"tariff": "E-ELEC", "supplier": "bundled", "interconnection_year": 2026},
+    )
+    entry.add_to_hass(hass)
+
+    assert await async_migrate_entry(hass, entry)
+    assert "grid_import_entity" not in entry.options
+    assert "grid_export_entity" not in entry.options
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
@@ -1049,6 +1130,7 @@ async def test_cca_validation_loads_the_rate_card_off_the_event_loop(
         },
     )
 
+    result = await _past_meters(hass, flow_id, result)
     assert result["type"] == "create_entry"
     assert seen, "the CCA step never loaded a rate card"
     assert loop_thread not in seen, "the rate card was loaded on the event loop"
@@ -1129,6 +1211,7 @@ async def test_a_care_setup_completes_without_touching_the_tier(
         },
     )
 
+    result = await _past_meters(hass, flow_id, result)
     assert result["type"] == "create_entry", result.get("errors")
     stored = Config.from_dict(result["data"][CONF_PROFILE]["epochs"][0]["config"])
     assert stored.resolved_bsc_tier == 1

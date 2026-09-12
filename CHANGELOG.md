@@ -5,6 +5,400 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+
+- **`tariffkit account init` reads your latest bill instead of guessing.** With
+  a PG&E login already stored it fetches the newest statement and sets the
+  account up from it; `--from-statement <pdf>` takes a file you have, and
+  `--from-portal` forces the download. With no login and no statement it still
+  falls back to `config.toml` plus built-in defaults, and now says so rather
+  than presenting a guess as an answer. Naming any field yourself keeps the
+  download from happening at all -- a flag is an answer. A bill prints most of what an
+  account is, and they are the fields most likely to be typed wrong: the tariff,
+  whether generation comes from a CCA and which one, the baseline territory, and
+  the PCIA vintage. The epoch is dated from the cycle the bill covers rather
+  than from today, because an epoch dated today claims the account only became
+  this on setup day and nothing earlier can be priced.
+
+  Validated against 47 of this project's 48 real statements, which span three
+  tariffs as the account actually changed them -- a cycle split by a rate change
+  takes the schedule it *ended* on, since that is what the account now is.
+
+  The CCA identity goes through the same normaliser the statement importer uses.
+  A bill prints the marketing name -- `Marin Clean Energy` -- and lowercasing
+  that gave a `rate_card` of `marin clean energy`, which can never load: the
+  vendored card is `mce`. A CCA with no vendored card now gets no `rate_card` at
+  all, because naming one that does not exist is worse than naming none --
+  `CcaConfig` reports an incomplete CCA and the caller can supply
+  `generation_rates`, where a bad card only fails to load.
+
+  One statement, not a history: `account sync` is the tool for the history and
+  better at it. And the command names what a bill cannot say -- Permission To
+  Operate, the interconnection application year, ACC Plus segment, CARE or FERA
+  enrolment, Base Services Charge tier -- rather than letting a default look
+  like an answer.
+- **`tariffkit sources`**, which reports what is configured -- including the
+  account itself, which most commands need and which listing only the meters
+  left off the page -- what each one would enable, and what to do about the ones
+  that are not:
+
+  ```
+    yes  rates
+            now, forecast, info, serve, mqtt
+    no   home_assistant
+            bill --source ha
+            -> set HA_HOST and HA_TOKEN, or store home_assistant.token with ...
+    no   pge_portal
+            bill --source green-button, statement download, billing periods
+            -> store pge.username and pge.password with ...
+  ```
+
+  Every source is optional and the useful combinations are not a line: an
+  account with no utility login still prices a cycle from Home Assistant, one
+  with no meter integration still prices a downloaded export, and one with
+  neither still answers what a kilowatt-hour costs. Only rate pricing is
+  unconditional, because the rate data ships in the wheel.
+
+- **The Home Assistant setup form points at the bill-reading CLI path.** The
+  integration does not contact PG&E and stores no utility login -- that is
+  deliberate, and it left an HA-only user typing ten fields that a bill prints.
+  The import step and the opening menu now say that `tariffkit account init`
+  reads most of an account off your latest statement and `account export`
+  produces the JSON to paste, with the exact commands in
+  `docs/home-assistant.md`.
+- **The billing cycle start day is optional on the meters step**, and says so:
+  it was the one required field on a step titled "Optional", and its help said
+  `0 uses the calendar month` without mentioning that statement evidence
+  supersedes it entirely.
+- **A repair that names the grid counters for an existing entry.** Naming them
+  became part of setting up, but setup runs once: an entry created before that
+  step existed never sees it, and the form lives under Configure where nobody
+  looks unless they already know it is there -- so the improvement reached new
+  installs only.
+
+  Home Assistant now raises a fixable issue on any entry with no counters
+  named, and the repair *is* the form: fill it in from the Repairs panel and the
+  running-total entities appear, with the same validation the options flow uses.
+  Naming them any other way clears the issue without anything to dismiss, and
+  clearing them raises it again. Leaving both blank is still a valid answer, so
+  the issue is a warning rather than an error.
+
+  Verified against an entry created by the released 0.8.1 integration: 19
+  entities and an open issue before, 30 entities and no issue after, with the
+  options written where the coordinator reads them.
+- **Setup asks for the grid counters**, instead of creating the entry and
+  leaving the meters to be found later under Configure. A site whose counters
+  are already in Home Assistant now gets its running cost, credit and net
+  entities from the first screen rather than after a second trip through the
+  options menu -- 30 entities against 19 on a fresh entry.
+
+  The step is optional and skipping it is a real answer, which is what the
+  earlier decision to leave meters out of setup was protecting: the counters
+  are often integrated after the tariff, and a question a new user cannot
+  answer yet is worse than no question. Leaving both blank creates exactly the
+  entry it used to. The same validation applies as under Configure -- one
+  entity named for both directions, or a `measurement` sensor with no
+  cumulative change, is refused with the reason. An imported profile that
+  already carries `meter_sources.ha` offers those as the suggested values.
+
+### Changed
+
+#### Upgrading the CLI from 0.8.1: one command, and only if you relied on a default
+
+`bill --source ha` and `--source influx` used to fall back to a hardcoded pair
+of entity names when nothing else named them. Those defaults are gone, so if
+you **never** configured your counters, record them once:
+
+```bash
+tariffkit account source set ha \
+  --grid-import-entity sensor.eagle_100_energy_delivered \
+  --grid-export-entity sensor.eagle_100_energy_received --apply
+```
+
+```bash
+tariffkit account source set influx \
+  --grid-import-entity eagle_100_total_energy_delivered \
+  --grid-export-entity eagle_100_total_energy_received --apply
+```
+
+Those are exactly the names 0.8.1 read. Substitute your own if they are
+different -- they were one site's device and almost certainly never matched
+yours, in which case `bill --source ha` was already failing to find them.
+
+**Nothing to do** if you set `import_entity`/`export_entity` under
+`[home_assistant]` or `[influxdb]` in `config.toml`, or ever ran
+`tariffkit account source set`, or pass `--ha-import-entity` on the command
+line, or only use `--csv` / `--source green-button`. Rate pricing -- `now`,
+`forecast`, `info`, `serve`, `mqtt` -- never read a meter and is unaffected.
+
+The error says all of this if you hit it, including the retired names, so this
+note is a convenience rather than something you have to have read first. The
+**Home Assistant integration needs nothing**: it never had defaults, and an
+existing config entry keeps the entities it was given.
+- **Choosing a source probes only as far as it has to.** `bill` asked every
+  source before picking one, and each question loads a settings object that
+  consults the keyring -- so a machine that only ever reads Home Assistant was
+  touching the stored utility password on every run, which on a macOS Keychain
+  is an access record and possibly a prompt. Choosing now stops at the first
+  source that answers: three keyring lookups became none on an account
+  configured for Home Assistant. `tariffkit sources` still asks everything,
+  which is its whole purpose, and an unconfigured run still reports every
+  source it tried.
+- **`tariffkit sources` collapses the home directory** in the one path it
+  prints. These lines get pasted into bug reports, and an absolute path under a
+  home directory carries the account name with it.
+
+- **A statistic does not have to belong to an entity.** The reading path never
+  assumed it did -- the recorder query takes statistic ids -- but both ways of
+  *configuring* one rejected the `source:object` form that an integration
+  importing history writes, so a feed that priced perfectly could not be
+  entered. Both are widened:
+
+  - the meters form is a `StatisticSelector` rather than an `EntitySelector`,
+    which validates an entity id and refused the colon outright. The cost is
+    that it lists every statistic instead of only energy sensors, since that
+    selector takes no filter; `_meter_problem` makes up for it afterwards and
+    was already stricter than a picker can be, because no selector can filter
+    on `state_class`.
+  - the account profile's meter mapping accepts a colon, having allowed only
+    letters, digits, underscores and dots.
+
+  An id that is neither shape is still refused, so widening did not turn the
+  check off. No particular feed is supported and none is planned; what is
+  pinned by test is that none is shut out.
+
+- **The library no longer decides where consumption data comes from.** Rate
+  data is vendored because a tariff is the same everywhere; a meter is not, and
+  which one to read is the client's answer. The engine boundary was already
+  right -- `tariffkit.billing` has never imported `tariffkit.sources` -- but
+  three things around it were not:
+
+  - `tariffkit.sources.availability`, added earlier in this cycle, was library
+    code whose remedies named `tariffkit` commands. It is now
+    `tariffkit.cli.availability`, beside the front end whose vocabulary it
+    speaks, and reader construction moved with it to `tariffkit.cli.meters`.
+    The Home Assistant integration answers the same question in its own terms,
+    with an entity picker.
+  - **`tariffkit.metering`** is new: `interval_energy`, `carry`, `monotonic`
+    and `MAX_INTERVAL_KW`, the arithmetic that turns a cumulative counter into
+    interval energy and recognises the drop-to-zero artefact. These were inside
+    the Home Assistant client, so the Home Assistant *integration* imported a
+    websocket client to reuse three functions that make no network calls, and
+    the InfluxDB client kept its own half of the same idea. No dependency, no
+    extra, no client.
+  - `load_dotenv` moved from the Home Assistant client to `tariffkit.secrets`,
+    which is where "what is configured" already lives. InfluxDB, PG&E and the
+    MQTT publisher were each importing Home Assistant to parse a text file. It
+    is still importable from its old home.
+
+  `PgeSettings`, `HaSettings` and `InfluxSettings` stay in `tariffkit.sources`
+  behind their existing extras -- they are useful, and the audit harness and
+  CLI both use them -- but nothing in the library builds or chooses one, and
+  importing `tariffkit` pulls in no client and no extra.
+
+- **`bill` no longer knows what a source is.** It carried a branch per source
+  -- Home Assistant, InfluxDB, a Green Button export, a CSV -- each loading its
+  own settings, doing its own window arithmetic, and formatting its own note,
+  so adding a source meant editing the code that prices bills, and the code
+  that prices bills had opinions about credentials.
+
+  `tariffkit.sources.meters` defines a `MeterReader`: given a window, it
+  answers `MeterData` -- readings, one line naming itself, and optionally a
+  narrower window it knows about. The command opens a reader, resolves a
+  window, reads, and prices. Its body went from 145 lines to 62 and mentions no
+  source at all. A reader that ships outside the library satisfies the same
+  protocol.
+
+  The library's billing was already source-agnostic -- `BillEngine` and
+  `compute_segments` have only ever taken `IntervalReading`s -- so nothing
+  about a computed bill changes.
+
+- **A utility login is optional too, and `bill` picks a source that exists.**
+  `--source` defaulted to the constant `ha`, so an account pricing from
+  InfluxDB, or from a Green Button export it had already downloaded, was told
+  that `HA_TOKEN` was not set -- naming the one source it had not configured
+  rather than any of the ones it had. The default is now the first *available*
+  source, still preferring Home Assistant when it is set up, because the
+  account's own meter matched a statement to 0.00 kWh on a cycle where the
+  utility's export was missing 30 days. With nothing configured at all, the
+  error lists every source that would work and what to do for each, and says
+  that rates need none of it.
+
+  `cached_green_button` now takes `None` for its settings and serves whatever
+  the cache already holds. A login is what *downloads* an export; it is not
+  what reads one, and requiring it to read one meant an account that had
+  fetched a year of intervals could not price any of them offline. When no
+  cached file covers the window and there is no login, the error says both --
+  and points at `bill --csv` for an export you already have.
+
+  Half a window (`--start` without `--end`) is now rejected before any of this,
+  so a mistyped invocation is answered with what is wrong about it rather than
+  with a survey of the sources it would have needed.
+
+- **The grid counters are optional everywhere, with no default.** The library
+  used to default `import_entity`/`export_entity` to one site's hardware, so an
+  install that had named no meter was indistinguishable from one configured as
+  somebody else's sensors -- and the request went out to Home Assistant or
+  InfluxDB either way. `HaSettings` and `InfluxSettings` now carry `None` until
+  something names them.
+
+  **Breaking** for anyone who relied on the fallback: name the entities with
+  `tariffkit account source set {ha,influx} --grid-import-entity ...
+  --grid-export-entity ...`, or under `[home_assistant]` / `[influxdb]` in the
+  config file. `DEFAULT_IMPORT_ENTITY` and `DEFAULT_EXPORT_ENTITY` are gone from
+  `tariffkit.sources`.
+
+  Nothing that prices a rate is affected: `tariffkit now`, `forecast` and
+  `info` never touched a meter and still need no configuration at all. Only
+  `bill --source ha` and `--source influx` require the entities, and they now
+  fail with a message naming both the missing key and the command that sets it,
+  instead of quietly reading a sensor that is not yours. The Home Assistant
+  integration already worked this way -- unset means no running totals, and the
+  rate entities appear regardless.
+
+- **The documentation no longer names one brand of meter reader.** Docstrings,
+  guides, changelog entries and the `audit reconcile --readings` help described
+  the hardware this was developed against -- a Rainforest Eagle-100 -- as
+  though every reader were one. The behaviour being described is a class of
+  device, not that model: readers commonly publish a monotonic counter beside a
+  raw feed that drops to zero whenever the reader re-establishes its session
+  with the meter, which is the artefact the filtering exists for. The text now
+  says so.
+
+  The default entity ids went with them -- see the entry above: there are no
+  defaults now, and the configuration guide says outright that the entities
+  are yours to name.
+
+### Fixed
+
+- **`tariffkit account init` can express your account.** It took no field flags,
+  so the first epoch was always built from the built-in defaults -- E-ELEC,
+  bundled, a PTO date belonging to one site -- and dated today. That is not a
+  cosmetic default: an epoch dated *before* the first one cannot be added
+  without restating the whole config, so anyone who ran `init` before knowing
+  to pass something was left correcting history through `--config-json`. `init`
+  now accepts the same fields `update` does, from one shared definition so the
+  two cannot drift, and every one of them has help text.
+- **Two documented commands put a global flag after the subcommand.**
+  `docs/mqtt.md` showed `tariffkit mqtt --broker ... -v`, in a code block and
+  again inside a systemd unit; `-v` is a top-level flag and argparse rejects it
+  there. Both are now `tariffkit -v mqtt ...`.
+- **`docs/billing.md` promised a source default** that this release removes, and
+  `docs/packaging_strategy.md` still described "named account profiles" and put
+  account persistence in the library rather than the CLI. The repair added for
+  an entry with no counters was documented nowhere.
+- **The README showed two commands that do not exist.** `tariffkit account init
+  home` and `tariffkit account source home show ha` both carried a profile name
+  positionally, which has not been accepted since named profiles were removed in
+  0.8.0 -- the released 0.8.1 README has them, and both fail with an argparse
+  error. It also listed five of the eight extras, omitting `ha`, `influx` and
+  `pge`: exactly the three the meter and statement paths need, so following the
+  README left `bill --source ha` uninstallable. `test_packaging.py` now parses
+  **every** `tariffkit` invocation in the README, `audit/README.md` and every
+  page under `docs/` against the real parser -- 86 of them, with `\`
+  continuations joined and systemd/cron prefixes included -- and checks the
+  extras against `pyproject.toml`, so none of this can drift again.
+- **`account source show` no longer promises a default.** It printed "not
+  configured; the source default will be used", describing a fallback this
+  release removes.
+- **`audit reconcile --readings statistics` no longer needs InfluxDB.** It
+  loaded the InfluxDB settings and read the series unconditionally before
+  choosing a branch, so an account configured only for Home Assistant was told
+  its InfluxDB series were unset while asking for the path that does not use
+  them. InfluxDB is a *comparison* on that path, and a comparison that cannot
+  happen must not fail the run; asking for `--readings influx` without it still
+  fails, with the same message as before.
+
+  The check has to be `require_entities`, not just `load`: `load` validates the
+  host, database and token and *not* the series names, so credentials present
+  with series absent returned a settings object and the read raised anyway.
+  Now one named `optional_influx`, with tests that fail if either half goes.
+
+  A failed *read* is optional on that path too, not only missing
+  configuration: a refused connection or a malformed response from the
+  comparison source aborted a run that never needed it, and as a traceback
+  rather than a message, since the harness does not catch the HTTP client's own
+  errors. `optional_counters` skips it and the summary prints it as
+  `not checked`, because a comparison that was not made is not one that agreed.
+  `--readings influx` still fails hard.
+- **One entity flag is enough to choose a source.** `--ha-import-entity` alone
+  was ignored: the settings loader merges an override with the other entity from
+  the profile or the config file, so a config file naming the export counter and
+  a flag naming the import counter is a complete pair -- but requiring *both*
+  flags meant the run reported Home Assistant unconfigured, silently picked
+  another source, and told the user to name counters they had just named. Either
+  flag now selects that source, and a genuinely incomplete pair is reported by
+  name (`Home Assistant export_entity not set`) rather than by switching.
+- **A statement downloaded by `account init` does not outlive the command.**
+  `--from-portal` wrote the PDF into the sync cache and left it there, on
+  success and on failure alike -- which is why `sync_profile` removes its own
+  cache in a `finally`. It is a context manager now, so the file is gone
+  whatever happens; a file you named yourself with `--from-statement` is never
+  touched.
+- **A stale repair aborts instead of raising.** Home Assistant builds the fix
+  flow from the Repairs panel, so an issue whose config entry had since been
+  removed put a traceback in front of somebody who had only clicked a row. It
+  now aborts with `entry_gone` -- the translated string that was already there
+  and unused.
+- **`tariffkit sources` agrees with what `bill` can use.** The Green Button
+  cache check globbed `*.csv` and so counted names the export cache
+  deliberately skips -- a symlink, or anything that is not a `start_end.csv`
+  range -- reporting the source available for a file `bill` would then refuse.
+  It uses the same parser `bill` selects with.
+- **An unreachable host is an error, not a traceback.** Home Assistant,
+  InfluxDB and the portal all reach the network through libraries that raise
+  `OSError` subclasses -- `socket.gaierror` for a typo'd host,
+  `ConnectionRefusedError` for a wrong port -- and none of those is a
+  `TariffKitError`, so nothing caught them. Fixing an entity name and running
+  `bill` again answered with a Python stack trace.
+- **Reading a statement no longer floods the terminal.** pypdf logs a warning
+  per over-long whitespace run and a PG&E bill trips it dozens of times, so
+  forty lines of library noise buried whatever the command was saying. Nothing
+  here acts on those warnings.
+- **`--supplier cca` names the flag it needs.** It failed with the library's
+  `supplier='cca' requires a CcaConfig`, which is true and does not say that
+  `--cca-json` is what supplies one. The error now shows the flag and an
+  example.
+- **Migrating a version 1 or 2 config entry keeps its meters.** The migration
+  rebuilt `options` from a fixed list of two keys, so an entry that named its
+  grid counters came out the other side pricing rates only -- the running-total
+  entities silently stopped existing. The meter keys travel now, and only when
+  they were there: writing `""` for an entry that never had them would lose the
+  meters a second way, because a key present and empty is how the integration
+  records a deliberate "no entity" and that suppresses an imported profile's own
+  `meter_sources.ha`. Verified by migrating a real version 1 entry in a
+  container: 30 entities including all twelve running totals.
+- **A statistic with no running sum is refused.** The statistic equivalent of
+  the `state_class` check the entity path has always had: an hourly `change`
+  exists only for a summed statistic, so a mean-only one has nothing to
+  difference and would price every hour as zero.
+- **`bill --ha-import-entity ... --ha-export-entity ...` reads Home Assistant
+  again.** Choosing the default source consulted only the config file and the
+  account profile, so naming the counters as flags left Home Assistant looking
+  unconfigured -- and the run either priced from a Green Button download
+  instead (saying so, but only after a network round trip) or refused outright
+  while telling the user to name the very counters they had just named. Naming
+  a pair on the command line now selects that source, the way a CSV path
+  already did. Found by adversarial review of this branch; no test covered it,
+  because every existing case passed `--source` explicitly.
+- **A cached Green Button export prices an open cycle without a login.** The
+  guard that requires credentials sat in front of the lookup that pulls the
+  window back to the last published read -- and the utility publishes a day
+  behind, so a cache holding every published day never covered "through today"
+  and was refused. This defeated the offline case the cache exists for; only
+  explicit `--start/--end` windows ending on an already-cached day worked.
+- **A non-energy statistic is refused instead of billed as kWh.** The meters
+  form lists every statistic, and the recorder converts only within a unit
+  class -- so a gas series in cubic metres arrived unconverted and 26 m3 priced
+  as a $26.59 electricity bill. The form now asks the recorder for the
+  statistic's unit class and refuses anything that is not energy. Energy in
+  other units (Wh, MJ) was always converted correctly and still is.
+- **`audit reconcile` reads the series named on the account profile.** It
+  loaded `InfluxSettings` without the profile's mapping, which the library's
+  since-removed default entity names had been masking; the default
+  `--readings influx` path then failed for any account whose series live only
+  on the profile.
+
 ## [0.8.1] - 2026-09-11
 
 ### Changed
@@ -32,7 +426,7 @@ All notable changes to this project are documented here. This project follows
 ### Added
 - **`audit reconcile --readings {influx,statistics}`**, so the two derivations
   of one meter can be compared rather than assumed equal. Both are the same
-  Eagle-100 through different Home Assistant pipelines -- the recorder
+  smart meter through different Home Assistant pipelines -- the recorder
   aggregating an entity's states into hourly buckets, against its InfluxDB
   integration writing those states as rows that get differenced -- so agreement
   between them corroborates nothing about the meter; `--green-button` is the
@@ -45,8 +439,8 @@ All notable changes to this project are documented here. This project follows
   reproduce the import split to within 0.03 kWh.
 - **Meter comparisons name the entity they read.** A delta line saying
   "statement vs influx" left the one thing a reader needs unstated -- both
-  pipelines carry the unfiltered Eagle counters and the filtered pair, so it now
-  reads "statement vs influx:eagle_100_total_energy_received".
+  pipelines carry the unfiltered meter counters and the filtered pair, so it
+  now names the entity, as in "statement vs influx:grid_export_total".
 - **The ceiling that caps `credit_applied`, published** (#58). Export credits
   are scoped, so what a cycle can spend is capped bucket by bucket rather than
   by the charge total -- a cycle holding $34.78 of charges and $19.94 of credit
@@ -695,8 +1089,8 @@ warning string to do it.
 - **A counter reset the recorder only believed in no longer costs the hour.**
   A `total_increasing` sensor reading 0.0 is taken for a counter reset, so the
   recorder reports the whole counter as the next hour's `change` -- 1455 kWh on
-  a meter that had moved 0.42. The Rainforest Eagle-100 does this several times
-  a day while it re-establishes its meter session. Refusing that figure was
+  a meter that had moved 0.42. A smart-meter reader does this several times a
+  day while it re-establishes its session with the meter. Refusing that figure was
   right and dropping the hour with it was not: the counter itself is in `state`,
   and differencing it against the previous hour brings the energy back. On the
   account this came from, a cycle credited 54.206 kWh against the filtered

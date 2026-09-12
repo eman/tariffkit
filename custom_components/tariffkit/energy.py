@@ -6,8 +6,8 @@ between two points on a counter, not a state anyone can read directly.
 
 Long-term statistics already do that arithmetic, and they do it better than a
 listener could. The recorder's ``change`` for an hour is the counter's advance
-across it, absorbing counter restarts, integration reloads, and the Rainforest
-Eagle's meter-session drops on its own -- the same artefacts
+across it, absorbing counter restarts, integration reloads, and the meter
+reader's own session drops -- the same artefacts
 :mod:`tariffkit.sources.homeassistant` exists to work around when it reads a
 whole billing cycle back. Statistics, though, only compile at the top of the
 hour, so the current hour is read live off the entity state instead: the last
@@ -46,9 +46,9 @@ from tariffkit.billing import (
 )
 from tariffkit.billing.engine import compute_segments
 from tariffkit.errors import TariffKitError
-from tariffkit.sources.homeassistant import MAX_INTERVAL_KW as _MAX_INTERVAL_KW
-from tariffkit.sources.homeassistant import carry as _carry
-from tariffkit.sources.homeassistant import interval_energy
+from tariffkit.metering import MAX_INTERVAL_KW as _MAX_INTERVAL_KW
+from tariffkit.metering import carry as _carry
+from tariffkit.metering import interval_energy
 from tariffkit.timeutil import PACIFIC, hour_floor, now_pacific, to_pacific
 
 from .const import (

@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Set up TariffKit",
-        "description": "Choose a manual account setup or import a sanitized TariffKit profile.",
+        "description": "Configure manually, or import a profile from the TariffKit CLI. The CLI can build one from your latest PG&E bill, which is less typing than the manual form.",
         "menu_options": {
           "manual": "Configure manually",
           "import": "Import TariffKit profile"
@@ -45,15 +45,30 @@
       },
       "import": {
         "title": "Import TariffKit profile",
-        "description": "Paste the sanitized JSON produced by TariffKit account export.",
+        "description": "Paste the sanitized JSON from `tariffkit account export`.\n\nThe quickest way to produce one is to let the CLI read your latest PG&E bill: store your portal login with `tariffkit credentials set pge.username` and `pge.password`, run `tariffkit account init`, then `tariffkit account export`. That fills in the tariff, whether generation comes from a CCA and which one, the baseline territory and the PCIA vintage, so the only things left to type are your Permission-To-Operate date and interconnection year.\n\nThis integration never contacts PG&E itself, and no login is stored here. An imported profile also brings its meter entities with it.",
         "data": {
           "profile_json": "Profile JSON"
+        }
+      },
+      "meters": {
+        "title": "Metered energy",
+        "description": "Optional, and you can change this later under Configure. Name the cumulative kWh counters for grid import and grid export and TariffKit adds running cost, credit, and net entities for today and for the billing cycle. Leave them blank to price rates only.\n\nThese counters do not have to reset daily; the recorder's own statistics supply each hour's change.\n\n{detail}",
+        "data": {
+          "grid_import_entity": "Grid import (energy delivered)",
+          "grid_export_entity": "Grid export (energy received)",
+          "billing_cycle_start_day": "Billing cycle start day"
+        },
+        "data_description": {
+          "grid_import_entity": "Cumulative kWh the grid has delivered to the site. Leave blank to skip cost tracking.",
+          "grid_export_entity": "Cumulative kWh the site has sent to the grid. Leave blank if the site does not export.",
+          "billing_cycle_start_day": "Fallback only, and you can leave it alone. The day of the month your meter is read, from a recent statement; 0 uses the calendar month, which will not line up with a bill. Ignored once the account carries statement evidence, which `tariffkit account sync` or Configure -> Account history supplies."
         }
       }
     },
     "error": {
       "invalid_config": "Invalid configuration: {detail}",
-      "invalid_profile": "Invalid account profile: {detail}"
+      "invalid_profile": "Invalid account profile: {detail}",
+      "invalid_meters": "That meter configuration cannot work: {detail}"
     },
     "abort": {
       "already_configured": "This service agreement is already configured."
@@ -386,6 +401,35 @@
         "start": {
           "name": "Start date",
           "description": "First day to price, as an ISO date. Defaults to the billing cycle containing the Permission To Operate date, where the export credit bank opens at zero. Starting later opens it at zero anyway, which overstates every amount due in the window."
+        }
+      }
+    }
+  },
+  "issues": {
+    "no_meters": {
+      "title": "TariffKit has no grid counters for {account}",
+      "fix_flow": {
+        "step": {
+          "meters": {
+            "title": "Metered energy",
+            "description": "Name the cumulative kWh counters for grid import and grid export and TariffKit adds running cost, credit, and net entities for today and for the billing cycle. Right now it prices rates only.\n\nThese counters do not have to reset daily; the recorder's own statistics supply each hour's change. Leave both blank and nothing changes.\n\n{detail}",
+            "data": {
+              "grid_import_entity": "Grid import (energy delivered)",
+              "grid_export_entity": "Grid export (energy received)",
+              "billing_cycle_start_day": "Billing cycle start day"
+            },
+            "data_description": {
+              "grid_import_entity": "Cumulative kWh the grid has delivered to the site.",
+              "grid_export_entity": "Cumulative kWh the site has sent to the grid. Leave blank if the site does not export.",
+              "billing_cycle_start_day": "Fallback only. The day of the month your meter is read; 0 uses the calendar month. Ignored once the account carries statement evidence."
+            }
+          }
+        },
+        "error": {
+          "invalid_meters": "That meter configuration cannot work: {detail}"
+        },
+        "abort": {
+          "entry_gone": "That TariffKit account no longer exists."
         }
       }
     }

@@ -26,6 +26,7 @@ nothing derived from them is stored.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Sequence
 from dataclasses import replace
@@ -290,6 +291,13 @@ def read_statement(path: str | Path) -> Statement:
         raise StatementError(
             "reading a statement PDF needs pypdf: install 'tariffkit[statements]'"
         ) from exc
+
+    # pypdf logs one WARNING per over-long whitespace run, and a PG&E statement
+    # trips it dozens of times per document -- so reading a single bill printed
+    # forty lines of library noise over whatever the command was actually
+    # saying. Nothing here acts on those warnings, and a caller who wants them
+    # can raise the level back.
+    logging.getLogger("pypdf").setLevel(logging.ERROR)
 
     try:
         reader = PdfReader(source)

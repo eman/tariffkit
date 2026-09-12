@@ -22,6 +22,7 @@ import json
 from collections.abc import Sequence
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 
 from tariffkit import __version__ as library_version
 from tariffkit.errors import TariffKitError
@@ -74,11 +75,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("influx", "statistics"),
         default="influx",
         help="which derivation of the meter prices the bill: InfluxDB counter samples "
-        "from eagle_100_total_energy_delivered/_received (default), or Home Assistant "
-        "hourly statistics from sensor.eagle_100_energy_delivered/_received. Both are "
-        "the same physical meter through different pipelines, so agreement between "
-        "them says nothing about whether the meter is right -- for that, use "
-        "--green-button, which fetches an independent record from the utility",
+        "(default), or Home Assistant hourly statistics -- both read the grid import "
+        "and export entities named in your configuration. Both are the same physical "
+        "meter through different pipelines, so agreement between them says nothing "
+        "about whether the meter is right -- for that, use --green-button, which "
+        "fetches an independent record from the utility",
     )
 
     run = sub.add_parser("run", help="download every statement the portal lists and reconcile it")
@@ -100,11 +101,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("influx", "statistics"),
         default="influx",
         help="which derivation of the meter prices the bill: InfluxDB counter samples "
-        "from eagle_100_total_energy_delivered/_received (default), or Home Assistant "
-        "hourly statistics from sensor.eagle_100_energy_delivered/_received. Both are "
-        "the same physical meter through different pipelines, so agreement between "
-        "them says nothing about whether the meter is right -- for that, use "
-        "--green-button, which fetches an independent record from the utility",
+        "(default), or Home Assistant hourly statistics -- both read the grid import "
+        "and export entities named in your configuration. Both are the same physical "
+        "meter through different pipelines, so agreement between them says nothing "
+        "about whether the meter is right -- for that, use --green-button, which "
+        "fetches an independent record from the utility",
     )
     run.add_argument(
         "--keep-statements",
@@ -265,6 +266,68 @@ def _doctor(*, since: date | None = None, offline: bool = False) -> int:
     return EXIT_OK
 
 
+def optional_counters(
+    settings: Any,
+    start: Any,
+    end: Any,
+    *,
+    readings_from: str,
+    label: str,
+    skipped: list[str],
+) -> Any:
+    """InfluxDB readings for the comparison, or ``None`` when it could not be read.
+
+    `optional_influx` makes *missing configuration* optional; this makes a failed
+    *read* optional too. On the statistics path InfluxDB is not the source being
+    audited, so a refused connection or a malformed response there must not abort
+    a run that never needed it -- and `main` does not catch the HTTP client's own
+    errors, so it surfaced as a traceback rather than a message.
+
+    The skip is named rather than swallowed: the summary prints it as
+    ``not checked``, because a comparison that was not made is not a comparison
+    that agreed.
+    """
+    from tariffkit.sources.influx import read_counters
+
+    try:
+        return read_counters(settings, start, end)
+    except Exception as err:
+        # Deliberately broad: this reaches the network through httpx, which the
+        # audit harness does not declare and must not import in order to name.
+        if readings_from == "influx":
+            raise
+        skipped.append(f"influx comparison for {label}: {err}")
+        return None
+
+
+def optional_influx(profile: Any, readings_from: str) -> Any:
+    """InfluxDB settings for the comparison, or ``None`` when it cannot happen.
+
+    InfluxDB is read as a *comparison* on the statistics path, and a comparison
+    that cannot happen must not fail the run: an account configured only for
+    Home Assistant was told its InfluxDB series were unset while asking for the
+    path that does not use them.
+
+    `require_entities` as well as `load`, because `load` validates host,
+    database and token and not the series names -- so credentials present and
+    series absent returned an object and the read raised anyway, which is the
+    shape the first version of this missed.
+
+    Asking for ``--readings influx`` without it still raises, with that source's
+    own message.
+    """
+    from tariffkit.sources.influx import InfluxSettings
+
+    try:
+        settings = InfluxSettings.load(profile_source=profile.meter_sources.influx)
+        settings.require_entities()
+    except TariffKitError:
+        if readings_from == "influx":
+            raise
+        return None
+    return settings
+
+
 def _reconcile(
     paths: Sequence[Path],
     *,
@@ -278,7 +341,6 @@ def _reconcile(
     from tariffkit.cli import AccountStore
     from tariffkit.engine import RateEngine
     from tariffkit.providers.pge.statements import read_statement
-    from tariffkit.sources.influx import InfluxSettings, read_counters
 
     from .errors import AccountError
     from .reconcile import reconcile, render_all, render_summary
@@ -289,7 +351,16 @@ def _reconcile(
         profile = AccountStore().load()
     except TariffKitError as exc:
         raise AccountError(f"could not load the account: {exc}") from exc
-    settings = InfluxSettings.load()
+    # The profile's own mapping, the way the statistics branch below reads its
+    # own. Masked while the library defaulted the series names; with those gone,
+    # an account whose series live only on the profile could not run the default
+    # `--readings influx` path at all.
+    #
+    # Optional unless it is the path being asked for. InfluxDB is read as a
+    # *comparison* on the statistics path, and a comparison that cannot happen
+    # must not fail the run: an account with only Home Assistant configured was
+    # told its InfluxDB series were unset while asking for statistics.
+    settings = optional_influx(profile, readings_from)
 
     results = []
     skipped: list[str] = []
@@ -340,16 +411,28 @@ def _reconcile(
         start, end = window(statement.period, read_hour=read_hour)
         # Keyed by the entity each reading came from, not by the store it came
         # out of. "influx" and "ha" name pipelines, and both pipelines carry
-        # several entities -- the unfiltered Eagle counters and the filtered
+        # several entities -- the unfiltered meter counters and the filtered
         # pair -- so a delta line reading "statement vs influx" left the one
         # thing a reader needs unstated: which sensor disagreed.
-        influx_key = f"influx:{settings.export_entity}"
-        sources = {influx_key: read_counters(settings, start, end)}
-        primary = influx_key
+        sources = {}
+        primary = ""
+        if settings is not None:
+            influx_key = f"influx:{settings.export_entity}"
+            readings_or_none = optional_counters(
+                settings,
+                start,
+                end,
+                readings_from=readings_from,
+                label=statement.source or "statement",
+                skipped=skipped,
+            )
+            if readings_or_none is not None:
+                sources[influx_key] = readings_or_none
+                primary = influx_key
 
         # Home Assistant's hourly statistics, when asked for.
         #
-        # Not a second meter. It is the same Eagle-100 through a second
+        # Not a second meter. It is the same physical meter through a second
         # pipeline: Home Assistant's recorder aggregates the entity's states
         # into hourly buckets, while its InfluxDB integration writes the same
         # states as rows that `read_counters` differences. Agreement between
@@ -382,6 +465,11 @@ def _reconcile(
             ha = HaSettings.load(profile_source=profile.meter_sources.home_assistant)
             primary = f"statistics:{ha.export_entity}"
             sources[primary] = read_statistics(ha, start, end)
+        if not primary:
+            raise AccountError(
+                f"no readings source is configured for --readings {readings_from}; "
+                "name the grid counters with `tariffkit account source set`"
+            )
         readings = sources[primary]
 
         if green_button:

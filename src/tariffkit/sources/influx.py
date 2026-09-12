@@ -1,7 +1,7 @@
 """Interval readings from raw meter counters in InfluxDB 3.
 
 Home Assistant writes each numeric sensor sample to InfluxDB, so the same
-Rainforest Eagle-100 counters land here as a plain time series of readings
+smart-meter counters land here as a plain time series of readings
 rather than the pre-aggregated buckets :mod:`tariffkit.sources.homeassistant`
 returns. Two consequences, and they point in opposite directions.
 
@@ -38,13 +38,21 @@ from ..account.model import MeterSource
 from ..billing.models import IntervalReading
 from ..config import default_config_path, default_dotenv_path
 from ..errors import ConfigError, DataError
-from ..secrets import get_secret
+from ..metering import monotonic
+from ..secrets import get_secret, load_dotenv
 from ..timeutil import to_pacific
-from .homeassistant import load_dotenv
 
-#: The raw Eagle-100 counters. Unfiltered on purpose -- see the module docstring.
-DEFAULT_IMPORT_ENTITY = "eagle_100_total_energy_delivered"
-DEFAULT_EXPORT_ENTITY = "eagle_100_total_energy_received"
+#: What 0.8.1 and earlier read when nothing named the series. Kept only to make
+#: that upgrade a copy-paste; nothing reads them, and they can go once 0.8.x is
+#: far enough behind.
+_RETIRED_DEFAULTS: tuple[str, str] = (
+    "eagle_100_total_energy_delivered",
+    "eagle_100_total_energy_received",
+)
+
+#: No default pair: series names are site-specific, and the one that used to be
+#: here named the hardware this was developed against. Prefer the *raw* counters
+#: when you name them -- unfiltered on purpose, see the module docstring.
 
 #: Home Assistant's InfluxDB integration writes one row per numeric sample.
 DEFAULT_TABLE = "sensor_numeric"
@@ -69,9 +77,38 @@ class InfluxSettings:
     #: Never printed. `repr=False` keeps it out of tracebacks, which render
     #: dataclass frames -- the same reason PgeSettings marks its own.
     token: str = field(repr=False)
-    import_entity: str = DEFAULT_IMPORT_ENTITY
-    export_entity: str = DEFAULT_EXPORT_ENTITY
+    #: Optional: rate pricing needs neither. ``None`` means "not configured",
+    #: which is answered when a read is attempted, not at load time.
+    import_entity: str | None = None
+    export_entity: str | None = None
     table: str = DEFAULT_TABLE
+
+    def require_entities(self) -> tuple[str, str]:
+        """The two series names, or a ConfigError naming how to set them."""
+        missing = [
+            name
+            for name, value in (
+                ("import_entity", self.import_entity),
+                ("export_entity", self.export_entity),
+            )
+            if not value
+        ]
+        if missing:
+            raise ConfigError(
+                f"InfluxDB {' and '.join(missing)} not set. Name your grid series:\n"
+                f"  tariffkit account source set influx \\\n"
+                f"    --grid-import-entity YOUR_IMPORT_SERIES \\\n"
+                f"    --grid-export-entity YOUR_EXPORT_SERIES --apply\n"
+                f"or put import_entity/export_entity under [influxdb] in the config "
+                f"file.\n\n"
+                f"Upgrading from 0.8.1 or earlier? Those versions read "
+                f"{_RETIRED_DEFAULTS[0]} and {_RETIRED_DEFAULTS[1]} when nothing "
+                f"named them, so if you never configured these, that is what you "
+                f"were using.\n\n"
+                f"Rate pricing (`tariffkit now`, `forecast`, `info`) needs neither."
+            )
+        assert self.import_entity is not None and self.export_entity is not None
+        return self.import_entity, self.export_entity
 
     @property
     def query_url(self) -> str:
@@ -135,8 +172,12 @@ class InfluxSettings:
             host=values["host"],
             database=values["database"],
             token=values["token"],
-            import_entity=_clean_entity(values.get("import_entity", DEFAULT_IMPORT_ENTITY)),
-            export_entity=_clean_entity(values.get("export_entity", DEFAULT_EXPORT_ENTITY)),
+            import_entity=_clean_entity(values["import_entity"])
+            if values.get("import_entity")
+            else None,
+            export_entity=_clean_entity(values["export_entity"])
+            if values.get("export_entity")
+            else None,
             table=_sql_name(values.get("table", DEFAULT_TABLE), "table name"),
         )
 
@@ -158,43 +199,6 @@ def _sql_name(name: str, what: str) -> str:
     if not _ENTITY_RE.match(name):
         raise ConfigError(f"unsupported {what} {name!r}")
     return name
-
-
-def monotonic(samples: list[tuple[datetime, float]]) -> list[tuple[datetime, float]]:
-    """Drop readings that cannot be a cumulative counter moving forward.
-
-    The Eagle-100 re-establishes its meter session several times a day and
-    publishes exactly ``0.0`` while it does -- about one sample in ten on this
-    data. A reading that is zero, negative, or lower than one already seen is a
-    device artefact, not energy, and differencing across it would invent a huge
-    interval and then a compensating hole.
-
-    This is the same rule the Home Assistant template filter applies, reproduced
-    here so the unfiltered series -- which reaches back nine months further --
-    can be used directly.
-
-    KNOWN LIMITATION, deliberately not papered over: a counter that *restarts*
-    at a lower base -- a meter swap, a firmware reset, a 32-bit wrap -- leaves
-    every later sample below the old maximum, so this discards the remainder of
-    the window and the bill comes out short and plausible. Detecting it here
-    was tried and withdrawn: a rule strong enough to catch a noisy restart also
-    fired on a single spuriously *high* sample, which poisons the maximum and
-    makes every subsequent normal reading look like a restart. Turning that
-    into a hard error broke legitimate reads, which on the Home Assistant side
-    means every entity goes unavailable. Separating the two cases needs
-    upward-outlier rejection this does not have, so the artefact rule stands
-    and the gap is recorded rather than half-closed.
-    """
-    kept: list[tuple[datetime, float]] = []
-    highest: float | None = None
-    for moment, value in samples:
-        if value is None or value <= 0:
-            continue
-        if highest is not None and value < highest:
-            continue
-        highest = value
-        kept.append((moment, value))
-    return kept
 
 
 def _query(settings: InfluxSettings, sql: str) -> list[dict[str, Any]]:
@@ -367,14 +371,15 @@ def read_counters(
     # Reach back before the window so the first interval has something to
     # subtract from; otherwise it would silently start from zero.
     lookback = start - BASELINE_LOOKBACK
-    import_samples = monotonic(_samples(settings, settings.import_entity, lookback, end))
-    export_samples = monotonic(_samples(settings, settings.export_entity, lookback, end))
+    import_entity, export_entity = settings.require_entities()
+    import_samples = monotonic(_samples(settings, import_entity, lookback, end))
+    export_samples = monotonic(_samples(settings, export_entity, lookback, end))
     # Test the samples, not the bucketed result: bucketing always yields an
     # entry per interval, so an empty window is indistinguishable from a quiet
     # one once it has been through _per_interval.
     if not import_samples and not export_samples:
         raise DataError(
-            f"no samples for {settings.import_entity} / {settings.export_entity} "
+            f"no samples for {import_entity} / {export_entity} "
             f"between {start.isoformat()} and {end.isoformat()}"
         )
     imported, smeared_in = _per_interval(import_samples, start, end, resolution)

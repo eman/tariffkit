@@ -78,7 +78,7 @@ anyway, because two of them are about *ordering* rather than about repair.
 
 ### From a release, without metered energy configured
 
-There is nothing to migrate. [Metered energy](#metered-energy) is opt-in and
+There is nothing to migrate. [Metered energy](#metered-energy) is optional and
 creates no entities until you name a meter, so an instance that never used it
 has none of the entities the notes below discuss. Update, restart, carry on.
 
@@ -152,27 +152,47 @@ first choice:
      **Import TariffKit profile** below, or later through account history's
      own edit form once a profile carries them.
 - **Import TariffKit profile** — paste JSON produced by `tariffkit account
-  export NAME` (or another Home Assistant instance's **Export profile**,
-  under [Account history](#account-history)). This is the only path that
-  carries a multi-epoch history, CCA raw generation-rate overrides, and
-  meter-source mappings into the entry directly, and it is how you move a
-  profile you already maintain on the CLI into HA.
+  export` (or another Home Assistant instance's **Export profile**, under
+  [Account history](#account-history)). This is the only path that carries a
+  multi-epoch history, CCA raw generation-rate overrides, and meter-source
+  mappings into the entry directly, and it is how you move a profile you
+  already maintain on the CLI into HA.
+
+  It is also **less typing than the manual form**, because the CLI can read
+  most of the account off a bill and this integration cannot — it never
+  contacts PG&E, and stores no utility login:
+
+  ```bash
+  pipx install 'tariffkit[pge,statements]'
+  tariffkit credentials set pge.username
+  tariffkit credentials set pge.password
+  tariffkit account init        # reads your latest statement
+  tariffkit account update --effective <pto-date> --pto-date <pto-date> \
+      --interconnection-year <year> --apply
+  tariffkit account export      # paste the output here
+  ```
+
+  A bill gives the tariff, supplier, CCA, baseline territory and PCIA vintage;
+  the Permission-To-Operate date and interconnection application year are not
+  printed on one, which is why the second command exists. See
+  [Your account](accounts.md#tutorial-your-first-account).
 
 Every field is validated against the library before the entry is created, so
 an invalid combination is rejected in the form with the same error the CLI
 would raise, not discovered later at runtime.
 
-Forecast horizon, Predbat compatibility mode, and metered energy are **not**
-asked during setup — they default to sensible values (48 hours, Predbat off,
-no meters) and live under **Configure → Forecast and Predbat** and
-**Configure → Metered energy** afterward, as their own menu items rather than
-mixed into pricing settings. Keeping them out of initial setup means the two
-or three questions most people need to answer are the only ones on screen.
+Setup ends by offering [Metered energy](#metered-energy) — the grid import and
+export counters, and the billing cycle start day. Leave them blank and setup
+finishes exactly as it would have: pricing an account does not require a meter,
+and the counters are often integrated after the tariff rather than before. The
+step is there so that anyone who *does* already have them gets the running
+totals immediately, instead of finishing setup and having to discover the same
+form under Configure.
 
-Metered energy in particular is deliberately not a setup question: pricing an
-account does not require a meter, and the counters are usually integrated
-after the tariff rather than before, so asking during setup would put a
-question in front of every new user that most of them cannot answer yet.
+Forecast horizon and Predbat compatibility mode are **not** asked during setup
+— they default to sensible values (48 hours, Predbat off) and live under
+**Configure → Forecast and Predbat** afterward, as their own menu item rather
+than mixed into pricing settings.
 
 Once you *have* named the meters, run
 [Backfilling history](#backfilling-history) straight away rather than waiting
@@ -543,9 +563,18 @@ Optional. Point TariffKit at the two cumulative kWh counters your meter or
 meter reader publishes and it prices what actually moved, not just what a kWh
 would have cost:
 
-**Configure → Metered energy** — it is not part of initial setup, so an entry
-created before you integrated a meter picks it up later without being
-recreated:
+Offered at the end of initial setup, and always available afterward at
+**Configure → Metered energy** — so an entry created before you integrated a
+meter picks it up later without being recreated.
+
+An entry with no counters named also raises a **repair**, and the repair is the
+same form: open it from **Settings → System → Repairs** and fill it in there.
+That exists because setup runs once — an entry created before the setup step
+existed would otherwise never be offered the form, and would have to be found
+under Configure by someone who already knew it was there. It is a warning rather
+than an error, because pricing rates without a meter is a legitimate
+configuration: name the counters any way you like and the repair clears itself,
+or ignore it and nothing changes.
 
 | Field | What it is |
 |---|---|
@@ -571,14 +600,13 @@ below only ever compute forward from now.
 
 ### The counters do not have to reset
 
-They usually do not. The Rainforest Eagle-100's
-`sensor.eagle_100_energy_delivered` and `sensor.eagle_100_energy_received` are
-monotonic counters that only ever climb, and today's energy is a *difference*
-between two points on one.
+They usually do not. A smart-meter reader's grid-import and grid-export
+sensors are normally monotonic counters that only ever climb, and today's
+energy is a *difference* between two points on one.
 
 TariffKit does that arithmetic out of the recorder's own long-term statistics,
 which is where it belongs: a statistic's hourly `change` already absorbs
-counter restarts, integration reloads, and the Eagle's meter-session drops.
+counter restarts, integration reloads, and the reader's own session drops.
 Statistics compile at the top of the hour, so the hour in progress is read
 live off the entity state instead — the last completed hour's recorded value
 is a baseline the counter has advanced from. Anything implausible (a negative

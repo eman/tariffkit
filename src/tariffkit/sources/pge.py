@@ -50,10 +50,9 @@ from uuid import uuid4
 from ..billing import BillingPeriod, IntervalReading
 from ..config import default_config_path
 from ..errors import ConfigError, DataError
-from ..secrets import get_secret
+from ..secrets import get_secret, load_dotenv
 from ..timeutil import to_pacific
 from .greenbutton import GreenButtonLayout, read_green_button
-from .homeassistant import load_dotenv
 
 BASE = "https://myaccount.pge.com"
 LOGIN_PATH = "/myaccount/s/login/"
@@ -1265,6 +1264,16 @@ def read_green_button_download(
     return parse_green_button(read_green_button_export(settings, start, end), layout)
 
 
+def green_button_cache_dir() -> Path:
+    """Where downloaded exports are kept, for a client that wants to look.
+
+    Public because a front end reporting what it can do offline has to know
+    whether anything is cached, and reaching for a private name to find out is
+    how a boundary stops being one.
+    """
+    return _default_export_cache()
+
+
 def _default_export_cache() -> Path:
     """Where downloaded interval exports are kept between runs.
 
@@ -1316,7 +1325,7 @@ def cached_exports(directory: Path | None = None) -> list[CachedExport]:
 
 
 def cached_green_button(
-    settings: PgeSettings,
+    settings: PgeSettings | None,
     start: date,
     end: date,
     *,
@@ -1342,6 +1351,11 @@ def cached_green_button(
     in the meter or the file: the reads are simply not published yet. Pulling
     it back also means yesterday's cached file usually answers today's
     question, so the same open cycle is not re-downloaded every morning.
+
+    ``settings`` may be ``None``, which restricts this to what is already
+    cached. A utility login is what *downloads* an export; it is not what reads
+    one, and requiring it to read one would mean an account that has already
+    fetched a year of intervals could not price any of them offline.
     """
     base = directory or _default_export_cache()
     if not refresh:
@@ -1349,6 +1363,11 @@ def cached_green_button(
         if found is not None:
             return found
 
+    # Asked before the login is required, because it answers from its own cache
+    # when there is none. An open cycle runs to today and the utility publishes
+    # a day behind, so a cache holding every published day covers the window
+    # only after this pulls the end back -- which is exactly the case a login
+    # should not be needed for.
     available = cached_available_reads(settings, refresh=refresh)
     if available is not None and available.end < end:
         end = max(available.end, start)
@@ -1356,6 +1375,16 @@ def cached_green_button(
             found = _covering(base, start, end)
             if found is not None:
                 return found
+
+    if settings is None:
+        want = "re-downloading it" if refresh else "downloading one"
+        raise ConfigError(
+            f"no cached Green Button export covers {start.isoformat()}..{end.isoformat()}, "
+            f"and {want} needs a utility login: store pge.username and "
+            f"pge.password with `tariffkit credentials set`, or set PGE_USERNAME and "
+            f"PGE_PASSWORD. An export you already have can be priced with "
+            f"`tariffkit bill --csv <file>`."
+        )
 
     text = read_green_button_export(settings, start, end)
     base.mkdir(mode=0o700, parents=True, exist_ok=True)

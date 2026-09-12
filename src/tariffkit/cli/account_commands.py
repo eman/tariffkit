@@ -13,11 +13,12 @@ import os
 import re
 import shutil
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 from uuid import uuid4
 
 from ..account import (
@@ -122,6 +123,130 @@ def migrate_existing(
     return AccountProfile((AccountEpoch(effective or date.today(), config),))
 
 
+#: Fields a bill cannot establish, with why, so the command can say so rather
+#: than letting a default stand in silently.
+UNDERIVABLE: Final = {
+    "interconnection_year": "the year your interconnection application was filed",
+    "pto_date": "the date Permission To Operate was granted",
+    "acc_plus_segment": "your ACC Plus segment",
+    "discount": "CARE or FERA enrolment",
+    "base_services_charge_tier": "your Base Services Charge income tier",
+}
+
+
+@contextmanager
+def downloaded_statement(*, config_path: str | Path | None = None) -> Iterator[Path]:
+    """The newest statement, on disk only for as long as it is being read.
+
+    Setting an account up should not mean finding a PDF first. Uses the same
+    session, cache and 0600 permissions `sync` does, and takes one statement
+    rather than the history: `init` needs what the account *is*, and `sync`
+    afterwards fills in what it has been.
+
+    A context manager because the file is a bill. `sync_profile` removes its
+    cache in a `finally` for that reason, and the first version of this did not
+    -- every `init --from-portal`, successful or not, left a statement PDF under
+    `account-sync`. A caller's own `--from-statement` file is never touched;
+    only what this downloaded is.
+    """
+    from ..sources.pge import PgeSession, PgeSettings
+
+    settings = PgeSettings.load(config_path)
+    cache = _cache_directory()
+    with PgeSession(settings) as session:
+        session.login()
+        rows = session.bill_history()
+        dated: list[tuple[date, str]] = []
+        for row in rows:
+            identifier = _row_value(row, "billpdf", "billid", "invoiceid", "statementid")
+            issued = _row_date(row)
+            if identifier and issued is not None:
+                dated.append((issued, identifier))
+        if not dated:
+            raise ConfigError(
+                "the portal listed no statement this can read; "
+                "`tariffkit account init --from-statement <pdf>` takes a file you have"
+            )
+        _, identifier = max(dated)
+        path = cache / "init-statement.pdf"
+        path.write_bytes(session.download_bill(identifier))
+        path.chmod(0o600)
+    try:
+        yield path
+    finally:
+        path.unlink(missing_ok=True)
+        shutil.rmtree(cache, ignore_errors=True)
+
+
+def _vendored_rate_card(identity: str, on: date) -> bool:
+    """Whether a rate card ships for this CCA on that date."""
+    from ..cca import load_rate_card
+    from ..errors import TariffKitError
+
+    try:
+        load_rate_card(identity, on)
+    except TariffKitError:
+        return False
+    return True
+
+
+def config_from_statement(statement: Any) -> tuple[dict[str, object], tuple[str, ...]]:
+    """What one statement establishes about the account, and what it cannot.
+
+    A bill prints the tariff it was billed under, who supplied generation, the
+    baseline territory and the PCIA vintage -- the fields most likely to be
+    typed wrong, and the ones that change. It says nothing about the solar
+    interconnection: Permission To Operate and the application year are facts
+    about a different process, and an income tier or CARE enrolment is not
+    printed at all. Those come back as the second return value so the caller
+    can ask for them instead of defaulting and hoping.
+    """
+    changes: dict[str, object] = {}
+    # The newest agreement, not the first: a cycle split by a rate change prints
+    # the old schedule before the new one, and what the account *is* now is the
+    # one it ended on.
+    tariff = ""
+    if statement.agreements:
+        tariff = statement.agreements[-1].tariff
+    elif statement.rate_schedule:
+        from ..providers.pge.statements.parse import normalize_tariff
+
+        tariff = normalize_tariff(statement.rate_schedule) or ""
+    if tariff:
+        changes["tariff"] = tariff
+
+    if statement.cca_name:
+        from ..providers.pge.reconcile import normalize_cca_identity
+
+        changes["supplier"] = "cca"
+        # Through the same normaliser the statement importer uses. A bill prints
+        # the marketing name -- "Marin Clean Energy" -- and lowercasing that gave
+        # a rate_card of "marin clean energy", which can never load: the vendored
+        # card is "mce". The normaliser knows the identity behind the name.
+        identity = normalize_cca_identity(statement.cca_name)
+        cca: dict[str, object] = {"name": identity}
+        # Only when a card is actually vendored. Naming one that does not exist
+        # is worse than naming none: CcaConfig reports an incomplete CCA and the
+        # caller can supply generation_rates, where a bad rate_card just fails to
+        # load. The option is a product tier a bill does not print, so it keeps
+        # its default and is named in the gaps.
+        if _vendored_rate_card(identity, statement.period.start):
+            cca["rate_card"] = identity.lower().replace(" ", "_")
+        if statement.pcia_vintage is not None:
+            cca["pcia_vintage"] = statement.pcia_vintage
+        changes["cca"] = cca
+    else:
+        changes["supplier"] = "bundled"
+        if statement.pcia_vintage is not None:
+            changes["vintage"] = str(statement.pcia_vintage)
+
+    if statement.baseline_territory:
+        changes["baseline_territory"] = statement.baseline_territory
+
+    gaps = tuple(sorted(UNDERIVABLE))
+    return changes, gaps
+
+
 def init_profile(
     store: AccountStore,
     *,
@@ -129,8 +254,18 @@ def init_profile(
     config_json: Path | None = None,
     effective: date | None = None,
     audit_path: str | Path | None = None,
-) -> AccountProfile:
-    """Create the account from explicit inputs or the resolved public configuration."""
+    changes: Mapping[str, object] | None = None,
+    from_statement: Path | None = None,
+) -> tuple[AccountProfile, tuple[str, ...]]:
+    """Create the account from explicit inputs or the resolved public configuration.
+
+    ``changes`` are the per-field flags, applied over whatever base was
+    resolved. Without them the first epoch is built from the built-in defaults
+    -- E-ELEC, bundled, a PTO date that belongs to one site -- which is a
+    plausible account rather than the caller's, and correcting it afterwards is
+    awkward: an epoch dated before the first one cannot be added without
+    restating the whole config, so `init` needs to be right the first time.
+    """
     if store.exists():
         raise ConfigError(
             f"an account already exists at {store.path}; 'tariffkit account update' changes it"
@@ -146,7 +281,52 @@ def init_profile(
             audit_path=audit_path,
             effective=effective,
         )
-    return store.save(profile)
+    derived: dict[str, object] = {}
+    gaps: tuple[str, ...] = ()
+    observations: list[AccountObservation] = []
+    if from_statement is not None:
+        from ..providers.pge.reconcile import import_statement
+        from ..providers.pge.statements.parse import read_statement
+
+        # One statement, the latest. Setting up asks what the account *is*, and
+        # the newest bill is the answer; `tariffkit account sync` is what reads
+        # the history, and it is a better tool for it than a list of paths here.
+        statement = read_statement(from_statement)
+        derived, gaps = config_from_statement(statement)
+        observations.append(import_statement(from_statement))
+        if effective is None:
+            # The cycle this bill covers, not today: an epoch dated today claims
+            # the account only became this on the day it was set up, and nothing
+            # earlier could then be priced.
+            effective = statement.period.start
+
+    # Explicit flags win over what the bill said: the caller is correcting it.
+    changes = {**derived, **dict(changes or {})}
+    if effective is not None and profile.epochs and profile.epochs[0].effective != effective:
+        first = profile.epochs[0]
+        profile = replace(
+            profile, epochs=(replace(first, effective=effective), *profile.epochs[1:])
+        )
+    if changes:
+        if changes.get("supplier") == "cca" and "cca" not in changes:
+            # The library says "requires a CcaConfig", which is true and does not
+            # name the flag that supplies one.
+            raise ConfigError(
+                "--supplier cca also needs --cca-json, e.g. "
+                '--cca-json \'{"name": "MCE", "option": "light_green", '
+                '"pcia_vintage": "2025"}\''
+            )
+        epochs = list(profile.epochs)
+        merged = epochs[0].config.to_dict()
+        merged.update(dict(changes))
+        try:
+            epochs[0] = AccountEpoch(epochs[0].effective, Config.from_dict(merged), epochs[0].note)
+        except (ConfigError, TypeError, ValueError) as exc:
+            raise ConfigError(f"invalid account: {exc}") from exc
+        profile = replace(profile, epochs=tuple(epochs))
+    if observations:
+        profile = replace(profile, observations=tuple(observations))
+    return store.save(profile), gaps
 
 
 def config_changes(args: Any) -> dict[str, object]:
