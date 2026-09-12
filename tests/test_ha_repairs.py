@@ -98,3 +98,19 @@ async def test_the_fix_flow_refuses_a_configuration_that_cannot_work(
     )
     assert result["errors"] == {"base": "invalid_meters"}
     assert "both directions" in result["description_placeholders"]["detail"]
+
+
+@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+async def test_a_stale_issue_aborts_rather_than_raising(hass: HomeAssistant) -> None:
+    """Home Assistant calls this from the Repairs panel.
+
+    Raising put a traceback in front of somebody whose only mistake was clicking
+    a row for an account that had since been removed.
+    """
+    from custom_components.tariffkit.repairs import async_create_fix_flow
+
+    flow = await async_create_fix_flow(hass, "no_meters_gone", {"entry_id": "gone"})
+    flow.hass = hass
+    result = await flow.async_step_init()
+    assert result["type"] == "abort"
+    assert result["reason"] == "entry_gone"

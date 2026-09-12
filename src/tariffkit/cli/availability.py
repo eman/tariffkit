@@ -177,11 +177,15 @@ def _account() -> SourceStatus:
 
 
 def _green_button_cache() -> SourceStatus:
-    from ..sources.pge import green_button_cache_dir
+    from ..sources.pge import cached_exports, green_button_cache_dir
 
     features = ("bill --source green-button, without a login",)
     base = green_button_cache_dir()
-    held = sorted(base.glob("*.csv")) if base.is_dir() else []
+    # The same parser `bill` selects with, not a glob. Globbing `*.csv` counted
+    # files `cached_exports` deliberately skips -- a symlink, or anything whose
+    # name is not a `start_end.csv` range -- so `sources` could report the cache
+    # available for a file `bill` would then refuse to use.
+    held = cached_exports(base)
     if not held:
         return SourceStatus(
             "green_button_cache",

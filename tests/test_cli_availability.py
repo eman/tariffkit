@@ -206,3 +206,29 @@ def test_an_existing_account_reports_available() -> None:
     status = next(s for s in survey() if s.name == "account")
     assert status.available is True
     assert status.remedy == ""
+
+
+@pytest.mark.usefixtures("bare")
+def test_the_cache_only_counts_files_bill_could_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`sources` must agree with what `bill` would actually select.
+
+    A glob for `*.csv` counted names the export cache deliberately skips, so
+    the survey reported a Green Button source available while `bill` could not
+    use the file and still wanted a login.
+    """
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    held = cache / "tariffkit" / "pge" / "green-button"
+    held.mkdir(parents=True)
+
+    # A csv that is not an export range.
+    (held / "notes.csv").write_text("", encoding="utf-8")
+    status = next(s for s in survey() if s.name == "green_button_cache")
+    assert status.available is False
+
+    # One that is.
+    (held / "2026-08-01_2026-08-31.csv").write_text("", encoding="utf-8")
+    status = next(s for s in survey() if s.name == "green_button_cache")
+    assert status.available is True

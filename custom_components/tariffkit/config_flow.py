@@ -396,9 +396,12 @@ def _meters_schema(defaults: dict[str, Any]) -> vol.Schema:
     for export; a site whose export counter is the only one integrated can still
     say so. Naming neither leaves the running-total entities out entirely.
 
-    The selector filters to energy sensors rather than all of them, because the
-    only useful answer here is a cumulative kWh counter -- the thing the
-    recorder keeps long-term statistics for.
+    The picker lists every statistic, not only energy sensors: what this reads is
+    long-term statistics, and not all of those belong to an entity, so filtering
+    by entity would shut out a feed that imports history. `_meter_problem` and
+    `_async_meter_problem` are what keep the answer honest -- they refuse a
+    series that is not energy, one that keeps no running sum, and one entity
+    named for both directions, which is stricter than any picker can be.
     """
     # A statistic picker, not an entity picker. What this integration reads is
     # long-term statistics, and not every statistic belongs to an entity: an

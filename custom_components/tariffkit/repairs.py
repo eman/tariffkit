@@ -96,18 +96,26 @@ class MetersRepairFlow(RepairsFlow):
         )
 
 
+class GoneRepairFlow(RepairsFlow):
+    """The account this issue was about no longer exists."""
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        return self.async_abort(reason="entry_gone")
+
+
 async def async_create_fix_flow(
     hass: HomeAssistant,
     issue_id: str,
     data: dict[str, str | int | float | None] | None,
 ) -> RepairsFlow:
-    """Hand back the flow for one issue, or a bare one if the entry is gone."""
+    """Hand back the flow for one issue, or one that aborts if the entry is gone."""
     entry_id = str((data or {}).get("entry_id") or "")
     entry = hass.config_entries.async_get_entry(entry_id)
     if entry is None:
-        # The entry was removed while the issue was open. Returning a flow that
-        # immediately finishes is better than raising: the issue is stale, and a
-        # traceback in the repairs panel is not a fix.
+        # The entry was removed while the issue was open. Home Assistant calls
+        # this from the Repairs panel, so raising put a traceback in front of
+        # somebody whose only mistake was clicking a stale row. The issue goes,
+        # and the flow says so in the one sentence it has.
         ir.async_delete_issue(hass, DOMAIN, issue_id)
-        raise ValueError(f"config entry {entry_id} is gone")
+        return GoneRepairFlow()
     return MetersRepairFlow(entry)

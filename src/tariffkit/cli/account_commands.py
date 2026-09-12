@@ -13,7 +13,8 @@ import os
 import re
 import shutil
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -133,13 +134,20 @@ UNDERIVABLE: Final = {
 }
 
 
-def newest_portal_statement(*, config_path: str | Path | None = None) -> Path:
-    """Download the newest statement to the sync cache and return its path.
+@contextmanager
+def downloaded_statement(*, config_path: str | Path | None = None) -> Iterator[Path]:
+    """The newest statement, on disk only for as long as it is being read.
 
     Setting an account up should not mean finding a PDF first. Uses the same
-    session, cache and file permissions `sync` does, and takes one statement
+    session, cache and 0600 permissions `sync` does, and takes one statement
     rather than the history: `init` needs what the account *is*, and `sync`
     afterwards fills in what it has been.
+
+    A context manager because the file is a bill. `sync_profile` removes its
+    cache in a `finally` for that reason, and the first version of this did not
+    -- every `init --from-portal`, successful or not, left a statement PDF under
+    `account-sync`. A caller's own `--from-statement` file is never touched;
+    only what this downloaded is.
     """
     from ..sources.pge import PgeSession, PgeSettings
 
@@ -163,7 +171,11 @@ def newest_portal_statement(*, config_path: str | Path | None = None) -> Path:
         path = cache / "init-statement.pdf"
         path.write_bytes(session.download_bill(identifier))
         path.chmod(0o600)
-        return path
+    try:
+        yield path
+    finally:
+        path.unlink(missing_ok=True)
+        shutil.rmtree(cache, ignore_errors=True)
 
 
 def config_from_statement(statement: Any) -> tuple[dict[str, object], tuple[str, ...]]:

@@ -9,6 +9,7 @@ import json
 import logging
 import sys
 from collections.abc import Mapping, Sequence
+from contextlib import ExitStack
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -806,9 +807,9 @@ def _print_skipped(skipped: Sequence[Mapping[str, str]]) -> None:
 def _run_account_command(args: Any) -> int:
     from .account_commands import (
         config_changes,
+        downloaded_statement,
         import_statements,
         init_profile,
-        newest_portal_statement,
         sync_profile,
         update_profile,
     )
@@ -816,11 +817,15 @@ def _run_account_command(args: Any) -> int:
     store = _account_store()
     command = args.account_command
     if command == "init":
+        stack = ExitStack()
         statement = args.from_statement
         if args.from_portal:
             if statement is not None:
                 raise ConfigError("choose either --from-statement or --from-portal")
-            statement = newest_portal_statement(config_path=args.config)
+            # Entered on a stack so the downloaded bill is removed whether or not
+            # the rest of this succeeds. A file the caller named is theirs and is
+            # never touched.
+            statement = stack.enter_context(downloaded_statement(config_path=args.config))
         elif statement is None and not _told_how_to_set_up(args):
             # Nobody said where the account comes from, so read it rather than
             # invent it: the alternative was a confident set of built-in
@@ -829,7 +834,9 @@ def _run_account_command(args: Any) -> int:
             # this never prompts for one.
             if _have_pge_credentials(getattr(args, "config", None)):
                 print("reading your latest PG&E statement...", file=sys.stderr)
-                statement = newest_portal_statement(config_path=args.config)
+                statement = stack.enter_context(
+                    downloaded_statement(config_path=getattr(args, "config", None))
+                )
             else:
                 print(
                     "No statement and no stored PG&E login, so this is built from "
@@ -838,15 +845,16 @@ def _run_account_command(args: Any) -> int:
                     "--from-statement <pdf>` reads it off a bill instead.",
                     file=sys.stderr,
                 )
-        profile, gaps = init_profile(
-            store,
-            config_path=args.config,
-            config_json=args.config_json,
-            effective=args.effective,
-            audit_path=args.audit_file,
-            changes=config_changes(args),
-            from_statement=statement,
-        )
+        with stack:
+            profile, gaps = init_profile(
+                store,
+                config_path=args.config,
+                config_json=args.config_json,
+                effective=args.effective,
+                audit_path=args.audit_file,
+                changes=config_changes(args),
+                from_statement=statement,
+            )
         _print_profile(profile, json_output=args.json)
         if gaps and not args.json:
             from .account_commands import UNDERIVABLE

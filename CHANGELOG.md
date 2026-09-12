@@ -293,6 +293,29 @@ existing config entry keeps the entities it was given.
 - **`account source show` no longer promises a default.** It printed "not
   configured; the source default will be used", describing a fallback this
   release removes.
+- **`audit reconcile --readings statistics` no longer needs InfluxDB.** It
+  loaded the InfluxDB settings and read the series unconditionally before
+  choosing a branch, so an account configured only for Home Assistant was told
+  its InfluxDB series were unset while asking for the path that does not use
+  them. InfluxDB is a *comparison* on that path, and a comparison that cannot
+  happen must not fail the run; asking for `--readings influx` without it still
+  fails, with the same message as before.
+- **A statement downloaded by `account init` does not outlive the command.**
+  `--from-portal` wrote the PDF into the sync cache and left it there, on
+  success and on failure alike -- which is why `sync_profile` removes its own
+  cache in a `finally`. It is a context manager now, so the file is gone
+  whatever happens; a file you named yourself with `--from-statement` is never
+  touched.
+- **A stale repair aborts instead of raising.** Home Assistant builds the fix
+  flow from the Repairs panel, so an issue whose config entry had since been
+  removed put a traceback in front of somebody who had only clicked a row. It
+  now aborts with `entry_gone` -- the translated string that was already there
+  and unused.
+- **`tariffkit sources` agrees with what `bill` can use.** The Green Button
+  cache check globbed `*.csv` and so counted names the export cache
+  deliberately skips -- a symlink, or anything that is not a `start_end.csv`
+  range -- reporting the source available for a file `bill` would then refuse.
+  It uses the same parser `bill` selects with.
 - **An unreachable host is an error, not a traceback.** Home Assistant,
   InfluxDB and the portal all reach the network through libraries that raise
   `OSError` subclasses -- `socket.gaierror` for a typo'd host,

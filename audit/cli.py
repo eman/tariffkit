@@ -22,6 +22,7 @@ import json
 from collections.abc import Sequence
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 
 from tariffkit import __version__ as library_version
 from tariffkit.errors import TariffKitError
@@ -289,11 +290,21 @@ def _reconcile(
         profile = AccountStore().load()
     except TariffKitError as exc:
         raise AccountError(f"could not load the account: {exc}") from exc
-    # The profile's own mapping, the way the statistics branch below already
-    # reads it. This was masked while the library defaulted the series names;
-    # with those gone, an account whose series live only on the profile could
-    # not run the default `--readings influx` path at all.
-    settings = InfluxSettings.load(profile_source=profile.meter_sources.influx)
+    # The profile's own mapping, the way the statistics branch below reads its
+    # own. Masked while the library defaulted the series names; with those gone,
+    # an account whose series live only on the profile could not run the default
+    # `--readings influx` path at all.
+    #
+    # Optional unless it is the path being asked for. InfluxDB is read as a
+    # *comparison* on the statistics path, and a comparison that cannot happen
+    # must not fail the run: an account with only Home Assistant configured was
+    # told its InfluxDB series were unset while asking for statistics.
+    settings: Any = None
+    try:
+        settings = InfluxSettings.load(profile_source=profile.meter_sources.influx)
+    except TariffKitError:
+        if readings_from == "influx":
+            raise
 
     results = []
     skipped: list[str] = []
@@ -347,9 +358,12 @@ def _reconcile(
         # several entities -- the unfiltered meter counters and the filtered
         # pair -- so a delta line reading "statement vs influx" left the one
         # thing a reader needs unstated: which sensor disagreed.
-        influx_key = f"influx:{settings.export_entity}"
-        sources = {influx_key: read_counters(settings, start, end)}
-        primary = influx_key
+        sources = {}
+        primary = ""
+        if settings is not None:
+            influx_key = f"influx:{settings.export_entity}"
+            sources[influx_key] = read_counters(settings, start, end)
+            primary = influx_key
 
         # Home Assistant's hourly statistics, when asked for.
         #
@@ -386,6 +400,11 @@ def _reconcile(
             ha = HaSettings.load(profile_source=profile.meter_sources.home_assistant)
             primary = f"statistics:{ha.export_entity}"
             sources[primary] = read_statistics(ha, start, end)
+        if not primary:
+            raise AccountError(
+                f"no readings source is configured for --readings {readings_from}; "
+                "name the grid counters with `tariffkit account source set`"
+            )
         readings = sources[primary]
 
         if green_button:

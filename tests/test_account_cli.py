@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -1228,11 +1230,13 @@ class TestBareInitReadsRatherThanInvents:
 
         asked: list[str] = []
         account_commands = importlib.import_module("tariffkit.cli.account_commands")
-        monkeypatch.setattr(
-            account_commands,
-            "newest_portal_statement",
-            lambda **_kw: (asked.append("portal"), pdf)[1],
-        )
+
+        @contextmanager
+        def fake(**_kw: object) -> Iterator[Path]:
+            asked.append("portal")
+            yield pdf
+
+        monkeypatch.setattr(account_commands, "downloaded_statement", fake)
         parse = importlib.import_module("tariffkit.providers.pge.statements.parse")
         reconcile = importlib.import_module("tariffkit.providers.pge.reconcile")
         monkeypatch.setattr(parse, "read_statement", lambda _p: _statement())
@@ -1257,7 +1261,7 @@ class TestBareInitReadsRatherThanInvents:
         def refuse(**_kw: object) -> object:
             raise AssertionError("the portal was consulted with no login stored")
 
-        monkeypatch.setattr(account_commands, "newest_portal_statement", refuse)
+        monkeypatch.setattr(account_commands, "downloaded_statement", refuse)
 
         assert main(["account", "init"]) == 0
         assert "built-in defaults" in capsys.readouterr().err
@@ -1275,7 +1279,7 @@ class TestBareInitReadsRatherThanInvents:
         def refuse(**_kw: object) -> object:
             raise AssertionError("the portal was consulted despite an explicit tariff")
 
-        monkeypatch.setattr(account_commands, "newest_portal_statement", refuse)
+        monkeypatch.setattr(account_commands, "downloaded_statement", refuse)
 
         assert main(["account", "init", "--tariff", "EV2-A"]) == 0
 
@@ -1309,3 +1313,51 @@ def test_an_unreachable_host_is_an_error_not_a_traceback(
     err = capsys.readouterr().err
     assert "could not reach the host" in err
     assert "Traceback" not in err
+
+
+def test_a_downloaded_statement_does_not_outlive_the_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It is a bill. `sync_profile` removes its cache for that reason.
+
+    The first version of `--from-portal` wrote the PDF into the sync cache and
+    left it there, on success and on failure alike.
+    """
+    from tariffkit.cli.account_commands import downloaded_statement
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    class FakeSession:
+        def __enter__(self) -> FakeSession:
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def login(self) -> None:
+            return None
+
+        def bill_history(self) -> list[dict[str, str]]:
+            return [{"billpdf": "abc", "billdate": "08/04/2026"}]
+
+        def download_bill(self, _identifier: str) -> bytes:
+            return b"%PDF synthetic"
+
+    pge = importlib.import_module("tariffkit.sources.pge")
+    monkeypatch.setattr(pge, "PgeSession", lambda _settings: FakeSession())
+    monkeypatch.setattr(pge.PgeSettings, "load", classmethod(lambda _cls, *a, **k: object()))
+
+    with downloaded_statement() as path:
+        assert path.is_file()
+        assert path.stat().st_mode & 0o777 == 0o600
+        held = path
+    assert not held.exists(), "the downloaded bill outlived the command"
+
+    # And a failure while it is open still removes it.
+    try:
+        with downloaded_statement() as path:
+            held = path
+            raise RuntimeError("boom")
+    except RuntimeError:
+        pass
+    assert not held.exists(), "a failed run left the bill on disk"
