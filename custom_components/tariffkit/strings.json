@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Set up TariffKit",
-        "description": "Choose a manual account setup or import a sanitized TariffKit profile.",
+        "description": "Configure manually, or import a profile from the TariffKit CLI. The CLI can build one from your latest PG&E bill, which is less typing than the manual form.",
         "menu_options": {
           "manual": "Configure manually",
           "import": "Import TariffKit profile"
@@ -45,7 +45,7 @@
       },
       "import": {
         "title": "Import TariffKit profile",
-        "description": "Paste the sanitized JSON produced by TariffKit account export.",
+        "description": "Paste the sanitized JSON from `tariffkit account export`.\n\nThe quickest way to produce one is to let the CLI read your latest PG&E bill: store your portal login with `tariffkit credentials set pge.username` and `pge.password`, run `tariffkit account init`, then `tariffkit account export`. That fills in the tariff, whether generation comes from a CCA and which one, the baseline territory and the PCIA vintage, so the only things left to type are your Permission-To-Operate date and interconnection year.\n\nThis integration never contacts PG&E itself, and no login is stored here. An imported profile also brings its meter entities with it.",
         "data": {
           "profile_json": "Profile JSON"
         }

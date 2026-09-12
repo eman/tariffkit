@@ -50,6 +50,13 @@ All notable changes to this project are documented here. This project follows
   neither still answers what a kilowatt-hour costs. Only rate pricing is
   unconditional, because the rate data ships in the wheel.
 
+- **The Home Assistant setup form points at the bill-reading CLI path.** The
+  integration does not contact PG&E and stores no utility login -- that is
+  deliberate, and it left an HA-only user typing ten fields that a bill prints.
+  The import step and the opening menu now say that `tariffkit account init`
+  reads most of an account off your latest statement and `account export`
+  produces the JSON to paste, with the exact commands in
+  `docs/home-assistant.md`.
 - **The billing cycle start day is optional on the meters step**, and says so:
   it was the one required field on a step titled "Optional", and its help said
   `0 uses the calendar month` without mentioning that statement evidence

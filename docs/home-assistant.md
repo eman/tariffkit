@@ -152,11 +152,30 @@ first choice:
      **Import TariffKit profile** below, or later through account history's
      own edit form once a profile carries them.
 - **Import TariffKit profile** — paste JSON produced by `tariffkit account
-  export NAME` (or another Home Assistant instance's **Export profile**,
-  under [Account history](#account-history)). This is the only path that
-  carries a multi-epoch history, CCA raw generation-rate overrides, and
-  meter-source mappings into the entry directly, and it is how you move a
-  profile you already maintain on the CLI into HA.
+  export` (or another Home Assistant instance's **Export profile**, under
+  [Account history](#account-history)). This is the only path that carries a
+  multi-epoch history, CCA raw generation-rate overrides, and meter-source
+  mappings into the entry directly, and it is how you move a profile you
+  already maintain on the CLI into HA.
+
+  It is also **less typing than the manual form**, because the CLI can read
+  most of the account off a bill and this integration cannot — it never
+  contacts PG&E, and stores no utility login:
+
+  ```bash
+  pipx install 'tariffkit[pge,statements]'
+  tariffkit credentials set pge.username
+  tariffkit credentials set pge.password
+  tariffkit account init        # reads your latest statement
+  tariffkit account update --effective <pto-date> --pto-date <pto-date> \
+      --interconnection-year <year> --apply
+  tariffkit account export      # paste the output here
+  ```
+
+  A bill gives the tariff, supplier, CCA, baseline territory and PCIA vintage;
+  the Permission-To-Operate date and interconnection application year are not
+  printed on one, which is why the second command exists. See
+  [Your account](accounts.md#tutorial-your-first-account).
 
 Every field is validated against the library before the entry is created, so
 an invalid combination is rejected in the form with the same error the CLI
