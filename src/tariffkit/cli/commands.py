@@ -95,9 +95,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-v", "--verbose", action="store_true", help="log to stderr")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    sub.add_parser(
+        "setup",
+        help="guided first-run setup: PG&E login, account, meter data, MQTT",
+    )
+
     credentials = sub.add_parser(
         "credentials",
-        help="store credentials in the operating-system keyring",
+        help="store credentials in the operating-system keyring or .env",
     )
     credential_commands = credentials.add_subparsers(dest="credential_command", required=True)
     credential_set = credential_commands.add_parser("set", help="prompt for and store a secret")
@@ -153,8 +158,19 @@ def build_parser() -> argparse.ArgumentParser:
     account_sync = account_commands.add_parser("sync", help="sync statements from the PG&E portal")
     account_sync.add_argument("--config", type=Path, default=argparse.SUPPRESS)
     account_sync.add_argument("--since", type=date.fromisoformat)
-    account_sync.add_argument("--apply", action="store_true")
-    account_sync.add_argument("--keep-statements", action="store_true")
+    account_sync.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="show what the statements would change without saving it",
+    )
+    # Saving is the default now; kept so scripts written for the old default work.
+    account_sync.add_argument("--apply", action="store_true", help=argparse.SUPPRESS)
+    account_sync.add_argument(
+        "--discard-statements",
+        action="store_true",
+        help="delete each statement PDF once read instead of keeping it in "
+        "~/.cache/tariffkit/statements",
+    )
     account_sync.add_argument("--json", action="store_true")
     account_periods = account_commands.add_parser(
         "periods", help="record the cycle boundaries the utility billed on"
@@ -233,6 +249,12 @@ def build_parser() -> argparse.ArgumentParser:
         "green-button when a CSV path is given). `tariffkit sources` lists them",
     )
     bill.add_argument("--start", type=date.fromisoformat, help="cycle start (meter read date)")
+    bill.add_argument(
+        "--no-bank",
+        action="store_true",
+        help="price this cycle alone, with an empty export credit bank, instead of "
+        "carrying what earlier cycles since PTO left",
+    )
     bill.add_argument("--end", type=date.fromisoformat, help="cycle end, inclusive")
     bill.add_argument("--json", action="store_true")
     bill.add_argument("--no-check", dest="check", action="store_false", help="skip coverage checks")
@@ -370,10 +392,9 @@ def _print_banks(entry: Any, config: Any) -> None:
     cycle announced a single "+94.43" where the statement prints $11.96 on one
     page and $98.79 on another.
 
-    Opening is zero here and says so: this command prices one cycle on its own,
-    so nothing carries in. A bank that accumulates needs the run of cycles
-    before it, which is what ``run_ledger`` and the Home Assistant bank entity
-    are for.
+    Opening is what the cycles since Permission To Operate left behind, folded
+    by :func:`_carried_bank`; it is zero only where that could not be done,
+    and the note printed beneath says why.
     """
     from ..models import Supplier
 
@@ -423,7 +444,13 @@ def _priced_as(config: Any, from_account: bool) -> str:
     return f"priced from {source}: {tariff}, generation by {by}"
 
 
-def _print_bill(bill: Any, config: Any = None, from_account: bool = False) -> None:
+def _print_bill(
+    bill: Any,
+    config: Any = None,
+    from_account: bool = False,
+    opening: Any = None,
+    bank_note: str = "",
+) -> None:
     p = bill.period
     print(f"Billing period {p.start} to {p.end} ({p.days} days)")
     if config is not None:
@@ -469,17 +496,83 @@ def _print_bill(bill: Any, config: Any = None, from_account: bool = False) -> No
     # not reach is banked, not owed.
     from ..billing import apply_credits
 
-    entry = apply_credits(bill)
+    entry = apply_credits(bill, opening)
     print(f"\n  {'gross charges':<34} {entry.gross_charges:>+9.2f}")
     print(f"  {'credit applied':<34} {-entry.applied.total:>+9.2f}")
     print(f"  {'AMOUNT DUE':<34} {entry.cash_due:>+9.2f}")
     _print_banks(entry, config)
+    if bank_note:
+        print(f"  {bank_note}")
     if bill.effective_import_rate:
         print(f"  {'effective $/kWh imported':<34} {bill.effective_import_rate:>9.5f}")
     for warning in bill.warnings:
         print(f"\n  warning: {warning}")
     if not bill.complete:
         print("  note: some prices were incomplete or inexact; treat the total as an estimate")
+
+
+def _carried_bank(args: Any, profile: Any, meter: Any, period: Any) -> tuple[Any, str]:
+    """The export credit bank this cycle opens with, and a line saying where from.
+
+    Under Net Billing unspent export credit carries from cycle to cycle until
+    the annual true-up, so a cycle priced on its own opens with an empty bank
+    that no statement shows. Every cycle since Permission To Operate is priced
+    from the same meter source and folded the way the Home Assistant
+    integration folds them -- the same :func:`tariffkit.billing.bank.fold` --
+    so the two agree for the same account.
+
+    ``(None, reason)`` where the fold cannot be trusted: a gap in the cycles, a
+    cycle the meter could not read, a supplier change. A wrong bank is worse
+    than an empty one that says it is empty.
+    """
+    from ..billing.bank import fold
+    from ..billing.engine import compute_segments
+
+    pto = profile.pto_date
+    if pto is None or period.start <= pto:
+        return None, ""
+    earlier = sorted(
+        (p for p in _known_periods(args, profile) if p.end >= pto and p.end < period.start),
+        key=lambda p: p.start,
+    )
+    if not earlier:
+        return None, (
+            f"bank: opening 0 -- no billed cycles known between PTO ({pto}) and "
+            f"{period.start}; `tariffkit account sync` records them"
+        )
+    # `fold` checks the cycles against each other; the two ends are this
+    # caller's to check. A first known cycle starting after PTO means credits
+    # earned in between are missing from the arithmetic, not zero.
+    if earlier[0].start > pto:
+        return None, (
+            f"bank: opening 0 -- no billed cycles known from PTO ({pto}) to "
+            f"{earlier[0].start}; `tariffkit account sync` records them"
+        )
+    if earlier[-1].end + timedelta(days=1) != period.start:
+        return None, (
+            f"bank: opening 0 -- the last known cycle ends {earlier[-1].end}, not the "
+            f"day before this one ({period.start})"
+        )
+    print(
+        f"carrying the export credit bank: pricing {len(earlier)} earlier "
+        f"cycle(s) since PTO {pto}...",
+        file=sys.stderr,
+    )
+    bills = []
+    for cycle in earlier:
+        try:
+            readings = meter.read(cycle).readings
+        except TariffKitError as exc:
+            return None, f"bank: opening 0 -- could not read {cycle.start}..{cycle.end}: {exc}"
+        bills.append(compute_segments(profile.segments_for(cycle), readings, netted=True))
+    state = fold(profile, bills)
+    if not state.trustworthy:
+        return None, f"bank: opening 0 -- not carried: {'; '.join(state.warnings)}"
+    settled = f", through {', '.join(state.true_ups)}" if state.true_ups else ""
+    return state.balance, (
+        f"bank: opening carried from {state.cycles} cycle(s) since PTO {pto}{settled} "
+        "(--no-bank to price this cycle alone)"
+    )
 
 
 def _account_store() -> Any:
@@ -755,6 +848,69 @@ def _cycle_start_day(args: Any) -> int:
     return day
 
 
+#: How `sources` names each source for a reader; the JSON keeps the ids.
+_SOURCE_LABELS = {
+    "rates": "Rates",
+    "account": "Account",
+    "home_assistant": "Home Assistant",
+    "influxdb": "InfluxDB",
+    "pge_portal": "PG&E login",
+    "green_button_cache": "Green Button cache",
+}
+_METER_STATUS = {"home_assistant": "ha", "influxdb": "influx", "pge_portal": "green-button"}
+
+
+def _print_sources(statuses: Sequence[Any]) -> None:
+    """What is set up and what is not, as two short lists.
+
+    One line per source with what it enables beside it, wrapped to the
+    terminal. A meter source left off when another is already chosen is an
+    option rather than a problem, so it gets one line saying so instead of a
+    full remedy that reads like an error.
+    """
+    import shutil
+    import textwrap
+
+    from .availability import first_available_meter_source
+
+    chosen = first_available_meter_source(tuple(statuses))
+    width = min(shutil.get_terminal_size((100, 24)).columns, 100)
+    column = max(len(label) for label in _SOURCE_LABELS.values()) + 4
+
+    def row(label: str, text: str, *more: str) -> None:
+        lines = textwrap.wrap(text, width - column, initial_indent="", subsequent_indent="") or [""]
+        print(f"  {label:<{column - 2}}{lines[0]}")
+        for line in lines[1:]:
+            print(" " * column + line)
+        for extra in more:
+            for line in textwrap.wrap(extra, width - column):
+                print(" " * column + line)
+
+    ready = [status for status in statuses if status.available]
+    missing = [status for status in statuses if not status.available]
+    print("Set up")
+    for status in ready:
+        text = ", ".join(status.features)
+        if chosen and _METER_STATUS.get(status.name) == chosen:
+            text += "  (bill's default)"
+        row(_SOURCE_LABELS.get(status.name, status.name), text)
+    if missing:
+        print("\nNot set up")
+    for status in missing:
+        label = _SOURCE_LABELS.get(status.name, status.name)
+        if chosen and status.name in _METER_STATUS:
+            hint = "optional; `tariffkit setup` adds it"
+        else:
+            hint = status.remedy
+        row(label, ", ".join(status.features), hint)
+    print()
+    if chosen is None:
+        print("`bill` has no meter source to read; anything above would give it one.")
+    else:
+        names = {v: _SOURCE_LABELS[k] for k, v in _METER_STATUS.items()}
+        print(f"`bill` reads {names.get(chosen, chosen)} unless told otherwise.")
+
+
 def _print_credentials() -> None:
     """Where each credential resolves from -- never what it is.
 
@@ -802,6 +958,77 @@ def _print_skipped(skipped: Sequence[Mapping[str, str]]) -> None:
     """
     for entry in skipped:
         print(f"skipped {entry['statement']}: {entry['reason']}", file=sys.stderr)
+
+
+#: How each reconciliation outcome reads in a list of changes.
+_OUTCOME_LABELS = {
+    "add": "new",
+    "confirm": "confirmed",
+    "conflict": "CONFLICT",
+    "missing-required": "MISSING",
+}
+
+
+def _change_value(value: Any) -> str:
+    if value is None or value == "":
+        return "-"
+    if isinstance(value, Mapping):
+        return ", ".join(f"{k}={_change_value(v)}" for k, v in value.items() if v is not None)
+    if isinstance(value, list | tuple):
+        return ", ".join(_change_value(v) for v in value) or "-"
+    return str(value)
+
+
+def _print_proposals(proposals: Sequence[Mapping[str, Any]], indent: str = "") -> int:
+    """Each change a reconciliation proposes, one line apiece. Returns how many.
+
+    Confirmations are counted but not listed: a statement agreeing with what the
+    account already says is the normal case, and listing it buried the lines
+    that change something. What would change reads ``field: before -> after``.
+    """
+    changes = [
+        change
+        for proposal in proposals
+        for change in cast(list[dict[str, Any]], proposal["changes"])
+        if change["outcome"] != "confirm"
+    ]
+    # Each older statement extends the history by one cycle, so a sync of a
+    # year prints a dozen of these; only the net extension is news.
+    extended = [change for change in changes if change["field"] == "history_start"]
+    if extended:
+        changes = [change for change in changes if change["field"] != "history_start"]
+        changes.append(
+            {
+                "outcome": "add",
+                "effective": min(str(change["after"]) for change in extended),
+                "field": "history_start",
+                "before": max(str(change["before"]) for change in extended),
+                "after": min(str(change["after"]) for change in extended),
+            }
+        )
+    changes.sort(key=lambda change: (change["effective"] or "", change["field"]))
+    for change in changes:
+        label = _OUTCOME_LABELS.get(change["outcome"], change["outcome"])
+        before, after = change.get("before"), change.get("after")
+        value = (
+            _change_value(after)
+            if before in (None, "")
+            else f"{_change_value(before)} -> {_change_value(after)}"
+        )
+        line = f"{indent}  {label:<10} {change['effective'] or '':<10}  {change['field']}: {value}"
+        print(line)
+        if change["outcome"] in ("conflict", "missing-required") and change.get("reason"):
+            print(f"{indent}  {'':<10} {'':<10}  {change['reason']}")
+    return len(changes)
+
+
+def _blocking_changes(proposals: Sequence[Mapping[str, Any]]) -> int:
+    return sum(
+        1
+        for proposal in proposals
+        for change in cast(list[dict[str, Any]], proposal["changes"])
+        if change["outcome"] in ("conflict", "missing-required")
+    )
 
 
 def _run_account_command(args: Any) -> int:
@@ -945,41 +1172,51 @@ def _run_account_command(args: Any) -> int:
             _print_skipped(skipped)
             for path, proposal in zip(imported, proposals, strict=True):
                 print(f"{path.name}:")
-                proposal_changes = cast(list[dict[str, Any]], proposal["changes"])
-                if proposal_changes:
-                    for change in proposal_changes:
-                        print(
-                            f"  {change['outcome'].upper()} {change['effective']} {change['field']}"
-                        )
-                else:
+                if not _print_proposals([proposal], indent="  "):
                     print("  no account changes")
             if not args.apply:
                 print("preview only; pass --apply to save")
         return 0
 
     if command == "sync":
+        from .account_commands import statement_directory
+
+        apply = not args.dry_run
         _updated, proposals, skipped = sync_profile(
             store,
             since=args.since,
-            apply=args.apply,
-            keep_statements=args.keep_statements,
+            apply=apply,
+            keep_statements=not args.discard_statements,
             config_path=args.config,
         )
+        blocked = _blocking_changes(proposals)
+        saved = apply and not blocked
         payload = {
-            "applied": args.apply,
+            "applied": saved,
             "proposals": proposals,
             "skipped": skipped,
         }
         if args.json:
             print(json.dumps(payload, indent=2, default=str))
+            return 0 if not (apply and blocked) else 1
+        _print_skipped(skipped)
+        count = _print_proposals(proposals)
+        print(f"\nread {len(proposals)} statement(s); {count} change(s) to your account")
+        if not args.discard_statements:
+            print(f"statements kept in {statement_directory()}")
+        if not count:
+            return 0
+        if args.dry_run:
+            print("dry run: nothing saved; run without --dry-run to save")
+        elif saved:
+            print("saved to your account")
         else:
-            _print_skipped(skipped)
-            print(f"received {len(proposals)} statement update(s)")
-            for proposal in proposals:
-                proposal_changes = cast(list[dict[str, Any]], proposal["changes"])
-                print(f"  {len(proposal_changes)} change(s)" + ("" if args.apply else " (preview)"))
-            if not args.apply:
-                print("preview only; pass --apply to save")
+            print(
+                f"not saved: {blocked} change(s) above conflict with your account or "
+                "need a value no statement prints. Correct the account with "
+                "`tariffkit account update ... --apply`, then sync again."
+            )
+            return 1
         return 0
 
     if command == "export":
@@ -1111,14 +1348,21 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
+        if args.command == "setup":
+            from .setup import run_setup
+
+            return run_setup(args.config)
+
         if args.command == "credentials":
             if args.credential_command == "set":
                 value = getpass.getpass(f"{args.name}: ")
-                set_secret(args.name, value)
-                print(f"stored {args.name}")
+                file = set_secret(args.name, value)
+                print(
+                    f"stored {args.name}" + (f" in {file} (no keyring available)" if file else "")
+                )
             elif args.credential_command == "delete":
-                delete_secret(args.name)
-                print(f"deleted {args.name}")
+                file = delete_secret(args.name)
+                print(f"deleted {args.name}" + (f" from {file}" if file else ""))
             else:
                 _print_credentials()
             return 0
@@ -1168,19 +1412,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 )
                 return 0
-            for status in statuses:
-                mark = "yes" if status.available else "no "
-                print(f"  {mark}  {status.name}")
-                for feature in status.features:
-                    print(f"          {feature}")
-                if status.remedy:
-                    print(f"          -> {status.remedy}")
-            chosen = first_available_meter_source(statuses)
-            print()
-            if chosen is None:
-                print("`bill` has no meter source to read; anything above would give it one.")
-            else:
-                print(f"`bill` reads --source {chosen} unless told otherwise.")
+            _print_sources(statuses)
             return 0
 
         if args.command == "bill":
@@ -1226,6 +1458,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
             else:
                 result = BillEngine(engine).compute(readings, period, check=args.check, netted=True)
+            opening, bank_note = None, ""
+            if from_account and not args.no_bank:
+                assert account_profile is not None
+                opening, bank_note = _carried_bank(args, account_profile, meter, period)
             if args.json:
                 print(json.dumps(result.to_dict(), indent=2))
             else:
@@ -1238,6 +1474,8 @@ def main(argv: list[str] | None = None) -> int:
                     if account_profile is not None
                     else engine.config,
                     from_account,
+                    opening,
+                    bank_note,
                 )
                 if note:
                     print(note)

@@ -197,6 +197,22 @@ ENDPOINTS: Mapping[str, Endpoint] = {
         "controller, which is why no amount of grepping for a Bill*List class "
         "finds it. Dispatches sClassName/sMethodName with a JSON string input.",
     ),
+    "device_code_send": Endpoint(
+        "device_code_send",
+        "MyAcct_Apex_CustomMFAController",
+        "handleChoiceofMFA",
+        note="read from the login page's myAcct_CustomLoginMFA component, not captured. "
+        "Takes username (the encrypted one login returned), selectedChoice (Email or "
+        "Phone), uuid and isforgotpassword; answers retMessage 'verifymfa:<codeId>'.",
+    ),
+    "device_code_verify": Endpoint(
+        "device_code_verify",
+        "MyAcct_Apex_CustomMFAController",
+        "verifySignInCode",
+        note="read from the login page's myAcct_CustomLoginMFA component, not captured. "
+        "Takes one `input` object; on success wrapperObj carries the frontdoor URL and "
+        "the device pair (retencrUsrname, encryptedKey) the page stores as cookies.",
+    ),
     "login": Endpoint(
         "login",
         "MyAcct_customLoginLWCController",
@@ -240,6 +256,7 @@ BROWSER_COOKIE = "LSKey-c$browsercookie"
 VALIDATION_COOKIE = "LSKey-c$validationCookie"
 #: The login form runs in its own Lightning app, not the authenticated one.
 LOGIN_APP = "siteforce:loginApp2"
+START_URL = "/myaccount/s/"
 COMMUNITY_APP = "siteforce:communityApp"
 
 
@@ -334,6 +351,21 @@ class PortalError(DataError):
         super().__init__(message)
         self.endpoint = endpoint
         self.step = step
+
+
+class DeviceNotRecognisedError(PortalError):
+    """The portal wants this device verified with a one-time code.
+
+    Raised by :meth:`PgeSession.login`, which keeps what the challenge needs, so
+    the same session can go on to :meth:`PgeSession.send_device_code` and
+    :meth:`PgeSession.verify_device_code`. ``email`` and ``phone`` are the
+    masked destinations the portal offers, as it prints them.
+    """
+
+    def __init__(self, message: str, *, email: str = "", phone: str = "") -> None:
+        super().__init__(message, endpoint="login", step="device-trust")
+        self.email = email
+        self.phone = phone
 
 
 class InvalidSessionError(PortalError):
@@ -482,9 +514,9 @@ def _check_device_trust(answer: Any, *, configured: bool) -> None:
     verified, and a browser only avoids it by carrying the result of an earlier
     verification for 180 days.
 
-    Worth being precise about, because reading it as "MFA is on" sends you off
-    building a one-time-code flow for a challenge that a correctly identified
-    device never sees.
+    A browser passes it once with a one-time code, after which the portal
+    hands back the pair of device values the page stores as cookies; see
+    :meth:`PgeSession.verify_device_code`.
     """
     if not isinstance(answer, Mapping):
         return
@@ -492,21 +524,20 @@ def _check_device_trust(answer: Any, *, configured: bool) -> None:
     message = str(value.get("retMessage", "")) if isinstance(value, Mapping) else ""
     if "verifymfa" not in message.lower():
         return
-    raise PortalError(
+    phone = str(value.get("PhoneVal") or "") if isinstance(value, Mapping) else ""
+    raise DeviceNotRecognisedError(
         "the portal does not recognise this device"
         + (
             ", even with the configured PGE_BROWSER_COOKIE and PGE_VALIDATION_COOKIE; "
-            "they may have expired (the portal trusts a device for 180 days) or been "
-            "copied from a different browser profile"
+            "they may have expired (the portal trusts a device for 180 days)"
             if configured
-            else "; set PGE_BROWSER_COOKIE and PGE_VALIDATION_COOKIE from a signed-in "
-            "browser (see audit/pge/PORTAL.md). They are created by the login page's own "
-            "JavaScript, so no amount of fetching will produce them"
+            else ""
         )
-        + ". This is device verification, not multi-factor authentication -- the account "
-        "needs no second factor, and a recognised device is never challenged.",
-        endpoint="login",
-        step="device-trust",
+        + ". Run `tariffkit setup` to verify it with a one-time code sent to your email "
+        "or phone; that is device verification, not multi-factor authentication, and "
+        "a verified device is not asked again for 180 days.",
+        email=str(value.get("EmailVal") or "") if isinstance(value, Mapping) else "",
+        phone="" if "no phone" in phone.lower() else phone,
     )
 
 
@@ -523,6 +554,13 @@ class PgeSession:
         self._client: Any = None
         self._fwuid = ""
         self._token = ""
+        #: The page's tracking id, which every call of one sign-in shares.
+        self._tracking = str(uuid4())
+        #: What a device challenge needs: login's answer, and the code id the
+        #: portal returns when it sends a code.
+        self._challenge: Mapping[str, Any] = {}
+        self._code_id = ""
+        self._channel = ""
 
     def __enter__(self) -> PgeSession:
         try:
@@ -915,21 +953,131 @@ class PgeSession:
             {
                 "username": self.settings.username,
                 "password": self.settings.password,
-                "startUrl": "/myaccount/s/",
-                "uuid": str(uuid4()),
+                "startUrl": START_URL,
+                "uuid": self._tracking,
                 "browsercookie": browser,
                 "validationCookie": validation,
             },
             page=LOGIN_PATH,
             app=LOGIN_APP,
         )
+        returned = answer.get("returnValue") if isinstance(answer, Mapping) else None
+        self._challenge = returned if isinstance(returned, Mapping) else {}
         _check_device_trust(answer, configured=bool(self.settings.browser_cookie))
+        self._finish_sign_in(_frontdoor(answer))
 
+    def send_device_code(self, channel: str) -> None:
+        """Ask the portal to send a one-time code, after `login` was challenged.
+
+        ``channel`` is ``"Email"`` or ``"Phone"`` (a text message), the page's
+        own values.
+        """
+        if channel not in ("Email", "Phone"):
+            raise ValueError("channel must be 'Email' or 'Phone'")
+        if not self._challenge:
+            raise PortalError("no device challenge to answer; call login() first")
+        answer = self.apex(
+            "device_code_send",
+            {
+                "username": self._challenge.get("retencrUsrname", ""),
+                "selectedChoice": channel,
+                "uuid": self._tracking,
+                "isforgotpassword": False,
+            },
+            page=LOGIN_PATH,
+            app=LOGIN_APP,
+        )
+        value = answer.get("returnValue") if isinstance(answer, Mapping) else None
+        message = str(value.get("retMessage", "")) if isinstance(value, Mapping) else ""
+        # The page accepts two answers: "verifymfa:<codeId>", and a bare
+        # "success" (seen for a text message) that sends a code without an id.
+        if "verifymfa" in message.lower():
+            self._code_id = message.split(":", 1)[1].strip() if ":" in message else ""
+        elif "success" in message.lower():
+            self._code_id = ""
+        else:
+            raise PortalError(
+                f"the portal did not send a code: {message or 'no answer'}",
+                endpoint="device_code_send",
+                step="device-trust",
+            )
+        self._channel = channel
+
+    def verify_device_code(self, code: str) -> tuple[str, str]:
+        """Answer the challenge, finish signing in, and return the device pair.
+
+        The pair is ``(browser cookie, validation cookie)``: what the page would
+        store as cookies, and what `PgeSettings` takes as ``browser_cookie`` and
+        ``validation_cookie``. Store it, and later sign-ins from this machine are
+        not challenged for as long as the portal trusts it (180 days).
+        """
+        if not self._channel:
+            raise PortalError("no code has been sent; call send_device_code() first")
+        answer = self.apex(
+            "device_code_verify",
+            {
+                "input": {
+                    "authCode": code.strip(),
+                    "uuid": self._tracking,
+                    "password": self.settings.password,
+                    "startUrl": START_URL,
+                    "encToken": self._challenge.get("encryptedTFT"),
+                    # The page leaves this unset when the send answered a bare
+                    # "success"; null is what that serialises to.
+                    "codeId": self._code_id or None,
+                    "usernameVal": self._challenge.get("retencrUsrname", ""),
+                    "isForgotPasswordFlow": False,
+                    "otpType": self._channel,
+                }
+            },
+            page=LOGIN_PATH,
+            app=LOGIN_APP,
+        )
+        value = answer.get("returnValue") if isinstance(answer, Mapping) else None
+        value = value if isinstance(value, Mapping) else {}
+        response = str(value.get("returnResponse", ""))
+        if "success" not in response.lower():
+            if "invalidotp" in response.lower():
+                left = value.get("remainingAttempt")
+                raise PortalError(
+                    "that code was not accepted"
+                    + (f"; {left} attempts left" if left is not None else ""),
+                    endpoint="device_code_verify",
+                    step="device-trust",
+                )
+            if "userlocked" in response.lower():
+                raise PortalError(
+                    "PG&E has locked the account after too many attempts; unlock it "
+                    "through PG&E before trying again",
+                    endpoint="device_code_verify",
+                    step="device-trust",
+                )
+            raise PortalError(
+                f"the portal refused the code: {response or 'no answer'}",
+                endpoint="device_code_verify",
+                step="device-trust",
+            )
+        wrapper = value.get("wrapperObj") or {}
+        browser = str(wrapper.get("retencrUsrname") or self._challenge.get("retencrUsrname", ""))
+        validation = str(wrapper.get("encryptedKey") or "")
+        if not (browser and validation):
+            raise PortalError(
+                "the code was accepted but the portal returned no device values",
+                endpoint="device_code_verify",
+                step="device-trust",
+            )
+        for name, cookie in ((BROWSER_COOKIE, browser), (VALIDATION_COOKIE, validation)):
+            self._client.cookies.set(name, cookie, domain="myaccount.pge.com", path="/")
+        door = str(wrapper.get("retMessage") or "")
+        self._finish_sign_in(door if door.startswith("http") else "")
+        self._challenge, self._code_id, self._channel = {}, "", ""
+        return browser, validation
+
+    def _finish_sign_in(self, door: str) -> None:
         # The call does not itself establish the session. It returns a
         # Salesforce frontdoor URL, and *following* that is what sets the
         # session cookie -- so a login that stops at a successful POST leaves an
         # anonymous client holding a success message.
-        door = _frontdoor(answer)
         if door:
             self._client.get(door)
             # The authenticated community issues its own CSRF token, and the

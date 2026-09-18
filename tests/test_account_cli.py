@@ -157,10 +157,10 @@ def test_bill_without_dates_prices_the_open_cycle_from_statement_evidence(
     monkeypatch.setenv("PGE_USERNAME", "person@example.invalid")
     monkeypatch.setenv("PGE_PASSWORD", "secret")
     monkeypatch.setattr("tariffkit.sources.cached_bill_periods", lambda *a, **k: [])
-    asked: dict[str, date] = {}
+    asked: list[tuple[date, date]] = []
 
     def fake(settings: object, start: date, end: date, **kwargs: object) -> object:
-        asked.update(start=start, end=end)
+        asked.append((start, end))
         return SimpleNamespace(
             path=_export_csv(tmp_path), start=start, end=end, downloaded=False, covers="cached"
         )
@@ -170,9 +170,54 @@ def test_bill_without_dates_prices_the_open_cycle_from_statement_evidence(
     assert main(["bill", "--source", "green-button"]) == 0
 
     # The cycle after the last statement: contiguous, so it opened on the 28th.
-    assert asked == {"start": date(2026, 8, 28), "end": date(2026, 9, 9)}
+    assert asked == [(date(2026, 8, 28), date(2026, 9, 9))]
     out = capsys.readouterr().out
     assert "cycle: 2026-08-28 to 2026-09-09, the boundary your statements print" in out
+    # PTO (2026-06-03, the default) precedes the only known cycle, so the
+    # credits in between are unknown and the bank says so rather than guess.
+    assert "no billed cycles known from PTO (2026-06-03) to 2026-07-29" in out
+
+
+@freeze_time("2026-09-09T12:00:00-07:00")
+def test_bill_carries_the_bank_from_the_cycles_since_pto(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Each earlier cycle is priced from the same source and its credit carried in."""
+    from dataclasses import replace
+
+    profile = _account_with_statement(tmp_path, monkeypatch)
+    epoch = profile.epochs[0]
+    AccountStore(tmp_path).save(
+        replace(
+            profile,
+            epochs=(replace(epoch, config=replace(epoch.config, pto_date=date(2026, 7, 29))),),
+        )
+    )
+    monkeypatch.setenv("PGE_USERNAME", "person@example.invalid")
+    monkeypatch.setenv("PGE_PASSWORD", "secret")
+    monkeypatch.setattr("tariffkit.sources.cached_bill_periods", lambda *a, **k: [])
+    asked: list[tuple[date, date]] = []
+
+    def fake(settings: object, start: date, end: date, **kwargs: object) -> object:
+        asked.append((start, end))
+        return SimpleNamespace(
+            path=_export_csv(tmp_path), start=start, end=end, downloaded=False, covers="cached"
+        )
+
+    monkeypatch.setattr("tariffkit.sources.pge.cached_green_button", fake)
+
+    assert main(["bill", "--source", "green-button"]) == 0
+
+    assert asked == [
+        (date(2026, 8, 28), date(2026, 9, 9)),
+        (date(2026, 7, 29), date(2026, 8, 27)),
+    ]
+    out = capsys.readouterr().out
+    assert "bank: opening carried from 1 cycle(s) since PTO 2026-07-29" in out
+
+    asked.clear()
+    assert main(["bill", "--source", "green-button", "--no-bank"]) == 0
+    assert asked == [(date(2026, 8, 28), date(2026, 9, 9))]
 
 
 @freeze_time("2026-09-09T12:00:00-07:00")
@@ -938,7 +983,7 @@ def test_account_import_statement_previews_then_applies(
     ]
 
 
-def test_account_sync_removes_private_cache_after_parsing(
+def test_account_sync_can_still_discard_statements_after_parsing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = AccountStore(tmp_path)
@@ -985,7 +1030,7 @@ def test_account_sync_removes_private_cache_after_parsing(
     reconcile_module = importlib.import_module("tariffkit.providers.pge.reconcile")
     monkeypatch.setattr(reconcile_module, "import_statement", lambda _path: imported)
 
-    _profile, proposals, skipped = sync_profile(store, apply=False)
+    _profile, proposals, skipped = sync_profile(store, apply=False, keep_statements=False)
 
     assert len(proposals) == 1
     assert skipped == []
@@ -1444,3 +1489,94 @@ class TestCcaFromStatement:
         changes, _ = config_from_statement(_statement(cca_name="Sonoma Clean Power"))
         assert changes["cca"] == {"name": "SONOMA CLEAN POWER"}
         assert "rate_card" not in changes["cca"]  # type: ignore[operator]
+
+
+def test_sync_saves_by_default_keeps_statements_and_lists_each_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store = AccountStore(tmp_path)
+    store.save(AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),)))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    downloads: list[str] = []
+
+    class Session:
+        def __enter__(self) -> Session:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def login(self, *, force: bool = False) -> None:
+            return None
+
+        def bill_history(self) -> list[dict[str, str]]:
+            return [{"billId": "bill-1", "billDate": "2026-02-01"}]
+
+        def download_bill(self, bill_id: str) -> bytes:
+            downloads.append(bill_id)
+            return b"%PDF synthetic"
+
+    import tariffkit.sources.pge as pge_module
+
+    monkeypatch.setattr(pge_module, "PgeSession", lambda _settings: Session())
+    monkeypatch.setattr(pge_module.PgeSettings, "load", lambda _path=None: object())
+    reconcile_module = importlib.import_module("tariffkit.providers.pge.reconcile")
+    monkeypatch.setattr(
+        reconcile_module,
+        "import_statement",
+        lambda _path: observation(tariff="EV2-A", digest="d" * 64),
+    )
+
+    assert main(["account", "sync", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "tariff: E-ELEC -> EV2-A" in out
+    assert "dry run: nothing saved" in out
+    assert [epoch.config.tariff for epoch in store.load().epochs] == ["E-ELEC"]
+
+    assert main(["account", "sync"]) == 0
+    assert "saved to your account" in capsys.readouterr().out
+    assert "EV2-A" in [epoch.config.tariff for epoch in store.load().epochs]
+
+    kept = list((tmp_path / "cache" / "tariffkit" / "statements").glob("*.pdf"))
+    assert [path.name[:10] for path in kept] == ["2026-02-01"]
+    assert kept[0].stat().st_mode & 0o777 == 0o600
+    # The second sync read the kept copy rather than downloading it again.
+    assert downloads == ["bill-1"]
+
+
+def test_a_run_of_history_extensions_prints_as_one_line(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from tariffkit.cli.commands import _print_proposals
+
+    def extend(before: str, after: str) -> dict[str, object]:
+        return {
+            "changes": [
+                {
+                    "outcome": "add",
+                    "effective": after,
+                    "field": "history_start",
+                    "before": before,
+                    "after": after,
+                }
+            ]
+        }
+
+    assert (
+        _print_proposals([extend("2026-07-29", "2026-06-30"), extend("2026-06-30", "2026-06-01")])
+        == 1
+    )
+    assert "history_start: 2026-07-29 -> 2026-06-01" in capsys.readouterr().out
+
+
+def test_the_account_file_is_indented_for_reading(tmp_path: Path) -> None:
+    store = AccountStore(tmp_path)
+    saved = store.save(AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),)))
+
+    text = store.path.read_text(encoding="utf-8")
+
+    assert text.startswith("{\n  ")
+    assert json.loads(text)["epochs"][0]["effective"] == "2025-01-01"
+    # The revision is the hash of the bytes written, so it still round-trips.
+    assert store.load().revision == saved.revision

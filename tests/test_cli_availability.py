@@ -127,8 +127,9 @@ def test_a_cached_export_is_a_source_without_a_login(
 def test_the_sources_command_reports_what_works(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["sources"]) == 0
     out = capsys.readouterr().out
-    assert "yes  rates" in out
-    assert "no   pge_portal" in out
+    ready, missing = out.split("Not set up")
+    assert "Rates" in ready
+    assert "PG&E login" in missing
     assert "no meter source to read" in out
 
 

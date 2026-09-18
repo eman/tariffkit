@@ -5,6 +5,43 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+- **`tariffkit setup`: guided first-run configuration.** Walks the PG&E login,
+  the account, a meter source (Home Assistant or InfluxDB) and MQTT in order,
+  tests each connection, writes every answer where the loaders already read
+  it (`config.toml`, the keyring or `.env`, the account), and ends with
+  `sources` and `now`. Enter keeps the current value, so it is safe to rerun.
+  Addresses without a scheme are tried as https, then http; Home Assistant
+  and InfluxDB energy counters are listed to pick from.
+- **PG&E device verification without a browser.** An unrecognised machine is
+  verified with a one-time code sent by email or text
+  (`PgeSession.send_device_code` / `verify_device_code`), after which the
+  portal-issued device pair is stored and trusted for 180 days. The two
+  controller calls were read from the login page's component source and are
+  registered as not yet captured.
+- **`tariffkit bill` carries the export credit bank.** Every cycle since PTO is
+  priced from the same meter source and folded as the Home Assistant
+  integration folds it, now shared as `tariffkit.billing.bank`. Where the fold
+  cannot be trusted the bank opens at zero and says why; `--no-bank` prices
+  the cycle alone.
+
+### Changed
+- **`credentials set` falls back to `~/.config/tariffkit/.env`** (mode 600)
+  when no keyring backend is available, instead of failing.
+- **`account sync` saves by default** (`--dry-run` previews; `--apply` is still
+  accepted), lists each change as `field: before -> after`, keeps statements
+  in `~/.cache/tariffkit/statements` and reuses them instead of downloading
+  again (`--discard-statements` for the old behaviour). A conflict saves
+  nothing and says why.
+- **Older statements extend the account's history back** instead of coming
+  back `missing-required`: facts a bill does not print carry from the
+  earliest snapshot.
+- **`tariffkit sources` is grouped into "Set up" and "Not set up"**, with
+  readable names, wrapped text, remedies naming the exact config key, and
+  unused alternative meter sources shown as optional.
+- **`account.json` is indented** so it can be read.
+- The OCR install hint names the command for the platform.
+
 ## [0.9.0] - 2026-09-12
 
 ### Added

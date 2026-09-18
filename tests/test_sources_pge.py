@@ -237,7 +237,11 @@ class TestEndpointRegistry:
     def test_every_endpoint_records_whether_it_was_observed(self) -> None:
         # The registry is the memory of what was actually seen, so a future
         # reader can tell a confirmed action from an educated guess.
-        assert all(endpoint.captured for endpoint in ENDPOINTS.values())
+        # Device verification was read from the login page's component source
+        # rather than captured, and says so; everything else was observed.
+        unobserved = {name for name, endpoint in ENDPOINTS.items() if not endpoint.captured}
+        assert unobserved == {"device_code_send", "device_code_verify"}
+        assert all("not captured" in ENDPOINTS[name].note for name in unobserved)
 
     def test_the_login_controller_is_the_utilitys_own(self) -> None:
         # Worth pinning, because the obvious guess is wrong: this is not
@@ -298,3 +302,148 @@ class TestGreenButton:
             archive.writestr("readme.txt", "nope")
         with pytest.raises(PortalError, match="no CSV"):
             _unzip_csv(buffer.getvalue())
+
+
+class _Jar(dict[str, str]):
+    def set(self, name: str, value: str, **_where: Any) -> None:
+        self[name] = value
+
+
+class ScriptedPortal(FakeClient):
+    """Answers each Apex method from a script, and records which pages were fetched."""
+
+    def __init__(self, answers: dict[str, list[Any]]) -> None:
+        super().__init__()
+        self.answers = answers
+        self.cookies = _Jar()
+        self.fetched: list[str] = []
+
+    def get(self, path: str, **kwargs: Any) -> FakeResponse:
+        self.fetched.append(path)
+        return super().get(path, **kwargs)
+
+    def post(self, path: str, **kwargs: Any) -> FakeResponse:
+        self.posts.append({"path": path, **kwargs})
+        method = json.loads(kwargs["data"]["message"])["actions"][0]["params"]["method"]
+        value = self.answers[method].pop(0)
+        return FakeResponse({"actions": [{"state": "SUCCESS", "returnValue": value}]})
+
+    def sent(self, method: str) -> list[dict[str, Any]]:
+        calls = [json.loads(p["data"]["message"])["actions"][0]["params"] for p in self.posts]
+        return [c["params"] for c in calls if c["method"] == method]
+
+
+CHALLENGE = {
+    "retMessage": "verifymfa :",
+    "retencrUsrname": "ENC-USER",
+    "EmailVal": "s*****@example.com",
+    "PhoneVal": "No Phone on file",
+}
+
+
+class TestDeviceVerification:
+    def test_an_unrecognised_device_is_verified_with_a_code(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tariffkit.sources.pge import DeviceNotRecognisedError
+
+        portal = ScriptedPortal(
+            {
+                "login": [{"returnValue": CHALLENGE}],
+                "handleChoiceofMFA": [{"returnValue": {"retMessage": "verifymfa:CODE-ID"}}],
+                "verifySignInCode": [
+                    {
+                        "returnValue": {
+                            "returnResponse": "success",
+                            "wrapperObj": {
+                                "retMessage": "https://myaccount.pge.com/secur/frontdoor.jsp?x",
+                                "retencrUsrname": "DEVICE-B",
+                                "encryptedKey": "DEVICE-V",
+                            },
+                        }
+                    }
+                ],
+            }
+        )
+        session = session_with(portal, tmp_path)
+        monkeypatch.setattr(session, "signed_in", lambda: portal.fetched[-1] == "/myaccount/s/")
+
+        with pytest.raises(DeviceNotRecognisedError) as challenged:
+            session.login(force=True)
+        # Masked as the portal prints it; a missing phone is not offered.
+        assert (challenged.value.email, challenged.value.phone) == ("s*****@example.com", "")
+
+        session.send_device_code("Email")
+        assert session.verify_device_code(" 123456 ") == ("DEVICE-B", "DEVICE-V")
+
+        (login,) = portal.sent("login")
+        (choice,) = portal.sent("handleChoiceofMFA")
+        (verify,) = portal.sent("verifySignInCode")
+        # The encrypted username login returned, not the typed one, and one
+        # tracking id across the whole sign-in, as the page does.
+        assert choice == {
+            "username": "ENC-USER",
+            "selectedChoice": "Email",
+            "uuid": login["uuid"],
+            "isforgotpassword": False,
+        }
+        assert verify["input"]["authCode"] == "123456"
+        assert verify["input"]["codeId"] == "CODE-ID"
+        assert verify["input"]["usernameVal"] == "ENC-USER"
+        assert verify["input"]["password"] == "p"
+        assert verify["input"]["uuid"] == login["uuid"]
+        # Signing in is finished by following the frontdoor link.
+        assert "https://myaccount.pge.com/secur/frontdoor.jsp?x" in portal.fetched
+
+    def test_a_wrong_code_says_how_many_tries_are_left(self, tmp_path: Path) -> None:
+        from tariffkit.sources.pge import DeviceNotRecognisedError
+
+        portal = ScriptedPortal(
+            {
+                "login": [{"returnValue": CHALLENGE}],
+                "handleChoiceofMFA": [{"returnValue": {"retMessage": "verifymfa:CODE-ID"}}],
+                "verifySignInCode": [
+                    {"returnValue": {"returnResponse": "InvalidOtp", "remainingAttempt": 2}}
+                ],
+            }
+        )
+        session = session_with(portal, tmp_path)
+        with pytest.raises(DeviceNotRecognisedError):
+            session.login(force=True)
+        session.send_device_code("Email")
+
+        with pytest.raises(PortalError, match="2 attempts left"):
+            session.verify_device_code("000000")
+
+
+def test_a_bare_success_still_sends_the_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Seen live for a text message: no code id, and the page carries on."""
+    from tariffkit.sources.pge import DeviceNotRecognisedError
+
+    portal = ScriptedPortal(
+        {
+            "login": [{"returnValue": CHALLENGE}],
+            "handleChoiceofMFA": [{"returnValue": {"retMessage": "success"}}],
+            "verifySignInCode": [
+                {
+                    "returnValue": {
+                        "returnResponse": "success",
+                        "wrapperObj": {"retencrUsrname": "B", "encryptedKey": "V"},
+                    }
+                }
+            ],
+        }
+    )
+    session = session_with(portal, tmp_path)
+    monkeypatch.setattr(session, "signed_in", lambda: True)
+    with pytest.raises(DeviceNotRecognisedError):
+        session.login(force=True)
+
+    session.send_device_code("Phone")
+
+    assert session.verify_device_code("123456") == ("B", "V")
+    (verify,) = portal.sent("verifySignInCode")
+    assert verify["input"]["codeId"] is None
+    assert verify["input"]["otpType"] == "Phone"
