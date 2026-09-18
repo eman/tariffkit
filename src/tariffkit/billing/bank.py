@@ -178,4 +178,25 @@ def _suppliers_changed(profile: AccountProfile, bills: list[Bill]) -> bool:
     arrangement and half another. Where the assumption does not hold, say so
     rather than answer.
     """
-    return len({_is_cca(profile, bill.period.end) for bill in bills}) > 1
+    return len({_generation_supplier(profile, bill.period.end) for bill in bills}) > 1
+
+
+def _generation_supplier(profile: AccountProfile, on: date) -> tuple[str, ...]:
+    """Who supplied generation on ``on``, down to which CCA.
+
+    Not `_is_cca`: MCE to SVCE is CCA both sides, and folding across it would
+    carry one aggregator's generation and bonus credit into another's bank.
+    """
+    from ..timeutil import PACIFIC
+
+    try:
+        config = profile.config_at(datetime(on.year, on.month, on.day, 12, tzinfo=PACIFIC))
+    except AccountError:
+        return ()
+    if config.supplier is not Supplier.CCA or config.cca is None:
+        return (str(config.supplier),)
+    return (
+        str(config.supplier),
+        config.cca.name.casefold(),
+        (config.cca.rate_card or "").casefold(),
+    )

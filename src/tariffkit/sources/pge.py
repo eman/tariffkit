@@ -273,11 +273,11 @@ class PgeSettings:
     #: verified once carries the result for 180 days, which is why a person
     #: never sees a challenge.
     #:
-    #: These are created by the login page's own JavaScript, so they never
-    #: arrive over Set-Cookie and a scripted client cannot obtain them by
-    #: fetching anything. Left empty, every run looks like a brand-new device
-    #: and the portal asks to verify it. Copy them once from a signed-in
-    #: browser -- see audit/pge/PORTAL.md.
+    #: They never arrive over Set-Cookie: the login page's JavaScript stores
+    #: them from the answer to the device-code check. Left empty, every run
+    #: looks like a brand-new device and the portal asks to verify it;
+    #: `tariffkit setup` (or `verify_device_code`) completes that check once
+    #: and stores the pair -- see audit/pge/PORTAL.md.
     browser_cookie: str = field(repr=False, default="")
     validation_cookie: str = field(repr=False, default="")
     #: Which account the usage platform answers for, e.g.
@@ -1058,7 +1058,10 @@ class PgeSession:
                 step="device-trust",
             )
         wrapper = value.get("wrapperObj") or {}
-        browser = str(wrapper.get("retencrUsrname") or self._challenge.get("retencrUsrname", ""))
+        # Not the challenge's `retencrUsrname`: that is the encrypted login
+        # name, and storing it as the browser cookie leaves every later
+        # sign-in challenged again.
+        browser = str(wrapper.get("retencrUsrname") or "")
         validation = str(wrapper.get("encryptedKey") or "")
         if not (browser and validation):
             raise PortalError(

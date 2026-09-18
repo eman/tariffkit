@@ -562,9 +562,22 @@ def _carried_bank(args: Any, profile: Any, meter: Any, period: Any) -> tuple[Any
     for cycle in earlier:
         try:
             readings = meter.read(cycle).readings
+            # Inside the guard: a known cycle the account's epochs do not reach
+            # yet is a reason the bank is not carried, not a failed command.
+            bill = compute_segments(profile.segments_for(cycle), readings, netted=True)
         except TariffKitError as exc:
-            return None, f"bank: opening 0 -- could not read {cycle.start}..{cycle.end}: {exc}"
-        bills.append(compute_segments(profile.segments_for(cycle), readings, netted=True))
+            return None, f"bank: opening 0 -- could not price {cycle.start}..{cycle.end}: {exc}"
+        # `fold` looks at `complete` -- the rates -- but not at coverage. A
+        # cycle with missing or estimated meter days still prices to a
+        # real-looking figure, and a bank folded from it would cut this cycle's
+        # amount due on data the meter never supplied. The integration refuses
+        # these through `backfill.build`; this path refuses them here.
+        if bill.warnings:
+            return None, (
+                f"bank: opening 0 -- {cycle.start}..{cycle.end} is not fully metered: "
+                f"{'; '.join(bill.warnings)}"
+            )
+        bills.append(bill)
     state = fold(profile, bills)
     if not state.trustworthy:
         return None, f"bank: opening 0 -- not carried: {'; '.join(state.warnings)}"
@@ -877,13 +890,17 @@ def _print_sources(statuses: Sequence[Any]) -> None:
     width = min(shutil.get_terminal_size((100, 24)).columns, 100)
     column = max(len(label) for label in _SOURCE_LABELS.values()) + 4
 
+    # Floored: a terminal narrower than the label column would otherwise make
+    # textwrap raise instead of wrap.
+    wrap_width = max(width - column, 20)
+
     def row(label: str, text: str, *more: str) -> None:
-        lines = textwrap.wrap(text, width - column, initial_indent="", subsequent_indent="") or [""]
+        lines = textwrap.wrap(text, wrap_width, initial_indent="", subsequent_indent="") or [""]
         print(f"  {label:<{column - 2}}{lines[0]}")
         for line in lines[1:]:
             print(" " * column + line)
         for extra in more:
-            for line in textwrap.wrap(extra, width - column):
+            for line in textwrap.wrap(extra, wrap_width):
                 print(" " * column + line)
 
     ready = [status for status in statuses if status.available]
@@ -1463,7 +1480,17 @@ def main(argv: list[str] | None = None) -> int:
                 assert account_profile is not None
                 opening, bank_note = _carried_bank(args, account_profile, meter, period)
             if args.json:
-                print(json.dumps(result.to_dict(), indent=2))
+                payload = result.to_dict()
+                if from_account:
+                    from ..billing import apply_credits
+
+                    # Beside the bill rather than in place of it, so the
+                    # existing keys keep their meaning: `statement` is what the
+                    # human output prints as AMOUNT DUE, with the carried bank
+                    # (or none, under --no-bank) as its opening.
+                    payload["statement"] = apply_credits(result, opening).to_dict()
+                    payload["bank_note"] = bank_note or None
+                print(json.dumps(payload, indent=2))
             else:
                 # An account profile describes a changing agreement, so the
                 # config is the one in force over this cycle rather than a

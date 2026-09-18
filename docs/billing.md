@@ -349,6 +349,32 @@ period — only how it was computed.
 `--config FILE` opts out for that command, pricing a hypothetical from one
 snapshot instead; see [Pricing from the account](accounts.md#pricing-from-the-account).
 
+### The carried bank
+
+A cycle priced on its own opens with an empty export credit bank, which no
+statement after the first one does. So when the account has a PTO date, `bill`
+also prices every known cycle from PTO up to this one, from the same meter
+source, and folds them into the bank this cycle opens with — the same
+`tariffkit.billing.bank.fold` the Home Assistant integration uses, so the two
+agree. The human output prints `gross charges`, `credit applied` and
+`AMOUNT DUE` with that opening, and a `bank:` line saying where it came from.
+`--json` adds the same figures beside the bill as `statement` (a
+`LedgerEntry`) and `bank_note`; the existing keys are unchanged.
+
+The bank opens at zero, with the `bank:` line saying why, rather than being
+guessed whenever the fold cannot be trusted:
+
+- no cycles are known between PTO and this one, or they do not run
+  contiguously from PTO to the day before it (`tariffkit account sync` records
+  them);
+- an earlier cycle could not be read or priced, or was not fully metered —
+  missing or estimated days would put credit in the bank that the meter never
+  recorded;
+- generation changed hands inside the run, including from one CCA to another.
+
+`--no-bank` prices the cycle alone, as before, and skips reading the earlier
+cycles.
+
 ## Reading the output
 
 `buckets` mirror how a statement prints: one line per season and TOU period,

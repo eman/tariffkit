@@ -122,6 +122,13 @@ def delete_dotenv_secret(name: str, path: str | Path | None = None) -> Path:
     return file
 
 
+def _in_dotenv(name: str) -> bool:
+    file = _dotenv_path(None)
+    return len(_dotenv_lines_without(file, SECRET_ENV[name])) != (
+        len(file.read_text(encoding="utf-8").splitlines()) if file.is_file() else 0
+    )
+
+
 def _dotenv_path(path: str | Path | None) -> Path:
     if path is not None:
         return Path(path)
@@ -151,6 +158,7 @@ def _write_private(file: Path, lines: list[str]) -> None:
 class _KeyringErrors(Protocol):
     KeyringError: type[Exception]
     NoKeyringError: type[Exception]
+    PasswordDeleteError: type[Exception]
 
 
 class _Keyring(Protocol):
@@ -211,22 +219,40 @@ def set_secret(name: str, value: str) -> Path | None:
         return set_dotenv_secret(name, value)
     except keyring.errors.KeyringError as exc:
         raise ConfigError(f"could not store {name!r} in the operating-system keyring") from exc
+    # A fallback entry from before this machine had a keyring would shadow the
+    # new value: every loader reads ``.env`` first.
+    if _in_dotenv(name):
+        delete_dotenv_secret(name)
     return None
 
 
 def delete_secret(name: str) -> Path | None:
-    """Delete a named secret from wherever `set_secret` would have put it."""
+    """Delete a named secret from everywhere `set_secret` may have put it.
+
+    Both places, not whichever `set_secret` would pick today: a secret written
+    to ``.env`` on a machine that had no keyring then is still there after one
+    is installed, and every loader reads ``.env`` first -- so deleting only the
+    keyring entry would report success while the old credential stayed live.
+    Returns the ``.env`` file when an entry was removed from it.
+    """
     _validate_name(name)
+    removed = delete_dotenv_secret(name) if _in_dotenv(name) else None
     keyring = _available_keyring()
     if keyring is None:
-        return delete_dotenv_secret(name)
+        if removed is None:
+            return delete_dotenv_secret(name)  # raises: set nowhere
+        return removed
     try:
         keyring.delete_password(SERVICE, name)
     except keyring.errors.NoKeyringError:
-        return delete_dotenv_secret(name)
+        if removed is None:
+            return delete_dotenv_secret(name)
+    except keyring.errors.PasswordDeleteError:
+        if removed is None:
+            raise ConfigError(f"{name!r} is not stored in the keyring or .env") from None
     except keyring.errors.KeyringError as exc:
         raise ConfigError(f"could not delete {name!r} from the operating-system keyring") from exc
-    return None
+    return removed
 
 
 def _available_keyring() -> _Keyring | None:

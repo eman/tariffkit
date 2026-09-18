@@ -24,10 +24,18 @@ class _NoKeyringError(RuntimeError):
     pass
 
 
+class _PasswordDeleteError(RuntimeError):
+    pass
+
+
 class FakeKeyring:
     def __init__(self) -> None:
         self.values: dict[tuple[str, str], str] = {}
-        self.errors = SimpleNamespace(KeyringError=RuntimeError, NoKeyringError=_NoKeyringError)
+        self.errors = SimpleNamespace(
+            KeyringError=RuntimeError,
+            NoKeyringError=_NoKeyringError,
+            PasswordDeleteError=_PasswordDeleteError,
+        )
 
     def get_password(self, service: str, name: str) -> str | None:
         return self.values.get((service, name))
@@ -36,6 +44,8 @@ class FakeKeyring:
         self.values[(service, name)] = value
 
     def delete_password(self, service: str, name: str) -> None:
+        if (service, name) not in self.values:
+            raise _PasswordDeleteError(name)
         del self.values[(service, name)]
 
     def get_keyring(self) -> FakeKeyring:
@@ -112,6 +122,33 @@ def test_missing_keyring_backend_falls_back_to_dotenv(
     assert secrets.load_dotenv() == {"PGE_USERNAME": "someone"}
     assert secrets.delete_secret("pge.username") == file
     assert secrets.load_dotenv() == {}
+
+
+def test_a_keyring_installed_later_does_not_strand_the_dotenv_entry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`.env` is read first, so an entry left behind there stays the live value."""
+    monkeypatch.delenv("TARIFFKIT_DISABLE_KEYRING")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    file = tmp_path / "tariffkit" / ".env"
+    monkeypatch.setattr(secrets, "_keyring", lambda: None)
+    secrets.set_secret("pge.password", "old")
+
+    backend = FakeKeyring()
+    monkeypatch.setattr(secrets, "_keyring", lambda: backend)
+    assert secrets.delete_secret("pge.password") == file
+    assert secrets.load_dotenv() == {}
+
+    monkeypatch.setattr(secrets, "_keyring", lambda: None)
+    secrets.set_secret("pge.password", "old")
+    monkeypatch.setattr(secrets, "_keyring", lambda: backend)
+    assert secrets.set_secret("pge.password", "new") is None
+    assert secrets.load_dotenv() == {}
+    assert secrets.get_secret("pge.password") == "new"
+
+    secrets.delete_secret("pge.password")
+    with pytest.raises(ConfigError, match="not stored"):
+        secrets.delete_secret("pge.password")
 
 
 def test_missing_keyring_package_falls_back_to_dotenv(
