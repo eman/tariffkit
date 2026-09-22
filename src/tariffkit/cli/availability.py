@@ -72,8 +72,9 @@ def _ha(config_path: str | Path | None, profile: object | None) -> SourceStatus:
             "home_assistant",
             False,
             features,
-            "set HA_HOST and HA_TOKEN, or store home_assistant.token with "
-            "`tariffkit credentials set`",
+            "run `tariffkit setup`, or set host under [home_assistant] in "
+            f"{_short_path(_config(config_path))} (or HA_HOST) and store "
+            "home_assistant.token with `tariffkit credentials set` (or HA_TOKEN)",
         )
     if not (settings.import_entity and settings.export_entity):
         return SourceStatus(
@@ -100,7 +101,10 @@ def _influx(config_path: str | Path | None, profile: object | None) -> SourceSta
             "influxdb",
             False,
             features,
-            "set INFLUXDB3_HOST, INFLUXDB3_DATABASE and INFLUXDB3_AUTH_TOKEN",
+            "run `tariffkit setup`, or set host and database under [influxdb] in "
+            f"{_short_path(_config(config_path))} (or INFLUXDB3_HOST, "
+            "INFLUXDB3_DATABASE) and store influxdb.token with `tariffkit "
+            "credentials set` (or INFLUXDB3_AUTH_TOKEN)",
         )
     if not (settings.import_entity and settings.export_entity):
         return SourceStatus(
@@ -128,10 +132,16 @@ def _pge(config_path: str | Path | None) -> SourceStatus:
             "pge_portal",
             False,
             features,
-            "store pge.username and pge.password with `tariffkit credentials set`, "
-            "or set PGE_USERNAME and PGE_PASSWORD",
+            "run `tariffkit setup`, or store pge.username and pge.password with "
+            "`tariffkit credentials set` (or PGE_USERNAME and PGE_PASSWORD)",
         )
     return SourceStatus("pge_portal", True, features)
+
+
+def _config(config_path: str | Path | None) -> Path:
+    from ..config import default_config_path
+
+    return Path(config_path) if config_path else default_config_path()
 
 
 def _short_path(path: Path) -> str:
@@ -171,7 +181,8 @@ def _account() -> SourceStatus:
             "account",
             False,
             features,
-            "run `tariffkit account init --tariff ... --supplier ... --pto-date ...`",
+            "run `tariffkit setup`, or `tariffkit account init --tariff ... "
+            "--supplier ... --pto-date ...`",
         )
     return SourceStatus("account", True, features)
 

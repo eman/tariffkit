@@ -69,7 +69,10 @@ def _json_bytes(profile: AccountProfile) -> bytes:
                 ensure_ascii=False,
                 allow_nan=False,
                 sort_keys=True,
-                separators=(",", ":"),
+                # Indented: this is a file people open to check what the tool
+                # recorded. The revision is a hash of whatever bytes are on
+                # disk, so the layout is free to be readable.
+                indent=2,
             ).encode("utf-8")
             + b"\n"
         )

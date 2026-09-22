@@ -3,6 +3,19 @@
 Every entry point (library, CLI, MQTT, web, Home Assistant) prices from the
 same `Config` object. Get this right once and all of them agree.
 
+## The quick way: `tariffkit setup`
+
+```bash
+tariffkit setup
+```
+
+walks through the PG&E login, your account, a meter data source (Home
+Assistant or InfluxDB) and MQTT, in that order. It checks each connection
+before moving on, writes every answer to the place described below, and ends
+by printing `tariffkit sources` and `tariffkit now`. Enter keeps the value
+shown in brackets, so running it again edits your setup rather than starting
+over. Everything it does can also be done by hand, as this page describes.
+
 ## Everything below is optional
 
 The only thing TariffKit cannot run without is its rate data, and that ships
@@ -17,7 +30,7 @@ $ tariffkit sources
           now, forecast, info, serve, mqtt
   no   home_assistant
           bill --source ha
-          -> set HA_HOST and HA_TOKEN, or store home_assistant.token with ...
+          -> run `tariffkit setup`, or set host under [home_assistant] in ...
   ...
 `bill` has no meter source to read; anything above would give it one.
 ```
@@ -87,8 +100,12 @@ tariffkit credentials delete mqtt.password
 
 `set` prompts without echo, so the value never appears in process arguments or
 shell history. macOS Keychain, Windows Credential Locker, and the configured
-Linux Secret Service backend provide storage. Containers and unattended
-services can continue to inject environment variables instead.
+Linux Secret Service backend provide storage. Where there is no keyring -- the
+`keyring` package is not installed, a headless Linux machine has no Secret
+Service running, or `TARIFFKIT_DISABLE_KEYRING=1` is set -- `set` writes the
+value to `~/.config/tariffkit/.env` instead, owner-only (mode 600), and says so.
+`delete` removes it from the same place. Containers and unattended services can
+continue to inject environment variables instead.
 
 Secret precedence is: explicit library/CLI value, real environment variables,
 `~/.config/tariffkit/.env`, then the OS keyring. Non-secret settings use:
