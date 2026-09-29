@@ -164,6 +164,19 @@ def _as_layout(words: list[tuple[int, int, int, int, str]]) -> str:
     return "\n".join(out)
 
 
+def _install_hint() -> str:
+    """The package command for this machine; the tools are named differently per OS."""
+    import sys
+
+    if sys.platform == "darwin":
+        return "`brew install tesseract poppler`"
+    if shutil.which("apt-get"):
+        return "`sudo apt install tesseract-ocr poppler-utils`"
+    if shutil.which("dnf"):
+        return "`sudo dnf install tesseract poppler-utils`"
+    return "installing tesseract and poppler (pdftoppm)"
+
+
 def readings(path: str | Path) -> Iterator[list[str]]:
     """Each candidate recognition of a statement's pages, best mode first.
 
@@ -175,7 +188,7 @@ def readings(path: str | Path) -> Iterator[list[str]]:
     if not available():
         raise StatementError(
             f"{source.name} carries no readable text and recognition tools are not "
-            f"installed; `brew install tesseract poppler` provides both"
+            f"installed; {_install_hint()} provides both"
         )
 
     with tempfile.TemporaryDirectory(prefix="nem-ocr-") as scratch:

@@ -258,17 +258,26 @@ tariffkit credentials set pge.password
 tariffkit account sync --since 2026-01-01
 ```
 
-This downloads every statement the portal lists since that date into a
-private, mode-`0700` cache directory, parses each, reconciles the evidence,
-and deletes the PDFs again once it is done — pass `--keep-statements` only if
-you specifically want to keep them (they carry your name, address, and
-account number, so keeping them is opt-in, not a side effect):
+This downloads every statement the portal lists since that date, parses each,
+reconciles the evidence, saves the result to your account, and lists each change:
 
-```bash
-tariffkit account sync --since 2026-01-01 --apply --json
+```console
+$ tariffkit account sync
+  new        2026-06-03  tariff: EV2-A -> E-ELEC
+
+read 11 statement(s); 1 change(s) to your account
+statements kept in ~/.cache/tariffkit/statements
+saved to your account
 ```
 
-Preview first (the default, without `--apply`), the same as with local PDFs.
+`--dry-run` shows the same list without saving. If any change conflicts with
+the account, or needs a value no statement prints, nothing is saved and the
+reason is shown under that line.
+
+The PDFs are kept in `~/.cache/tariffkit/statements`, owner-only (the
+directory mode `0700`, each file `0600`), and later syncs read them from there
+instead of downloading them again. They carry your name, address and account
+number; pass `--discard-statements` to delete each one once it has been read.
 
 ### Review and apply a conflict
 
@@ -279,13 +288,13 @@ can be applied:
 ```console
 $ tariffkit account import-statement ~/Downloads/PGE_20260901.pdf
 PGE_20260901.pdf:
-  CONFLICT None account_suffix
-  CONFIRM 2026-08-03 supplier
-  CONFIRM 2026-08-03 tariff
+  CONFLICT               account_suffix: 1234 -> 5678
+                         the statement is for a different account
 preview only; pass --apply to save
 ```
 
-Each line is `OUTCOME EFFECTIVE FIELD` — `None` for `effective` means the
+Each line is `OUTCOME EFFECTIVE FIELD: BEFORE -> AFTER`, and statements that
+agree with the account are not listed. A blank `effective` means the
 change is not tied to a single dated snapshot (an `account_suffix` mismatch
 applies to the whole account, not one epoch). Use `--json` for the full
 detail — every change carries `before`, `after`, and `reason`:
@@ -481,7 +490,7 @@ output instead of the human summary shown above.
 | `account history [--json]` | Print every epoch and the statement evidence recorded against them. |
 | `account update --effective DATE [field flags...] [--config PATH \| --config-json PATH] [--note TEXT] [--apply] [--json]` | Add or replace one dated snapshot. Field flags (`--tariff`, `--supplier`, `--interconnection-year`, `--pto-date`, `--vintage`, `--acc-plus-segment`, `--discount`, `--base-services-charge-tier`, `--baseline-territory`, `--baseline-code`, `--nsc-rate`, `--cca-json`) change only the named fields against the snapshot in force the day before; `--config`/`--config-json` replace the whole snapshot. |
 | `account import-statement PDF... [--apply] [--json]` | Parse local PDFs and reconcile their evidence. |
-| `account sync [--config PATH] [--since DATE] [--apply] [--keep-statements] [--json]` | Download portal statements since a date and reconcile them. |
+| `account sync [--config PATH] [--since DATE] [--dry-run] [--discard-statements] [--json]` | Download portal statements since a date, reconcile them, and save the result (`--dry-run` previews). Statements are kept in `~/.cache/tariffkit/statements` unless `--discard-statements`. |
 | `account periods [--apply] [--json]` | Read the cycle boundaries PG&E billed on from the portal and record them on the account. |
 | `account export [--output PATH] [--json]` | Print (or write, mode `0600`) the sanitized account JSON — the Home Assistant import format. |
 | `account source show {ha,influx} [--json]` | Show the grid-import/grid-export entities for one meter source. |

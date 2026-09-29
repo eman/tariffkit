@@ -455,8 +455,13 @@ def apply_observations(
     observations: Sequence[AccountObservation],
     *,
     apply: bool,
+    refuse_conflicts: bool = True,
 ) -> tuple[AccountProfile, list[dict[str, object]]]:
-    """Reconcile evidence in order and optionally persist one atomic update."""
+    """Reconcile evidence in order and optionally persist one atomic update.
+
+    With ``refuse_conflicts`` false, an update that cannot apply is left unsaved
+    instead of raising, so the caller can still show what was found and why.
+    """
     from ..providers.pge.reconcile import reconcile
 
     profile = store.load()
@@ -473,6 +478,8 @@ def apply_observations(
 
     if apply:
         if not can_apply:
+            if not refuse_conflicts:
+                return profile, proposals
             raise ConfigError("account update contains conflicts or missing required values")
         if working != profile:
             working = store.save(working, expected_revision=profile.revision)
@@ -584,10 +591,16 @@ def sync_profile(
     *,
     since: date | None = None,
     apply: bool,
-    keep_statements: bool = False,
+    keep_statements: bool = True,
     config_path: str | Path | None = None,
 ) -> tuple[AccountProfile, list[dict[str, object]], list[dict[str, str]]]:
     """Download, parse, and reconcile portal statements through a private cache.
+
+    Statements are kept, owner-only, in :func:`statement_directory` and read
+    from there on later syncs instead of being downloaded again: they are the
+    account's evidence, and re-reading them (with better OCR, or a fixed
+    parser) should not need the portal. ``keep_statements=False`` restores the
+    old behaviour of deleting each one once read.
 
     Returns the profile, the reconciliation proposals, and the statements that
     could not be read. The third is not an error: the portal lists whatever it
@@ -599,7 +612,7 @@ def sync_profile(
     from ..sources.pge import PgeSession
 
     profile = store.load()
-    cache = _cache_directory()
+    cache = statement_directory() if keep_statements else _cache_directory()
     observations: list[AccountObservation] = []
     skipped: list[dict[str, str]] = []
     try:
@@ -633,9 +646,13 @@ def sync_profile(
             if not selected:
                 return profile, [], []
             for index, (identifier, issued_on) in enumerate(selected):
-                pdf_path = cache / f"statement-{index:04d}.pdf"
-                pdf_path.write_bytes(session.download_bill(identifier))
-                pdf_path.chmod(0o600)
+                if keep_statements:
+                    pdf_path = cache / _statement_name(identifier, issued_on)
+                else:
+                    pdf_path = cache / f"statement-{index:04d}.pdf"
+                if not (keep_statements and pdf_path.is_file()):
+                    pdf_path.write_bytes(session.download_bill(identifier))
+                    pdf_path.chmod(0o600)
                 try:
                     observations.append(import_statement(pdf_path))
                 except StatementError as err:
@@ -665,8 +682,31 @@ def sync_profile(
     finally:
         if not keep_statements:
             shutil.rmtree(cache, ignore_errors=False)
-    updated, proposals = apply_observations(store, observations, apply=apply)
+    updated, proposals = apply_observations(
+        store, observations, apply=apply, refuse_conflicts=False
+    )
     return updated, proposals, skipped
+
+
+def statement_directory() -> Path:
+    """Where synced statements are kept: private, and outside any repository."""
+    root = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+    path = root / "tariffkit" / "statements"
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.chmod(0o700)
+    return path
+
+
+def _statement_name(identifier: str, issued_on: str | None) -> str:
+    """A stable file name per statement: its issue date, then a short digest.
+
+    The digest rather than the portal's identifier, which is an opaque document
+    id with no business in a directory listing.
+    """
+    import hashlib
+
+    digest = hashlib.sha256(identifier.encode()).hexdigest()[:10]
+    return f"{issued_on or 'undated'}-{digest}.pdf"
 
 
 def profile_summary(profile: AccountProfile) -> dict[str, Any]:

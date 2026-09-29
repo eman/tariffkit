@@ -72,9 +72,93 @@ def load_dotenv(path: str | Path | None = None) -> dict[str, str]:
     return found
 
 
+def set_dotenv_secret(name: str, value: str, path: str | Path | None = None) -> Path:
+    """Write a secret into the ``.env`` file as its environment variable.
+
+    For machines with no keyring backend: the file is plain text, so it is kept
+    owner-only.
+    """
+    _validate_name(name)
+    if not value:
+        raise ConfigError("secret value must not be empty")
+    return set_dotenv_value(SECRET_ENV[name], value, path)
+
+
+def set_dotenv_value(variable: str, value: str, path: str | Path | None = None) -> Path:
+    """Set one variable in the ``.env`` file, keeping every other line as written.
+
+    An existing line for the variable is replaced where it stands. The file is
+    created owner-only, since it may hold credentials.
+    """
+    # `load_dotenv` strips surrounding whitespace and quotes and reads one line
+    # per entry, so a value it cannot read back unchanged is refused here.
+    if "\n" in value or "\r" in value or value != value.strip().strip('"').strip("'"):
+        raise ConfigError(
+            f"{variable} cannot be stored in .env: it has a line break, or "
+            "leading or trailing whitespace or quotes"
+        )
+    file = _dotenv_path(path)
+    lines = file.read_text(encoding="utf-8").splitlines() if file.is_file() else []
+    entry = f"{variable}={value}"
+    for index, line in enumerate(lines):
+        if line.split("=", 1)[0].strip() == variable:
+            lines[index] = entry
+            break
+    else:
+        lines.append(entry)
+    _write_private(file, lines)
+    return file
+
+
+def delete_dotenv_secret(name: str, path: str | Path | None = None) -> Path:
+    """Remove a secret's variable from the ``.env`` file."""
+    _validate_name(name)
+    variable = SECRET_ENV[name]
+    file = _dotenv_path(path)
+    lines = _dotenv_lines_without(file, variable)
+    if not file.is_file() or len(lines) == len(file.read_text(encoding="utf-8").splitlines()):
+        raise ConfigError(f"{variable} is not set in {file}")
+    _write_private(file, lines)
+    return file
+
+
+def _in_dotenv(name: str) -> bool:
+    file = _dotenv_path(None)
+    return len(_dotenv_lines_without(file, SECRET_ENV[name])) != (
+        len(file.read_text(encoding="utf-8").splitlines()) if file.is_file() else 0
+    )
+
+
+def _dotenv_path(path: str | Path | None) -> Path:
+    if path is not None:
+        return Path(path)
+    from .config import default_dotenv_path
+
+    return default_dotenv_path()
+
+
+def _dotenv_lines_without(file: Path, variable: str) -> list[str]:
+    if not file.is_file():
+        return []
+    return [
+        line
+        for line in file.read_text(encoding="utf-8").splitlines()
+        if line.split("=", 1)[0].strip() != variable
+    ]
+
+
+def _write_private(file: Path, lines: list[str]) -> None:
+    file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write("".join(f"{line}\n" for line in lines))
+    file.chmod(0o600)
+
+
 class _KeyringErrors(Protocol):
     KeyringError: type[Exception]
     NoKeyringError: type[Exception]
+    PasswordDeleteError: type[Exception]
 
 
 class _Keyring(Protocol):
@@ -114,26 +198,67 @@ def get_secret(name: str) -> str | None:
         raise ConfigError(f"could not read {name!r} from the operating-system keyring") from exc
 
 
-def set_secret(name: str, value: str) -> None:
-    """Store a non-empty secret without exposing it in process arguments."""
+def set_secret(name: str, value: str) -> Path | None:
+    """Store a non-empty secret without exposing it in process arguments.
+
+    Goes to the OS keyring. A machine without one -- no ``keyring`` package, no
+    backend (a headless box with no Secret Service), or the keyring turned off
+    with ``TARIFFKIT_DISABLE_KEYRING`` -- gets the owner-only ``.env`` instead,
+    which every source already reads. Returns that file when it was used, or
+    ``None`` for the keyring.
+    """
     _validate_name(name)
     if not value:
         raise ConfigError("secret value must not be empty")
-    keyring = _require_keyring()
+    keyring = _available_keyring()
+    if keyring is None:
+        return set_dotenv_secret(name, value)
     try:
         keyring.set_password(SERVICE, name, value)
+    except keyring.errors.NoKeyringError:
+        return set_dotenv_secret(name, value)
     except keyring.errors.KeyringError as exc:
         raise ConfigError(f"could not store {name!r} in the operating-system keyring") from exc
+    # A fallback entry from before this machine had a keyring would shadow the
+    # new value: every loader reads ``.env`` first.
+    if _in_dotenv(name):
+        delete_dotenv_secret(name)
+    return None
 
 
-def delete_secret(name: str) -> None:
-    """Delete a named secret, raising when the keyring operation fails."""
+def delete_secret(name: str) -> Path | None:
+    """Delete a named secret from everywhere `set_secret` may have put it.
+
+    Both places, not whichever `set_secret` would pick today: a secret written
+    to ``.env`` on a machine that had no keyring then is still there after one
+    is installed, and every loader reads ``.env`` first -- so deleting only the
+    keyring entry would report success while the old credential stayed live.
+    Returns the ``.env`` file when an entry was removed from it.
+    """
     _validate_name(name)
-    keyring = _require_keyring()
+    removed = delete_dotenv_secret(name) if _in_dotenv(name) else None
+    keyring = _available_keyring()
+    if keyring is None:
+        if removed is None:
+            return delete_dotenv_secret(name)  # raises: set nowhere
+        return removed
     try:
         keyring.delete_password(SERVICE, name)
+    except keyring.errors.NoKeyringError:
+        if removed is None:
+            return delete_dotenv_secret(name)
+    except keyring.errors.PasswordDeleteError:
+        if removed is None:
+            raise ConfigError(f"{name!r} is not stored in the keyring or .env") from None
     except keyring.errors.KeyringError as exc:
         raise ConfigError(f"could not delete {name!r} from the operating-system keyring") from exc
+    return removed
+
+
+def _available_keyring() -> _Keyring | None:
+    if os.environ.get("TARIFFKIT_DISABLE_KEYRING") == "1":
+        return None
+    return _keyring()
 
 
 def configured_secrets() -> tuple[str, ...]:

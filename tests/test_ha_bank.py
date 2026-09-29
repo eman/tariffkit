@@ -473,3 +473,30 @@ def test_the_bank_finds_a_pto_recorded_only_on_an_earlier_epoch() -> None:
         name="probe",
     )
     assert profile.pto_date == PTO
+
+
+def test_a_change_between_two_ccas_is_refused_like_any_supplier_change() -> None:
+    """MCE to another aggregator is CCA both sides, and still two banks."""
+    from tariffkit.config import CcaConfig
+    from tariffkit.models import Supplier
+
+    def cca(name: str) -> Config:
+        return Config(
+            tariff="E-ELEC",
+            pto_date=PTO,
+            supplier=Supplier.CCA,
+            baseline_territory="X",
+            cca=CcaConfig(name=name, rate_card="MCE", option="light_green", pcia_vintage=2011),
+        )
+
+    profile = AccountProfile(
+        (AccountEpoch(date(2026, 1, 1), cca("MCE")), AccountEpoch(date(2026, 8, 1), cca("SVCE"))),
+        name="probe",
+    )
+    bills = [
+        _cycle_bill(profile, date(2026, 6, 1), date(2026, 6, 30), exported=2.0),
+        _cycle_bill(profile, date(2026, 9, 1), date(2026, 9, 30), exported=2.0),
+    ]
+    state = bank.fold(profile, bills)
+    assert not state.trustworthy
+    assert any("changed supplier" in w for w in state.warnings)

@@ -55,11 +55,30 @@ portal verifies *devices*, and a browser that was verified once carries the
 result for 180 days, which is why a person never sees a challenge.
 
 The device identity is the pair `LSKey-c$browsercookie` and
-`LSKey-c$validationCookie`. They are created by the login page's **own
-JavaScript**, so they never arrive over `Set-Cookie` and no amount of fetching
-will produce them — a scripted client that invents fresh values is simply a new
-device every run. Copy them once from a signed-in browser, on the console at
-`myaccount.pge.com`:
+`LSKey-c$validationCookie`. They are not random and not made up by the page: the
+**server issues them** when a device passes the one-time-code check, and the
+page stores them as cookies. So a scripted client can get them itself, by going
+through the same check once. The sequence, read from the login page's
+`c:myAcct_CustomLoginMFA` component (served to anonymous visitors, so no capture
+of a signed-in session was needed):
+
+| Step | Controller.method | Params |
+|---|---|---|
+| 1 | `MyAcct_customLoginLWCController.login` | as above; answers `retMessage: "verifymfa :"` with `retencrUsrname` (an encrypted username), `EmailVal`, `PhoneVal` (masked, or "No Phone on file") |
+| 2 | `MyAcct_Apex_CustomMFAController.handleChoiceofMFA` | `username` (= `retencrUsrname`), `selectedChoice` (`Email` / `Phone`), `uuid`, `isforgotpassword: false`; answers `retMessage: "verifymfa:<codeId>"` and sends the code |
+| 3 | `MyAcct_Apex_CustomMFAController.verifySignInCode` | one `input` object: `authCode`, `uuid`, `password`, `startUrl`, `encToken` (login's `encryptedTFT`, absent here), `codeId`, `usernameVal` (= `retencrUsrname`), `isForgotPasswordFlow: false`, `otpType` |
+
+Step 3 answers `returnResponse: "success"` and a `wrapperObj` with the frontdoor
+URL in `retMessage` and the device pair: `retencrUsrname` becomes the browser
+cookie and `encryptedKey` the validation cookie, trusted for
+`cookieExpiryDays` (180). A wrong code answers `InvalidOtp` with
+`remainingAttempt`; too many answer `userlocked`. `uuid` is the page's tracking
+id and is the same value across all three calls.
+
+`PgeSession.send_device_code` / `verify_device_code` implement this, and
+`tariffkit setup` drives it. **Steps 2 and 3 have not yet been observed
+against the live portal**; the endpoints are registered with `captured=False`.
+Copying the pair from a signed-in browser's console still works as a fallback:
 
 ```js
 Object.fromEntries(document.cookie.split(';')
@@ -67,14 +86,9 @@ Object.fromEntries(document.cookie.split(';')
   .filter(([k]) => k === 'LSKey-c$browsercookie' || k === 'LSKey-c$validationCookie'))
 ```
 
-and put them in `.env` as `PGE_BROWSER_COOKIE` and `PGE_VALIDATION_COOKIE`. They
-are device identifiers, not credentials — the password is still required — but
-they belong in `.env` with everything else, not in a config file.
-
-Chasing this as though it were MFA is a real detour: the component does ship
-`MyAcct_Apex_CustomMFAController.handleChoiceofMFA` /
-`.verifySignInCode` / `.resendOTP`, so an OTP flow is implementable, but a
-correctly identified device never reaches it.
+stored as `pge.browser_cookie` and `pge.validation_cookie` with `tariffkit
+credentials set` (or `PGE_BROWSER_COOKIE` / `PGE_VALIDATION_COOKIE`). They are
+device identifiers, not credentials -- the password is still required.
 
 To capture a login without recording the credential, hook **before** submitting
 and store only `operationName`, `classname`, `method` and `Object.keys(params)`
