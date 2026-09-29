@@ -17,6 +17,7 @@ from tariffkit.billing import Bill, BillingPeriod, UsageBucket, run_ledger, run_
 from tariffkit.billing.ledger import CreditBalances, CreditBucket, LedgerEntry
 from tariffkit.billing.trueup import (
     CHECK_THRESHOLD,
+    OPEN_QUESTIONS,
     TrueUpKind,
     average_export_rate,
     cash_out_periods,
@@ -38,6 +39,7 @@ def entry(
     exported: float = 0.0,
     earned_generation: float = 0.0,
     closing_generation: float = 0.0,
+    pre_pto_imported: float = 0.0,
 ) -> LedgerEntry:
     balances = CreditBalances(generation=closing_generation)
     return LedgerEntry(
@@ -51,6 +53,7 @@ def entry(
         non_offsettable=0.0,
         imported_kwh=imported,
         exported_kwh=exported,
+        pre_pto_imported_kwh=pre_pto_imported,
     )
 
 
@@ -225,6 +228,77 @@ class TestPgeTrueUp:
     def test_the_period_notes_the_anniversary_it_was_measured_against(self) -> None:
         got = pge_true_up(year_of_cycles(), date(2026, 6, 3), is_cca=True)
         assert "2027-06-03" in got.notes[0]
+
+
+class TestTheSurplusTestRunsFromPto:
+    """A first cycle straddling PTO: its pre-PTO imports are billed, not tested.
+
+    Its pre-PTO exports never reach ``exported_kwh``, so counting the imports
+    beside them weighs energy from before Net Billing against energy after it.
+    """
+
+    def first_year(self) -> list[LedgerEntry]:
+        # 250 of the first cycle's 300 kWh arrived before PTO.
+        return [
+            entry(
+                date(2026, 5, 15),
+                date(2026, 6, 14),
+                imported=300.0,
+                pre_pto_imported=250.0,
+                exported=100.0,
+                earned_generation=5.0,
+            ),
+            entry(
+                date(2027, 3, 15),
+                date(2027, 4, 14),
+                imported=50.0,
+                exported=300.0,
+                earned_generation=15.0,
+                closing_generation=20.0,
+            ),
+        ]
+
+    def test_an_mce_cash_out_counts_only_imports_from_pto(self) -> None:
+        got = mce_cash_out(self.first_year(), nsc_rate=0.05)
+        assert got.imported_kwh == pytest.approx(100.0)
+        assert got.exported_kwh == pytest.approx(400.0)
+        assert got.surplus_kwh == pytest.approx(300.0)
+
+    def test_a_pge_relevant_period_counts_only_imports_from_pto(self) -> None:
+        got = pge_true_up(self.first_year(), date(2026, 6, 3), is_cca=True)
+        assert got.imported_kwh == pytest.approx(100.0)
+        assert got.surplus_kwh == pytest.approx(300.0)
+
+    def test_it_can_decide_whether_there_is_a_surplus_at_all(self) -> None:
+        # 250 kWh in, 200 out: a deficit counting from the first cycle's start,
+        # a surplus of 150 counting from PTO.
+        cycles = [
+            entry(
+                date(2026, 5, 15),
+                date(2026, 6, 14),
+                imported=250.0,
+                pre_pto_imported=200.0,
+                exported=200.0,
+                earned_generation=10.0,
+                closing_generation=10.0,
+            )
+        ]
+        got = pge_true_up(cycles, date(2026, 6, 3), is_cca=False)
+        assert got.eligible
+        assert got.surplus_kwh == pytest.approx(150.0)
+
+    def test_the_exclusion_is_noted(self) -> None:
+        pge = pge_true_up(self.first_year(), date(2026, 6, 3), is_cca=True)
+        assert any("250.0 kWh imported before Permission To Operate" in n for n in pge.notes)
+
+    def test_mce_also_records_that_its_start_is_unconfirmed(self) -> None:
+        got = mce_cash_out(self.first_year(), nsc_rate=0.05)
+        assert OPEN_QUESTIONS[2] in got.notes
+
+    def test_later_years_carry_no_such_note(self) -> None:
+        got = mce_cash_out(year_of_cycles(imported=10.0, exported=40.0), nsc_rate=0.05)
+        assert not any("before Permission To Operate" in n for n in got.notes)
+        assert OPEN_QUESTIONS[2] not in got.notes
 
 
 class TestAverageExportRate:

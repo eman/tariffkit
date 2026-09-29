@@ -42,6 +42,19 @@ All notable changes to this project are documented here. This project follows
 - **`account.json` is indented** so it can be read.
 - The OCR install hint names the command for the platform.
 
+### Fixed
+- **The first year's Net Surplus test counts from Permission To Operate on
+  both sides.** A first billing cycle usually starts before PTO. Its exports
+  before PTO were already left out, since they earn nothing, but its imports
+  before PTO were counted, so both the MCE cash-out and PG&E's Relevant
+  Period weighed pre-PTO imports against post-PTO exports. That understated
+  the surplus, and near the line could decide whether the customer was a Net
+  Surplus Generator at all. Those imports are still billed in their cycle; the
+  bill and ledger now record them as `pre_pto_imported_kwh`, and the true-up
+  leaves them out and says so. Whether MCE's first cash-out year really starts
+  at PTO is recorded as an open question until a cash-out statement settles
+  it.
+
 ## [0.9.0] - 2026-09-12
 
 ### Added

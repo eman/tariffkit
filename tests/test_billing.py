@@ -11,6 +11,7 @@ The statement is PG&E delivery + MCE generation on SBP EELEC, 27 days:
 from __future__ import annotations
 
 import io
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -28,6 +29,8 @@ from tariffkit.billing import (
     hourly,
 )
 from tariffkit.billing.engine import Segment, compute_segments
+from tariffkit.billing.ledger import run_ledger
+from tariffkit.billing.trueup import pge_true_up
 from tariffkit.config import CcaConfig
 from tariffkit.errors import DataError
 from tariffkit.models import Season, TouPeriod
@@ -706,3 +709,53 @@ class TestCheckCoverageIsToldWhatItIsLookingAt:
         through = datetime(2026, 7, 3, tzinfo=PACIFIC)
         found = list(check_coverage(holed, self.PERIOD, netted=True, through=through))
         assert any("gap(s) in the series" in warning for warning in found)
+
+
+class TestImportsBeforePto:
+    """A first cycle straddling Permission To Operate, on 2026-07-10."""
+
+    PTO = date(2026, 7, 10)
+
+    def readings(self) -> list[IntervalReading]:
+        return [
+            IntervalReading(pt(6, 2), imported=10.0),  # before PTO
+            IntervalReading(pt(7, 12), exported=30.0),  # before PTO: earns nothing
+            IntervalReading(pt(20, 2), imported=4.0),
+            IntervalReading(pt(21, 12), exported=50.0),
+        ]
+
+    def bill(self, pto: date) -> Bill:
+        config = replace(mce_config(), pto_date=pto)
+        return BillEngine(RateEngine(config)).compute(self.readings(), PERIOD, check=False)
+
+    def test_they_are_recorded_apart(self) -> None:
+        assert self.bill(self.PTO).pre_pto_imported_kwh == pytest.approx(10.0)
+
+    def test_they_are_still_billed(self) -> None:
+        straddling = self.bill(self.PTO)
+        interconnected = self.bill(date(2026, 6, 3))
+        assert straddling.imported_kwh == pytest.approx(14.0)
+        assert straddling.energy_charges == pytest.approx(interconnected.energy_charges)
+        assert interconnected.pre_pto_imported_kwh == 0.0
+
+    def test_segments_add_them_up(self) -> None:
+        config = replace(mce_config(), pto_date=self.PTO)
+        bill = compute_segments(
+            [
+                Segment(config, BillingPeriod(date(2026, 7, 2), date(2026, 7, 9))),
+                Segment(config, BillingPeriod(date(2026, 7, 10), date(2026, 7, 28))),
+            ],
+            self.readings(),
+            check=False,
+        )
+        assert bill.pre_pto_imported_kwh == pytest.approx(10.0)
+
+    def test_the_surplus_test_counts_only_imports_from_pto(self) -> None:
+        entries = run_ledger([self.bill(self.PTO)]).entries
+        assert entries[0].pre_pto_imported_kwh == pytest.approx(10.0)
+        got = pge_true_up(entries, self.PTO, is_cca=False)
+        # 50 exported after PTO against 4 imported after it; the 10 imported
+        # and 30 exported before PTO are both outside the test.
+        assert got.imported_kwh == pytest.approx(4.0)
+        assert got.exported_kwh == pytest.approx(50.0)
+        assert got.surplus_kwh == pytest.approx(46.0)

@@ -39,8 +39,14 @@ Scope, and what is still unverified: no true-up statement exists for this
 account yet -- the first MCE cash-out falls after the March-April 2027 cycle and
 the first PG&E Relevant Period ends on the 2027 PTO anniversary. Everything here
 is read off tariff text rather than reconciled against a bill, so a
-:class:`TrueUp` carries ``verified=False``. Two specific things to check when
+:class:`TrueUp` carries ``verified=False``. The specific things to check when
 that statement arrives are recorded on :data:`OPEN_QUESTIONS`.
+
+**The surplus test runs from Permission To Operate.** A first billing cycle
+usually starts before PTO. Its exports before PTO earn nothing and never reach
+``exported_kwh``; its imports before PTO are still billed, but are left out of
+the kWh test by the same line, so pre-PTO imports are not weighed against
+post-PTO exports. See :func:`surplus_test_kwh`.
 """
 
 from __future__ import annotations
@@ -72,7 +78,7 @@ CASH_OUT_END_MONTH = 4
 #: Cash-out at or below this is credited on the bill; above it, paid by cheque.
 CHECK_THRESHOLD = 200.0
 
-#: What a real cash-out statement needs to settle. Both are places where the
+#: What a real cash-out statement needs to settle. Each is a place where the
 #: tariff text supports more than one reading, and guessing would be worse than
 #: recording the guess.
 OPEN_QUESTIONS: tuple[str, ...] = (
@@ -86,6 +92,10 @@ OPEN_QUESTIONS: tuple[str, ...] = (
     "Whether MCE's $5,000 annual cap and the NEM-era 'NSC rate plus $0.02/kWh' "
     "formula carry over to the Solar Billing Plan. Both appear on MCE's website "
     "under the NEM 1.0/2.0 program; neither appears in the SBP tariff text.",
+    "Whether MCE's first cash-out year starts at Permission To Operate or at the "
+    "start of the first billing cycle. The Solar Billing Plan is a Net Billing "
+    "arrangement, which begins at PTO, so this module leaves imports before PTO "
+    "out of the first year's surplus test, as PG&E's Relevant Period does.",
 )
 
 
@@ -159,6 +169,8 @@ class TrueUp:
     opening: CreditBalances
     #: What rolls into the next period. Never zeroed; both tariffs carry forward.
     closing: CreditBalances
+    #: Energy the surplus test counts, from Permission To Operate: imports
+    #: before PTO were billed but are not in this figure.
     imported_kwh: float
     exported_kwh: float
     #: Exported minus imported, floored at zero. Positive makes the customer a
@@ -217,6 +229,33 @@ class TrueUp:
 
 def _span(entries: Sequence[LedgerEntry]) -> BillingPeriod:
     return BillingPeriod(entries[0].period.start, entries[-1].period.end)
+
+
+def surplus_test_kwh(entries: Sequence[LedgerEntry]) -> tuple[float, float, float]:
+    """Imported and exported kWh for the Net Surplus test, and the imports left out.
+
+    Both sides are counted from Permission To Operate. PG&E's Relevant Period
+    runs "from the customer's PTO date or anniversary", and MCE's Solar Billing
+    Plan is a Net Billing arrangement, which begins at PTO. Exports before PTO
+    are already missing from ``exported_kwh``, because they earn nothing; the
+    imports beside them are in ``imported_kwh``, because they are billed.
+    Leaving them in weighed pre-PTO imports against post-PTO exports and
+    understated a first year's surplus -- enough, near the line, to decide
+    whether the customer was a Net Surplus Generator at all.
+
+    Returns ``(imported, exported, pre_pto_imported)``.
+    """
+    pre_pto = sum(e.pre_pto_imported_kwh for e in entries)
+    imported = sum(e.imported_kwh for e in entries) - pre_pto
+    exported = sum(e.exported_kwh for e in entries)
+    return imported, exported, pre_pto
+
+
+def _pre_pto_note(pre_pto: float) -> str:
+    return (
+        f"{pre_pto:.1f} kWh imported before Permission To Operate is billed in its "
+        "cycle but left out of the surplus test, which runs from PTO."
+    )
 
 
 def cash_out_periods(entries: Iterable[LedgerEntry]) -> list[list[LedgerEntry]]:
@@ -313,11 +352,12 @@ def mce_cash_out(
     period = _span(ordered)
     opening = opening if opening is not None else ordered[0].opening
     closing = ordered[-1].closing
-    imported = sum(e.imported_kwh for e in ordered)
-    exported = sum(e.exported_kwh for e in ordered)
+    imported, exported, pre_pto = surplus_test_kwh(ordered)
     surplus = max(exported - imported, 0.0)
 
     notes: list[str] = []
+    if pre_pto:
+        notes += [_pre_pto_note(pre_pto), OPEN_QUESTIONS[2]]
     if surplus <= 0.0:
         # Not a Net Surplus Generator, so no reversal and no payment. The bank
         # still rolls forward untouched.
@@ -401,13 +441,14 @@ def pge_true_up(entries: Sequence[LedgerEntry], pto_date: date, *, is_cca: bool)
         raise ConfigError("a relevant period needs at least one cycle")
     ordered = sorted(entries, key=lambda e: e.period.start)
     period = _span(ordered)
-    imported = sum(e.imported_kwh for e in ordered)
-    exported = sum(e.exported_kwh for e in ordered)
+    imported, exported, pre_pto = surplus_test_kwh(ordered)
     surplus = max(exported - imported, 0.0)
     closing = ordered[-1].closing
     anniversary = relevant_period_end(pto_date, ordered[-1].period.start)
 
     notes = [f"Relevant Period measured against the PTO anniversary {anniversary.isoformat()}."]
+    if pre_pto:
+        notes.append(_pre_pto_note(pre_pto))
     if is_cca:
         notes.append(
             "PG&E pays no NSC on a CCA account (Schedule NBT, Special Condition "

@@ -297,6 +297,11 @@ class LedgerEntry:
     #: imported energy over the period.
     imported_kwh: float = 0.0
     exported_kwh: float = 0.0
+    #: The part of ``imported_kwh`` delivered before Permission To Operate.
+    #: ``exported_kwh`` already leaves out pre-PTO exports, which earn nothing;
+    #: this lets the true-up leave out the imports beside them, so the surplus
+    #: test runs from PTO on both sides. See ``Bill.pre_pto_imported_kwh``.
+    pre_pto_imported_kwh: float = 0.0
     #: Export credits the statement spent inside this cycle instead of banking,
     #: by the bucket whose charges they reduced. MCE's Solar Bonus Credit is the
     #: one vendored. They never enter ``earned`` -- that is what makes them
@@ -319,6 +324,7 @@ class LedgerEntry:
             "non_offsettable": round(self.non_offsettable, 2),
             "imported_kwh": round(self.imported_kwh, 3),
             "exported_kwh": round(self.exported_kwh, 3),
+            "pre_pto_imported_kwh": round(self.pre_pto_imported_kwh, 3),
             "complete": self.complete,
         }
 
@@ -495,6 +501,7 @@ def apply_credits(bill: Bill, opening: CreditBalances | None = None) -> LedgerEn
         non_offsettable=non_offsettable,
         imported_kwh=sum(b.imported for b in bill.buckets),
         exported_kwh=sum(b.exported for b in bill.buckets),
+        pre_pto_imported_kwh=bill.pre_pto_imported_kwh,
         # Only the part actually spent against this cycle's charges. Whatever
         # an offset could not cover has already been banked into `earned` by
         # the clamp above, so carrying the gross figure here would let the
