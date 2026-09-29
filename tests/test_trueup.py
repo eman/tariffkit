@@ -318,6 +318,57 @@ class TestTheSurplusTestRunsFromPto:
         assert OPEN_QUESTIONS[2] not in got.notes
 
 
+class TestTheFirstCashOutYear:
+    """MCE's tariff "applies to all PG&E SBP customers": none before PTO."""
+
+    def spring(self) -> list[LedgerEntry]:
+        return [
+            entry(date(2026, 2, 15), date(2026, 3, 14), imported=500.0, pre_pto_imported=500.0),
+            entry(date(2026, 3, 15), date(2026, 4, 14), imported=450.0, pre_pto_imported=450.0),
+        ]
+
+    def test_a_year_closing_before_pto_is_not_reported(self) -> None:
+        # A backfill reaching into pre-solar history.
+        events = run_true_ups(self.spring(), pto_date=date(2026, 6, 3), is_cca=True)
+        assert [e for e in events if e.kind is TrueUpKind.MCE_CASH_OUT] == []
+
+    def test_mce_cash_out_refuses_one(self) -> None:
+        with pytest.raises(ConfigError, match="not on the Solar Billing Plan"):
+            mce_cash_out(self.spring(), nsc_rate=0.05, pto_date=date(2026, 6, 3))
+
+    def test_the_year_after_is_still_reported(self) -> None:
+        cycles = self.spring() + year_of_cycles(imported=10.0, exported=40.0)
+        events = run_true_ups(cycles, pto_date=date(2026, 6, 3), is_cca=True)
+        cash_outs = [e for e in events if e.kind is TrueUpKind.MCE_CASH_OUT]
+        assert [e.period.end for e in cash_outs] == [date(2027, 4, 14)]
+
+    def test_a_short_first_year_still_cashes_out_and_says_so(self) -> None:
+        # PTO on 20 March: the March-April cycle closes the first year 26 days
+        # later. The tariff sets no minimum, so it settles.
+        cycles = [
+            entry(
+                date(2026, 3, 15),
+                date(2026, 4, 14),
+                imported=60.0,
+                pre_pto_imported=20.0,
+                exported=300.0,
+                earned_generation=15.0,
+                closing_generation=15.0,
+            )
+        ]
+        events = run_true_ups(cycles, pto_date=date(2026, 3, 20), is_cca=True, nsc_rate=0.05)
+        cash_out = next(e for e in events if e.kind is TrueUpKind.MCE_CASH_OUT)
+        assert cash_out.eligible
+        assert cash_out.surplus_kwh == pytest.approx(260.0)
+        assert any("covers 26 days" in note for note in cash_out.notes)
+
+    def test_a_later_year_is_not_called_the_first(self) -> None:
+        got = mce_cash_out(
+            year_of_cycles(imported=10.0, exported=40.0), nsc_rate=0.05, pto_date=date(2026, 5, 1)
+        )
+        assert not any("first cash-out" in note for note in got.notes)
+
+
 class TestAverageExportRate:
     def test_dollars_earned_over_kwh_exported(self) -> None:
         cycles = [

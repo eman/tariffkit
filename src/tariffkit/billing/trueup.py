@@ -93,9 +93,10 @@ OPEN_QUESTIONS: tuple[str, ...] = (
     "formula carry over to the Solar Billing Plan. Both appear on MCE's website "
     "under the NEM 1.0/2.0 program; neither appears in the SBP tariff text.",
     "Whether MCE's first cash-out year starts at Permission To Operate or at the "
-    "start of the first billing cycle. The Solar Billing Plan is a Net Billing "
-    "arrangement, which begins at PTO, so this module leaves imports before PTO "
-    "out of the first year's surplus test, as PG&E's Relevant Period does.",
+    "start of the first billing cycle. The tariff 'applies to all PG&E SBP "
+    "customers', and a customer is not on SBP before PTO, so this module leaves "
+    "imports before PTO out of the first year's surplus test, as PG&E's Relevant "
+    "Period does.",
 )
 
 
@@ -342,6 +343,7 @@ def mce_cash_out(
     nsc_rate: float | None = None,
     *,
     opening: CreditBalances | None = None,
+    pto_date: date | None = None,
 ) -> TrueUp:
     """Close one MCE cash-out year over ``entries``.
 
@@ -350,17 +352,37 @@ def mce_cash_out(
     credits against charges as each cycle is folded, so credits owed against
     earlier charges in the same year have already been applied rather than left
     outstanding to be refunded.
+
+    ``pto_date`` says where the customer joined the Solar Billing Plan. A year
+    closing before it is refused: the tariff "applies to all PG&E SBP
+    customers", and until PTO this one was not. A year holding it is the first,
+    and may be short -- a mid-March PTO closes it with the March-April cycle a
+    few weeks later. It still cashes out: the tariff runs the process
+    "following the conclusion of each customer's March-April billing cycle" and
+    sets no minimum period. The result says how short it was.
     """
     if not entries:
         raise ConfigError("a cash-out period needs at least one cycle")
     ordered = sorted(entries, key=lambda e: e.period.start)
     period = _span(ordered)
+    if pto_date is not None and period.end < pto_date:
+        raise ConfigError(
+            f"a cash-out year closing {period.end} is before PTO ({pto_date}); "
+            "the customer was not on the Solar Billing Plan and has no cash-out"
+        )
     opening = opening if opening is not None else ordered[0].opening
     closing = ordered[-1].closing
     imported, exported, pre_pto = surplus_test_kwh(ordered)
     surplus = max(exported - imported, 0.0)
 
     notes: list[str] = []
+    if pto_date is not None and period.start < pto_date:
+        days = (period.end - pto_date).days + 1
+        notes.append(
+            f"the first cash-out on the Solar Billing Plan covers {days} days, from "
+            f"PTO ({pto_date}) to the end of the March-April cycle; the tariff sets "
+            "no minimum period, so a short first year cashes out like any other."
+        )
     if pre_pto:
         notes += [_pre_pto_note(pre_pto), OPEN_QUESTIONS[2]]
     if surplus <= 0.0:
@@ -560,11 +582,15 @@ def run_true_ups(
     if is_cca:
         for group in cash_out_periods(ordered):
             last = group[-1]
-            if (
+            closed = (
                 last.period.start.month == CASH_OUT_START_MONTH
                 and last.period.end.month == CASH_OUT_END_MONTH
-            ):
-                out.append(mce_cash_out(group, nsc_rate))
+            )
+            # A year that closed before PTO was never on the Solar Billing Plan:
+            # a backfill reaching into pre-solar history would otherwise report a
+            # cash-out for it. See `mce_cash_out`.
+            if closed and (pto_date is None or last.period.end >= pto_date):
+                out.append(mce_cash_out(group, nsc_rate, pto_date=pto_date))
 
     if pto_date is not None:
         # Close the period *including* the cycle that reaches the anniversary,

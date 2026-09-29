@@ -532,10 +532,29 @@ the payment second.
 `TrueUp.verified` is always `False`. Nothing here has been checked against a
 statement, because none exists yet: the first MCE cash-out falls after the
 March–April 2027 cycle and the first PG&E Relevant Period ends 2027-06-03.
-`tariffkit.billing.trueup.OPEN_QUESTIONS` records the two places the tariff text
-supports more than one reading — whether the credit reversal and the NSC rate
-are two steps or one, and whether MCE's $5,000 cap and "NSC + $0.02/kWh" formula
-(both published under its NEM 1.0/2.0 program) carry over to the SBP.
+`tariffkit.billing.trueup.OPEN_QUESTIONS` records the three places the tariff
+text supports more than one reading — whether the credit reversal and the NSC
+rate are two steps or one, whether MCE's $5,000 cap and "NSC + $0.02/kWh"
+formula (both published under its NEM 1.0/2.0 program) carry over to the SBP,
+and whether MCE's first cash-out year starts at PTO.
+
+### The first year
+
+Both surplus tests run from **Permission To Operate**. A first billing cycle
+usually starts before PTO: its exports before PTO earn nothing, and its imports
+before PTO are billed but left out of the kWh test, so energy from before Net
+Billing is never weighed against energy after it. A `TrueUp` reports those
+imports as `pre_pto_imported_kwh`.
+
+MCE's tariff "applies to all PG&E SBP customers", so a March–April year that
+closes before PTO has no cash-out, and none is reported. The year holding PTO
+does cash out, however short: the tariff runs the process "following the
+conclusion of each customer's March-April billing cycle" with no minimum
+period, and the result notes how many days it covered.
+
+An account epoch that records no PTO — an import-only history before solar —
+is priced against the account's PTO, as is one recording a different date: PTO
+belongs to the interconnection, not to a tariff.
 
 `Config.nsc_rate` is unset by default and the result is marked `estimated`,
 because MCE determines its SBP rate *at* cash-out rather than publishing it in

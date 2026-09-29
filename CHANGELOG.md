@@ -59,7 +59,14 @@ All notable changes to this project are documented here. This project follows
   `account update --pto-date` leaves behind -- was priced as though Net Billing
   had already begun, crediting its exports and counting its imports in the
   first year's surplus test. Such an epoch is now priced against the account's
-  PTO date.
+  PTO date, and so is one recording a different date, for bills and live prices
+  alike: the settlements are windowed from that date, and pricing now draws
+  the line in the same place.
+- **No MCE cash-out is reported for a year that closed before PTO.** A backfill
+  reaching into pre-solar history reported one, over zero energy, for a
+  customer not yet on the Solar Billing Plan. The first year after PTO still
+  cashes out however short it is -- the tariff sets no minimum -- and now says
+  how many days it covered.
 
 ## [0.9.0] - 2026-09-12
 
