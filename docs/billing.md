@@ -521,11 +521,32 @@ Relevant Period", forfeited only on leaving the tariff; MCE's SBP tariff rolls
 the balance over "indefinitely". The annual reset to zero belongs to NEM 2.0.
 
 Surplus is a **kilowatt-hour** test in both tariffs — exported energy exceeding
-imported energy over the period — not a dollar balance. When it is met, the
-export credit already paid for that energy is reversed at the average export
-credit rate (including MCE's Solar Bonus Credit) so the same kilowatt-hours are
-not paid for twice, and the reversal is charged against the balance first and
-the payment second.
+imported energy over the period, counted from Permission To Operate — not a
+dollar balance. When it is met, the export credit already paid for that energy
+is reversed at the average export credit rate (including MCE's Solar Bonus
+Credit) so the same kilowatt-hours are not paid for twice, and the reversal is
+charged against the balance first and the payment second.
+
+### The first year
+
+Both surplus tests run from **Permission To Operate**. A first billing cycle
+usually starts before PTO: its exports before PTO earn nothing, and its imports
+before PTO are billed but left out of the kWh test, so energy from before Net
+Billing is never weighed against energy after it. A `TrueUp`'s
+`imported_kwh` is therefore the energy the test counted, not everything the
+cycles metered: the imports it left out are `pre_pto_imported_kwh`, and the two
+add back to the cycles' total. `Bill` and `LedgerEntry` carry the same figure,
+while their own `imported_kwh` stays the full metered import that was billed.
+
+MCE's tariff "applies to all PG&E SBP customers", so a March–April year that
+closes before PTO has no cash-out, and none is reported. The year holding PTO
+does cash out, however short: the tariff runs the process "following the
+conclusion of each customer's March-April billing cycle" with no minimum
+period, and the result notes how many days it covered.
+
+An account epoch that records no PTO — an import-only history before solar —
+is priced against the account's PTO, as is one recording a different date: PTO
+belongs to the interconnection, not to a tariff.
 
 ### What is not settled
 
@@ -537,24 +558,6 @@ text supports more than one reading — whether the credit reversal and the NSC
 rate are two steps or one, whether MCE's $5,000 cap and "NSC + $0.02/kWh"
 formula (both published under its NEM 1.0/2.0 program) carry over to the SBP,
 and whether MCE's first cash-out year starts at PTO.
-
-### The first year
-
-Both surplus tests run from **Permission To Operate**. A first billing cycle
-usually starts before PTO: its exports before PTO earn nothing, and its imports
-before PTO are billed but left out of the kWh test, so energy from before Net
-Billing is never weighed against energy after it. A `TrueUp` reports those
-imports as `pre_pto_imported_kwh`.
-
-MCE's tariff "applies to all PG&E SBP customers", so a March–April year that
-closes before PTO has no cash-out, and none is reported. The year holding PTO
-does cash out, however short: the tariff runs the process "following the
-conclusion of each customer's March-April billing cycle" with no minimum
-period, and the result notes how many days it covered.
-
-An account epoch that records no PTO — an import-only history before solar —
-is priced against the account's PTO, as is one recording a different date: PTO
-belongs to the interconnection, not to a tariff.
 
 `Config.nsc_rate` is unset by default and the result is marked `estimated`,
 because MCE determines its SBP rate *at* cash-out rather than publishing it in

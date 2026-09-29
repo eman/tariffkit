@@ -282,6 +282,26 @@ class TestTheSurplusTestRunsFromPto:
             )
             assert got.to_dict()["pre_pto_imported_kwh"] == 250.0
 
+    def test_rounding_cannot_invent_a_surplus(self) -> None:
+        # Every import before PTO, nothing exported. The ledger's figure comes
+        # from bucket totals and the pre-PTO one from reading order, so the two
+        # can differ in the last place; a hair below zero counted as surplus.
+        cycles = [
+            entry(
+                date(2026, 5, 15),
+                date(2026, 6, 14),
+                imported=0.1 + 0.2,
+                pre_pto_imported=0.2 + 0.1 + 1e-16,
+            )
+        ]
+        for got in (
+            mce_cash_out(cycles, nsc_rate=0.05),
+            pge_true_up(cycles, date(2026, 6, 3), is_cca=False),
+        ):
+            assert got.imported_kwh == 0.0
+            assert got.surplus_kwh == 0.0
+            assert not got.eligible
+
     def test_pge_does_not_raise_mces_open_question(self) -> None:
         got = pge_true_up(self.first_year(), date(2026, 6, 3), is_cca=True)
         assert OPEN_QUESTIONS[2] not in got.notes

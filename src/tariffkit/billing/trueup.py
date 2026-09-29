@@ -252,7 +252,11 @@ def surplus_test_kwh(entries: Sequence[LedgerEntry]) -> tuple[float, float, floa
     Returns ``(imported, exported, pre_pto_imported)``.
     """
     pre_pto = sum(e.pre_pto_imported_kwh for e in entries)
-    imported = sum(e.imported_kwh for e in entries) - pre_pto
+    # Floored because the two sides are summed differently -- ``imported_kwh``
+    # from bucket totals, the pre-PTO figure in reading order -- so a cycle
+    # whose imports all came before PTO can subtract to a hair below zero. Left
+    # there, an account that exported nothing had a surplus and was eligible.
+    imported = max(sum(e.imported_kwh for e in entries) - pre_pto, 0.0)
     exported = sum(e.exported_kwh for e in entries)
     return imported, exported, pre_pto
 
