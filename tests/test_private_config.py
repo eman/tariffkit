@@ -20,10 +20,22 @@ from tariffkit.sources.influx import InfluxSettings
 from tariffkit.sources.pge import PgeSettings
 
 
+class _NoKeyringError(RuntimeError):
+    pass
+
+
+class _PasswordDeleteError(RuntimeError):
+    pass
+
+
 class FakeKeyring:
     def __init__(self) -> None:
         self.values: dict[tuple[str, str], str] = {}
-        self.errors = SimpleNamespace(KeyringError=RuntimeError)
+        self.errors = SimpleNamespace(
+            KeyringError=RuntimeError,
+            NoKeyringError=_NoKeyringError,
+            PasswordDeleteError=_PasswordDeleteError,
+        )
 
     def get_password(self, service: str, name: str) -> str | None:
         return self.values.get((service, name))
@@ -32,6 +44,8 @@ class FakeKeyring:
         self.values[(service, name)] = value
 
     def delete_password(self, service: str, name: str) -> None:
+        if (service, name) not in self.values:
+            raise _PasswordDeleteError(name)
         del self.values[(service, name)]
 
     def get_keyring(self) -> FakeKeyring:
@@ -87,6 +101,65 @@ def test_keyring_never_lists_values(monkeypatch: pytest.MonkeyPatch) -> None:
     assert secrets.configured_secrets() == ("pge.password",)
     secrets.delete_secret("pge.password")
     assert secrets.configured_secrets() == ()
+
+
+def test_missing_keyring_backend_falls_back_to_dotenv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    backend = FakeKeyring()
+
+    def no_backend(*_args: Any) -> None:
+        raise _NoKeyringError("No recommended backend was available")
+
+    monkeypatch.setattr(backend, "set_password", no_backend)
+    monkeypatch.setattr(backend, "delete_password", no_backend)
+    monkeypatch.delenv("TARIFFKIT_DISABLE_KEYRING")
+    monkeypatch.setattr(secrets, "_keyring", lambda: backend)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    file = tmp_path / "tariffkit" / ".env"
+
+    assert secrets.set_secret("pge.username", "someone") == file
+    assert secrets.load_dotenv() == {"PGE_USERNAME": "someone"}
+    assert secrets.delete_secret("pge.username") == file
+    assert secrets.load_dotenv() == {}
+
+
+def test_a_keyring_installed_later_does_not_strand_the_dotenv_entry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`.env` is read first, so an entry left behind there stays the live value."""
+    monkeypatch.delenv("TARIFFKIT_DISABLE_KEYRING")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    file = tmp_path / "tariffkit" / ".env"
+    monkeypatch.setattr(secrets, "_keyring", lambda: None)
+    secrets.set_secret("pge.password", "old")
+
+    backend = FakeKeyring()
+    monkeypatch.setattr(secrets, "_keyring", lambda: backend)
+    assert secrets.delete_secret("pge.password") == file
+    assert secrets.load_dotenv() == {}
+
+    monkeypatch.setattr(secrets, "_keyring", lambda: None)
+    secrets.set_secret("pge.password", "old")
+    monkeypatch.setattr(secrets, "_keyring", lambda: backend)
+    assert secrets.set_secret("pge.password", "new") is None
+    assert secrets.load_dotenv() == {}
+    assert secrets.get_secret("pge.password") == "new"
+
+    secrets.delete_secret("pge.password")
+    with pytest.raises(ConfigError, match="not stored"):
+        secrets.delete_secret("pge.password")
+
+
+def test_missing_keyring_package_falls_back_to_dotenv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("TARIFFKIT_DISABLE_KEYRING")
+    monkeypatch.setattr(secrets, "_keyring", lambda: None)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+    assert secrets.set_secret("pge.password", "hunter2") == tmp_path / "tariffkit" / ".env"
+    assert secrets.load_dotenv() == {"PGE_PASSWORD": "hunter2"}
 
 
 def test_credentials_list_is_never_silent_about_where_a_value_comes_from(
@@ -311,3 +384,52 @@ def test_config_that_is_not_toml_is_reported_not_raised(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError, match="not valid TOML"):
         Config.from_toml(bad)
+
+
+def test_dotenv_secrets_replace_their_line_and_keep_the_rest(tmp_path: Path) -> None:
+    file = tmp_path / "tariffkit" / ".env"
+    file.parent.mkdir()
+    file.write_text("# mine\nHA_TOKEN=abc\nPGE_USERNAME=old\n", encoding="utf-8")
+
+    secrets.set_dotenv_secret("pge.username", "new@example.com", file)
+    secrets.set_dotenv_secret("pge.password", "p=ss word", file)
+
+    assert file.read_text(encoding="utf-8") == (
+        "# mine\nHA_TOKEN=abc\nPGE_USERNAME=new@example.com\nPGE_PASSWORD=p=ss word\n"
+    )
+    assert secrets.load_dotenv(file)["PGE_PASSWORD"] == "p=ss word"
+    assert file.stat().st_mode & 0o777 == 0o600
+
+    secrets.delete_dotenv_secret("pge.password", file)
+    assert "PGE_PASSWORD" not in secrets.load_dotenv(file)
+    with pytest.raises(ConfigError, match="PGE_PASSWORD is not set"):
+        secrets.delete_dotenv_secret("pge.password", file)
+
+
+def test_dotenv_new_file_is_private(tmp_path: Path) -> None:
+    file = tmp_path / "new" / ".env"
+
+    secrets.set_dotenv_secret("pge.username", "someone", file)
+
+    assert file.stat().st_mode & 0o777 == 0o600
+    assert file.parent.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.parametrize("value", ["two\nlines", " padded", '"quoted"'])
+def test_dotenv_refuses_values_it_could_not_read_back(tmp_path: Path, value: str) -> None:
+    with pytest.raises(ConfigError, match=r"PGE_PASSWORD cannot be stored in \.env"):
+        secrets.set_dotenv_secret("pge.password", value, tmp_path / ".env")
+    assert not (tmp_path / ".env").exists()
+
+
+def test_cli_says_where_a_keyringless_credential_went(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr("getpass.getpass", lambda _prompt: "someone@example.com")
+
+    assert main(["credentials", "set", "pge.username"]) == 0
+
+    file = tmp_path / "tariffkit" / ".env"
+    assert f"stored pge.username in {file} (no keyring available)" in capsys.readouterr().out
+    assert secrets.load_dotenv(file) == {"PGE_USERNAME": "someone@example.com"}

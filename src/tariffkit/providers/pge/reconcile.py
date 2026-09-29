@@ -706,15 +706,63 @@ def reconcile(
             default=-1,
         )
         if active_index < 0:
-            changes.append(
-                AccountChange(
-                    ChangeOutcome.MISSING_REQUIRED,
-                    effective,
-                    "config",
-                    after=None,
-                    reason="no complete prior Config exists before the printed agreement start",
+            if not working:
+                changes.append(
+                    AccountChange(
+                        ChangeOutcome.MISSING_REQUIRED,
+                        effective,
+                        "config",
+                        after=None,
+                        reason="no complete prior Config exists before the printed agreement start",
+                    )
                 )
-            )
+                continue
+            # Evidence older than the account's history. What a statement does
+            # not print -- PTO, the interconnection year, a discount -- is a fact
+            # about the account rather than about a date, so it is taken from
+            # the earliest snapshot; what it does print overrides it. Refusing
+            # here made a history that began at the newest bill impossible to
+            # extend: every older statement came back "missing" and nothing in
+            # the account could be priced before the day it was set up.
+            earliest = working[0]
+            merged, merge_missing = _merge_observed(earliest.config, agreement)
+            missing = tuple(dict.fromkeys((*merge_missing, *_validate_complete_config(merged))))
+            if missing:
+                changes.extend(
+                    AccountChange(
+                        ChangeOutcome.MISSING_REQUIRED,
+                        effective,
+                        field,
+                        before=None,
+                        after=None,
+                        reason="the statement predates the account and does not print this",
+                    )
+                    for field in missing
+                )
+                continue
+            if merged == earliest.config:
+                # Nothing differs: the earliest snapshot simply began sooner.
+                working[0] = AccountEpoch(effective, earliest.config, earliest.note)
+                changes.append(
+                    AccountChange(
+                        ChangeOutcome.ADD,
+                        effective,
+                        "history_start",
+                        before=earliest.effective,
+                        after=effective,
+                        reason="the account's history is extended back to this statement",
+                    )
+                )
+            else:
+                working.insert(0, AccountEpoch(effective, merged))
+                changes.extend(
+                    _changes_for_facts(
+                        earliest.config,
+                        agreement,
+                        outcome=ChangeOutcome.ADD,
+                        effective=effective,
+                    )
+                )
             continue
 
         active = working[active_index].config

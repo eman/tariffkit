@@ -126,9 +126,25 @@ Or add it manually:
 5. Restart Home Assistant, then add TariffKit from
    **Settings → Devices & services → Add integration**.
 
+## Getting started
+
+```bash
+pip install 'tariffkit[all]'
+tariffkit setup
+```
+
+`setup` asks for your PG&E login, reads your tariff off your latest statement
+(or asks for it), connects Home Assistant or InfluxDB for meter data, and
+optionally sets up MQTT. It tests each connection as it goes, saves settings to
+`~/.config/tariffkit/config.toml` and secrets to the OS keyring (or an
+owner-only `~/.config/tariffkit/.env` where there is none), and can be run
+again to change anything. Every step is optional: `tariffkit now` works with
+none of them.
+
 ## CLI
 
 ```bash
+tariffkit setup                        # guided first-run configuration
 tariffkit now                          # current import/export price
 tariffkit forecast --hours 48          # the upcoming curve
 tariffkit forecast --format json       # machine-readable
@@ -174,7 +190,7 @@ base_services_charge_tier = 3
 
 `TARIFFKIT_*` environment variables override any file setting.
 Long-lived PG&E, Home Assistant, InfluxDB, and MQTT credentials can be stored
-outside that file with `tariffkit credentials set`; see
+outside that file with `tariffkit setup` or `tariffkit credentials set`; see
 [Configuration](https://github.com/eman/tariffkit/blob/main/docs/configuration.md#credentials).
 
 ### What the numbers include

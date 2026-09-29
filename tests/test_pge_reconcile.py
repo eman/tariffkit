@@ -432,3 +432,36 @@ def test_applying_a_statement_keeps_the_boundaries_the_portal_gave() -> None:
 
     assert applied.billing_periods == periods
     assert applied.observations  # and it still did its own job
+
+
+def test_older_statements_extend_the_history_back() -> None:
+    """An account set up from its newest bill can still take in the ones before it.
+
+    What a statement does not print -- PTO, the interconnection year -- carries
+    back from the earliest snapshot; what it prints decides the rest.
+    """
+    newest = AccountEpoch(date(2026, 7, 29), Config(tariff="E-ELEC", pto_date=date(2026, 6, 3)))
+    profile = AccountProfile((newest,))
+
+    same = reconcile(
+        profile, observation(agreement(start=date(2026, 6, 30), end=date(2026, 7, 28)))
+    )
+    assert same.can_apply
+    assert [(e.effective, e.config.tariff) for e in same.proposed_epochs] == [
+        (date(2026, 6, 30), "E-ELEC")
+    ]
+    assert [(c.outcome, c.field) for c in same.changes] == [(ChangeOutcome.ADD, "history_start")]
+
+    older = reconcile(
+        profile,
+        observation(
+            agreement(start=date(2026, 5, 1), end=date(2026, 6, 2), tariff="EV2-A"),
+            source_digest="b" * 64,
+        ),
+    )
+    assert older.can_apply
+    first, second = older.proposed_epochs
+    assert (first.effective, first.config.tariff) == (date(2026, 5, 1), "EV2-A")
+    # Not printed on a bill, so taken from the snapshot the account already had.
+    assert first.config.pto_date == date(2026, 6, 3)
+    assert second == newest
