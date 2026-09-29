@@ -2,8 +2,10 @@ name: Upstream rate data check
 
 # PG&E updates export rates by October 1 of any year the CPUC adopts a new
 # Avoided Cost Calculator, and changes retail rates more often via advice
-# letters. This turns that drift into a failing build instead of silently stale
-# numbers.
+# letters. This regenerates the vendored data from the publishers each week.
+# When that runs cleanly and the tests pass on the result, it opens (or
+# refreshes) a pull request with the new data; when anything fails, it opens an
+# issue instead, because a failure is a signal to look, not to trust.
 
 on:
   schedule:
@@ -17,58 +19,266 @@ concurrency:
   group: rate-data-check
   cancel-in-progress: false
 
+env:
+  PR_BRANCH: rate-data/auto
+  ISSUE_TITLE: Vendored rate data is out of date with PG&E
+
 jobs:
-  compare:
-    name: Compare vendored data
+  regenerate:
+    name: Regenerate vendored data
     runs-on: ubuntu-latest
     outputs:
+      result: ${{ steps.result.outputs.result }}
       export_outcome: ${{ steps.export.outcome }}
       retail_outcome: ${{ steps.retail.outcome }}
+      diff_outcome: ${{ steps.diff.outcome }}
+      tests_outcome: ${{ steps.tests.outcome }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
-      - run: uv sync --group regen
-      - name: Compare vendored export rates against the utility
+      - run: uv sync --all-extras --group regen --group test
+      # Both generators write in place and refuse to write anything that does
+      # not reconcile against its own published totals. continue-on-error lets
+      # one report cover both rather than the first failure hiding the second.
+      - name: Regenerate export rates
         id: export
-        run: uv run python -m tools.regen.export --download --check
-      # Runs even when the export check failed, so one report covers both
-      # rather than the first failure hiding the second. Sources a script
-      # cannot fetch are skipped with a note, not failed: they are unknown
-      # rather than stale, and a permanently red job trains everyone to ignore
-      # it.
-      - name: Compare vendored tariffs, adders and CCA cards against publishers
+        continue-on-error: true
+        shell: bash
+        run: uv run python -m tools.regen.export --download 2>&1 | tee "$RUNNER_TEMP/export.log"
+      # Sources a script cannot fetch are skipped with a note, not failed: they
+      # are unknown rather than stale, and a permanently red job trains
+      # everyone to ignore it.
+      - name: Regenerate tariffs, adders and CCA cards
         id: retail
+        continue-on-error: true
+        shell: bash
+        run: uv run python -m tools.regen 2>&1 | tee "$RUNNER_TEMP/retail.log"
+      # Only a fully clean run is worth proposing. A partial one mixes new data
+      # with old in ways a reviewer cannot see from the diff.
+      - name: Collect the changes
+        id: diff
+        if: steps.export.outcome == 'success' && steps.retail.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          git add --all
+          # The generators only ever write under src/tariffkit/data/. Anything
+          # else changed means something went wrong, and it is not shipped.
+          stray=$(git diff --cached --name-only | grep -v '^src/tariffkit/data/' || true)
+          if [ -n "$stray" ]; then
+            printf '::error::regeneration touched files outside src/tariffkit/data/:\n%s\n' "$stray"
+            exit 1
+          fi
+          if git diff --cached --summary | grep -q 'mode 120000'; then
+            echo "::error::regeneration produced a symlink"
+            exit 1
+          fi
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Vendored data matches upstream."
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          out="$RUNNER_TEMP/rate-data"
+          mkdir -p "$out"
+          git diff --cached --binary > "$out/data.patch"
+          {
+            echo '```'
+            git diff --cached --stat
+            echo '```'
+            echo
+            echo '<details><summary>Regeneration log</summary>'
+            echo
+            echo '```'
+            # Download and cache chatter is indented; the per-dataset result
+            # lines are not.
+            grep -hv '^    ' "$RUNNER_TEMP/export.log" "$RUNNER_TEMP/retail.log"
+            echo '```'
+            echo
+            echo '</details>'
+          } > "$out/summary.md"
+          git diff --cached --stat
+      # A pull request opened with GITHUB_TOKEN does not trigger CI, so the new
+      # data is tested here, where it was made, before anything is proposed.
+      - name: Test the regenerated data
+        id: tests
+        if: steps.diff.outputs.changed == 'true'
+        continue-on-error: true
+        run: |
+          uv run pytest
+          uv run pytest audit/tests
+      - name: Upload the changes
+        if: steps.tests.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rate-data
+          path: ${{ runner.temp }}/rate-data/
+          retention-days: 7
+      - name: Decide what to report
+        id: result
         if: always()
-        run: uv run python -m tools.regen --check
-      # Gated on the two comparisons, not on `failure()`. Any job failure --
-      # a flaky download of a 35 MB archive, a uv hiccup, a full runner --
-      # would otherwise file "rate data is out of date" when nothing is stale;
-      # and because the dedupe below returns early while an open rate-data
-      # issue exists, one such false alarm left open silences every real one
-      # after it.
+        env:
+          EXPORT: ${{ steps.export.outcome }}
+          RETAIL: ${{ steps.retail.outcome }}
+          DIFF: ${{ steps.diff.outcome }}
+          CHANGED: ${{ steps.diff.outputs.changed }}
+          TESTS: ${{ steps.tests.outcome }}
+        run: |
+          if [ "$EXPORT" = success ] && [ "$RETAIL" = success ] && [ "$DIFF" = success ]; then
+            if [ "$CHANGED" != true ]; then
+              result=current
+            elif [ "$TESTS" = success ]; then
+              result=changed
+            else
+              result=failed
+            fi
+          elif [ "$EXPORT" = failure ] || [ "$RETAIL" = failure ] || [ "$DIFF" = failure ]; then
+            result=failed
+          else
+            # Setup failed before any comparison ran: nothing is known about
+            # upstream, so nothing is reported. The red run is the signal.
+            result=unknown
+          fi
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+          echo "result: $result"
+          # The steps above continue on error so this one can see them all;
+          # the run should still go red when a person is needed.
+          case "$result" in failed|unknown) exit 1 ;; esac
+
+  propose:
+    name: Propose the new data
+    needs: regenerate
+    if: needs.regenerate.outputs.result == 'changed'
+    runs-on: ubuntu-latest
+    # Write access lives only in this job, which runs no project code and
+    # parses no publisher documents: it applies a patch after rechecking it.
+    permissions:
+      contents: write # Pushes the rate-data branch.
+      pull-requests: write # Opens or updates the pull request.
+      issues: read # Finds an open stale-rate-data issue for the PR to close.
+    env:
+      # A GITHUB_TOKEN-created pull request triggers no workflows, so the
+      # required checks never report. A fine-grained token with contents and
+      # pull-requests write on this repository avoids that; without one the
+      # pull request is still opened, and closing and reopening it runs CI.
+      GH_TOKEN: ${{ secrets.RATE_DATA_PR_TOKEN || github.token }}
+      HAS_PR_TOKEN: ${{ secrets.RATE_DATA_PR_TOKEN != '' }}
+      BOT_NAME: github-actions[bot]
+      BOT_EMAIL: 41898799+github-actions[bot]@users.noreply.github.com
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RATE_DATA_PR_TOKEN || github.token }}
+          # Needed to push. Safe here because nothing below executes code from
+          # the repository or the artifact.
+          persist-credentials: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rate-data
+          path: ${{ runner.temp }}/rate-data
+      - name: Apply the changes
+        run: |
+          git apply --index --binary "$RUNNER_TEMP/rate-data/data.patch"
+          # Rechecked because this job can write to the repository and the
+          # patch came from one that parsed documents from the internet.
+          stray=$(git diff --cached --name-only | grep -v '^src/tariffkit/data/' || true)
+          if [ -n "$stray" ]; then
+            printf '::error::patch touches files outside src/tariffkit/data/:\n%s\n' "$stray"
+            exit 1
+          fi
+          if git diff --cached --summary | grep -q 'mode 120000'; then
+            echo "::error::patch contains a symlink"
+            exit 1
+          fi
+          {
+            echo "Refresh vendored rate data from publishers"
+            echo
+            echo "Regenerated by the scheduled upstream check: $RUN_URL"
+            echo
+            git diff --cached --stat
+          } > "$RUNNER_TEMP/commit-msg"
+          git -c user.name="$BOT_NAME" -c user.email="$BOT_EMAIL" \
+            commit -q -F "$RUNNER_TEMP/commit-msg"
+      - name: Push the branch
+        id: push
+        run: |
+          if git rev-parse -q --verify "refs/remotes/origin/$PR_BRANCH" >/dev/null; then
+            # A maintainer who pushed a fix onto the branch should not have it
+            # overwritten by next week's run.
+            if git log --format=%ae "origin/main..origin/$PR_BRANCH" | grep -qvxF "$BOT_EMAIL"; then
+              echo "::warning::$PR_BRANCH has commits this workflow did not make; leaving it alone"
+              echo "pushed=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if git diff --quiet HEAD "origin/$PR_BRANCH"; then
+              echo "$PR_BRANCH already holds this data"
+              echo "pushed=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          git push --force origin "HEAD:refs/heads/$PR_BRANCH"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+      - name: Open or update the pull request
+        if: steps.push.outputs.pushed == 'true'
+        run: |
+          issue=$(gh issue list --label rate-data --state open --json number,title \
+            --jq "map(select(.title == env.ISSUE_TITLE)) | .[0].number // empty")
+          {
+            echo "The scheduled check regenerated the vendored rate data from the"
+            echo "publishers. Both generators ran cleanly, every value reconciled against"
+            echo "its published totals, and the test suite passed on the result."
+            echo
+            if [ -n "$issue" ]; then echo "Fixes #$issue."; echo; fi
+            cat "$RUNNER_TEMP/rate-data/summary.md"
+            echo
+            echo "Run: $RUN_URL"
+            if [ "$HAS_PR_TOKEN" != true ]; then
+              echo
+              echo "> [!NOTE]"
+              echo "> Opened with \`GITHUB_TOKEN\`, which does not trigger CI. Close and"
+              echo "> reopen this pull request to run the required checks."
+            fi
+          } > "$RUNNER_TEMP/pr-body.md"
+          pr=$(gh pr list --head "$PR_BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$pr" ]; then
+            gh pr edit "$pr" --body-file "$RUNNER_TEMP/pr-body.md"
+          else
+            gh pr create --base main --head "$PR_BRANCH" \
+              --title "Refresh vendored rate data from publishers" \
+              --body-file "$RUNNER_TEMP/pr-body.md" \
+              --label rate-data
+          fi
+
+  # Gated on the outcomes of the regeneration steps, not on `failure()`. Any
+  # job failure -- a uv hiccup, a full runner -- would otherwise file "rate
+  # data is out of date" when nothing is known to be stale; and because the
+  # dedupe below returns early while an open rate-data issue exists, one such
+  # false alarm left open silences every real one after it.
   report:
-    name: Report upstream changes
-    needs: compare
-    if: >-
-      always() && (needs.compare.outputs.export_outcome == 'failure'
-      || needs.compare.outputs.retail_outcome == 'failure')
+    name: Report a failed regeneration
+    needs: regenerate
+    if: always() && needs.regenerate.outputs.result == 'failed'
     runs-on: ubuntu-latest
     # Scheduled tokens cannot create issues without this job-scoped grant.
-    # Keeping it off the comparison job prevents downloaded publisher data or
+    # Keeping it off the regeneration job prevents downloaded publisher data or
     # regeneration tooling from receiving repository write access.
     permissions:
       issues: write # Creates the deduplicated stale-rate-data issue.
     steps:
-      - name: Open an issue when upstream has moved
+      - name: Open an issue when regeneration needs a person
         env:
-          EXPORT_OUTCOME: ${{ needs.compare.outputs.export_outcome }}
-          RETAIL_OUTCOME: ${{ needs.compare.outputs.retail_outcome }}
+          EXPORT_OUTCOME: ${{ needs.regenerate.outputs.export_outcome }}
+          RETAIL_OUTCOME: ${{ needs.regenerate.outputs.retail_outcome }}
+          DIFF_OUTCOME: ${{ needs.regenerate.outputs.diff_outcome }}
+          TESTS_OUTCOME: ${{ needs.regenerate.outputs.tests_outcome }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
-            const title = 'Vendored rate data is out of date with PG&E';
+            const title = process.env.ISSUE_TITLE;
             const { data: existing } = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -82,15 +292,18 @@ jobs:
               title,
               labels: ['rate-data'],
               body: [
-                'The scheduled check found upstream rate data differing from what is vendored.',
+                'The scheduled check could not regenerate the vendored rate data cleanly,',
+                'so it did not open a pull request.',
                 '',
                 `- export rates (\`tools.regen.export\`): **${process.env.EXPORT_OUTCOME}**`,
                 `- retail tariffs (\`tools.regen\`): **${process.env.RETAIL_OUTCOME}**`,
+                `- changes confined to \`src/tariffkit/data/\`: **${process.env.DIFF_OUTCOME}**`,
+                `- tests on the regenerated data: **${process.env.TESTS_OUTCOME}**`,
                 '',
-                'To refresh whichever failed:',
+                'To regenerate locally:',
                 '```bash',
                 'python -m tools.regen.export --download   # export rate matrices',
-                'python -m tools.regen                    # tariffs, adders, CCA cards',
+                'python -m tools.regen --refresh          # tariffs, adders, CCA cards',
                 'uv run pytest',
                 '```',
                 '',
