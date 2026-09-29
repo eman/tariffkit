@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-29
+
 ### Added
 - **`tariffkit setup`: guided first-run configuration.** Walks the PG&E login,
   the account, a meter source (Home Assistant or InfluxDB) and MQTT in order,
@@ -41,6 +43,8 @@ All notable changes to this project are documented here. This project follows
   unused alternative meter sources shown as optional.
 - **`account.json` is indented** so it can be read.
 - The OCR install hint names the command for the platform.
+- PG&E's published Net Surplus Compensation rate for October 2026
+  ($0.02740/kWh) is vendored, extending the stand-in series the true-up uses.
 
 ### Fixed
 - **The first year's Net Surplus test counts from Permission To Operate on
@@ -2036,7 +2040,8 @@ Initial release.
 - Holiday calendars are extracted per vintage from the source data rather than
   recomputed, because the vintage files disagree in far-future years.
 
-[Unreleased]: https://github.com/eman/tariffkit/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/eman/tariffkit/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/eman/tariffkit/releases/tag/v0.10.0
 [0.9.0]: https://github.com/eman/tariffkit/releases/tag/v0.9.0
 [0.8.1]: https://github.com/eman/tariffkit/releases/tag/v0.8.1
 [0.8.0]: https://github.com/eman/tariffkit/releases/tag/v0.8.0
