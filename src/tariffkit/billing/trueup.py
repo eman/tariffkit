@@ -170,7 +170,7 @@ class TrueUp:
     #: What rolls into the next period. Never zeroed; both tariffs carry forward.
     closing: CreditBalances
     #: Energy the surplus test counts, from Permission To Operate: imports
-    #: before PTO were billed but are not in this figure.
+    #: before PTO were billed but are in ``pre_pto_imported_kwh`` instead.
     imported_kwh: float
     exported_kwh: float
     #: Exported minus imported, floored at zero. Positive makes the customer a
@@ -178,6 +178,10 @@ class TrueUp:
     surplus_kwh: float
     #: Whether this provider pays NSC to this account at all.
     eligible: bool
+    #: Imports billed in the period but left out of ``imported_kwh`` because
+    #: they arrived before Permission To Operate. Adding the two gives the
+    #: cycles' metered imports back.
+    pre_pto_imported_kwh: float = 0.0
     #: Export credit clawed back so the same energy is not paid for twice.
     reversal: float = 0.0
     #: The rate used, and whether it came from config or the PG&E stand-in.
@@ -214,6 +218,7 @@ class TrueUp:
             "closing": self.closing.to_dict(),
             "imported_kwh": round(self.imported_kwh, 3),
             "exported_kwh": round(self.exported_kwh, 3),
+            "pre_pto_imported_kwh": round(self.pre_pto_imported_kwh, 3),
             "surplus_kwh": round(self.surplus_kwh, 3),
             "eligible": self.eligible,
             "reversal": round(self.reversal, 2),
@@ -372,6 +377,7 @@ def mce_cash_out(
             closing=closing,
             imported_kwh=imported,
             exported_kwh=exported,
+            pre_pto_imported_kwh=pre_pto,
             surplus_kwh=0.0,
             eligible=False,
             notes=tuple(notes),
@@ -417,6 +423,7 @@ def mce_cash_out(
         closing=closing,
         imported_kwh=imported,
         exported_kwh=exported,
+        pre_pto_imported_kwh=pre_pto,
         surplus_kwh=surplus,
         eligible=True,
         reversal=reversal,
@@ -462,6 +469,7 @@ def pge_true_up(entries: Sequence[LedgerEntry], pto_date: date, *, is_cca: bool)
             closing=closing,
             imported_kwh=imported,
             exported_kwh=exported,
+            pre_pto_imported_kwh=pre_pto,
             surplus_kwh=surplus,
             eligible=False,
             notes=tuple(notes),
@@ -476,6 +484,7 @@ def pge_true_up(entries: Sequence[LedgerEntry], pto_date: date, *, is_cca: bool)
             closing=closing,
             imported_kwh=imported,
             exported_kwh=exported,
+            pre_pto_imported_kwh=pre_pto,
             surplus_kwh=0.0,
             eligible=False,
             notes=tuple(notes),
@@ -507,6 +516,7 @@ def pge_true_up(entries: Sequence[LedgerEntry], pto_date: date, *, is_cca: bool)
         closing=closing,
         imported_kwh=imported,
         exported_kwh=exported,
+        pre_pto_imported_kwh=pre_pto,
         surplus_kwh=surplus,
         eligible=True,
         reversal=reversal,

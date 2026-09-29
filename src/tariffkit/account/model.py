@@ -624,7 +624,18 @@ class AccountProfile:
         return min(found) if found else None
 
     def segments_for(self, period: BillingPeriod) -> list[Segment]:
-        """Tile a billing period into segments priced by complete snapshots."""
+        """Tile a billing period into segments priced by complete snapshots.
+
+        An epoch that records no PTO is priced against the account's
+        :attr:`pto_date`. The engine reads PTO from the config it is handed, and
+        to it ``None`` means "already interconnected": an import-only epoch
+        before solar -- the shape Home Assistant saves, and the one ``account
+        update --pto-date`` leaves behind -- would otherwise credit its exports
+        and count its imports in the first year's surplus test, while the
+        settlements themselves are windowed from this same account-wide date.
+        An epoch naming its own PTO keeps it.
+        """
+        pto = self.pto_date
         applicable = self.epochs_in(period)
         segments: list[Segment] = []
         for index, epoch in enumerate(applicable):
@@ -635,7 +646,10 @@ class AccountProfile:
                 else period.end + timedelta(days=1)
             )
             end = min(period.end, next_start - timedelta(days=1))
-            segments.append(Segment(epoch.config, BillingPeriod(start, end)))
+            config = epoch.config
+            if config.pto_date is None and pto is not None:
+                config = config.with_(pto_date=pto)
+            segments.append(Segment(config, BillingPeriod(start, end)))
         return segments
 
     def with_observation(self, observation: AccountObservation) -> Self:

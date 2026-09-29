@@ -50,10 +50,16 @@ All notable changes to this project are documented here. This project follows
   Period weighed pre-PTO imports against post-PTO exports. That understated
   the surplus, and near the line could decide whether the customer was a Net
   Surplus Generator at all. Those imports are still billed in their cycle; the
-  bill and ledger now record them as `pre_pto_imported_kwh`, and the true-up
-  leaves them out and says so. Whether MCE's first cash-out year really starts
-  at PTO is recorded as an open question until a cash-out statement settles
-  it.
+  bill, ledger and true-up now record them as `pre_pto_imported_kwh`, and the
+  true-up leaves them out and says so. Whether MCE's first cash-out year really
+  starts at PTO is recorded as an open question until a cash-out statement
+  settles it.
+- **An account epoch with no PTO date no longer counts as interconnected.** An
+  import-only epoch before solar -- what Home Assistant saves, and what
+  `account update --pto-date` leaves behind -- was priced as though Net Billing
+  had already begun, crediting its exports and counting its imports in the
+  first year's surplus test. Such an epoch is now priced against the account's
+  PTO date.
 
 ## [0.9.0] - 2026-09-12
 

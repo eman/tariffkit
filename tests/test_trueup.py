@@ -261,13 +261,30 @@ class TestTheSurplusTestRunsFromPto:
     def test_an_mce_cash_out_counts_only_imports_from_pto(self) -> None:
         got = mce_cash_out(self.first_year(), nsc_rate=0.05)
         assert got.imported_kwh == pytest.approx(100.0)
+        assert got.pre_pto_imported_kwh == pytest.approx(250.0)
         assert got.exported_kwh == pytest.approx(400.0)
         assert got.surplus_kwh == pytest.approx(300.0)
 
     def test_a_pge_relevant_period_counts_only_imports_from_pto(self) -> None:
         got = pge_true_up(self.first_year(), date(2026, 6, 3), is_cca=True)
         assert got.imported_kwh == pytest.approx(100.0)
+        assert got.pre_pto_imported_kwh == pytest.approx(250.0)
         assert got.surplus_kwh == pytest.approx(300.0)
+
+    def test_the_two_figures_add_back_to_the_metered_imports(self) -> None:
+        cycles = self.first_year()
+        for got in (
+            mce_cash_out(cycles, nsc_rate=0.05),
+            pge_true_up(cycles, date(2026, 6, 3), is_cca=False),
+        ):
+            assert got.imported_kwh + got.pre_pto_imported_kwh == pytest.approx(
+                sum(e.imported_kwh for e in cycles)
+            )
+            assert got.to_dict()["pre_pto_imported_kwh"] == 250.0
+
+    def test_pge_does_not_raise_mces_open_question(self) -> None:
+        got = pge_true_up(self.first_year(), date(2026, 6, 3), is_cca=True)
+        assert OPEN_QUESTIONS[2] not in got.notes
 
     def test_it_can_decide_whether_there_is_a_surplus_at_all(self) -> None:
         # 250 kWh in, 200 out: a deficit counting from the first cycle's start,

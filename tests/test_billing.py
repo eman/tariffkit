@@ -17,6 +17,7 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 
 from tariffkit import Config, RateEngine, Supplier
+from tariffkit.account import AccountEpoch, AccountProfile
 from tariffkit.billing import (
     Bill,
     BillEngine,
@@ -749,6 +750,21 @@ class TestImportsBeforePto:
             check=False,
         )
         assert bill.pre_pto_imported_kwh == pytest.approx(10.0)
+
+    def test_an_import_only_epoch_before_solar_is_still_before_pto(self) -> None:
+        # The shape Home Assistant saves: no PTO until the solar epoch adds one.
+        # The engine would read the first epoch's None as "interconnected".
+        before = replace(mce_config(), vintage="NBT00", interconnection_year=None, pto_date=None)
+        account = AccountProfile(
+            (
+                AccountEpoch(date(2026, 7, 1), before),
+                AccountEpoch(self.PTO, replace(mce_config(), pto_date=self.PTO)),
+            )
+        )
+        bill = compute_segments(account.segments_for(PERIOD), self.readings(), check=False)
+        assert bill.pre_pto_imported_kwh == pytest.approx(10.0)
+        assert bill.uncompensated_kwh == pytest.approx(30.0)
+        assert bill.exported_kwh == pytest.approx(50.0)
 
     def test_the_surplus_test_counts_only_imports_from_pto(self) -> None:
         entries = run_ledger([self.bill(self.PTO)]).entries
