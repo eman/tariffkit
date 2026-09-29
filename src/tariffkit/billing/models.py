@@ -255,6 +255,13 @@ class Bill:
     #: whole first year. Nothing that reads this is asking whether the bill is
     #: sound; it is asking what happened, which is what a figure answers.
     uncompensated_kwh: float = 0.0
+    #: Energy imported before Permission To Operate, in kWh. The import side of
+    #: ``uncompensated_kwh``, but unlike those exports these *are* in
+    #: ``buckets`` and priced: the energy was delivered and is billed. They are
+    #: recorded apart for the annual Net Surplus test, which runs from PTO on
+    #: both sides -- counting a first cycle's pre-PTO imports against its
+    #: post-PTO exports understates the surplus.
+    pre_pto_imported_kwh: float = 0.0
 
     @property
     def imported_kwh(self) -> float:
@@ -394,5 +401,6 @@ class Bill:
             "total": round(self.total, 2),
             "complete": self.complete,
             "uncompensated_kwh": round(self.uncompensated_kwh, 3),
+            "pre_pto_imported_kwh": round(self.pre_pto_imported_kwh, 3),
             "warnings": list(self.warnings),
         }

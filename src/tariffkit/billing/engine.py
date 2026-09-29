@@ -87,6 +87,7 @@ class BillEngine:
 
         buckets: dict[tuple[Season, TouPeriod], _Accumulator] = {}
         uncompensated = 0.0
+        pre_pto_imported = 0.0
         import_components: dict[str, float] = {}
         export_components: dict[str, float] = {}
         complete = True
@@ -107,7 +108,8 @@ class BillEngine:
             # counter recorded real energy leaving the house. Pricing
             # the counter's view would invent credits the tariff does not grant.
             export_price = None
-            if reading.exported and self._compensated(moment):
+            in_net_billing = self._compensated(moment)
+            if reading.exported and in_net_billing:
                 export_price = self.rates.export_rates.price_at(moment)
             elif reading.exported:
                 uncompensated += reading.exported
@@ -124,6 +126,11 @@ class BillEngine:
                 bucket.imported += reading.imported
                 bucket.import_charge += reading.imported * import_price.total
                 _add_scaled(import_components, import_price.components, reading.imported)
+                # Billed like any other import, but outside the annual surplus
+                # test, which runs from PTO -- the same line the exports above
+                # are drawn on. See `Bill.pre_pto_imported_kwh`.
+                if not in_net_billing:
+                    pre_pto_imported += reading.imported
 
             if reading.exported and export_price is not None:
                 bucket.exported += reading.exported
@@ -163,6 +170,7 @@ class BillEngine:
             export_components=export_components,
             fixed_components=fixed_components,
             uncompensated_kwh=uncompensated,
+            pre_pto_imported_kwh=pre_pto_imported,
             warnings=tuple(warnings),
             # Pricing confidence only. Coverage problems travel separately in
             # `warnings`: they say the meter data is patchy, not that the rates
@@ -499,6 +507,7 @@ def compute_segments(
     warnings: list[str] = []
     complete = True
     uncompensated = 0.0
+    pre_pto_imported = 0.0
 
     priced = price_segments(ordered, readings, check=check, netted=netted)
     for segment, part in zip(ordered, priced, strict=True):
@@ -530,6 +539,7 @@ def compute_segments(
         )
         complete = complete and part.complete
         uncompensated += part.uncompensated_kwh
+        pre_pto_imported += part.pre_pto_imported_kwh
 
     return Bill(
         period=whole,
@@ -538,6 +548,7 @@ def compute_segments(
         export_components=exports,
         fixed_components=fixed,
         uncompensated_kwh=uncompensated,
+        pre_pto_imported_kwh=pre_pto_imported,
         warnings=tuple(warnings),
         complete=complete,
     )

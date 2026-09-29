@@ -169,6 +169,54 @@ class TestAccountProfile:
         ]
         assert sum(segment.period.days for segment in segments) == 29
 
+    def test_an_epoch_without_a_pto_is_priced_against_the_accounts(self) -> None:
+        # An import-only epoch before solar, as Home Assistant saves one.
+        pto = date(2026, 6, 3)
+        account = AccountProfile(
+            (
+                AccountEpoch(
+                    date(2026, 1, 1),
+                    Config(vintage="NBT00", interconnection_year=None, pto_date=None),
+                ),
+                AccountEpoch(pto, Config(pto_date=pto)),
+            )
+        )
+        segments = account.segments_for(BillingPeriod(date(2026, 5, 15), date(2026, 6, 14)))
+
+        assert [segment.config.pto_date for segment in segments] == [pto, pto]
+
+    def test_every_epoch_is_priced_against_the_accounts_pto(self) -> None:
+        # Two epochs disagreeing about PTO. The settlements are windowed from
+        # the account's date, so pricing draws the line in the same place.
+        account = AccountProfile(
+            (
+                AccountEpoch(date(2026, 1, 1), Config(pto_date=date(2026, 6, 1))),
+                AccountEpoch(date(2026, 6, 3), Config(pto_date=date(2026, 6, 3))),
+            )
+        )
+        segments = account.segments_for(BillingPeriod(date(2026, 5, 15), date(2026, 6, 14)))
+
+        assert account.pto_date == date(2026, 6, 1)
+        assert [segment.config.pto_date for segment in segments] == [
+            date(2026, 6, 1),
+            date(2026, 6, 1),
+        ]
+
+    def test_live_prices_use_the_same_pto_as_bills(self) -> None:
+        pto = date(2026, 6, 3)
+        account = AccountProfile(
+            (
+                AccountEpoch(
+                    date(2026, 1, 1),
+                    Config(vintage="NBT00", interconnection_year=None, pto_date=None),
+                ),
+                AccountEpoch(pto, Config(pto_date=pto)),
+            )
+        )
+        engine = AccountRateEngine(account)
+
+        assert engine.describe(datetime(2026, 5, 1, 12, tzinfo=PACIFIC))["pto_date"] == "2026-06-03"
+
     def test_forecast_resolves_each_timestamp(self) -> None:
         account = AccountProfile(
             (

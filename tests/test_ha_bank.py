@@ -174,6 +174,40 @@ def test_the_first_year_of_a_new_system_yields_a_spendable_bank() -> None:
     assert result.bills[0].uncompensated_kwh > 0
 
 
+def test_an_import_only_history_before_solar_is_before_pto() -> None:
+    """The epoch shape Home Assistant saves, through the real backfill and fold.
+
+    An import-only setup stores no PTO; adding solar later adds an epoch that
+    has one. The first epoch's None must not read as "already interconnected".
+    """
+    before = Config(tariff="E-ELEC", vintage="NBT00", interconnection_year=None, pto_date=None)
+    profile = AccountProfile(
+        (AccountEpoch(date(2026, 1, 1), before), AccountEpoch(PTO, Config(tariff="E-ELEC"))),
+        name="probe",
+    )
+    readings = []
+    day = date(2026, 6, 1)
+    while day <= date(2026, 7, 31):
+        readings += [
+            IntervalReading(
+                datetime(day.year, day.month, day.day, hour, tzinfo=PACIFIC),
+                imported=0.2,
+                exported=2.0,
+            )
+            for hour in range(24)
+        ]
+        day += timedelta(days=1)
+
+    result = backfill.build(profile, readings, date(2026, 6, 1), date(2026, 7, 31), 1)
+    state = bank.fold(profile, result.bills)
+
+    # 1 and 2 June are before PTO: 48 hours of each direction.
+    first = result.bills[0]
+    assert first.pre_pto_imported_kwh == pytest.approx(48 * 0.2)
+    assert first.uncompensated_kwh == pytest.approx(48 * 2.0)
+    assert state.trustworthy
+
+
 def _cca_profile() -> AccountProfile:
     from tariffkit.config import CcaConfig
     from tariffkit.models import Supplier

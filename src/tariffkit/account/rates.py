@@ -26,7 +26,7 @@ class AccountRateEngine:
             raise AssertionError("config_at should have raised for prehistory")
         engine = self._engines.get(index)
         if engine is None:
-            engine = RateEngine(self.profile.epochs[index].config)
+            engine = RateEngine(self.profile.pricing_config(self.profile.epochs[index]))
             self._engines[index] = engine
         return engine
 

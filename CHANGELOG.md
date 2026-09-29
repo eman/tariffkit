@@ -42,6 +42,32 @@ All notable changes to this project are documented here. This project follows
 - **`account.json` is indented** so it can be read.
 - The OCR install hint names the command for the platform.
 
+### Fixed
+- **The first year's Net Surplus test counts from Permission To Operate on
+  both sides.** A first billing cycle usually starts before PTO. Its exports
+  before PTO were already left out, since they earn nothing, but its imports
+  before PTO were counted, so both the MCE cash-out and PG&E's Relevant
+  Period weighed pre-PTO imports against post-PTO exports. That understated
+  the surplus, and near the line could decide whether the customer was a Net
+  Surplus Generator at all. Those imports are still billed in their cycle; the
+  bill, ledger and true-up now record them as `pre_pto_imported_kwh`, and the
+  true-up leaves them out and says so. Whether MCE's first cash-out year really
+  starts at PTO is recorded as an open question until a cash-out statement
+  settles it.
+- **An account epoch with no PTO date no longer counts as interconnected.** An
+  import-only epoch before solar -- what Home Assistant saves, and what
+  `account update --pto-date` leaves behind -- was priced as though Net Billing
+  had already begun, crediting its exports and counting its imports in the
+  first year's surplus test. Such an epoch is now priced against the account's
+  PTO date, and so is one recording a different date, for bills and live prices
+  alike: the settlements are windowed from that date, and pricing now draws
+  the line in the same place.
+- **No MCE cash-out is reported for a year that closed before PTO.** A backfill
+  reaching into pre-solar history reported one, over zero energy, for a
+  customer not yet on the Solar Billing Plan. The first year after PTO still
+  cashes out however short it is -- the tariff sets no minimum -- and now says
+  how many days it covered.
+
 ## [0.9.0] - 2026-09-12
 
 ### Added
