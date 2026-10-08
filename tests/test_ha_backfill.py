@@ -112,9 +112,14 @@ def test_a_single_day_may_exceed_its_cycle() -> None:
         IntervalReading(datetime(2026, 7, 1, hour, tzinfo=PACIFIC), imported=8.0)
         for hour in range(24)
     ]
+    # Enough export to put the cycle's total well below zero, not so much that
+    # every scoped bucket's charges are covered. At 8 kWh an hour the credit
+    # reaches all of them and nothing is owed; the cycle only used to owe
+    # something there because the energy tax was floored day by day, taxing
+    # day one's import while the rest of the month's export offset nothing.
     for day in range(2, 32):
         readings += [
-            IntervalReading(datetime(2026, 7, day, hour, tzinfo=PACIFIC), exported=8.0)
+            IntervalReading(datetime(2026, 7, day, hour, tzinfo=PACIFIC), exported=2.0)
             for hour in range(24)
         ]
     days = backfill.decompose(backfill.walk_cycle(profile, readings, cycle), None)

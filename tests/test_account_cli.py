@@ -264,6 +264,58 @@ def test_bill_refuses_a_bank_folded_from_a_cycle_with_missing_meter_days(
 
 
 @freeze_time("2026-09-09T12:00:00-07:00")
+def test_bill_carries_the_bank_across_a_cycle_with_an_approximate_hour(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Every kWh is there; only which hour a few of them fell in is a guess.
+
+    A counter-based source always has an hour or two to spread, so refusing
+    these refused every cycle InfluxDB priced, and 2026-08-28 opened on an
+    empty bank where the statement opened it on $11.96.
+    """
+    from dataclasses import replace
+
+    from tariffkit.billing import engine
+
+    profile = _account_with_statement(tmp_path, monkeypatch)
+    epoch = profile.epochs[0]
+    AccountStore(tmp_path).save(
+        replace(
+            profile,
+            epochs=(replace(epoch, config=replace(epoch.config, pto_date=date(2026, 7, 29))),),
+        )
+    )
+    monkeypatch.setenv("PGE_USERNAME", "person@example.invalid")
+    monkeypatch.setenv("PGE_PASSWORD", "secret")
+    monkeypatch.setattr("tariffkit.sources.cached_bill_periods", lambda *a, **k: [])
+
+    def fake(settings: object, start: date, end: date, **kwargs: object) -> object:
+        path = _export_csv(tmp_path) if start == date(2026, 8, 28) else _full_cycle_csv(tmp_path)
+        return SimpleNamespace(path=path, start=start, end=end, downloaded=False, covers="cached")
+
+    monkeypatch.setattr("tariffkit.sources.pge.cached_green_button", fake)
+    priced = engine.compute_segments
+
+    def approximate(*args: object, **kwargs: object) -> object:
+        bill = priced(*args, **kwargs)  # type: ignore[arg-type]
+        if bill.period.start != date(2026, 7, 29):
+            return bill
+        guess = (
+            "3 interval(s) covering 3.0h were reconstructed across gaps in the source, "
+            "carrying 0.7 kWh whose time-of-use split is a guess even though the cycle "
+            "total is not"
+        )
+        return replace(bill, warnings=(*bill.warnings, guess))
+
+    monkeypatch.setattr(engine, "compute_segments", approximate)
+
+    assert main(["bill", "--source", "green-button"]) == 0
+    out = capsys.readouterr().out
+    assert "bank: opening carried from 1 cycle(s) since PTO 2026-07-29" in out
+    assert "1 of them with some energy in an approximate hour" in out
+
+
+@freeze_time("2026-09-09T12:00:00-07:00")
 def test_bill_without_dates_takes_the_boundary_the_utility_billed_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -405,7 +457,8 @@ def _export_csv(tmp_path: Path) -> Path:
         "statement-0007.pdf could not be read as a PDF",
         "statement-0007.pdf has no text layer, so it is a scan or a print-to-PDF export",
         "statement-0007.pdf produced no pages to recognise",
-        "statement-0007.pdf failed its self-check (3 problem(s))",
+        "statement-0007.pdf failed its self-check: pge_delivery: rows sum to 37.00 but "
+        "the section prints 62.39 (off by -25.39)",
         "statement-0007.pdf OCR read the statement but it did not check out (2): a: b; c",
     ],
 )

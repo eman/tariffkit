@@ -521,6 +521,41 @@ def test_a_real_gap_is_still_reported_as_reconstructed() -> None:
     ), warnings
 
 
+def test_only_an_approximate_hour_leaves_the_totals_whole() -> None:
+    """`split_only` tells "which hour" apart from "how much".
+
+    A bank may be carried across the first and not the second. Refusing both
+    opened every cycle an InfluxDB counter priced on an empty bank.
+    """
+    from tariffkit.billing import BillingPeriod, IntervalReading, check_coverage
+    from tariffkit.billing.netting import split_only
+    from tariffkit.timeutil import PACIFIC
+
+    start = datetime(2026, 7, 1, tzinfo=PACIFIC)
+    period = BillingPeriod(date(2026, 7, 1), date(2026, 7, 1))
+
+    def hour(n: int, *, estimated: bool = False, smeared: float = 0.0) -> IntervalReading:
+        return IntervalReading(
+            start=start + timedelta(hours=n),
+            imported=2.0,
+            duration=timedelta(hours=1),
+            estimated=estimated,
+            smeared=smeared,
+        )
+
+    reconstructed = list(
+        check_coverage([hour(n, estimated=n < 6, smeared=0.5) for n in range(24)], period)
+    )
+    spread = list(check_coverage([hour(n, smeared=0.2) for n in range(24)], period))
+    missing = list(check_coverage([hour(n) for n in range(20)], period))
+
+    assert reconstructed and all(split_only(w) for w in reconstructed), reconstructed
+    assert spread and all(split_only(w) for w in spread), spread
+    assert missing and not any(split_only(w) for w in missing), missing
+    # As a segmented bill quotes it, behind the segment's own label.
+    assert split_only(f"2026-07-01..2026-07-01 (E-ELEC): {reconstructed[0]}")
+
+
 class TestOptionalEntities:
     """Naming the series is optional; reading them without is an error."""
 

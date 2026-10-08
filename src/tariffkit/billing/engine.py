@@ -88,6 +88,7 @@ class BillEngine:
         buckets: dict[tuple[Season, TouPeriod], _Accumulator] = {}
         uncompensated = 0.0
         pre_pto_imported = 0.0
+        pre_pto_charges: dict[str, float] = {}
         import_components: dict[str, float] = {}
         export_components: dict[str, float] = {}
         complete = True
@@ -131,6 +132,7 @@ class BillEngine:
                 # are drawn on. See `Bill.pre_pto_imported_kwh`.
                 if not in_net_billing:
                     pre_pto_imported += reading.imported
+                    _add_scaled(pre_pto_charges, import_price.components, reading.imported)
 
             if reading.exported and export_price is not None:
                 bucket.exported += reading.exported
@@ -139,8 +141,16 @@ class BillEngine:
                 _add_scaled(export_components, export_price.components, -reading.exported)
 
         fixed_components = self._fixed_charges(period)
+        pto = self.rates.config.pto_date
+        if pto is not None and period.start < pto:
+            before = BillingPeriod(period.start, min(period.end, pto - timedelta(days=1)))
+            for name, value in self._fixed_charges(before).items():
+                pre_pto_charges[name] = pre_pto_charges.get(name, 0.0) + value
         tax, untaxed_days = self._energy_surcharge(in_period, period)
-        if tax:
+        # Recorded at zero too. A statement prints the line at 0.00 on a cycle
+        # that exported more than it used -- 2026-08-04 and 2026-09-03 both do
+        # -- and a bill without the component reads as one that never priced it.
+        if in_period:
             import_components["energy_commission_tax"] = tax
         if untaxed_days:
             complete = False
@@ -171,6 +181,7 @@ class BillEngine:
             fixed_components=fixed_components,
             uncompensated_kwh=uncompensated,
             pre_pto_imported_kwh=pre_pto_imported,
+            pre_pto_charges=pre_pto_charges,
             warnings=tuple(warnings),
             # Pricing confidence only. Coverage problems travel separately in
             # `warnings`: they say the meter data is patchy, not that the rates
@@ -200,13 +211,19 @@ class BillEngine:
         731 kWh imported -- \$0.22, to the cent. On 2026-08-04 it exported after
         PTO and was taxed on nothing at all despite importing 39 kWh. So an
         export offsets the tax base exactly when the tariff compensates it,
-        which is the same test that decides whether it earns a credit. Floored
-        per day: a day that exports more than it imports owes no tax and does
-        not bank a negative against the next one.
+        which is the same test that decides whether it earns a credit.
 
-        Returns the charge and the days no vintage covered. Those days are not
-        charged, and the caller says so and marks the bill incomplete: a bill
-        that quietly omits a tax is the plausible-but-wrong kind, which is worse
+        Floored once, over the cycle, not day by day. The 2026-10-05 statement
+        settles it: 199.769 kWh imported against 117.990 exported, "Total Usage
+        81.779 kWh" on MCE's page, and a tax of $0.02 -- 81.779 at $0.0003. The
+        per-day floor this used to apply let every sunny day's surplus vanish
+        while every evening's import was taxed, and charged $0.04 on about 147
+        kWh. Each day is still rated by its own vintage, so a cycle spanning a
+        January change weighs each day at the rate in force on it.
+
+        Returns the charge and the days no vintage covered. Those days are left
+        out, and the caller says so and marks the bill incomplete: a bill that
+        quietly omits a tax is the plausible-but-wrong kind, which is worse
         than one that refuses to claim it is finished.
         """
         from ..data import versioned
@@ -221,8 +238,7 @@ class BillEngine:
             remaining[day] = remaining.get(day, 0.0) + consumed
         uncovered: list[date] = []
         for day, net in sorted(remaining.items()):
-            imported = max(net, 0.0)
-            if not imported:
+            if not net:
                 continue
             try:
                 rate = float(versioned.load("tax/ca_energy_resources", day).raw["rate"])
@@ -231,8 +247,8 @@ class BillEngine:
                 # fatal -- but it is not silent either.
                 uncovered.append(day)
                 continue
-            total += imported * rate
-        return total, uncovered
+            total += net * rate
+        return max(total, 0.0), uncovered
 
     #: How far a CCA rate card may predate a cycle before it is worth saying so.
     #: A CCA reprices at least annually, so a card more than a year older than
@@ -508,6 +524,7 @@ def compute_segments(
     complete = True
     uncompensated = 0.0
     pre_pto_imported = 0.0
+    pre_pto_charges: dict[str, float] = {}
 
     priced = price_segments(ordered, readings, check=check, netted=netted)
     for segment, part in zip(ordered, priced, strict=True):
@@ -540,6 +557,8 @@ def compute_segments(
         complete = complete and part.complete
         uncompensated += part.uncompensated_kwh
         pre_pto_imported += part.pre_pto_imported_kwh
+        for key, value in part.pre_pto_charges.items():
+            pre_pto_charges[key] = pre_pto_charges.get(key, 0.0) + value
 
     return Bill(
         period=whole,
@@ -549,6 +568,7 @@ def compute_segments(
         fixed_components=fixed,
         uncompensated_kwh=uncompensated,
         pre_pto_imported_kwh=pre_pto_imported,
+        pre_pto_charges=pre_pto_charges,
         warnings=tuple(warnings),
         complete=complete,
     )
