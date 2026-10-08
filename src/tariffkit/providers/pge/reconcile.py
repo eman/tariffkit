@@ -155,7 +155,7 @@ def _statement_is_valid(statement: Statement) -> None:
     problems = statement.self_check()
     if problems:
         raise StatementError(
-            f"{statement.source or 'statement'} failed its self-check ({len(problems)} problems)"
+            f"{statement.source or 'statement'} failed its self-check: {'; '.join(problems)}"
         )
     if not statement.agreements:
         raise StatementError("statement has no exact PG&E service-agreement spans")

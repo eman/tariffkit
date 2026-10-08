@@ -144,6 +144,79 @@ def test_a_rate_glued_to_its_at_sign_does_not_bill_the_kwh_as_dollars() -> None:
     assert row.rate == pytest.approx(0.10867)
 
 
+def test_a_dot_marked_charge_with_its_rate_glued_to_the_at_sign_is_kept() -> None:
+    """The same single-space gap, on a row whose label prints one line below.
+
+    The dot marker introduces both the Base Services Charge, which is priced,
+    and the baseline allowance, which is not, and the two were told apart by
+    looking for "@" as a field of its own. On the 2026-10-05 statement the
+    charge printed "@ $0.79343" with one space, the "@" stayed glued to the
+    rate, and the row was taken for an allowance and dropped: the delivery
+    section summed to 37.00 against a printed 62.39, short by the whole $25.39.
+    """
+    page = "\n".join(
+        [
+            " Details of PG&E Solar Billing Plan Charges",
+            ".                    32   days   @ $0.79343               $25.39",
+            "Base Services Charge",
+            ".                    281.30 kWh (29 days)",
+            "Baseline Allowance",
+            "Solar Billing Plan Charges                                $25.39",
+        ]
+    )
+    (section,) = parse_module._sections([page])
+    assert [(row.label, row.amount) for row in section.lines] == [
+        ("Base Services Charge", pytest.approx(25.39))
+    ], "the priced row is a charge, the allowance still is not"
+    assert section.printed_total == pytest.approx(25.39)
+
+
+def test_a_credit_carried_from_the_last_statement_is_part_of_the_amount_due() -> None:
+    """The 2026-10-05 statement opened on the credit the one before closed on.
+
+    -21.96 carried, 62.39 delivery and -36.18 adjustments make the 4.25 it
+    printed as due. The self-check knew only the last two, called the statement
+    21.96 short with "a whole section probably missing", and refused it; and
+    the electric figure reconciliation compares against came out 21.96 low.
+    """
+    pages = [
+        "\n".join(
+            [
+                "Statement Date: 10/05/2026",
+                "08/28/2026 to 09/28/2026 (32 billing days)",
+                "Your Account Summary",
+                "Credit Balance on Previous Statement          -$21.96",
+                "Payment(s) Received Since Last Statement         0.00",
+                "Outstanding Credit Balance                    -$21.96",
+                "Current PG&E Electric Monthly Charges          $62.39",
+                "Electric Adjustments                           -36.18",
+                "Total Amount Due by 10/26/2026                  $4.25",
+                " Details of PG&E Solar Billing Plan Charges",
+                "Rate Schedule:  EELEC  Electric Home",
+                "Off Peak    197.374000     kWh    @ $0.31580    62.39",
+                "Solar Billing Plan Charges                     $62.39",
+            ]
+        )
+    ]
+    statement = parse_statement(pages)
+    assert statement.carried_balance == pytest.approx(-21.96)
+    assert statement.self_check() == []
+    assert statement.electric_charges == pytest.approx(62.39), "this cycle's, not the account's"
+
+    # A bill paid in full carries nothing, printed under the other name.
+    paid = parse_statement(
+        [
+            pages[0]
+            .replace("Credit Balance on Previous Statement          -$21.96", "")
+            .replace("Outstanding Credit Balance                    -$21.96", "")
+            .replace("Payment(s)", "Previous Unpaid Balance    0.00\nPayment(s)")
+            .replace("$4.25", "$26.21")
+        ]
+    )
+    assert paid.carried_balance == 0.0
+    assert paid.self_check() == []
+
+
 def test_one_period_printed_twice_is_one_agreement() -> None:
     """The day count is evidence about a span, not part of its identity.
 
@@ -370,3 +443,111 @@ def test_delivery_heading_without_local_agreement_evidence_is_ambiguous() -> Non
 
     with pytest.raises(StatementAmbiguityError, match="no exact date span"):
         parse_statement(pages)
+
+
+def _plan_statement(*, pge_bank: str, mce_closing_export: str = "114.15") -> list[str]:
+    """The pages of a Solar Billing Plan statement that carry its banks.
+
+    Figures are the 2026-10-05 statement's.
+    """
+    return [
+        "\n".join(
+            [
+                "Statement Date: 10/05/2026",
+                "08/28/2026 to 09/28/2026 (32 billing days)",
+                "Your Account Summary",
+                "Credit Balance on Previous Statement          -$21.96",
+                "Outstanding Credit Balance                    -$21.96",
+                "Current PG&E Electric Monthly Charges          $62.39",
+                "Electric Adjustments                           -36.18",
+                "MCE Electric Generation Charges                  0.00",
+                "Total Amount Due by 10/26/2026                  $4.25",
+            ]
+        ),
+        "\n".join(
+            [
+                " Details of PG&E Solar Billing Plan Charges",
+                "08/28/2026 to 09/28/2026 (32 billing days)",
+                "Rate Schedule:  EELEC  Electric Home       Imports      199.769000 kWh",
+                "                                           Exports     -117.990000 kWh",
+                "Off Peak    197.374000     kWh    @ $0.31580    62.39",
+                "Solar Billing Plan Charges                     $62.39",
+            ]
+        ),
+        "\n".join(
+            [
+                "YOUR ENERGY EXPORT CREDIT BANK",
+                "                       Energy Delivered    Bonus Credits    Total Credits",
+                pge_bank,
+                "Earned This Bill (-118 kWh)    $2.13      $1.04      $3.17",
+            ]
+        ),
+        "\n".join(
+            [
+                " Details of MCE Electric Generation Charges",
+                "08/28/2026 to 09/28/2026 (32 billing days)",
+                "Off Peak Summer     197.374000     kWh   @  $0.11878     18.70",
+                "Energy Export Credits Applied            @  prices vary     -18.70",
+                " Energy Export Bonus Credits Applied        @  $0.00000      0.00",
+                "   Solar Export Credits (EEC) earned this cycle $40.23",
+                "   Solar Export Bonus Credits (EEBC) earned this cycle $1.04",
+                f"   Current Energy Export Credit (EEC) Balance ${mce_closing_export}",
+                "   Current Energy Export Bonus Credit (EEBC) Balance $7.21",
+                "Total MCE Electric Generation Charges          $0.00",
+                "  YOUR ENERGY EXPORT CREDIT BANK",
+                "  Beginning Balance                $98.79      MCE's generation charges",
+            ]
+        ),
+    ]
+
+
+def test_the_bank_a_cycle_opened_with_is_read_from_the_statement() -> None:
+    """PG&E's from its table; MCE's worked back from what it closed on.
+
+    MCE prints only a total opening, 98.79, so its two credits are each
+    closing - earned + spent: 114.15 - 40.23 + 18.70 and 7.21 - 1.04 + 0.00.
+    That they come to the printed total is the check on the arithmetic.
+    """
+    statement = parse_statement(
+        _plan_statement(pge_bank="Beginning Balance       $11.96      $0.00      $11.96")
+    )
+    assert statement.bank_problems == ()
+    bank = statement.opening_bank
+    assert bank is not None
+    assert (bank.delivery, bank.bonus) == (pytest.approx(11.96), 0.0)
+    assert (bank.generation, bank.cca_bonus) == (pytest.approx(92.62), pytest.approx(6.17))
+
+
+def test_a_printed_bank_that_cannot_be_read_is_a_problem_not_an_empty_bank() -> None:
+    """An empty bank is the defect the opening exists to prevent."""
+    columns = parse_statement(
+        _plan_statement(pge_bank="Beginning Balance  $1.00  $11.96  $0.00  $12.96")
+    )
+    assert columns.opening_bank is None
+    assert any("could not be read" in p for p in columns.self_check())
+
+    arithmetic = parse_statement(
+        _plan_statement(
+            pge_bank="Beginning Balance       $11.96      $0.00      $11.96",
+            mce_closing_export="115.15",
+        )
+    )
+    assert arithmetic.opening_bank is None
+    assert any("works back to 99.79" in p for p in arithmetic.self_check())
+
+
+def test_a_statement_before_pto_prints_no_bank() -> None:
+    assert parse_statement(load_fixture()).opening_bank is None
+
+
+def test_the_plan_bills_imports_and_exports() -> None:
+    """It prints no "Electric Usage This Period", so the kWh came out as None.
+
+    And with it went the audit's check of the meter against the statement,
+    skipped without a word on every cycle after PTO.
+    """
+    statement = parse_statement(
+        _plan_statement(pge_bank="Beginning Balance       $11.96      $0.00      $11.96")
+    )
+    assert statement.billed_kwh == pytest.approx(199.769)
+    assert statement.billed_export_kwh == pytest.approx(117.990)

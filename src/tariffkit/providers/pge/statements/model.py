@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from enum import StrEnum
 
-from tariffkit.billing import BillingPeriod
+from tariffkit.billing import BillingPeriod, CreditBalances
 
 #: A printed figure is rounded to the cent, so agreement is judged at half a cent
 #: plus a cent per line that had to be added together to get there.
@@ -158,7 +158,13 @@ class Statement:
     #: then discarded: it never reaches a fixture, a log line, or JSON output.
     account_masked: str = ""
     billed_days: int | None = None
+    #: Energy imported over the cycle, kWh: "Electric Usage This Period"
+    #: before Permission To Operate, "Imports" on a Solar Billing Plan page
+    #: after it, summed where the cycle carries both.
     billed_kwh: float | None = None
+    #: Energy exported, kWh and positive, from the plan's "Exports" figure.
+    #: None before PTO, when no export is billed.
+    billed_export_kwh: float | None = None
     #: How many service agreements the statement covers. More than one means the
     #: account changed tariff mid-cycle and the utility priced each part
     #: separately -- a count, never the identifiers themselves. Priced, not
@@ -185,6 +191,28 @@ class Statement:
     #: Summary-level electric adjustments, e.g. the California Climate Credit,
     #: which belong to no detail section and are not per-cycle charges.
     electric_adjustments: float | None = None
+    #: What the account owed, or was owed, before this cycle's charges: the
+    #: previous statement's amount less the payments since. Zero when the last
+    #: bill was paid in full, which until 2026-10-05 every one had been. That
+    #: statement opened on the -21.96 credit balance the one before it closed
+    #: on, so 62.39 delivery and -36.18 adjustments came to the 4.25 it printed
+    #: as due -- and a check that knew nothing of the carried credit called it
+    #: a missing section, 21.96 short.
+    carried_balance: float | None = None
+    #: The export credit bank this cycle opened with, as the statement prints
+    #: it: PG&E's delivery and bonus credits from its bank table, and the CCA's
+    #: export and bonus credits worked back from the balances it prints. None
+    #: where no bank is printed, which is every statement before Permission To
+    #: Operate.
+    #:
+    #: The applied credit on a statement is a function of this, of what the
+    #: cycle earned and of its charges. Reconciled against an empty bank, the
+    #: 2026-10-05 statement's $14.09 of delivery credit -- $11.96 carried in,
+    #: $2.13 earned -- read as a $12 overcharge in a bill whose rates were right.
+    opening_bank: CreditBalances | None = None
+    #: Why the bank could not be read, where one is printed. Reported by
+    #: `self_check`: a bank silently read as empty is the defect above.
+    bank_problems: tuple[str, ...] = ()
     sections: tuple[StatementSection, ...] = ()
     #: What the statement says about itself, used to catch a stale account
     #: configuration before it can produce a confident, fabricated finding.
@@ -236,6 +264,7 @@ class Statement:
         """
         return (
             self.amount_due
+            - (self.carried_balance or 0.0)
             - (self.gas_charges or 0.0)
             - (self.gas_adjustments or 0.0)
             - (self.electric_adjustments or 0.0)
@@ -298,12 +327,15 @@ class Statement:
         # into a tolerance -- an unexplained residue should stay visible.
         expected = (
             sum(parts)
+            + (self.carried_balance or 0.0)
             + (self.electric_adjustments or 0.0)
             + (self.gas_charges or 0.0)
             + (self.gas_adjustments or 0.0)
         )
         if parts and abs(expected - self.amount_due) > CENT:
             extra = []
+            if self.carried_balance:
+                extra.append(f"carried {self.carried_balance:+.2f}")
             if self.electric_adjustments:
                 extra.append(f"adjustments {self.electric_adjustments:+.2f}")
             if self.gas_charges:
@@ -315,6 +347,8 @@ class Statement:
                 f"the statement's own parts sum to {expected:.2f} but it is due "
                 f"{self.amount_due:.2f}{detail}; a whole section is probably missing"
             )
+
+        problems.extend(self.bank_problems)
 
         if self.billed_days is not None and self.billed_days != self.period.days:
             problems.append(
