@@ -447,3 +447,26 @@ def test_a_bare_success_still_sends_the_code(
     (verify,) = portal.sent("verifySignInCode")
     assert verify["input"]["codeId"] is None
     assert verify["input"]["otpType"] == "Phone"
+
+
+class TestAccountUrn:
+    def test_the_urn_is_asked_for_by_a_field_the_platform_still_serves(
+        self, tmp_path: Path
+    ) -> None:
+        """``BillingAccount.id`` went away; the query asked for it and nothing else.
+
+        The platform then refused the whole query at validation, before any
+        export was attempted -- "Field 'id' in type 'BillingAccount' is
+        undefined" -- so every Green Button download failed. ``urn`` is the
+        field that answers, and the form the selected-entities header takes.
+        """
+        urn = "urn:opower:v1:account:pge:uuid:00000000-0000-0000-0000-000000000000"
+        client = FakeClient(
+            post=FakeResponse({"data": {"billingAccountByAuthContext": {"urn": urn}}})
+        )
+        session = session_with(client, tmp_path)
+
+        assert session._discover_urn("example.invalid", "token") == urn
+        query = client.posts[0]["json"]["query"]
+        assert "    urn\n" in query
+        assert "    id\n" not in query, "a field the schema no longer has fails the query"
