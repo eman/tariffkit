@@ -586,6 +586,40 @@ class TestEnergyCommissionTax:
         )
         assert charge == 0.0
 
+    def test_segments_net_together_as_one_cycle(self) -> None:
+        """A rate change mid-cycle splits the bill, not the floor.
+
+        Each segment floored its own tax and the two were summed, so the
+        segment that exported 30 kWh offset nothing against the one that
+        imported 50: taxed on 50, where the cycle used 20.
+        """
+        config = replace(mce_config(), pto_date=date(2026, 6, 3))
+        readings = [
+            IntervalReading(datetime(2026, 9, 1, 12, tzinfo=PACIFIC), 0.0, 30.0),
+            IntervalReading(datetime(2026, 9, 2, 19, tzinfo=PACIFIC), 50.0, 0.0),
+        ]
+        bill = compute_segments(
+            [
+                Segment(config, BillingPeriod(date(2026, 9, 1), date(2026, 9, 1))),
+                Segment(config, BillingPeriod(date(2026, 9, 2), date(2026, 9, 2))),
+            ],
+            readings,
+            check=False,
+        )
+        assert bill.import_components["energy_commission_tax"] == pytest.approx(20 * 0.0003)
+
+    def test_exports_after_pto_do_not_reach_imports_before_it(self) -> None:
+        """The days before PTO are a closed agreement of their own."""
+        config = replace(mce_config(), pto_date=date(2026, 9, 2))
+        readings = [
+            IntervalReading(datetime(2026, 9, 1, 19, tzinfo=PACIFIC), 10.0, 0.0),
+            IntervalReading(datetime(2026, 9, 2, 12, tzinfo=PACIFIC), 0.0, 30.0),
+        ]
+        bill = BillEngine(RateEngine(config)).compute(
+            readings, BillingPeriod(date(2026, 9, 1), date(2026, 9, 2)), check=False
+        )
+        assert bill.import_components["energy_commission_tax"] == pytest.approx(10 * 0.0003)
+
     def test_a_cycle_that_owes_none_still_prints_the_line(self) -> None:
         """2026-08-04 and 2026-09-03 print "Energy Commission Tax 0.00"."""
         start = datetime(2026, 9, 1, 12, tzinfo=PACIFIC)

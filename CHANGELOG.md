@@ -42,8 +42,10 @@ All notable changes to this project are documented here. This project follows
   was floored day by day, so every sunny day's surplus disappeared while every
   evening's import was taxed. The 2026-10-05 statement taxes 81.779 kWh
   (199.769 imported less 117.990 exported) at $0.0003, which is $0.02, where
-  the daily floor charged $0.04. A cycle that owes none now records the tax at
-  $0.00, as the statement prints it.
+  the daily floor charged $0.04. The floor is applied once across the whole
+  cycle, segments included, and only to the days from PTO: days before it are
+  a closed agreement, taxed as consumed. A cycle that owes none now records the
+  tax at $0.00, as the statement prints it.
 - **Statements with a carried balance pass their self-check.** The check
   required the amount due to equal this cycle's charges, and the 2026-10-05
   statement also carries in the previous statement's -$21.96 credit. It is

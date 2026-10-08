@@ -11,7 +11,7 @@ belong in a ledger built on top of this.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from itertools import pairwise
@@ -226,29 +226,28 @@ class BillEngine:
         quietly omits a tax is the plausible-but-wrong kind, which is worse
         than one that refuses to claim it is finished.
         """
-        from ..data import versioned
+        return rate_surcharge(*self._tax_base(readings))
 
-        total = 0.0
-        remaining: dict[date, float] = {}
+    def _tax_base(
+        self, readings: Sequence[IntervalReading]
+    ) -> tuple[dict[date, float], dict[date, float]]:
+        """Energy consumed per day, before Permission To Operate and from it.
+
+        Apart because only the second may net: an export offsets the tax base
+        exactly when Net Billing compensates it, and the days before PTO are a
+        separate, closed agreement on the statement that later exports never
+        reach.
+        """
+        before: dict[date, float] = {}
+        after: dict[date, float] = {}
         for reading in readings:
-            day = to_pacific(reading.start).date()
-            consumed = reading.imported
-            if reading.exported and self._compensated(hour_floor(to_pacific(reading.start))):
-                consumed -= reading.exported
-            remaining[day] = remaining.get(day, 0.0) + consumed
-        uncovered: list[date] = []
-        for day, net in sorted(remaining.items()):
-            if not net:
-                continue
-            try:
-                rate = float(versioned.load("tax/ca_energy_resources", day).raw["rate"])
-            except DataError:
-                # The rest of the bill is still worth producing, so this is not
-                # fatal -- but it is not silent either.
-                uncovered.append(day)
-                continue
-            total += net * rate
-        return max(total, 0.0), uncovered
+            moment = hour_floor(to_pacific(reading.start))
+            day = moment.date()
+            if self._compensated(moment):
+                after[day] = after.get(day, 0.0) + reading.imported - reading.exported
+            else:
+                before[day] = before.get(day, 0.0) + reading.imported
+        return before, after
 
     #: How far a CCA rate card may predate a cycle before it is worth saying so.
     #: A CCA reprices at least annually, so a card more than a year older than
@@ -495,6 +494,37 @@ def price_segments(
     ]
 
 
+def rate_surcharge(
+    before: Mapping[date, float], after: Mapping[date, float]
+) -> tuple[float, list[date]]:
+    """The Energy Resources Surcharge on a tax base, and the days no vintage rates.
+
+    The days before PTO are charged as consumed. The days from it are netted
+    and floored once, together: a cycle that exports more than it uses owes
+    none, and does not pay out either.
+    """
+    from ..data import versioned
+
+    uncovered: list[date] = []
+
+    def rated(days: Mapping[date, float]) -> float:
+        total = 0.0
+        for day, net in sorted(days.items()):
+            if not net:
+                continue
+            try:
+                rate = float(versioned.load("tax/ca_energy_resources", day).raw["rate"])
+            except DataError:
+                # The rest of the bill is still worth producing, so this is not
+                # fatal -- but it is not silent either.
+                uncovered.append(day)
+                continue
+            total += net * rate
+        return total
+
+    return rated(before) + max(rated(after), 0.0), sorted(uncovered)
+
+
 def compute_segments(
     segments: Sequence[Segment],
     readings: Iterable[IntervalReading],
@@ -559,6 +589,21 @@ def compute_segments(
         pre_pto_imported += part.pre_pto_imported_kwh
         for key, value in part.pre_pto_charges.items():
             pre_pto_charges[key] = pre_pto_charges.get(key, 0.0) + value
+
+    # Rated again over the whole cycle. Each segment floors its own, and summing
+    # those would tax an import-heavy segment while the export-heavy one beside
+    # it offset nothing -- the per-day defect again, at segment scale. Days no
+    # vintage covers were already reported by the segment that held them.
+    if "energy_commission_tax" in imports:
+        before: dict[date, float] = {}
+        after: dict[date, float] = {}
+        for segment in ordered:
+            within = [r for r in readings if segment.period.contains(r.start)]
+            pre, post = BillEngine(RateEngine(segment.config))._tax_base(within)
+            for days, part_days in ((before, pre), (after, post)):
+                for day, net in part_days.items():
+                    days[day] = days.get(day, 0.0) + net
+        imports["energy_commission_tax"], _ = rate_surcharge(before, after)
 
     return Bill(
         period=whole,

@@ -54,3 +54,21 @@ def test_the_influx_series_are_read_from_the_account(monkeypatch: pytest.MonkeyP
     check = preflight._influx()
     assert check.ok, check.detail
     assert (seen[0].import_entity, seen[0].export_entity) == ("grid_in", "grid_out")
+
+
+def test_the_ocr_hint_names_the_package_manager_the_machine_has(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Not apt for every machine that is not a Mac: Fedora has dnf."""
+    import shutil
+    import sys
+
+    from tariffkit.providers.pge.statements import ocr
+
+    monkeypatch.setattr(ocr, "available", lambda: False)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/dnf" if name == "dnf" else None)
+
+    check = preflight._recognition()
+    assert "dnf install tesseract poppler-utils" in check.detail
+    assert "apt" not in check.detail

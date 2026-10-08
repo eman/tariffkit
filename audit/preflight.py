@@ -130,23 +130,17 @@ def _account() -> Check:
 
 
 def _recognition() -> Check:
-    from tariffkit.providers.pge.statements.ocr import available
+    from tariffkit.providers.pge.statements.ocr import available, install_hint
 
     if available():
         return Check("page recognition (tesseract, poppler)", True, "installed")
-    import sys
-
-    # The package manager the machine actually has: "brew install" on Debian
-    # is advice nobody can follow.
-    install = (
-        "brew install tesseract poppler"
-        if sys.platform == "darwin"
-        else "apt install tesseract-ocr poppler-utils"
-    )
+    # The package manager the machine actually has, as `account sync` names
+    # it: "brew install" on Debian, or "apt" on Fedora, is advice nobody can
+    # follow.
     return Check(
         "page recognition (tesseract, poppler)",
         False,
-        f"{install} -- without it, statements before "
+        f"{install_hint()} -- without it, statements before "
         "November 2025 cannot be read at all, since they carry no text layer",
         required=False,
     )

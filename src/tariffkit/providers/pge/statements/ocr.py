@@ -164,7 +164,7 @@ def _as_layout(words: list[tuple[int, int, int, int, str]]) -> str:
     return "\n".join(out)
 
 
-def _install_hint() -> str:
+def install_hint() -> str:
     """The package command for this machine; the tools are named differently per OS."""
     import sys
 
@@ -188,7 +188,7 @@ def readings(path: str | Path) -> Iterator[list[str]]:
     if not available():
         raise StatementError(
             f"{source.name} carries no readable text and recognition tools are not "
-            f"installed; {_install_hint()} provides both"
+            f"installed; {install_hint()} provides both"
         )
 
     with tempfile.TemporaryDirectory(prefix="nem-ocr-") as scratch:
