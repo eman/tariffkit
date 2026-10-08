@@ -535,6 +535,14 @@ def test_a_printed_bank_that_cannot_be_read_is_a_problem_not_an_empty_bank() -> 
     assert arithmetic.opening_bank is None
     assert any("works back to 99.79" in p for p in arithmetic.self_check())
 
+    # Neither of the CCA's balances found at all is the same failure, not a
+    # CCA bank of zero.
+    pages = _plan_statement(pge_bank="Beginning Balance       $11.96      $0.00      $11.96")
+    pages[3] = pages[3].replace("Current Energy Export", "Present Energy Export")
+    unread = parse_statement(pages)
+    assert unread.opening_bank is None
+    assert any("closing export, closing bonus" in p for p in unread.self_check())
+
 
 def test_a_statement_before_pto_prints_no_bank() -> None:
     assert parse_statement(load_fixture()).opening_bank is None

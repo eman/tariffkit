@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from freezegun import freeze_time
@@ -272,10 +273,13 @@ def test_bill_carries_the_bank_across_a_cycle_with_an_approximate_hour(
     A counter-based source always has an hour or two to spread, so refusing
     these refused every cycle InfluxDB priced, and 2026-08-28 opened on an
     empty bank where the statement opened it on $11.96.
+
+    And a note about the *rates* on the bill is not a coverage finding: it
+    was refused as "not fully metered" while `fold` already judges the rates.
     """
     from dataclasses import replace
 
-    from tariffkit.billing import engine
+    from tariffkit.billing import engine, netting
 
     profile = _account_with_statement(tmp_path, monkeypatch)
     epoch = profile.epochs[0]
@@ -294,20 +298,26 @@ def test_bill_carries_the_bank_across_a_cycle_with_an_approximate_hour(
         return SimpleNamespace(path=path, start=start, end=end, downloaded=False, covers="cached")
 
     monkeypatch.setattr("tariffkit.sources.pge.cached_green_button", fake)
+    covered = netting.check_coverage
+
+    def approximate(readings: object, period: Any, **kwargs: object) -> Iterator[str]:
+        yield from covered(readings, period, **kwargs)
+        if period.start == date(2026, 7, 29):
+            yield (
+                "3 interval(s) covering 3.0h were reconstructed across gaps in the "
+                "source, carrying 0.7 kWh whose time-of-use split is a guess even "
+                "though the cycle total is not"
+            )
+
+    monkeypatch.setattr(netting, "check_coverage", approximate)
     priced = engine.compute_segments
 
-    def approximate(*args: object, **kwargs: object) -> object:
+    def noted(*args: object, **kwargs: object) -> object:
         bill = priced(*args, **kwargs)  # type: ignore[arg-type]
-        if bill.period.start != date(2026, 7, 29):
-            return bill
-        guess = (
-            "3 interval(s) covering 3.0h were reconstructed across gaps in the source, "
-            "carrying 0.7 kWh whose time-of-use split is a guess even though the cycle "
-            "total is not"
-        )
-        return replace(bill, warnings=(*bill.warnings, guess))
+        note = "generation was priced from MCE's rate card dated 2025-03-01"
+        return replace(bill, warnings=(*bill.warnings, note))
 
-    monkeypatch.setattr(engine, "compute_segments", approximate)
+    monkeypatch.setattr(engine, "compute_segments", noted)
 
     assert main(["bill", "--source", "green-button"]) == 0
     out = capsys.readouterr().out

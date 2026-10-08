@@ -527,7 +527,7 @@ def _carried_bank(args: Any, profile: Any, meter: Any, period: Any) -> tuple[Any
     """
     from ..billing.bank import fold
     from ..billing.engine import compute_segments
-    from ..billing.netting import split_only
+    from ..billing.netting import check_coverage, split_only
 
     pto = profile.pto_date
     if pto is None or period.start <= pto:
@@ -580,13 +580,21 @@ def _carried_bank(args: Any, profile: Any, meter: Any, period: Any) -> tuple[Any
         # 2026-08-28 on an empty bank when the statement opened it on $11.96,
         # putting the amount due $12 high. The integration carries the bank
         # across the same cycles; this now agrees with it.
-        missing = [warning for warning in bill.warnings if not split_only(warning)]
+        #
+        # Judged from the readings, not from `bill.warnings`, which also carry
+        # pricing notes -- a day no tax vintage covers, a stale CCA rate card.
+        # Those are about the rates, and `fold` already refuses a run priced
+        # from incomplete ones; here they were refused a second time and
+        # called "not fully metered", which they are not.
+        within = [reading for reading in readings if cycle.contains(reading.start)]
+        coverage = list(check_coverage(within, cycle, netted=True))
+        missing = [finding for finding in coverage if not split_only(finding)]
         if missing:
             return None, (
                 f"bank: opening 0 -- {cycle.start}..{cycle.end} is not fully metered: "
                 f"{'; '.join(missing)}"
             )
-        if bill.warnings:
+        if coverage:
             approximate += 1
         bills.append(bill)
     state = fold(profile, bills)

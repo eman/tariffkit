@@ -508,7 +508,10 @@ def _opening_bank(
     generation = cca_bonus = 0.0
     cca = next((s for s in sections if s.name is Section.CCA_GENERATION), None)
     closing = {key: _scalar(joined, pattern) for key, pattern in CCA_CLOSING.items()}
-    if cca is not None and any(value is not None for value in closing.values()):
+    # Entered whenever the CCA has a page, not only when one of its balances
+    # was found: with neither found, skipping this returned both CCA credits
+    # as zero -- the silently empty bank this function exists to prevent.
+    if cca is not None:
         earned = {key: _scalar(joined, pattern) for key, pattern in CCA_EARNED.items()}
         printed = CCA_BANK_OPENING.search(joined)
         unread = [
