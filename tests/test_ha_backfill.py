@@ -1090,3 +1090,64 @@ async def test_the_sum_is_anchored_at_the_first_row_written(
     await backfill.async_publish(hass, "home", result)
 
     assert asked == [date(2026, 7, 1)], "base must be read from the earliest written row"
+
+
+def test_implausible_hours_are_one_warning_per_counter_and_said_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A warning per hour on every read was 470 lines in an hour, real history.
+
+    Home Assistant flagged the module for logging too frequently. The dropped
+    energy still deserves a warning -- once per counter, naming how many hours
+    and when, and not again for hours already reported.
+    """
+    import asyncio
+    import logging
+    from datetime import datetime, timedelta
+
+    from custom_components.tariffkit.energy import MeterSettings, UsageReader
+
+    from tariffkit.timeutil import PACIFIC
+
+    reader = UsageReader(None, MeterSettings(import_entity="sensor.x"))  # type: ignore[arg-type]
+    opens = datetime(2026, 6, 1, tzinfo=PACIFIC)
+    rows: list[dict[str, float]] = []
+    total = 0.0
+    for index in range(73):
+        # A statistics restart every sixth hour: the change is the whole total.
+        restart = bool(index) and index % 6 == 0
+        total += 0.5
+        rows.append(
+            {
+                "start": (opens - timedelta(hours=1)).timestamp() + index * 3600,
+                "change": 1500.0 if restart else 0.5,
+                "state": 0.0 if restart else total,
+            }
+        )
+
+    async def query(window: datetime, until: datetime) -> dict[str, list[dict[str, float]]]:
+        del window, until
+        return {"sensor.x": rows}
+
+    reader._async_query = query  # type: ignore[method-assign]
+    logger = "custom_components.tariffkit.energy"
+
+    def warned() -> list[str]:
+        return [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == logger and r.levelno == logging.WARNING
+        ]
+
+    with caplog.at_level(logging.DEBUG, logger=logger):
+        asyncio.run(reader.async_readings(date(2026, 6, 1), date(2026, 6, 3)))
+        first = warned()
+        assert len(first) == 1, first
+        assert "sensor.x" in first[0] and "implausible hourly change(s)" in first[0]
+        assert reader.discarded, "still counted, only no longer shouted"
+        debug = [r for r in caplog.records if r.name == logger and r.levelno == logging.DEBUG]
+        assert len(debug) >= 2, "each hour is still there at debug"
+
+        caplog.clear()
+        asyncio.run(reader.async_readings(date(2026, 6, 1), date(2026, 6, 3)))
+        assert warned() == [], "hours already reported are not reported again"
