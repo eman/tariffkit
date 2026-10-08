@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import sys
+from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
@@ -646,12 +647,27 @@ def sync_profile(
                 selected.append((identifier, issued.isoformat() if issued else None, amount))
             if not selected:
                 return profile, [], []
+            # Whose statements these are, so two logins never share a file:
+            # the cache is per machine, not per account.
+            owner = f"{getattr(settings, 'username', '')}|{getattr(settings, 'account_id', '')}"
+            listed = Counter((issued_on, amount) for _, issued_on, amount in selected)
+            seen: Counter[tuple[str | None, str | None]] = Counter()
             for index, (identifier, issued_on, amount) in enumerate(selected):
+                # Date and amount are what a row says that does not change
+                # between sessions, and they are not a document's identity: a
+                # corrected statement can repeat both. Rows that share them in
+                # this listing each get a file of their own and are fetched
+                # afresh, since nothing stable says which cached copy is which.
+                ambiguous = listed[(issued_on, amount)] > 1
+                ordinal = seen[(issued_on, amount)]
+                seen[(issued_on, amount)] += 1
                 if keep_statements:
-                    pdf_path = cache / _statement_name(identifier, issued_on, amount)
+                    pdf_path = cache / _statement_name(
+                        identifier, issued_on, amount, owner=owner, ordinal=ordinal
+                    )
                 else:
                     pdf_path = cache / f"statement-{index:04d}.pdf"
-                if not (keep_statements and pdf_path.is_file()):
+                if not (keep_statements and pdf_path.is_file() and not ambiguous):
                     pdf_path.write_bytes(session.download_bill(identifier))
                     pdf_path.chmod(0o600)
                 if keep_statements:
@@ -700,19 +716,27 @@ def statement_directory() -> Path:
     return path
 
 
-def _statement_name(identifier: str, issued_on: str | None, amount: str | None = None) -> str:
+def _statement_name(
+    identifier: str,
+    issued_on: str | None,
+    amount: str | None = None,
+    *,
+    owner: str = "",
+    ordinal: int = 0,
+) -> str:
     """A stable file name per statement: its issue date, then a short digest.
 
     The digest is of what the statement *says* -- its date and printed amount
-    -- not of the portal's identifier, which is minted afresh for every
-    session. Keyed on that, no sync ever found the copy the last one kept, and
-    each downloaded every statement again: a hundred files for twenty-five
-    statements by the fourth sync. The identifier remains the key only for a
-    row with no date, where there is nothing better.
+    -- and whose it is, not of the portal's identifier, which is minted afresh
+    for every session. Keyed on that, no sync ever found the copy the last one
+    kept, and each downloaded every statement again: a hundred files for
+    twenty-five statements by the fourth sync. ``ordinal`` separates rows of
+    one listing that share a date and amount. The identifier remains the key
+    only for a row with no date, where there is nothing better.
     """
     import hashlib
 
-    stable = f"{issued_on}|{amount or ''}" if issued_on else identifier
+    stable = f"{owner}|{issued_on}|{amount or ''}|{ordinal}" if issued_on else identifier
     digest = hashlib.sha256(stable.encode()).hexdigest()[:10]
     return f"{issued_on or 'undated'}-{digest}.pdf"
 

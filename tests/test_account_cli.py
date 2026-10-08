@@ -1242,6 +1242,75 @@ def test_a_kept_statement_is_found_again_by_the_next_session(
     assert not (kept / "2026-10-05-2222222222.pdf").exists()
 
 
+def test_statements_sharing_a_date_and_amount_are_not_one_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A corrected statement can repeat both; the cache must not merge them.
+
+    Keyed on date and amount alone, the second row resolved to the first row's
+    file, was never downloaded, and the first statement was imported twice.
+    """
+    store = AccountStore(tmp_path)
+    store.save(AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),)))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    kept = tmp_path / "cache" / "tariffkit" / "statements"
+    documents = {"original": b"%PDF original", "corrected": b"%PDF corrected"}
+    downloads: list[str] = []
+
+    class Session:
+        def __enter__(self) -> Session:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def login(self, *, force: bool = False) -> None:
+            pass
+
+        def bill_history(self) -> list[dict[str, str]]:
+            return [
+                {"billId": name, "billDate": "2026-10-05", "billAmount": "$4.25"}
+                for name in documents
+            ]
+
+        def download_bill(self, bill_id: str) -> bytes:
+            downloads.append(bill_id)
+            return documents[bill_id]
+
+    import tariffkit.sources.pge as pge_module
+
+    monkeypatch.setattr(pge_module, "PgeSession", lambda _settings: Session())
+    monkeypatch.setattr(
+        pge_module.PgeSettings,
+        "load",
+        lambda _path=None: SimpleNamespace(username="someone", account_id=""),
+    )
+    imported: list[bytes] = []
+
+    def read(path: Path) -> object:
+        imported.append(path.read_bytes())
+        return observation(tariff="EV2-A", digest="d" * 64)
+
+    reconcile_module = importlib.import_module("tariffkit.providers.pge.reconcile")
+    monkeypatch.setattr(reconcile_module, "import_statement", read)
+
+    sync_profile(store, apply=False)
+    assert sorted(imported) == sorted(documents.values()), "each document read once"
+    assert len(list(kept.glob("2026-10-05-*.pdf"))) == 2
+
+    # Nothing stable says which cached copy is which, so both are fetched again.
+    downloads.clear()
+    sync_profile(store, apply=False)
+    assert sorted(downloads) == ["corrected", "original"]
+
+    # Another login's statement of the same date and amount is its own file.
+    from tariffkit.cli.account_commands import _statement_name
+
+    assert _statement_name("x", "2026-10-05", "$4.25", owner="a|") != _statement_name(
+        "x", "2026-10-05", "$4.25", owner="b|"
+    )
+
+
 def test_one_unreadable_statement_does_not_discard_the_rest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

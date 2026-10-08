@@ -70,9 +70,11 @@ All notable changes to this project are documented here. This project follows
 - **`account sync` reuses the statements it kept.** They were named after the
   portal's bill id, which changes every session, so no sync found the last
   one's copies and each downloaded every statement again. They are now named
-  by issue date and printed amount, and a sync removes the copies left
-  behind: the same statement exported again, differing only in the export's
-  timestamps and file identifiers.
+  by the login, issue date and printed amount, and a sync removes the copies
+  left behind: the same statement exported again, differing only in the
+  export's timestamps and file identifiers. Statements in one listing that
+  share a date and amount, as a corrected statement can, each keep a file of
+  their own and are downloaded afresh.
 - **`audit run` reconciles applied credit from the statement's opening bank**
   instead of an empty one. Its check of the meter against the statement covers
   exports and every cycle after PTO, and `audit doctor` no longer reports a
