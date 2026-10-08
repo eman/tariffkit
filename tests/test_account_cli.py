@@ -1151,6 +1151,87 @@ def test_account_sync_can_still_discard_statements_after_parsing(
     assert opened[0].signed_in, "sync must sign in before listing statements"
 
 
+def test_a_kept_statement_is_found_again_by_the_next_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The portal mints a new bill id every session; the statement is the same.
+
+    Keyed on the id, no sync found the copy the last one kept, and each
+    downloaded every statement again -- four copies of each by the fourth.
+    """
+    store = AccountStore(tmp_path)
+    store.save(AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),)))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    # Stamped the way the portal stamps each export.
+    october = (
+        b"%PDF october /CreationDate (D:20261008143226Z) /ModDate (D:20261008143226Z) "
+        b'xmp:CreateDate="2026-10-08T14:32:26-04:00" /ID [<ab12><ab12>]'
+    )
+    kept = tmp_path / "cache" / "tariffkit" / "statements"
+    kept.mkdir(parents=True)
+    # What the old naming left behind: the same statement exported on another
+    # day, and a different document that happens to share the date.
+    (kept / "2026-10-05-0000000000.pdf").write_bytes(
+        october.replace(b"143226", b"091500").replace(b"14:32:26", b"09:15:00")
+    )
+    (kept / "2026-10-05-1111111111.pdf").write_bytes(b"%PDF something else")
+    downloads: list[str] = []
+    sessions = iter(range(100))
+
+    class Session:
+        def __init__(self) -> None:
+            self.number = next(sessions)
+
+        def __enter__(self) -> Session:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def login(self, *, force: bool = False) -> None:
+            pass
+
+        def bill_history(self) -> list[dict[str, str]]:
+            return [
+                {
+                    "billId": f"session-{self.number}-bill",
+                    "billDate": "2026-10-05",
+                    "billAmount": "$4.25",
+                }
+            ]
+
+        def download_bill(self, bill_id: str) -> bytes:
+            downloads.append(bill_id)
+            return october
+
+    import tariffkit.sources.pge as pge_module
+
+    monkeypatch.setattr(pge_module, "PgeSession", lambda _settings: Session())
+    monkeypatch.setattr(pge_module.PgeSettings, "load", lambda _path=None: object())
+    reconcile_module = importlib.import_module("tariffkit.providers.pge.reconcile")
+    monkeypatch.setattr(
+        reconcile_module,
+        "import_statement",
+        lambda _path: observation(tariff="EV2-A", digest="c" * 64),
+    )
+
+    sync_profile(store, apply=False)
+    sync_profile(store, apply=False)
+
+    assert downloads == ["session-0-bill"], "the second session reuses the first's copy"
+    names = sorted(path.name for path in kept.glob("*.pdf"))
+    assert len(names) == 2, names
+    assert "2026-10-05-1111111111.pdf" in names, "a different document is not a copy"
+    assert "2026-10-05-0000000000.pdf" not in names, "the other export is gone"
+
+    # Copies already beside a kept statement go too, with nothing downloaded:
+    # a cache the first fixed sync named stably still holds the old ones.
+    (kept / "2026-10-05-2222222222.pdf").write_bytes(october.replace(b"ab12", b"cd34"))
+    sync_profile(store, apply=False)
+    assert len(downloads) == 1
+    assert not (kept / "2026-10-05-2222222222.pdf").exists()
+
+
 def test_one_unreadable_statement_does_not_discard_the_rest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -52,6 +52,12 @@ All notable changes to this project are documented here. This project follows
   download failed validation; it asks for `urn`.
 - A statement that fails its self-check names the problems instead of
   counting them.
+- **`account sync` reuses the statements it kept.** They were named after the
+  portal's bill id, which changes every session, so no sync found the last
+  one's copies and each downloaded every statement again. They are now named
+  by issue date and printed amount, and a sync removes the copies left
+  behind: the same statement exported again, differing only in the export's
+  timestamps and file identifiers.
 - **`audit run` reconciles applied credit from the statement's opening bank**
   instead of an empty one. Its check of the meter against the statement covers
   exports and every cycle after PTO, and `audit doctor` no longer reports a
