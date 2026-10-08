@@ -330,3 +330,83 @@ def test_the_time_of_use_split_is_asserted_on_above_the_source_noise() -> None:
     # A cycle's worth of misattribution: asserted.
     (large,) = deltas(14.05)
     assert large.significant is True
+
+
+def test_applied_credit_is_reconciled_from_the_bank_the_statement_opened_with() -> None:
+    """2026-10-05 spent $11.96 carried in plus what the cycle earned.
+
+    Against an empty bank only the cycle's own credit could be applied, and a
+    statement whose rates were right read as a $12 overcharge.
+    """
+    from dataclasses import replace
+
+    from tariffkit.billing import CreditBalances
+    from tariffkit.providers.pge.statements.model import StatementLine, StatementSection
+
+    section = Section.CCA_GENERATION
+    statement = Statement(
+        statement_date=date(2026, 10, 5),
+        period=PERIOD,
+        amount_due=0.0,
+        sections=(
+            StatementSection(
+                section,
+                (
+                    StatementLine("Energy Export Credits Applied", -18.70, section, 5),
+                    StatementLine("Energy Export Bonus Credits Applied", 0.0, section, 5),
+                ),
+            ),
+        ),
+    )
+    bill = Bill(
+        period=PERIOD,
+        import_components={"cca_generation": 18.70},
+        export_components={"cca_generation": -8.70},
+    )
+
+    def applied(opening: CreditBalances | None) -> Any:
+        result = reconcile(replace(statement, opening_bank=opening), bill, CONFIG)
+        (line,) = [c for c in result.comparisons if c.label == "Energy Export Credits Applied"]
+        return line
+
+    carried = applied(CreditBalances(generation=10.0))
+    assert carried.outcome is Outcome.MATCH, carried
+    assert carried.computed == pytest.approx(-18.70)
+
+    empty = applied(None)
+    assert empty.outcome is Outcome.MISMATCH
+    assert empty.computed == pytest.approx(-8.70)
+
+
+def test_a_meter_that_disagrees_with_the_statement_about_export_is_flagged() -> None:
+    """Imports alone were checked, so a meter that lost export passed.
+
+    Export is the side every credit is priced from.
+    """
+    from audit.sources import compare_sources
+
+    def against(billed_export: float) -> Any:
+        statement = Statement(
+            statement_date=date(2026, 2, 1),
+            period=BillingPeriod(date(2026, 1, 1), date(2026, 1, 1)),
+            amount_due=0.0,
+            billed_kwh=10.0,
+            billed_export_kwh=billed_export,
+        )
+        meter = [
+            IntervalReading(
+                start=_hour(1, 12, 0.0).start,
+                imported=10.0,
+                exported=20.0,
+                duration=timedelta(hours=1),
+            )
+        ]
+        (delta,) = [
+            d for d in compare_sources({"influx": meter}, statement) if d.left == "statement"
+        ]
+        return delta
+
+    assert against(20.0).significant is False
+    flagged = against(30.0)
+    assert flagged.significant is True
+    assert flagged.exported_delta == pytest.approx(10.0)

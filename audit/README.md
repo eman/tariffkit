@@ -81,6 +81,10 @@ ratio it does not publish. Two invariants keep it honest and are enforced by
 why. `verified` records which statements a rule has actually reproduced, so the
 report can separate what reconciles from what is assumed.
 
+Credit applied is reconciled from the bank the statement says the cycle opened
+with, not an empty one. What a cycle applies depends on what earlier cycles
+left in the bank, and the statement records that opening balance.
+
 Three residuals are reported separately and never collapsed: an unmapped printed
 line, an unmapped computed component — the sneakiest, since every line can agree
 while the total is wrong — and a genuine mismatch.
