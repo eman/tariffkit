@@ -385,6 +385,9 @@ def charges_by_bucket(bill: Bill) -> tuple[dict[CreditBucket, float], float]:
     not explicitly non-bypassable. The Base Services Charge is not
     non-bypassable; the charges printed as Non-Bypassable Charges are, and they
     stay out of reach.
+
+    So is anything charged before Permission To Operate
+    (``Bill.pre_pto_charges``), whatever its bucket.
     """
     offsettable: dict[CreditBucket, float] = dict.fromkeys(CreditBucket, 0.0)
     non_offsettable = 0.0
@@ -396,6 +399,16 @@ def charges_by_bucket(bill: Bill) -> tuple[dict[CreditBucket, float], float]:
             non_offsettable += value
         else:
             offsettable[bucket] += value
+
+    # Charged before PTO, and so beyond any credit's reach: moved out of the
+    # bucket that would otherwise have let a later credit offset it. A charge
+    # with no bucket is already out of reach and stays where it is.
+    for name, value in bill.pre_pto_charges.items():
+        reach = CreditBucket.BONUS if name in bill.fixed_components else CHARGE_BUCKETS.get(name)
+        if reach is None or name in NON_OFFSETTABLE:
+            continue
+        offsettable[reach] -= value
+        non_offsettable += value
 
     # Spent in-cycle rather than banked; held negative on the export side.
     for name, value in bill.export_components.items():

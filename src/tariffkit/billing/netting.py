@@ -39,6 +39,30 @@ STALE_AFTER = timedelta(hours=3)
 MATERIAL_SMEAR = 0.1
 
 
+#: How the two findings that leave a cycle's energy *totals* intact end. Both
+#: say only that some energy's hour is approximate -- a counter's advance
+#: spread across a gap, or across measured intervals -- while every kilowatt-
+#: hour is still counted once. Every other finding means energy is missing or
+#: counted twice. Kept beside the messages themselves so the two cannot drift.
+_SPLIT_ONLY = (
+    "time-of-use split is a guess even though the cycle total is not",
+    "time-of-use split is approximate even though nothing is missing",
+)
+
+
+def split_only(warning: str) -> bool:
+    """Whether a coverage finding leaves the energy totals whole.
+
+    A bank folded from a cycle whose split is approximate is off by the
+    difference between two hours' rates on a few kilowatt-hours; one folded
+    from a cycle that is missing energy is off by that energy. Refusing both
+    alike refused every cycle a counter-based source prices, since a counter
+    sampled at irregular moments always has an hour or two to spread -- and
+    an empty bank is wrong by the whole balance, not by cents.
+    """
+    return any(phrase in warning for phrase in _SPLIT_ONLY)
+
+
 def check_coverage(
     readings: Sequence[IntervalReading],
     period: BillingPeriod,

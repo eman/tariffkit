@@ -262,6 +262,17 @@ class Bill:
     #: both sides -- counting a first cycle's pre-PTO imports against its
     #: post-PTO exports understates the surplus.
     pre_pto_imported_kwh: float = 0.0
+    #: The part of ``import_components`` and ``fixed_components`` charged
+    #: before Permission To Operate, by component. Billed, and in ``total``,
+    #: but out of reach of export credit: before PTO there is no Net Billing
+    #: arrangement for a credit to offset against.
+    #:
+    #: Needed because a cycle priced across PTO is one bill here and two
+    #: service agreements on the statement. On 2026-07-07 MCE applied $2.18 of
+    #: export credit to the E-ELEC days alone; the merged bill let the same
+    #: credit reach the two pre-PTO EV2-A days as well and applied $3.13, and
+    #: the $0.95 difference stayed missing from the bank from then on.
+    pre_pto_charges: dict[str, float] = field(default_factory=dict)
 
     @property
     def imported_kwh(self) -> float:
@@ -402,5 +413,6 @@ class Bill:
             "complete": self.complete,
             "uncompensated_kwh": round(self.uncompensated_kwh, 3),
             "pre_pto_imported_kwh": round(self.pre_pto_imported_kwh, 3),
+            "pre_pto_charges": {k: round(v, 4) for k, v in self.pre_pto_charges.items()},
             "warnings": list(self.warnings),
         }

@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from tariffkit.billing import Bill
+from tariffkit.billing import Bill, CreditBalances
 from tariffkit.billing.ledger import apply_credits
 from tariffkit.config import Config
 from tariffkit.providers.pge.statements import Section, Statement
@@ -124,9 +124,6 @@ class Reconciliation:
     comparisons: tuple[Comparison, ...] = ()
     source_deltas: tuple[SourceDelta, ...] = ()
     notes: tuple[str, ...] = ()
-    #: The cycle's bills, one per service agreement. Credits are applied within
-    #: each rather than across their sum, because that is what the utility does.
-    segment_bills: tuple[Bill, ...] = ()
 
     @property
     def failures(self) -> tuple[Comparison, ...]:
@@ -147,7 +144,7 @@ class Reconciliation:
         line by line. Before solar they are the same figure, so this is the
         right comparison in both regimes rather than a special case.
         """
-        return sum(apply_credits(part).cash_due for part in self.segment_bills or (self.bill,))
+        return apply_credits(self.bill, self.statement.opening_bank).cash_due
 
     @property
     def unverified_rules(self) -> tuple[str, ...]:
@@ -227,23 +224,20 @@ def _from_metered(rule: LineRule, metered: Mapping[str, float]) -> float | None:
     return total if priced else None
 
 
-def applied_across(bills: Sequence[Bill]) -> dict[str, float]:
-    """Credits applied, summed over the agreements that applied them."""
-    totals = {"generation": 0.0, "delivery": 0.0, "bonus": 0.0, "cca_bonus": 0.0}
-    for bill in bills:
-        for key, value in applied_credits(bill).items():
-            totals[key] += value
-    return totals
-
-
-def applied_credits(bill: Bill) -> dict[str, float]:
+def applied_credits(bill: Bill, opening: CreditBalances | None = None) -> dict[str, float]:
     """What the ledger spent this cycle, signed the way the statement prints it.
 
     Negative, because the statement prints these as credits against charges and
     a rule sums its components. Keeping the sign here rather than in each rule
     means no rule has to remember to subtract.
+
+    ``opening`` is the bank the statement says the cycle opened with. Without
+    it every cycle is reconciled as if it opened empty, which held until the
+    first one that spent a carried credit: 2026-10-05 applied $14.09 of
+    delivery credit, $11.96 of it from the cycle before, and an empty bank
+    could find only the $2.04 earned that cycle.
     """
-    entry = apply_credits(bill)
+    entry = apply_credits(bill, opening)
     return {
         "generation": -entry.applied.generation,
         "delivery": -entry.applied.delivery,
@@ -256,13 +250,13 @@ def applied_credits(bill: Bill) -> dict[str, float]:
     }
 
 
-def _side(bill: Bill, side: Side) -> Mapping[str, float]:
+def _side(bill: Bill, side: Side, opening: CreditBalances | None = None) -> Mapping[str, float]:
     if side is Side.IMPORT:
         return bill.import_components
     if side is Side.EXPORT:
         return bill.export_components
     if side is Side.APPLIED:
-        return applied_credits(bill)
+        return applied_credits(bill, opening)
     return bill.fixed_components
 
 
@@ -274,7 +268,6 @@ def reconcile(
     tolerance: Tolerance | None = None,
     source_deltas: Sequence[SourceDelta] = (),
     notes: Sequence[str] = (),
-    segment_bills: Sequence[Bill] = (),
 ) -> Reconciliation:
     """Compare a computed bill against a parsed statement, line by line."""
     allowed = tolerance or Tolerance()
@@ -309,10 +302,7 @@ def reconcile(
             parts: dict[str, float] = {}
             for component in rule.components:
                 side, key = split_side(component, rule.side)
-                if side is Side.APPLIED and segment_bills:
-                    value = applied_across(segment_bills).get(key)
-                else:
-                    value = _side(bill, side).get(key)
+                value = _side(bill, side, statement.opening_bank).get(key)
                 if value is not None:
                     parts[key] = value
             used.update(split_side(c, rule.side)[1] for c in rule.components)
@@ -386,7 +376,6 @@ def reconcile(
         comparisons=tuple(comparisons),
         source_deltas=tuple(source_deltas),
         notes=tuple(notes),
-        segment_bills=tuple(segment_bills),
     )
 
 

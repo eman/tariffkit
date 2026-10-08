@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from freezegun import freeze_time
@@ -264,6 +265,67 @@ def test_bill_refuses_a_bank_folded_from_a_cycle_with_missing_meter_days(
 
 
 @freeze_time("2026-09-09T12:00:00-07:00")
+def test_bill_carries_the_bank_across_a_cycle_with_an_approximate_hour(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Every kWh is there; only which hour a few of them fell in is a guess.
+
+    A counter-based source always has an hour or two to spread, so refusing
+    these refused every cycle InfluxDB priced, and 2026-08-28 opened on an
+    empty bank where the statement opened it on $11.96.
+
+    And a note about the *rates* on the bill is not a coverage finding: it
+    was refused as "not fully metered" while `fold` already judges the rates.
+    """
+    from dataclasses import replace
+
+    from tariffkit.billing import engine, netting
+
+    profile = _account_with_statement(tmp_path, monkeypatch)
+    epoch = profile.epochs[0]
+    AccountStore(tmp_path).save(
+        replace(
+            profile,
+            epochs=(replace(epoch, config=replace(epoch.config, pto_date=date(2026, 7, 29))),),
+        )
+    )
+    monkeypatch.setenv("PGE_USERNAME", "person@example.invalid")
+    monkeypatch.setenv("PGE_PASSWORD", "secret")
+    monkeypatch.setattr("tariffkit.sources.cached_bill_periods", lambda *a, **k: [])
+
+    def fake(settings: object, start: date, end: date, **kwargs: object) -> object:
+        path = _export_csv(tmp_path) if start == date(2026, 8, 28) else _full_cycle_csv(tmp_path)
+        return SimpleNamespace(path=path, start=start, end=end, downloaded=False, covers="cached")
+
+    monkeypatch.setattr("tariffkit.sources.pge.cached_green_button", fake)
+    covered = netting.check_coverage
+
+    def approximate(readings: object, period: Any, **kwargs: object) -> Iterator[str]:
+        yield from covered(readings, period, **kwargs)
+        if period.start == date(2026, 7, 29):
+            yield (
+                "3 interval(s) covering 3.0h were reconstructed across gaps in the "
+                "source, carrying 0.7 kWh whose time-of-use split is a guess even "
+                "though the cycle total is not"
+            )
+
+    monkeypatch.setattr(netting, "check_coverage", approximate)
+    priced = engine.compute_segments
+
+    def noted(*args: object, **kwargs: object) -> object:
+        bill = priced(*args, **kwargs)  # type: ignore[arg-type]
+        note = "generation was priced from MCE's rate card dated 2025-03-01"
+        return replace(bill, warnings=(*bill.warnings, note))
+
+    monkeypatch.setattr(engine, "compute_segments", noted)
+
+    assert main(["bill", "--source", "green-button"]) == 0
+    out = capsys.readouterr().out
+    assert "bank: opening carried from 1 cycle(s) since PTO 2026-07-29" in out
+    assert "1 of them with some energy in an approximate hour" in out
+
+
+@freeze_time("2026-09-09T12:00:00-07:00")
 def test_bill_without_dates_takes_the_boundary_the_utility_billed_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -405,7 +467,8 @@ def _export_csv(tmp_path: Path) -> Path:
         "statement-0007.pdf could not be read as a PDF",
         "statement-0007.pdf has no text layer, so it is a scan or a print-to-PDF export",
         "statement-0007.pdf produced no pages to recognise",
-        "statement-0007.pdf failed its self-check (3 problem(s))",
+        "statement-0007.pdf failed its self-check: pge_delivery: rows sum to 37.00 but "
+        "the section prints 62.39 (off by -25.39)",
         "statement-0007.pdf OCR read the statement but it did not check out (2): a: b; c",
     ],
 )
@@ -1096,6 +1159,156 @@ def test_account_sync_can_still_discard_statements_after_parsing(
     # Without this the statement list comes back empty and the sync reports
     # "0 statement update(s)" against an account that has plenty.
     assert opened[0].signed_in, "sync must sign in before listing statements"
+
+
+def test_a_kept_statement_is_found_again_by_the_next_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The portal mints a new bill id every session; the statement is the same.
+
+    Keyed on the id, no sync found the copy the last one kept, and each
+    downloaded every statement again -- four copies of each by the fourth.
+    """
+    store = AccountStore(tmp_path)
+    store.save(AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),)))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    # Stamped the way the portal stamps each export.
+    october = (
+        b"%PDF october /CreationDate (D:20261008143226Z) /ModDate (D:20261008143226Z) "
+        b'xmp:CreateDate="2026-10-08T14:32:26-04:00" /ID [<ab12><ab12>]'
+    )
+    kept = tmp_path / "cache" / "tariffkit" / "statements"
+    kept.mkdir(parents=True)
+    # What the old naming left behind: the same statement exported on another
+    # day, and a different document that happens to share the date.
+    (kept / "2026-10-05-0000000000.pdf").write_bytes(
+        october.replace(b"143226", b"091500").replace(b"14:32:26", b"09:15:00")
+    )
+    (kept / "2026-10-05-1111111111.pdf").write_bytes(b"%PDF something else")
+    downloads: list[str] = []
+    sessions = iter(range(100))
+
+    class Session:
+        def __init__(self) -> None:
+            self.number = next(sessions)
+
+        def __enter__(self) -> Session:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def login(self, *, force: bool = False) -> None:
+            pass
+
+        def bill_history(self) -> list[dict[str, str]]:
+            return [
+                {
+                    "billId": f"session-{self.number}-bill",
+                    "billDate": "2026-10-05",
+                    "billAmount": "$4.25",
+                }
+            ]
+
+        def download_bill(self, bill_id: str) -> bytes:
+            downloads.append(bill_id)
+            return october
+
+    import tariffkit.sources.pge as pge_module
+
+    monkeypatch.setattr(pge_module, "PgeSession", lambda _settings: Session())
+    monkeypatch.setattr(pge_module.PgeSettings, "load", lambda _path=None: object())
+    reconcile_module = importlib.import_module("tariffkit.providers.pge.reconcile")
+    monkeypatch.setattr(
+        reconcile_module,
+        "import_statement",
+        lambda _path: observation(tariff="EV2-A", digest="c" * 64),
+    )
+
+    sync_profile(store, apply=False)
+    sync_profile(store, apply=False)
+
+    assert downloads == ["session-0-bill"], "the second session reuses the first's copy"
+    names = sorted(path.name for path in kept.glob("*.pdf"))
+    assert len(names) == 2, names
+    assert "2026-10-05-1111111111.pdf" in names, "a different document is not a copy"
+    assert "2026-10-05-0000000000.pdf" not in names, "the other export is gone"
+
+    # Copies already beside a kept statement go too, with nothing downloaded:
+    # a cache the first fixed sync named stably still holds the old ones.
+    (kept / "2026-10-05-2222222222.pdf").write_bytes(october.replace(b"ab12", b"cd34"))
+    sync_profile(store, apply=False)
+    assert len(downloads) == 1
+    assert not (kept / "2026-10-05-2222222222.pdf").exists()
+
+
+def test_statements_sharing_a_date_and_amount_are_not_one_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A corrected statement can repeat both; the cache must not merge them.
+
+    Keyed on date and amount alone, the second row resolved to the first row's
+    file, was never downloaded, and the first statement was imported twice.
+    """
+    store = AccountStore(tmp_path)
+    store.save(AccountProfile((AccountEpoch(date(2025, 1, 1), Config()),)))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    kept = tmp_path / "cache" / "tariffkit" / "statements"
+    documents = {"original": b"%PDF original", "corrected": b"%PDF corrected"}
+    downloads: list[str] = []
+
+    class Session:
+        def __enter__(self) -> Session:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def login(self, *, force: bool = False) -> None:
+            pass
+
+        def bill_history(self) -> list[dict[str, str]]:
+            return [
+                {"billId": name, "billDate": "2026-10-05", "billAmount": "$4.25"}
+                for name in documents
+            ]
+
+        def download_bill(self, bill_id: str) -> bytes:
+            downloads.append(bill_id)
+            return documents[bill_id]
+
+    import tariffkit.sources.pge as pge_module
+
+    monkeypatch.setattr(pge_module, "PgeSession", lambda _settings: Session())
+    monkeypatch.setattr(
+        pge_module.PgeSettings,
+        "load",
+        lambda _path=None: SimpleNamespace(username="someone", account_id=""),
+    )
+    imported: list[bytes] = []
+
+    def read(path: Path) -> object:
+        imported.append(path.read_bytes())
+        return observation(tariff="EV2-A", digest="d" * 64)
+
+    reconcile_module = importlib.import_module("tariffkit.providers.pge.reconcile")
+    monkeypatch.setattr(reconcile_module, "import_statement", read)
+
+    sync_profile(store, apply=False)
+    assert sorted(imported) == sorted(documents.values()), "each document read once"
+    assert len(list(kept.glob("2026-10-05-*.pdf"))) == 2
+
+    # Nothing stable says which cached copy is which, so both are fetched again.
+    downloads.clear()
+    sync_profile(store, apply=False)
+    assert sorted(downloads) == ["corrected", "original"]
+
+    # Another login's statement of the same date and amount is its own file.
+    from tariffkit.cli.account_commands import _statement_name
+
+    assert _statement_name("x", "2026-10-05", "$4.25", owner="a|") != _statement_name(
+        "x", "2026-10-05", "$4.25", owner="b|"
+    )
 
 
 def test_one_unreadable_statement_does_not_discard_the_rest(

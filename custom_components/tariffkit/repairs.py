@@ -14,9 +14,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from homeassistant.components.repairs import RepairsFlow
+from homeassistant.components.repairs import RepairsFlow, RepairsFlowResult
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import issue_registry as ir
 
 from .const import DOMAIN
@@ -59,10 +58,12 @@ class MetersRepairFlow(RepairsFlow):
     def __init__(self, entry: TariffKitConfigEntry) -> None:
         self.entry = entry
 
-    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> RepairsFlowResult:
         return await self.async_step_meters()
 
-    async def async_step_meters(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+    async def async_step_meters(
+        self, user_input: dict[str, Any] | None = None
+    ) -> RepairsFlowResult:
         from .config_flow import (
             _async_meter_problem,
             _meter_defaults,
@@ -99,7 +100,7 @@ class MetersRepairFlow(RepairsFlow):
 class GoneRepairFlow(RepairsFlow):
     """The account this issue was about no longer exists."""
 
-    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> RepairsFlowResult:
         return self.async_abort(reason="entry_gone")
 
 

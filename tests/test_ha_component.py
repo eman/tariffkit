@@ -132,7 +132,9 @@ async def test_setup_exposes_energy_price_entities_and_service_device(
     assert "device_class" not in import_state.attributes
     assert "device_class" not in export_state.attributes
 
-    device = device_registry.async_get_device({(DOMAIN, entry.entry_id)}, set())
+    device = device_registry.async_get_device_by_identifier(
+        (DOMAIN, entry.entry_id), entry.entry_id
+    )
     assert device is not None
     assert device.entry_type is DeviceEntryType.SERVICE
     assert device.manufacturer == "Pacific Gas and Electric Company"
@@ -907,7 +909,9 @@ class TestGenerationSupplierOnDevice:
         entry = _entry()
         await _setup_entry(hass, entry)
 
-        device = device_registry.async_get_device({(DOMAIN, entry.entry_id)}, set())
+        device = device_registry.async_get_device_by_identifier(
+            (DOMAIN, entry.entry_id), entry.entry_id
+        )
         assert device is not None
         assert device.model is not None
         assert "·" not in device.model
@@ -920,7 +924,9 @@ class TestGenerationSupplierOnDevice:
         entry = _entry(profile=_cca_profile())
         await _setup_entry(hass, entry)
 
-        device = device_registry.async_get_device({(DOMAIN, entry.entry_id)}, set())
+        device = device_registry.async_get_device_by_identifier(
+            (DOMAIN, entry.entry_id), entry.entry_id
+        )
         assert device is not None
         assert device.model is not None
         assert device.model.endswith("· MCE Light Green")
@@ -934,7 +940,9 @@ class TestGenerationSupplierOnDevice:
         entry = _entry(profile=_cca_profile(name=""))
         await _setup_entry(hass, entry)
 
-        device = device_registry.async_get_device({(DOMAIN, entry.entry_id)}, set())
+        device = device_registry.async_get_device_by_identifier(
+            (DOMAIN, entry.entry_id), entry.entry_id
+        )
         assert device is not None
         assert device.model is not None
         assert device.model.endswith("· MCE Light Green")
@@ -1012,7 +1020,9 @@ class TestDeviceIdentityFollowsTheProfile:
         freezer.move_to("2026-08-15T12:00:00-07:00")
         await _setup_entry(hass, entry)
 
-        device = device_registry.async_get_device({(DOMAIN, entry.entry_id)}, set())
+        device = device_registry.async_get_device_by_identifier(
+            (DOMAIN, entry.entry_id), entry.entry_id
+        )
         assert device is not None and device.model is not None
         assert "MCE" not in device.model
 
@@ -1023,7 +1033,9 @@ class TestDeviceIdentityFollowsTheProfile:
         await coordinator.async_refresh()
         await hass.async_block_till_done()
 
-        device = device_registry.async_get_device({(DOMAIN, entry.entry_id)}, set())
+        device = device_registry.async_get_device_by_identifier(
+            (DOMAIN, entry.entry_id), entry.entry_id
+        )
         assert device is not None and device.model is not None
         assert device.model.endswith("· MCE Light Green")
 

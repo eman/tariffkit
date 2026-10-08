@@ -527,6 +527,7 @@ def _carried_bank(args: Any, profile: Any, meter: Any, period: Any) -> tuple[Any
     """
     from ..billing.bank import fold
     from ..billing.engine import compute_segments
+    from ..billing.netting import check_coverage, split_only
 
     pto = profile.pto_date
     if pto is None or period.start <= pto:
@@ -559,6 +560,7 @@ def _carried_bank(args: Any, profile: Any, meter: Any, period: Any) -> tuple[Any
         file=sys.stderr,
     )
     bills = []
+    approximate = 0
     for cycle in earlier:
         try:
             readings = meter.read(cycle).readings
@@ -568,23 +570,46 @@ def _carried_bank(args: Any, profile: Any, meter: Any, period: Any) -> tuple[Any
         except TariffKitError as exc:
             return None, f"bank: opening 0 -- could not price {cycle.start}..{cycle.end}: {exc}"
         # `fold` looks at `complete` -- the rates -- but not at coverage. A
-        # cycle with missing or estimated meter days still prices to a
-        # real-looking figure, and a bank folded from it would cut this cycle's
-        # amount due on data the meter never supplied. The integration refuses
-        # these through `backfill.build`; this path refuses them here.
-        if bill.warnings:
+        # cycle missing meter days still prices to a real-looking figure, and a
+        # bank folded from it would cut this cycle's amount due on data the
+        # meter never supplied, so that is refused.
+        #
+        # A cycle whose energy is all there but some of it in an approximate
+        # hour is not. Refusing those too refused every cycle an InfluxDB
+        # counter priced -- an hour or two is always spread -- and opened
+        # 2026-08-28 on an empty bank when the statement opened it on $11.96,
+        # putting the amount due $12 high. The integration carries the bank
+        # across the same cycles; this now agrees with it.
+        #
+        # Judged from the readings, not from `bill.warnings`, which also carry
+        # pricing notes -- a day no tax vintage covers, a stale CCA rate card.
+        # Those are about the rates, and `fold` already refuses a run priced
+        # from incomplete ones; here they were refused a second time and
+        # called "not fully metered", which they are not.
+        within = [reading for reading in readings if cycle.contains(reading.start)]
+        coverage = list(check_coverage(within, cycle, netted=True))
+        missing = [finding for finding in coverage if not split_only(finding)]
+        if missing:
             return None, (
                 f"bank: opening 0 -- {cycle.start}..{cycle.end} is not fully metered: "
-                f"{'; '.join(bill.warnings)}"
+                f"{'; '.join(missing)}"
             )
+        if coverage:
+            approximate += 1
         bills.append(bill)
     state = fold(profile, bills)
     if not state.trustworthy:
         return None, f"bank: opening 0 -- not carried: {'; '.join(state.warnings)}"
     settled = f", through {', '.join(state.true_ups)}" if state.true_ups else ""
+    split = (
+        f"; {approximate} of them with some energy in an approximate hour, so the "
+        "balance may be off by cents"
+        if approximate
+        else ""
+    )
     return state.balance, (
-        f"bank: opening carried from {state.cycles} cycle(s) since PTO {pto}{settled} "
-        "(--no-bank to price this cycle alone)"
+        f"bank: opening carried from {state.cycles} cycle(s) since PTO {pto}{settled}"
+        f"{split} (--no-bank to price this cycle alone)"
     )
 
 

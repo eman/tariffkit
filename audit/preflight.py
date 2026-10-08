@@ -41,12 +41,14 @@ def _credentials() -> Check:
     except Exception as exc:
         return Check("PG&E credentials", False, str(exc)[:120])
 
+    # Not PGE_ACCOUNT_ID. With none the portal lists the login's own account,
+    # which is what `run` does on a single-account login; demanding it here
+    # reported a run that works as one that cannot start.
     missing = [
         name
         for name, value in (
             ("PGE_USERNAME", settings.username),
             ("PGE_PASSWORD", settings.password),
-            ("PGE_ACCOUNT_ID", settings.account_id),
         )
         if not value
     ]
@@ -63,7 +65,8 @@ def _credentials() -> Check:
             "set PGE_BROWSER_COOKIE and PGE_VALIDATION_COOKIE; without them the "
             "portal treats this as a new device and asks to verify it. See pge/PORTAL.md",
         )
-    return Check("PG&E credentials", True, f"{settings.username[:3]}…, account configured")
+    account = "account configured" if settings.account_id else "the login's own account"
+    return Check("PG&E credentials", True, f"{settings.username[:3]}…, {account}")
 
 
 def _portal() -> Check:
@@ -85,8 +88,17 @@ def _influx() -> Check:
     from tariffkit.sources.influx import InfluxSettings, read_counters
     from tariffkit.timeutil import PACIFIC
 
+    # The series named on the account, as `run` reads them. Loading without it
+    # looked only at the config file, which no longer has to name them, and
+    # called a configured source missing.
     try:
-        settings = InfluxSettings.load()
+        profile = _load_profile()
+    except Exception:
+        profile = None
+    try:
+        settings = InfluxSettings.load(
+            profile_source=profile.meter_sources.influx if profile else None
+        )
     except Exception as exc:
         return Check("meter data (InfluxDB)", False, str(exc)[:120])
 
@@ -118,14 +130,17 @@ def _account() -> Check:
 
 
 def _recognition() -> Check:
-    from tariffkit.providers.pge.statements.ocr import available
+    from tariffkit.providers.pge.statements.ocr import available, install_hint
 
     if available():
         return Check("page recognition (tesseract, poppler)", True, "installed")
+    # The package manager the machine actually has, as `account sync` names
+    # it: "brew install" on Debian, or "apt" on Fedora, is advice nobody can
+    # follow.
     return Check(
         "page recognition (tesseract, poppler)",
         False,
-        "brew install tesseract poppler -- without it, statements before "
+        f"{install_hint()} -- without it, statements before "
         "November 2025 cannot be read at all, since they carry no text layer",
         required=False,
     )

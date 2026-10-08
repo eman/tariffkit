@@ -11,7 +11,7 @@ belong in a ledger built on top of this.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from itertools import pairwise
@@ -88,6 +88,7 @@ class BillEngine:
         buckets: dict[tuple[Season, TouPeriod], _Accumulator] = {}
         uncompensated = 0.0
         pre_pto_imported = 0.0
+        pre_pto_charges: dict[str, float] = {}
         import_components: dict[str, float] = {}
         export_components: dict[str, float] = {}
         complete = True
@@ -131,6 +132,7 @@ class BillEngine:
                 # are drawn on. See `Bill.pre_pto_imported_kwh`.
                 if not in_net_billing:
                     pre_pto_imported += reading.imported
+                    _add_scaled(pre_pto_charges, import_price.components, reading.imported)
 
             if reading.exported and export_price is not None:
                 bucket.exported += reading.exported
@@ -139,8 +141,16 @@ class BillEngine:
                 _add_scaled(export_components, export_price.components, -reading.exported)
 
         fixed_components = self._fixed_charges(period)
+        pto = self.rates.config.pto_date
+        if pto is not None and period.start < pto:
+            before = BillingPeriod(period.start, min(period.end, pto - timedelta(days=1)))
+            for name, value in self._fixed_charges(before).items():
+                pre_pto_charges[name] = pre_pto_charges.get(name, 0.0) + value
         tax, untaxed_days = self._energy_surcharge(in_period, period)
-        if tax:
+        # Recorded at zero too. A statement prints the line at 0.00 on a cycle
+        # that exported more than it used -- 2026-08-04 and 2026-09-03 both do
+        # -- and a bill without the component reads as one that never priced it.
+        if in_period:
             import_components["energy_commission_tax"] = tax
         if untaxed_days:
             complete = False
@@ -171,6 +181,7 @@ class BillEngine:
             fixed_components=fixed_components,
             uncompensated_kwh=uncompensated,
             pre_pto_imported_kwh=pre_pto_imported,
+            pre_pto_charges=pre_pto_charges,
             warnings=tuple(warnings),
             # Pricing confidence only. Coverage problems travel separately in
             # `warnings`: they say the meter data is patchy, not that the rates
@@ -200,39 +211,43 @@ class BillEngine:
         731 kWh imported -- \$0.22, to the cent. On 2026-08-04 it exported after
         PTO and was taxed on nothing at all despite importing 39 kWh. So an
         export offsets the tax base exactly when the tariff compensates it,
-        which is the same test that decides whether it earns a credit. Floored
-        per day: a day that exports more than it imports owes no tax and does
-        not bank a negative against the next one.
+        which is the same test that decides whether it earns a credit.
 
-        Returns the charge and the days no vintage covered. Those days are not
-        charged, and the caller says so and marks the bill incomplete: a bill
-        that quietly omits a tax is the plausible-but-wrong kind, which is worse
+        Floored once, over the cycle, not day by day. The 2026-10-05 statement
+        settles it: 199.769 kWh imported against 117.990 exported, "Total Usage
+        81.779 kWh" on MCE's page, and a tax of $0.02 -- 81.779 at $0.0003. The
+        per-day floor this used to apply let every sunny day's surplus vanish
+        while every evening's import was taxed, and charged $0.04 on about 147
+        kWh. Each day is still rated by its own vintage, so a cycle spanning a
+        January change weighs each day at the rate in force on it.
+
+        Returns the charge and the days no vintage covered. Those days are left
+        out, and the caller says so and marks the bill incomplete: a bill that
+        quietly omits a tax is the plausible-but-wrong kind, which is worse
         than one that refuses to claim it is finished.
         """
-        from ..data import versioned
+        return rate_surcharge(*self._tax_base(readings))
 
-        total = 0.0
-        remaining: dict[date, float] = {}
+    def _tax_base(
+        self, readings: Sequence[IntervalReading]
+    ) -> tuple[dict[date, float], dict[date, float]]:
+        """Energy consumed per day, before Permission To Operate and from it.
+
+        Apart because only the second may net: an export offsets the tax base
+        exactly when Net Billing compensates it, and the days before PTO are a
+        separate, closed agreement on the statement that later exports never
+        reach.
+        """
+        before: dict[date, float] = {}
+        after: dict[date, float] = {}
         for reading in readings:
-            day = to_pacific(reading.start).date()
-            consumed = reading.imported
-            if reading.exported and self._compensated(hour_floor(to_pacific(reading.start))):
-                consumed -= reading.exported
-            remaining[day] = remaining.get(day, 0.0) + consumed
-        uncovered: list[date] = []
-        for day, net in sorted(remaining.items()):
-            imported = max(net, 0.0)
-            if not imported:
-                continue
-            try:
-                rate = float(versioned.load("tax/ca_energy_resources", day).raw["rate"])
-            except DataError:
-                # The rest of the bill is still worth producing, so this is not
-                # fatal -- but it is not silent either.
-                uncovered.append(day)
-                continue
-            total += imported * rate
-        return total, uncovered
+            moment = hour_floor(to_pacific(reading.start))
+            day = moment.date()
+            if self._compensated(moment):
+                after[day] = after.get(day, 0.0) + reading.imported - reading.exported
+            else:
+                before[day] = before.get(day, 0.0) + reading.imported
+        return before, after
 
     #: How far a CCA rate card may predate a cycle before it is worth saying so.
     #: A CCA reprices at least annually, so a card more than a year older than
@@ -458,16 +473,17 @@ def price_segments(
     check: bool = True,
     netted: bool = False,
 ) -> list[Bill]:
-    """One bill per segment, unmerged.
+    """One bill per segment, unmerged: what each configuration charged on its days.
 
-    Kept separate from :func:`compute_segments` because export credits do not
-    cross a service agreement. A cycle where solar was interconnected carries a
-    closed agreement and a new one, and the utility applies the new agreement's
-    export credits only against its own charges -- on 2026-07-07 it spends 2.18
-    against the Solar Billing Plan's charges and nothing against the closed
-    agreement's 0.94, which predates Permission To Operate and has no export
-    arrangement at all. A ledger run over the merged bill spends them against
-    both and overstates what was applied.
+    :func:`compute_segments` merges these, and the merged bill is the one to
+    hand a ledger. It records the charges from before Permission To Operate
+    as ``pre_pto_charges``, so credit stays off the closed pre-PTO agreement
+    as the statement keeps it off -- on 2026-07-07, 2.18 spent against the
+    Solar Billing Plan's charges and nothing against the closed agreement's
+    0.94 -- and it rates the Energy Commission Tax once over the cycle. These
+    parts do neither: each floors its own tax, and a ledger applied to them
+    one at a time cannot carry a bank between them. Use them to see a cycle
+    the way a statement splits it, not to total or settle it.
     """
     ordered = _ordered_segments(segments)
     readings = list(readings)
@@ -477,6 +493,37 @@ def price_segments(
         )
         for segment in ordered
     ]
+
+
+def rate_surcharge(
+    before: Mapping[date, float], after: Mapping[date, float]
+) -> tuple[float, list[date]]:
+    """The Energy Resources Surcharge on a tax base, and the days no vintage rates.
+
+    The days before PTO are charged as consumed. The days from it are netted
+    and floored once, together: a cycle that exports more than it uses owes
+    none, and does not pay out either.
+    """
+    from ..data import versioned
+
+    uncovered: list[date] = []
+
+    def rated(days: Mapping[date, float]) -> float:
+        total = 0.0
+        for day, net in sorted(days.items()):
+            if not net:
+                continue
+            try:
+                rate = float(versioned.load("tax/ca_energy_resources", day).raw["rate"])
+            except DataError:
+                # The rest of the bill is still worth producing, so this is not
+                # fatal -- but it is not silent either.
+                uncovered.append(day)
+                continue
+            total += net * rate
+        return total
+
+    return rated(before) + max(rated(after), 0.0), sorted(uncovered)
 
 
 def compute_segments(
@@ -508,6 +555,7 @@ def compute_segments(
     complete = True
     uncompensated = 0.0
     pre_pto_imported = 0.0
+    pre_pto_charges: dict[str, float] = {}
 
     priced = price_segments(ordered, readings, check=check, netted=netted)
     for segment, part in zip(ordered, priced, strict=True):
@@ -540,6 +588,23 @@ def compute_segments(
         complete = complete and part.complete
         uncompensated += part.uncompensated_kwh
         pre_pto_imported += part.pre_pto_imported_kwh
+        for key, value in part.pre_pto_charges.items():
+            pre_pto_charges[key] = pre_pto_charges.get(key, 0.0) + value
+
+    # Rated again over the whole cycle. Each segment floors its own, and summing
+    # those would tax an import-heavy segment while the export-heavy one beside
+    # it offset nothing -- the per-day defect again, at segment scale. Days no
+    # vintage covers were already reported by the segment that held them.
+    if "energy_commission_tax" in imports:
+        before: dict[date, float] = {}
+        after: dict[date, float] = {}
+        for segment in ordered:
+            within = [r for r in readings if segment.period.contains(r.start)]
+            pre, post = BillEngine(RateEngine(segment.config))._tax_base(within)
+            for days, part_days in ((before, pre), (after, post)):
+                for day, net in part_days.items():
+                    days[day] = days.get(day, 0.0) + net
+        imports["energy_commission_tax"], _ = rate_surcharge(before, after)
 
     return Bill(
         period=whole,
@@ -549,6 +614,7 @@ def compute_segments(
         fixed_components=fixed,
         uncompensated_kwh=uncompensated,
         pre_pto_imported_kwh=pre_pto_imported,
+        pre_pto_charges=pre_pto_charges,
         warnings=tuple(warnings),
         complete=complete,
     )

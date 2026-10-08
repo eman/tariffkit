@@ -33,10 +33,11 @@ from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 
-from tariffkit.billing import BillingPeriod
+from tariffkit.billing import BillingPeriod, CreditBalances
 
 from .errors import StatementAmbiguityError, StatementError
 from .model import (
+    CENT,
     Section,
     Statement,
     StatementAgreement,
@@ -149,6 +150,49 @@ CREDIT_BALANCE = re.compile(
     re.I | re.S,
 )
 
+#: A printed amount inside a pattern, signed or not, with or without "$".
+_AMOUNT = r"-?\$?-?[\d,]+\.\d{2}"
+
+#: The heading over each bank table. Present means a bank is printed, and then
+#: failing to read it is a problem rather than an empty bank.
+BANK_HEADING = re.compile(r"YOUR\s+ENERGY\s+EXPORT\s+CREDIT\s+BANK", re.I)
+
+#: PG&E's bank opens on three columns: Energy Delivered, Bonus, Total. Exactly
+#: three: a fourth (an Energy Produced column, which a CCA account does not
+#: print) would shift every figure one column over, so it is not read.
+PGE_BANK_OPENING = re.compile(
+    rf"^\s*Beginning\s+Balance[ \t]+({_AMOUNT})[ \t]+({_AMOUNT})[ \t]+({_AMOUNT})"
+    rf"(?![\d.])(?![ \t]+{_AMOUNT})",
+    re.M,
+)
+
+#: The CCA's bank opens on one column, its total.
+CCA_BANK_OPENING = re.compile(
+    rf"^\s*Beginning\s+Balance[ \t]+({_AMOUNT})(?![\d.])(?![ \t]+{_AMOUNT})", re.M
+)
+
+#: The CCA prints its two credits' closing balances and this cycle's earnings
+#: as prose. The opening it does not split, so it is worked back from these.
+CCA_CLOSING = {
+    "export": re.compile(rf"Current\s+Energy\s+Export\s+Credit\s+\(EEC\)\s+Balance\s+({_AMOUNT})"),
+    "bonus": re.compile(
+        rf"Current\s+Energy\s+Export\s+Bonus\s+Credit\s+\(EEBC\)\s+Balance\s+({_AMOUNT})"
+    ),
+}
+CCA_EARNED = {
+    "export": re.compile(
+        rf"Solar\s+Export\s+Credits\s+\(EEC\)\s+earned\s+this\s+cycle\s+({_AMOUNT})"
+    ),
+    "bonus": re.compile(
+        rf"Solar\s+Export\s+Bonus\s+Credits\s+\(EEBC\)\s+earned\s+this\s+cycle\s+({_AMOUNT})"
+    ),
+}
+#: And the rows on its page that spent them, printed negative.
+CCA_APPLIED = {
+    "export": "Energy Export Credits Applied",
+    "bonus": "Energy Export Bonus Credits Applied",
+}
+
 #: Gas, on a combined statement. Taken from the gas section's own total rather
 #: than from the summary: the summary prints "Current Gas Charges" with the
 #: amount in a column that extraction drops entirely, so the only place the
@@ -165,6 +209,12 @@ DELIVERY_PAGE = ANCHORS[1][1]
 STATEMENT_DATE = re.compile(r"Statement\s+Date:\s*(\d{2}/\d{2}/\d{4})")
 ACCOUNT = re.compile(r"Account\s+N(?:o|umber)[.:]?\s*(\d[\d-]+)")
 USAGE = re.compile(r"Electric\s+Usage\s+This\s+Period:\s*([\d,]+\.?\d*)\s*kWh,?\s*(\d+)\s+billing")
+#: The Solar Billing Plan's own usage figures, in its Service Information box.
+#: The plan's page prints no "Electric Usage This Period" at all, so without
+#: these every cycle after PTO had no billed kWh and the audit's check of the
+#: meter against the statement was skipped without a word.
+IMPORTS = re.compile(r"\bImports\s+(-?[\d,]+\.?\d*)\s*kWh")
+EXPORTS = re.compile(r"\bExports\s+(-?[\d,]+\.?\d*)\s*kWh")
 RATE_SCHEDULE = re.compile(r"Rate\s+Schedule:\s*(.+?)\s*$", re.M)
 BASELINE_TERRITORY = re.compile(r"Baseline\s+Territory\s+([A-Z])\b")
 PCIA_VINTAGE = re.compile(r"(\d{4})\s+Vintaged\s+Power\s+Charge")
@@ -360,7 +410,9 @@ def read_statement(path: str | Path) -> Statement:
     statement = parse_statement(pages, source=source.name)
     problems = statement.self_check()
     if problems:
-        raise StatementError(f"{source.name} failed its self-check ({len(problems)} problems)")
+        # Named, not counted. "(2 problems)" sent the 2026-10-05 statement's
+        # reader into the PDF by hand to find out which two.
+        raise StatementError(f"{source.name} failed its self-check: {'; '.join(problems)}")
     return statement
 
 
@@ -422,6 +474,103 @@ def _summary_amount(summary: StatementSection, label: str) -> float | None:
     """One named line out of the running balance, or None if absent."""
     matches = summary.find(label)
     return matches[0].amount if matches else None
+
+
+def _opening_bank(
+    joined: str, sections: Sequence[StatementSection]
+) -> tuple[CreditBalances | None, tuple[str, ...]]:
+    """The bank this cycle opened with, and anything that kept it from being read.
+
+    PG&E's half is a table and is read straight off it. The CCA prints only a
+    total opening, so its export and bonus credits are each worked back from
+    the balance it closed on: closing, less what the cycle earned, plus what it
+    spent. The total it does print is then the check on that arithmetic --
+    98.79 on 2026-10-05, from 114.15 - 40.23 + 18.70 and 7.21 - 1.04 + 0.00.
+    """
+    if not BANK_HEADING.search(joined):
+        return None, ()
+    problems: list[str] = []
+
+    pge = PGE_BANK_OPENING.search(joined)
+    delivery = bonus = 0.0
+    if pge is None:
+        problems.append(
+            "the statement prints an export credit bank whose opening could not be read"
+        )
+    else:
+        delivery, bonus, total = (_money(value) or 0.0 for value in pge.groups())
+        if abs(delivery + bonus - total) > CENT:
+            problems.append(
+                f"the export credit bank opens on {delivery:.2f} delivery and {bonus:.2f} "
+                f"bonus credit, which do not make the {total:.2f} it prints"
+            )
+
+    generation = cca_bonus = 0.0
+    cca = next((s for s in sections if s.name is Section.CCA_GENERATION), None)
+    closing = {key: _scalar(joined, pattern) for key, pattern in CCA_CLOSING.items()}
+    # Entered whenever the CCA has a page, not only when one of its balances
+    # was found: with neither found, skipping this returned both CCA credits
+    # as zero -- the silently empty bank this function exists to prevent.
+    if cca is not None:
+        earned = {key: _scalar(joined, pattern) for key, pattern in CCA_EARNED.items()}
+        printed = CCA_BANK_OPENING.search(joined)
+        unread = [
+            name
+            for name, value in (
+                *(("closing " + k, v) for k, v in closing.items()),
+                *(("earned " + k, v) for k, v in earned.items()),
+                ("opening total", printed),
+            )
+            if value is None
+        ]
+        if unread:
+            problems.append(
+                f"the {cca.name} export credit bank could not be read: no {', '.join(unread)}"
+            )
+        else:
+            spent = {
+                key: -sum(line.amount for line in cca.find(label))
+                for key, label in CCA_APPLIED.items()
+            }
+            generation = closing["export"] - earned["export"] + spent["export"]  # type: ignore[operator]
+            cca_bonus = closing["bonus"] - earned["bonus"] + spent["bonus"]  # type: ignore[operator]
+            assert printed is not None
+            opening_total = _money(printed.group(1)) or 0.0
+            if abs(generation + cca_bonus - opening_total) > 2 * CENT:
+                problems.append(
+                    f"the CCA's export credit bank works back to {generation + cca_bonus:.2f} "
+                    f"but prints an opening of {opening_total:.2f}"
+                )
+
+    if problems:
+        return None, tuple(problems)
+    return (
+        # To the cent, as printed: the CCA's half is a sum of printed figures,
+        # and float subtraction leaves a residue like 4e-16 where it is zero.
+        CreditBalances(
+            generation=round(generation, 2),
+            delivery=round(delivery, 2),
+            bonus=round(bonus, 2),
+            cca_bonus=round(cca_bonus, 2),
+        ),
+        (),
+    )
+
+
+def _carried_balance(summary: StatementSection) -> float | None:
+    """The balance brought into this cycle, or None where none is printed.
+
+    Named two ways. A paid bill prints "Previous Unpaid Balance" -- 0.00 -- and
+    a credit carried over prints "Outstanding Credit Balance". Matched on how
+    the label *begins*, for the reason `_gas_adjustment` is: recognition cuts a
+    label at any wide gap inside it. The rows above it, "Amount Due on" and
+    "Credit Balance on Previous Statement", begin with neither word.
+    """
+    for line in summary.lines:
+        label = line.label.strip().lower()
+        if label.startswith(("previous", "outstanding")):
+            return line.amount
+    return None
 
 
 def _gas_adjustment(summary: StatementSection) -> float | None:
@@ -627,6 +776,7 @@ def parse_statement(
     billed_days = sum(int(s[2]) for s in chain if s[2]) or None
 
     sections = _sections(pages)
+    opening_bank, bank_problems = _opening_bank(joined, sections)
 
     summary = next((s for s in sections if s.name is Section.SUMMARY), None)
     if summary is None:
@@ -656,6 +806,9 @@ def parse_statement(
     usage_blocks = {
         (round(float(kwh.replace(",", "")), 3), int(days)) for kwh, days in USAGE.findall(joined)
     }
+    plan_imports = {round(float(kwh.replace(",", "")), 3) for kwh in IMPORTS.findall(joined)}
+    plan_exports = {abs(round(float(kwh.replace(",", "")), 3)) for kwh in EXPORTS.findall(joined)}
+    imported = sum(kwh for kwh, _ in usage_blocks) + sum(plan_imports)
     account = ACCOUNT.search(joined)
     schedules = RATE_SCHEDULE.findall(joined)
     territory = BASELINE_TERRITORY.search(joined)
@@ -675,12 +828,16 @@ def parse_statement(
         amount_due=printed_total,
         account_masked=re.sub(r"\D", "", account.group(1))[-4:] if account else "",
         billed_days=billed_days,
-        billed_kwh=(sum(kwh for kwh, _ in usage_blocks) or None if usage_blocks else None),
+        billed_kwh=imported if usage_blocks or plan_imports else None,
+        billed_export_kwh=sum(plan_exports) if plan_exports else None,
         service_agreements=len(agreements) or max(1, _delivery_pages(pages)),
         agreements=agreements,
         gas_charges=_scalar(joined, GAS_TOTAL),
         gas_adjustments=_gas_adjustment(summary),
         electric_adjustments=_summary_amount(summary, "Electric Adjustments"),
+        carried_balance=_carried_balance(summary),
+        opening_bank=opening_bank,
+        bank_problems=bank_problems,
         sections=sections,
         rate_schedule=agreements[0].printed_schedule if agreements else "",
         printed_schedules=tuple(dict.fromkeys(s.strip() for s in schedules if s.strip())),
@@ -770,8 +927,9 @@ def _sections(pages: Sequence[str]) -> tuple[StatementSection, ...]:
                 # introduces the baseline allowance -- "281.30 kWh (29 days)" --
                 # which states a quantity and no money; reading its kWh as
                 # dollars adds a few hundred to the section and looks exactly
-                # like a real overcharge.
-                if "@" in _fields(line):
+                # like a real overcharge. Split as `_line` splits, or a charge
+                # printed "@ $0.79343" with one space reads as an allowance.
+                if "@" in _split_at(_fields(line)):
                     deferred = _line(line, current, index, label="?")
                     if deferred is not None:
                         awaiting_label = deferred

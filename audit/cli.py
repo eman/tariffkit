@@ -337,7 +337,7 @@ def _reconcile(
     green_button: bool = False,
     readings_from: str = "influx",
 ) -> int:
-    from tariffkit.billing.engine import compute_segments, price_segments
+    from tariffkit.billing.engine import compute_segments
     from tariffkit.cli import AccountStore
     from tariffkit.engine import RateEngine
     from tariffkit.providers.pge.statements import read_statement
@@ -488,11 +488,12 @@ def _reconcile(
             )
             sources["green_button"] = read_green_button(export.path)
 
-        # Netted on both sides. The per-segment bills are handed to
-        # `reconcile` beside the merged one, so pricing them differently put
-        # the "intervals carry both directions" warning on every segment of
-        # every solar cycle while the bill next to them stayed quiet.
-        parts = price_segments(segments, readings, netted=True)
+        # One bill for the cycle, credits and all. Credit used to be applied
+        # per segment here, because a cycle priced across Permission To Operate
+        # let credit reach the closed pre-PTO agreement; the bill now records
+        # those charges as out of reach (`Bill.pre_pto_charges`), so the merged
+        # bill applies what the statement applied, as the CLI and the
+        # integration -- which never had the per-segment workaround -- now do.
         bill = compute_segments(segments, readings, netted=True)
         results.append(
             reconcile(
@@ -505,7 +506,6 @@ def _reconcile(
                     primary=primary,
                     classify=RateEngine(config).tariff.period,
                 ),
-                segment_bills=parts,
             )
         )
 

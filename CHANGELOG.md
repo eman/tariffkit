@@ -5,6 +5,81 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+- **The Home Assistant integration requires Home Assistant 2026.10.0.** That
+  release replaced voluptuous with probatio, and the config flow, options,
+  repairs and services now build their schemas with it. HACS will not offer
+  this version to an older Home Assistant.
+
+### Added
+- **A statement's opening export credit bank is read.** `Statement.opening_bank`
+  holds what the cycle opened with: PG&E's delivery and bonus credits from its
+  bank table, and the CCA's export and bonus credits worked back from the
+  balances it prints, checked against the total it prints. A printed bank that
+  cannot be read fails the statement's self-check rather than reading as empty.
+- **Solar Billing Plan usage is read.** `Statement.billed_kwh` now includes
+  the plan's "Imports" figure, and `billed_export_kwh` is new, so cycles after
+  PTO have billed kWh at all.
+
+### Fixed
+- **Export credit no longer offsets charges from before Permission To
+  Operate.** A cycle priced across PTO is two service agreements on the
+  statement and one bill here, and the ledger let credit earned after PTO
+  reach the pre-PTO days' charges too. On the cycle that went live on
+  2026-06-03 that applied $3.13 of MCE credit where MCE applied $2.18, and the
+  $0.95 never came back into the bank that `tariffkit bill` and the Home
+  Assistant integration carry. A bill now records those charges as
+  `pre_pto_charges`, and the ledger keeps credit off them.
+- **`tariffkit bill` carries the bank across cycles with an approximate
+  hour.** Any warning on an earlier cycle opened the bank at zero, including
+  "reconstructed across gaps", which says only that a few kWh fell in a
+  guessed hour while the cycle's total is exact. A counter-based source always
+  has a few such hours, so the bank was never carried from InfluxDB: the cycle
+  ending 2026-09-28 opened on $0.00 instead of the $11.96 its statement shows,
+  and came out $12 high. Only missing or duplicated energy refuses the bank
+  now, and the `bank:` line says how many cycles carried an approximate hour.
+- **The Energy Commission Tax is charged on the cycle's net consumption.** It
+  was floored day by day, so every sunny day's surplus disappeared while every
+  evening's import was taxed. The 2026-10-05 statement taxes 81.779 kWh
+  (199.769 imported less 117.990 exported) at $0.0003, which is $0.02, where
+  the daily floor charged $0.04. The floor is applied once across the whole
+  cycle, segments included, and only to the days from PTO: days before it are
+  a closed agreement, taxed as consumed. A cycle that owes none now records the
+  tax at $0.00, as the statement prints it.
+- **Statements with a carried balance pass their self-check.** The check
+  required the amount due to equal this cycle's charges, and the 2026-10-05
+  statement also carries in the previous statement's -$21.96 credit. It is
+  read as `Statement.carried_balance`, and `electric_charges` no longer
+  includes it.
+- **A dot-marked charge with one space after its "@" is kept.** The Base
+  Services Charge on 2026-10-05 printed "@ $0.79343", was taken for the
+  unpriced baseline allowance, and was dropped, leaving the delivery section
+  $25.39 short.
+- **Green Button downloads work again.** The account lookup asked the usage
+  platform for a field it has since removed (`BillingAccount.id`) and every
+  download failed validation; it asks for `urn`.
+- A statement that fails its self-check names the problems instead of
+  counting them.
+- **Every dependency advisory is fixed.** pypdf 6.19.0, which parses every
+  downloaded statement, fixes eight in 6.16.1, and urllib3 2.8.0 and multidict
+  6.9.1 four more. cryptography 50.0.1, installed by the `secrets` extra on
+  Linux, and PyJWT 2.15.1 were held back by Home Assistant's exact pins and
+  arrive with the move to its 2026.10 test stack, which retires the expired
+  audit exception for cryptography. CI now requires both dependency audits to
+  be clean unless an exception is declared.
+- **`account sync` reuses the statements it kept.** They were named after the
+  portal's bill id, which changes every session, so no sync found the last
+  one's copies and each downloaded every statement again. They are now named
+  by the login, issue date and printed amount, and a sync removes the copies
+  left behind: the same statement exported again, differing only in the
+  export's timestamps and file identifiers. Statements in one listing that
+  share a date and amount, as a corrected statement can, each keep a file of
+  their own and are downloaded afresh.
+- **`audit run` reconciles applied credit from the statement's opening bank**
+  instead of an empty one. Its check of the meter against the statement covers
+  exports and every cycle after PTO, and `audit doctor` no longer reports a
+  missing `PGE_ACCOUNT_ID` or InfluxDB series when the run does not need them.
+
 ## [0.10.0] - 2026-09-29
 
 ### Added

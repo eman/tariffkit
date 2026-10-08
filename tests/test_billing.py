@@ -24,6 +24,7 @@ from tariffkit.billing import (
     BillingPeriod,
     IntervalReading,
     UsageBucket,
+    apply_credits,
     check_coverage,
     find_gaps,
     find_overlaps,
@@ -552,6 +553,84 @@ class TestEnergyCommissionTax:
             + bill.fixed_charges
         )
 
+    def test_a_sunny_day_offsets_an_evening_on_another_day(self) -> None:
+        """Net over the cycle, floored once -- the 2026-10-05 statement.
+
+        It printed "Total Usage 81.779 kWh" (199.769 in, 117.990 out) and a
+        tax of $0.02. Flooring each day instead taxed every evening's import
+        and let every sunny day's surplus vanish: $0.04, on about 147 kWh.
+        """
+        start = datetime(2026, 9, 1, tzinfo=PACIFIC)
+        readings = [
+            # Day one exports 30 kWh at noon; day two imports 50 that evening.
+            IntervalReading(start + timedelta(hours=12), 0.0, 30.0, timedelta(hours=1)),
+            IntervalReading(start + timedelta(days=1, hours=19), 50.0, 0.0, timedelta(hours=1)),
+        ]
+        config = Config(pto_date=date(2026, 6, 3))
+        charge, uncovered = BillEngine(RateEngine(config))._energy_surcharge(
+            readings, BillingPeriod(date(2026, 9, 1), date(2026, 9, 2))
+        )
+        assert charge == pytest.approx(20 * 0.0003), "50 imported less 30 exported"
+        assert uncovered == []
+
+    def test_a_cycle_that_exports_more_than_it_uses_owes_nothing(self) -> None:
+        """Floored at zero, not paid out: 2026-08-04 printed no tax at all."""
+        start = datetime(2026, 9, 1, tzinfo=PACIFIC)
+        readings = [
+            IntervalReading(start + timedelta(hours=12), 0.0, 30.0, timedelta(hours=1)),
+            IntervalReading(start + timedelta(days=1, hours=19), 10.0, 0.0, timedelta(hours=1)),
+        ]
+        config = Config(pto_date=date(2026, 6, 3))
+        charge, _ = BillEngine(RateEngine(config))._energy_surcharge(
+            readings, BillingPeriod(date(2026, 9, 1), date(2026, 9, 2))
+        )
+        assert charge == 0.0
+
+    def test_segments_net_together_as_one_cycle(self) -> None:
+        """A rate change mid-cycle splits the bill, not the floor.
+
+        Each segment floored its own tax and the two were summed, so the
+        segment that exported 30 kWh offset nothing against the one that
+        imported 50: taxed on 50, where the cycle used 20.
+        """
+        config = replace(mce_config(), pto_date=date(2026, 6, 3))
+        readings = [
+            IntervalReading(datetime(2026, 9, 1, 12, tzinfo=PACIFIC), 0.0, 30.0),
+            IntervalReading(datetime(2026, 9, 2, 19, tzinfo=PACIFIC), 50.0, 0.0),
+        ]
+        bill = compute_segments(
+            [
+                Segment(config, BillingPeriod(date(2026, 9, 1), date(2026, 9, 1))),
+                Segment(config, BillingPeriod(date(2026, 9, 2), date(2026, 9, 2))),
+            ],
+            readings,
+            check=False,
+        )
+        assert bill.import_components["energy_commission_tax"] == pytest.approx(20 * 0.0003)
+
+    def test_exports_after_pto_do_not_reach_imports_before_it(self) -> None:
+        """The days before PTO are a closed agreement of their own."""
+        config = replace(mce_config(), pto_date=date(2026, 9, 2))
+        readings = [
+            IntervalReading(datetime(2026, 9, 1, 19, tzinfo=PACIFIC), 10.0, 0.0),
+            IntervalReading(datetime(2026, 9, 2, 12, tzinfo=PACIFIC), 0.0, 30.0),
+        ]
+        bill = BillEngine(RateEngine(config)).compute(
+            readings, BillingPeriod(date(2026, 9, 1), date(2026, 9, 2)), check=False
+        )
+        assert bill.import_components["energy_commission_tax"] == pytest.approx(10 * 0.0003)
+
+    def test_a_cycle_that_owes_none_still_prints_the_line(self) -> None:
+        """2026-08-04 and 2026-09-03 print "Energy Commission Tax 0.00"."""
+        start = datetime(2026, 9, 1, 12, tzinfo=PACIFIC)
+        config = replace(mce_config(), pto_date=date(2026, 6, 3))
+        bill = BillEngine(RateEngine(config)).compute(
+            [IntervalReading(start, 0.0, 30.0, timedelta(hours=1))],
+            BillingPeriod(date(2026, 9, 1), date(2026, 9, 1)),
+            check=False,
+        )
+        assert bill.import_components["energy_commission_tax"] == 0.0
+
     def test_days_with_no_tax_vintage_are_reported_not_dropped(self) -> None:
         """A bill that quietly omits a tax is the plausible-but-wrong kind.
 
@@ -775,3 +854,46 @@ class TestImportsBeforePto:
         assert got.imported_kwh == pytest.approx(4.0)
         assert got.exported_kwh == pytest.approx(50.0)
         assert got.surplus_kwh == pytest.approx(46.0)
+
+    def test_credit_does_not_reach_a_charge_from_before_pto(self) -> None:
+        """2026-07-07: MCE applied $2.18 to the E-ELEC days, not $3.13.
+
+        The cycle was two service agreements on the statement and one merged
+        bill here, and the merged bill let export credit earned after PTO
+        offset the two pre-PTO days' generation as well -- $0.95 the bank then
+        never had again.
+        """
+        straddling = apply_credits(self.bill(self.PTO))
+        # Priced alone, the post-PTO days are exactly what credit may reach.
+        config = replace(mce_config(), pto_date=self.PTO)
+        after = BillingPeriod(self.PTO, PERIOD.end)
+        alone = apply_credits(
+            BillEngine(RateEngine(config)).compute(self.readings(), after, check=False)
+        )
+
+        assert straddling.applied.generation == pytest.approx(alone.applied.generation)
+        assert straddling.applied.total == pytest.approx(alone.applied.total)
+        # The pre-PTO charges are still owed, credit or no credit.
+        assert straddling.cash_due > alone.cash_due
+
+    def test_the_same_holds_across_two_segments(self) -> None:
+        config = replace(mce_config(), pto_date=self.PTO)
+        merged = compute_segments(
+            [
+                Segment(config, BillingPeriod(PERIOD.start, self.PTO - timedelta(days=1))),
+                Segment(config, BillingPeriod(self.PTO, PERIOD.end)),
+            ],
+            self.readings(),
+            check=False,
+        )
+        single = self.bill(self.PTO)
+        assert merged.pre_pto_charges == pytest.approx(single.pre_pto_charges)
+        assert apply_credits(merged).applied.total == pytest.approx(
+            apply_credits(single).applied.total
+        )
+
+    def test_a_fixed_charge_before_pto_is_out_of_reach_too(self) -> None:
+        bill = self.bill(self.PTO)
+        days_before = (self.PTO - PERIOD.start).days
+        per_day = bill.fixed_components["base_services_charge"] / PERIOD.days
+        assert bill.pre_pto_charges["base_services_charge"] == pytest.approx(per_day * days_before)

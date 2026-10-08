@@ -147,10 +147,14 @@ BILL_PERIODS_QUERY = (
 #: How many cycles to ask for. Three years at one a month, plus the splits a
 #: mid-cycle agreement change adds.
 MAX_BILL_PERIODS = 48
+#: Asks for ``urn``, the form ``opower-selected-entities`` takes. It asked for
+#: ``id`` until the platform dropped that field, at which point every Green
+#: Button download failed validation before reaching the export:
+#: "Field 'id' in type 'BillingAccount' is undefined" (2026-10-08).
 ACCOUNT_URN_QUERY = (
     "query WUE_GetMetadata($selectedAccount: ID) {\n"
     "  billingAccountByAuthContext(selectedAccount: $selectedAccount) {\n"
-    "    id\n    __typename\n  }\n}"
+    "    urn\n    __typename\n  }\n}"
 )
 
 
@@ -1149,7 +1153,7 @@ class PgeSession:
         """
         payload = self.graphql(host, token, "", "WUE_GetMetadata", ACCOUNT_URN_QUERY, {})
         account = payload.get("billingAccountByAuthContext") or {}
-        urn = account.get("id") or account.get("urn")
+        urn = account.get("urn")
         if not urn:
             raise PortalError(
                 "could not determine which account this session is for", step="opower"

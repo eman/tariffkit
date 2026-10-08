@@ -137,19 +137,28 @@ def compare_sources(
         # a bill that reconciles to the cent. Reported either way; asserted as a
         # disagreement only when the figure covers the whole cycle.
         whole_cycle = statement.service_agreements == 1
+        # Exports too, where the statement bills them. Before this the check
+        # read imports alone, so a meter that lost or invented export -- the
+        # side every credit is priced from -- passed it.
+        exported = statement.billed_export_kwh
+        exported_delta = 0.0 if exported is None else exported - base_export
         deltas.append(
             SourceDelta(
                 left="statement",
                 right=primary,
                 imported_delta=statement.billed_kwh - base_import,
-                exported_delta=0.0,
+                exported_delta=exported_delta,
                 note=(
                     "what the utility says it billed"
                     if whole_cycle
                     else f"usage printed for one of {statement.service_agreements} service "
                     f"agreements, so it does not describe the whole cycle"
                 ),
-                significant=(whole_cycle and not allowed.kwh_ok(statement.billed_kwh, base_import)),
+                significant=whole_cycle
+                and not (
+                    allowed.kwh_ok(statement.billed_kwh, base_import)
+                    and (exported is None or allowed.kwh_ok(exported, base_export))
+                ),
             )
         )
     return deltas

@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, cast
 
-import voluptuous as vol
+import probatio as vol
 from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv

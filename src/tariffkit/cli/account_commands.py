@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import sys
+from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
@@ -634,7 +635,7 @@ def sync_profile(
             # "received 0 statement update(s)" on an account with 25 statements.
             session.login()
             rows = session.bill_history()
-            selected: list[tuple[str, str | None]] = []
+            selected: list[tuple[str, str | None, str | None]] = []
             for row in rows:
                 identifier = _row_value(row, "billpdf", "billid", "invoiceid", "statementid")
                 if not identifier:
@@ -642,17 +643,35 @@ def sync_profile(
                 issued = _row_date(row)
                 if since is not None and (issued is None or issued < since):
                     continue
-                selected.append((identifier, issued.isoformat() if issued else None))
+                amount = _row_value(row, "billamount", "amountdue", "totalamount")
+                selected.append((identifier, issued.isoformat() if issued else None, amount))
             if not selected:
                 return profile, [], []
-            for index, (identifier, issued_on) in enumerate(selected):
+            # Whose statements these are, so two logins never share a file:
+            # the cache is per machine, not per account.
+            owner = f"{getattr(settings, 'username', '')}|{getattr(settings, 'account_id', '')}"
+            listed = Counter((issued_on, amount) for _, issued_on, amount in selected)
+            seen: Counter[tuple[str | None, str | None]] = Counter()
+            for index, (identifier, issued_on, amount) in enumerate(selected):
+                # Date and amount are what a row says that does not change
+                # between sessions, and they are not a document's identity: a
+                # corrected statement can repeat both. Rows that share them in
+                # this listing each get a file of their own and are fetched
+                # afresh, since nothing stable says which cached copy is which.
+                ambiguous = listed[(issued_on, amount)] > 1
+                ordinal = seen[(issued_on, amount)]
+                seen[(issued_on, amount)] += 1
                 if keep_statements:
-                    pdf_path = cache / _statement_name(identifier, issued_on)
+                    pdf_path = cache / _statement_name(
+                        identifier, issued_on, amount, owner=owner, ordinal=ordinal
+                    )
                 else:
                     pdf_path = cache / f"statement-{index:04d}.pdf"
-                if not (keep_statements and pdf_path.is_file()):
+                if not (keep_statements and pdf_path.is_file() and not ambiguous):
                     pdf_path.write_bytes(session.download_bill(identifier))
                     pdf_path.chmod(0o600)
+                if keep_statements:
+                    _drop_copies(pdf_path)
                 try:
                     observations.append(import_statement(pdf_path))
                 except StatementError as err:
@@ -697,16 +716,60 @@ def statement_directory() -> Path:
     return path
 
 
-def _statement_name(identifier: str, issued_on: str | None) -> str:
+def _statement_name(
+    identifier: str,
+    issued_on: str | None,
+    amount: str | None = None,
+    *,
+    owner: str = "",
+    ordinal: int = 0,
+) -> str:
     """A stable file name per statement: its issue date, then a short digest.
 
-    The digest rather than the portal's identifier, which is an opaque document
-    id with no business in a directory listing.
+    The digest is of what the statement *says* -- its date and printed amount
+    -- and whose it is, not of the portal's identifier, which is minted afresh
+    for every session. Keyed on that, no sync ever found the copy the last one
+    kept, and each downloaded every statement again: a hundred files for
+    twenty-five statements by the fourth sync. ``ordinal`` separates rows of
+    one listing that share a date and amount. The identifier remains the key
+    only for a row with no date, where there is nothing better.
     """
     import hashlib
 
-    digest = hashlib.sha256(identifier.encode()).hexdigest()[:10]
+    stable = f"{owner}|{issued_on}|{amount or ''}|{ordinal}" if issued_on else identifier
+    digest = hashlib.sha256(stable.encode()).hexdigest()[:10]
     return f"{issued_on or 'undated'}-{digest}.pdf"
+
+
+#: What a PDF writer stamps on each export of the same document: its creation
+#: and modification dates, in the info dictionary and again in the XMP
+#: metadata, and the file identifiers. The portal renders a statement afresh
+#: for every download, so two copies differ in exactly these and nothing else.
+_EXPORT_STAMPS = re.compile(
+    rb"/(?:CreationDate|ModDate)\s*\(D:[^)]*\)"
+    rb"|/ID\s*\[\s*<[0-9A-Fa-f]*>\s*<[0-9A-Fa-f]*>\s*\]"
+    rb'|xmp(?:MM)?:(?:CreateDate|ModifyDate|MetadataDate|DocumentID|InstanceID)="[^"]*"'
+)
+
+
+def _drop_copies(kept: Path) -> None:
+    """Remove other copies of the statement just kept.
+
+    The ones the session-keyed names above left behind, one per sync. A copy
+    is the same document exported again: identical once the export stamps are
+    set aside. A same-day file differing in anything else is a different
+    document and stays.
+    """
+    parts = kept.name.split("-", 3)
+    if len(parts) < 4:
+        return
+    others = [p for p in kept.parent.glob(f"{'-'.join(parts[:3])}-*.pdf") if p != kept]
+    if not others:
+        return
+    content = _EXPORT_STAMPS.sub(b"", kept.read_bytes())
+    for other in others:
+        if _EXPORT_STAMPS.sub(b"", other.read_bytes()) == content:
+            other.unlink(missing_ok=True)
 
 
 def profile_summary(profile: AccountProfile) -> dict[str, Any]:

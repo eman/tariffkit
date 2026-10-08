@@ -71,18 +71,15 @@ class TestParser:
         assert "error:" in capsys.readouterr().out
 
 
-def test_segment_bills_are_netted_like_the_bill_beside_them() -> None:
-    """Both sides of the reconciliation price the same way.
+def test_the_cycle_is_priced_from_netted_meter_registers() -> None:
+    """`netted` silences the "intervals carry both directions" warning.
 
-    `netted` only silences the "intervals carry both directions" warning, which
-    every solar cycle raises once its readings are aggregated to an hour. Pricing
-    the per-segment bills without it put that warning on every segment while the
-    merged bill next to them stayed quiet -- the noise the flag exists to stop.
+    Every solar cycle raises it once its readings are aggregated to an hour,
+    and the audit's sources are all a meter's own netted registers.
     """
     import inspect
 
     from audit import cli
 
     source = inspect.getsource(cli._reconcile)
-    assert "price_segments(segments, readings, netted=True)" in source
     assert "compute_segments(segments, readings, netted=True)" in source

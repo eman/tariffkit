@@ -367,10 +367,15 @@ guessed whenever the fold cannot be trusted:
 - no cycles are known between PTO and this one, or they do not run
   contiguously from PTO to the day before it (`tariffkit account sync` records
   them);
-- an earlier cycle could not be read or priced, or was not fully metered —
-  missing or estimated days would put credit in the bank that the meter never
-  recorded;
+- an earlier cycle could not be read or priced, or is missing energy — missing
+  days or hours would put credit in the bank that the meter never recorded;
 - generation changed hands inside the run, including from one CCA to another.
+
+A cycle whose energy is all there but partly in an approximate hour — a
+counter's advance spread across a gap or across measured intervals — still
+carries. Every kWh is counted, so the bank can be off only by the difference
+between two hours' rates on those few kWh. The `bank:` line says how many
+cycles that applies to.
 
 `--no-bank` prices the cycle alone, as before, and skips reading the earlier
 cycles.
@@ -543,6 +548,12 @@ closes before PTO has no cash-out, and none is reported. The year holding PTO
 does cash out, however short: the tariff runs the process "following the
 conclusion of each customer's March-April billing cycle" with no minimum
 period, and the result notes how many days it covered.
+
+Charges from before PTO are owed, but no credit reaches them: before PTO there
+is no Net Billing arrangement to offset against, and the statement bills those
+days on a separate, closed agreement. A cycle priced across PTO is one `Bill`
+here, so it records those charges as `pre_pto_charges` and the ledger keeps
+credit off them.
 
 An account epoch that records no PTO — an import-only history before solar —
 is priced against the account's PTO, as is one recording a different date: PTO
