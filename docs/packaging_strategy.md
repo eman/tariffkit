@@ -152,13 +152,16 @@ while only one distribution exists.
 
 ## Packaging baseline
 
-- Python 3.14.2 is the declared and tested floor. Home Assistant 2026.8.0 is
-  the integration floor: it is the first release carrying
+- Python 3.14.2 is the declared and tested floor. Home Assistant 2026.10.0 is
+  the integration floor: it is the first release to ship probatio, which
+  replaced voluptuous in Home Assistant and which the config flow and the
+  services build their schemas with. It is also the series the suite pins
+  (2026.10.0), and the first whose pins of `cryptography` and `PyJWT` clear
+  their advisories. Before it the floor was 2026.8.0, the first release carrying
   `device_registry.async_get_device_by_identifier`, which the coordinator uses
-  because the older `async_get_device(identifiers=...)` is deprecated for
-  removal in 2027.8.0. It is also the series the suite pins (2026.8.2). The
-  floor used to be 2026.3.0 on the reasoning that it was the first release on
-  this Python patch line, which said nothing about whether anything ran there.
+  because `async_get_device(identifiers=...)` is deprecated; and before that
+  2026.3.0, on the reasoning that it was the first release on this Python patch
+  line, which said nothing about whether anything ran there.
 - Standardized `[project]` metadata is used (PEP 621).
 - The MIT license uses an SPDX expression and declared license files (PEP 639).
 - Runtime features use optional dependencies; development tools use dependency

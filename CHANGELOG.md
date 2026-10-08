@@ -5,6 +5,12 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+- **The Home Assistant integration requires Home Assistant 2026.10.0.** That
+  release replaced voluptuous with probatio, and the config flow, options,
+  repairs and services now build their schemas with it. HACS will not offer
+  this version to an older Home Assistant.
+
 ### Added
 - **A statement's opening export credit bank is read.** `Statement.opening_bank`
   holds what the cycle opened with: PG&E's delivery and bonus credits from its
@@ -52,8 +58,13 @@ All notable changes to this project are documented here. This project follows
   download failed validation; it asks for `urn`.
 - A statement that fails its self-check names the problems instead of
   counting them.
-- **pypdf 6.19.0**, which parses every downloaded statement, fixes eight
-  advisories in 6.16.1; urllib3 2.8.0 and multidict 6.9.1 fix four more.
+- **Every dependency advisory is fixed.** pypdf 6.19.0, which parses every
+  downloaded statement, fixes eight in 6.16.1, and urllib3 2.8.0 and multidict
+  6.9.1 four more. cryptography 50.0.1, installed by the `secrets` extra on
+  Linux, and PyJWT 2.15.1 were held back by Home Assistant's exact pins and
+  arrive with the move to its 2026.10 test stack, which retires the expired
+  audit exception for cryptography. CI now requires both dependency audits to
+  be clean unless an exception is declared.
 - **`account sync` reuses the statements it kept.** They were named after the
   portal's bill id, which changes every session, so no sync found the last
   one's copies and each downloaded every statement again. They are now named

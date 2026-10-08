@@ -51,7 +51,7 @@ docker compose up --build --force-recreate
 The defaults can be overridden without editing Compose:
 
 ```bash
-HA_VERSION=2026.8.1 HA_PORT=18123 TZ=America/Los_Angeles docker compose up --build
+HA_VERSION=2026.10.0 HA_PORT=18123 TZ=America/Los_Angeles docker compose up --build
 ```
 
 Pin `HA_VERSION` when reproducing a version-specific defect. The default

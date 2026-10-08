@@ -75,13 +75,19 @@ jobs:
           import os
           from pathlib import Path
 
-          policy = json.loads(Path(".github/dependency-audit-policy.json").read_text())
-          expected = {
-              (policy["package"]["name"], policy["package"]["version"], advisory)
-              for advisory in policy["advisories"]
-          }
-          if datetime.date.today() >= datetime.date.fromisoformat(policy["expires"]):
-              raise SystemExit(f"dependency audit exception expired on {policy['expires']}")
+          # No policy file means no accepted exceptions: both graphs must audit
+          # clean. One that exists names the exact advisories accepted, until
+          # it expires.
+          policy_path = Path(".github/dependency-audit-policy.json")
+          expected = set()
+          if policy_path.exists():
+              policy = json.loads(policy_path.read_text())
+              expected = {
+                  (policy["package"]["name"], policy["package"]["version"], advisory)
+                  for advisory in policy["advisories"]
+              }
+              if datetime.date.today() >= datetime.date.fromisoformat(policy["expires"]):
+                  raise SystemExit(f"dependency audit exception expired on {policy['expires']}")
           for scope in ("production", "development"):
               status = int(os.environ[f"{scope.upper()}_STATUS"])
               report = json.loads(Path(f"pip-audit-{scope}.json").read_text())
@@ -90,9 +96,10 @@ jobs:
                   for dependency in report["dependencies"]
                   for vulnerability in dependency["vulns"]
               }
-              if status != 1:
+              if status != (1 if expected else 0):
                   raise SystemExit(
-                      f"{scope} dependency audit did not report the tracked vulnerabilities"
+                      f"{scope} dependency audit exited {status}"
+                      + (" without the tracked vulnerabilities" if expected else "")
                   )
               if actual != expected:
                   raise SystemExit(

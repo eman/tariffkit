@@ -27,17 +27,15 @@ CI audits the locked production extras separately from the complete development
 graph, including the Home Assistant test stack. Both reports retain every
 finding rather than hiding policy exceptions.
 
-Home Assistant 2026.8.2 exactly pins `cryptography==48.0.1`, and the matching
-pytest plugin is currently the newest compatible release. On Linux, the
-production `secrets` extra also installs that version through
-`keyring -> SecretStorage -> cryptography`. The three advisories are not
-reachable from TariffKit: it uses keyring's high-level password storage API and
-does not import cryptography or call the affected PKCS#7 decryption and X.509
-verification APIs. The temporary exception is declared in
-[`.github/dependency-audit-policy.json`](.github/dependency-audit-policy.json).
-CI independently requires both audits to contain exactly those package,
-version, and advisory tuples; a missing or additional finding fails. The policy
-also expires automatically, forcing review even if upstream has not released
-fixed pins.
+Both audits must come back clean. An advisory that cannot be fixed yet -- one
+pinned by an upstream dependency, say -- may be accepted temporarily by adding
+`.github/dependency-audit-policy.json`, naming the package, version and exact
+advisories, why they are not reachable from TariffKit, and an expiry date. CI
+then requires both audits to report exactly those package, version and
+advisory tuples, so a missing or additional finding fails, and the policy
+expires automatically, forcing review even if upstream has not released fixed
+pins. None is in force: the last one, for `cryptography==48.0.1` as pinned by
+Home Assistant 2026.8.2, was retired by moving to Home Assistant 2026.10.0,
+whose pins are fixed releases.
 
 [report]: https://github.com/eman/tariffkit/security/advisories/new

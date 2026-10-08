@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import importlib.metadata
 import itertools
 import json
 import re
@@ -49,10 +50,14 @@ def test_project_identity_and_version_are_consistent() -> None:
     # not by the Python patch line -- it was 2026.3.0 on that older reasoning,
     # which said nothing about whether anything ran there. HACS refuses the
     # update below this version, which is the only thing standing between a
-    # 2026.7 user and an AttributeError. See docs/packaging_strategy.md.
-    assert hacs["homeassistant"] == "2026.8.0"
-    # The reason for that number, asserted rather than remembered: 2026.8.0 is
-    # the first release carrying the call `coordinator.py` makes.
+    # older user and an ImportError. See docs/packaging_strategy.md.
+    assert hacs["homeassistant"] == "2026.10.0"
+    # The reasons for that number, asserted rather than remembered: 2026.10.0
+    # is the first release to ship probatio, which the config flow and the
+    # services build their schemas with, and the calls `coordinator.py` makes
+    # arrived earlier, in 2026.8.0.
+    distribution = importlib.metadata.distribution("homeassistant")
+    assert any(r.startswith("probatio") for r in distribution.requires or [])
     assert hasattr(dr.DeviceRegistry, "async_get_device_by_identifier")
 
 

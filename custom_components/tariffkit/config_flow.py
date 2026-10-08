@@ -9,7 +9,7 @@ from dataclasses import replace
 from datetime import date
 from typing import Any
 
-import voluptuous as vol
+import probatio as vol
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import selector
