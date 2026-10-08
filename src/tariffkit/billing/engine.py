@@ -473,16 +473,17 @@ def price_segments(
     check: bool = True,
     netted: bool = False,
 ) -> list[Bill]:
-    """One bill per segment, unmerged.
+    """One bill per segment, unmerged: what each configuration charged on its days.
 
-    Kept separate from :func:`compute_segments` because export credits do not
-    cross a service agreement. A cycle where solar was interconnected carries a
-    closed agreement and a new one, and the utility applies the new agreement's
-    export credits only against its own charges -- on 2026-07-07 it spends 2.18
-    against the Solar Billing Plan's charges and nothing against the closed
-    agreement's 0.94, which predates Permission To Operate and has no export
-    arrangement at all. A ledger run over the merged bill spends them against
-    both and overstates what was applied.
+    :func:`compute_segments` merges these, and the merged bill is the one to
+    hand a ledger. It records the charges from before Permission To Operate
+    as ``pre_pto_charges``, so credit stays off the closed pre-PTO agreement
+    as the statement keeps it off -- on 2026-07-07, 2.18 spent against the
+    Solar Billing Plan's charges and nothing against the closed agreement's
+    0.94 -- and it rates the Energy Commission Tax once over the cycle. These
+    parts do neither: each floors its own tax, and a ledger applied to them
+    one at a time cannot carry a bank between them. Use them to see a cycle
+    the way a statement splits it, not to total or settle it.
     """
     ordered = _ordered_segments(segments)
     readings = list(readings)
