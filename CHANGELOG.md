@@ -52,6 +52,8 @@ All notable changes to this project are documented here. This project follows
   download failed validation; it asks for `urn`.
 - A statement that fails its self-check names the problems instead of
   counting them.
+- **pypdf 6.19.0**, which parses every downloaded statement, fixes eight
+  advisories in 6.16.1; urllib3 2.8.0 and multidict 6.9.1 fix four more.
 - **`account sync` reuses the statements it kept.** They were named after the
   portal's bill id, which changes every session, so no sync found the last
   one's copies and each downloaded every statement again. They are now named
