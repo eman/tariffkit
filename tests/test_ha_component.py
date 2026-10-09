@@ -1252,3 +1252,83 @@ def test_an_existing_care_entry_takes_its_programme_tier_after_upgrade() -> None
     # A tier the owner actually chose is still theirs.
     deliberate = {**stored, "discount": "none", "acc_plus_segment": "residential"}
     assert config_from_entry({**deliberate, "base_services_charge_tier": 2}).resolved_bsc_tier == 2
+
+
+def _rendered(result: Any) -> list[dict[str, Any]]:
+    """A form as the frontend receives it: its schema serialized, as HA does.
+
+    Building a selector validates its config, and serializing the schema is
+    what the flow view does before answering. Either failing answers the
+    browser with a bare 400 and logs nothing, so a form can be broken in every
+    installation while every test that only calls the step stays green.
+    """
+    import probatio
+    from homeassistant.helpers import config_validation as cv
+
+    assert result["type"] == "form", result
+    return probatio.to_field_list(result["data_schema"], custom_serializer=cv.custom_serializer)
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_every_options_form_renders(hass: HomeAssistant) -> None:
+    """Each form the options menu leads to, with every optional field present.
+
+    The history forms built their rate fields with `step=0.00001`, which Home
+    Assistant's NumberSelector refuses -- its step has a floor of 0.001 -- so
+    adding or editing an epoch failed for every account, for as long as the
+    fields existed. A runtime check against a real instance found it; this
+    renders the forms the way that instance did.
+    """
+    cca = CcaConfig(
+        name="MCE",
+        rate_card="mce",
+        pcia_rate=0.01234,
+        franchise_fee_surcharge=0.00056,
+    )
+    profile = AccountProfile(
+        (
+            AccountEpoch(
+                date(2026, 6, 3),
+                Config(
+                    tariff="E-ELEC",
+                    supplier=Supplier.CCA,
+                    cca=cca,
+                    pto_date=date(2026, 6, 3),
+                    nsc_rate=0.0274,
+                ),
+            ),
+        ),
+        name="overrides",
+    )
+    entry = _entry(profile=profile_payload(profile))
+    entry.add_to_hass(hass)
+    options = hass.config_entries.options
+
+    async def opened(*steps: str) -> Any:
+        result = await options.async_init(entry.entry_id)
+        for step in steps:
+            result = await options.async_configure(result["flow_id"], {"next_step_id": step})
+        return result
+
+    for path in (
+        ("settings",),
+        ("forecast",),
+        ("meters",),
+        ("history", "inspect"),
+        ("history", "add_epoch"),
+        ("history", "edit_epoch"),
+        ("history", "remove_epoch"),
+        ("history", "import"),
+        ("history", "export"),
+    ):
+        _rendered(await opened(*path))
+
+    # The values form behind edit_epoch, where the advanced fields appear.
+    result = await opened("history", "edit_epoch")
+    result = await options.async_configure(result["flow_id"], {"effective": "2026-06-03"})
+    names = {field["name"] for field in _rendered(result)}
+    assert {"cca_pcia_rate", "cca_franchise_fee_surcharge", "nsc_rate"} <= names, names
+
+    # And the add form, which the same fields made unreachable.
+    names = {field["name"] for field in _rendered(await opened("history", "add_epoch"))}
+    assert "effective" in names

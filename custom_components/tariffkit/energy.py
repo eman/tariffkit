@@ -195,6 +195,41 @@ class UsageReader:
         self.discarded: tuple[date, ...] = ()
         #: Configured meters the last backfill read could not fully cover.
         self.absent: tuple[str, ...] = ()
+        #: Implausible hours already warned about, so each is reported once
+        #: rather than on every read that meets it again.
+        self._reported: set[tuple[str, float]] = set()
+
+    def _report_implausible(self, entity: str, found: Sequence[tuple[float, float]]) -> None:
+        """One warning per counter per read, naming only hours not reported before.
+
+        It used to be a warning per hour on every read. A counter whose
+        statistics restart now and then has dozens of such hours, and each
+        backfill, reload and hourly refresh repeated all of them: 470 lines in
+        an hour on one real history, until Home Assistant itself flagged the
+        module for logging too frequently. The hours stay at debug.
+        """
+        for slot, change in found:
+            _LOGGER.debug(
+                "Ignoring implausible change of %.1f kWh for %s at %s",
+                change,
+                entity,
+                datetime.fromtimestamp(slot, tz=PACIFIC).isoformat(),
+            )
+        new = [(slot, change) for slot, change in found if (entity, slot) not in self._reported]
+        if not new:
+            return
+        self._reported.update((entity, slot) for slot, _ in new)
+        first, last = (datetime.fromtimestamp(slot, tz=PACIFIC) for slot in (new[0][0], new[-1][0]))
+        _LOGGER.warning(
+            "Ignoring %d implausible hourly change(s) for %s between %s and %s (largest "
+            "%.1f kWh): a counter that went backwards, jumped, or restarted its statistics. "
+            "Their energy is missing from the totals",
+            len(new),
+            entity,
+            first.isoformat(),
+            last.isoformat(),
+            max(abs(change) for _, change in new),
+        )
 
     async def async_usage(self, now: datetime) -> MeteredUsage | None:
         """Readings from the cycle's first midnight through ``now``.
@@ -254,6 +289,7 @@ class UsageReader:
             if not entity:
                 continue
             previous: tuple[float, float] | None = None
+            implausible: list[tuple[float, float]] = []
             for row in rows.get(entity) or []:
                 slot = float(row["start"])
                 if slot < opens_at.timestamp():
@@ -266,16 +302,11 @@ class UsageReader:
                 if energy is None:
                     if change is None:
                         continue
-                    # Loudly, unlike a silent skip: the recorder's figure was
+                    # Reported, unlike a silent skip: the recorder's figure was
                     # not usable and the counter could not be differenced
                     # either, so real energy is being dropped and the totals
                     # below it will be short by that much.
-                    _LOGGER.warning(
-                        "Backfill ignoring implausible change of %.1f kWh for %s at %s",
-                        change,
-                        entity,
-                        datetime.fromtimestamp(slot, tz=PACIFIC).isoformat(),
-                    )
+                    implausible.append((slot, change))
                     dropped.append(datetime.fromtimestamp(slot, tz=PACIFIC).date())
                     # Deliberately not added to `covered`: the hour is a hole
                     # now, and the hours either side of it carry or lost the
@@ -283,6 +314,7 @@ class UsageReader:
                     continue
                 hours.setdefault(slot, [0.0, 0.0])[direction] += energy
                 covered.setdefault(entity, set()).add(slot)
+            self._report_implausible(entity, implausible)
         self.discarded = tuple(sorted(set(dropped)))
         self.absent = self._absent_series(covered, recorded, opens_at, closes_at)
         reconstructed = self._reconstructed(covered)
@@ -429,6 +461,7 @@ class UsageReader:
             series = rows.get(entity) or []
             hours: dict[float, float] = {}
             previous: tuple[float, float] | None = None
+            implausible: list[tuple[float, float]] = []
             for row in series:
                 slot = float(row["start"])
                 # A statistics series that restarted reports its whole
@@ -443,15 +476,11 @@ class UsageReader:
                 previous = _carry(previous, slot, row.get("state"))
                 if energy is None:
                     if change is not None:
-                        _LOGGER.warning(
-                            "Ignoring implausible change of %.1f kWh for %s at %s",
-                            change,
-                            entity,
-                            datetime.fromtimestamp(slot, tz=PACIFIC).isoformat(),
-                        )
+                        implausible.append((slot, change))
                         dropped += 1
                     continue
                 hours[slot] = energy
+            self._report_implausible(entity, implausible)
             self._hours[entity] = hours
             for row in reversed(series):
                 recorded = row.get("state")

@@ -5,11 +5,7 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
-### Changed
-- **The Home Assistant integration requires Home Assistant 2026.10.0.** That
-  release replaced voluptuous with probatio, and the config flow, options,
-  repairs and services now build their schemas with it. HACS will not offer
-  this version to an older Home Assistant.
+## [0.11.0] - 2026-10-09
 
 ### Added
 - **A statement's opening export credit bank is read.** `Statement.opening_bank`
@@ -20,6 +16,12 @@ All notable changes to this project are documented here. This project follows
 - **Solar Billing Plan usage is read.** `Statement.billed_kwh` now includes
   the plan's "Imports" figure, and `billed_export_kwh` is new, so cycles after
   PTO have billed kWh at all.
+
+### Changed
+- **The Home Assistant integration requires Home Assistant 2026.10.0.** That
+  release replaced voluptuous with probatio, and the config flow, options,
+  repairs and services now build their schemas with it. HACS will not offer
+  this version to an older Home Assistant.
 
 ### Fixed
 - **Export credit no longer offsets charges from before Permission To
@@ -46,6 +48,16 @@ All notable changes to this project are documented here. This project follows
   cycle, segments included, and only to the days from PTO: days before it are
   a closed agreement, taxed as consumed. A cycle that owes none now records the
   tax at $0.00, as the statement prints it.
+- **Adding or editing an account epoch in Home Assistant works.** The history
+  forms built their rate fields with a step of 0.00001, below the 0.001 floor
+  Home Assistant's number selector enforces, so both forms failed with a bare
+  "400: Bad Request" for every account. They now accept any precision.
+- **Implausible meter hours are one warning, not hundreds.** Each discarded
+  hour was a warning of its own on every read, and a counter whose statistics
+  restart now and then logged hundreds per hour until Home Assistant flagged
+  the module for logging too frequently. Each read now names, once per
+  counter, how many new hours were discarded and when; the hours themselves
+  are logged at debug.
 - **Statements with a carried balance pass their self-check.** The check
   required the amount due to equal this cycle's charges, and the 2026-10-05
   statement also carries in the previous statement's -$21.96 credit. It is
@@ -55,18 +67,8 @@ All notable changes to this project are documented here. This project follows
   Services Charge on 2026-10-05 printed "@ $0.79343", was taken for the
   unpriced baseline allowance, and was dropped, leaving the delivery section
   $25.39 short.
-- **Green Button downloads work again.** The account lookup asked the usage
-  platform for a field it has since removed (`BillingAccount.id`) and every
-  download failed validation; it asks for `urn`.
 - A statement that fails its self-check names the problems instead of
   counting them.
-- **Every dependency advisory is fixed.** pypdf 6.19.0, which parses every
-  downloaded statement, fixes eight in 6.16.1, and urllib3 2.8.0 and multidict
-  6.9.1 four more. cryptography 50.0.1, installed by the `secrets` extra on
-  Linux, and PyJWT 2.15.1 were held back by Home Assistant's exact pins and
-  arrive with the move to its 2026.10 test stack, which retires the expired
-  audit exception for cryptography. CI now requires both dependency audits to
-  be clean unless an exception is declared.
 - **`account sync` reuses the statements it kept.** They were named after the
   portal's bill id, which changes every session, so no sync found the last
   one's copies and each downloaded every statement again. They are now named
@@ -75,10 +77,22 @@ All notable changes to this project are documented here. This project follows
   export's timestamps and file identifiers. Statements in one listing that
   share a date and amount, as a corrected statement can, each keep a file of
   their own and are downloaded afresh.
+- **Green Button downloads work again.** The account lookup asked the usage
+  platform for a field it has since removed (`BillingAccount.id`) and every
+  download failed validation; it asks for `urn`.
 - **`audit run` reconciles applied credit from the statement's opening bank**
   instead of an empty one. Its check of the meter against the statement covers
   exports and every cycle after PTO, and `audit doctor` no longer reports a
   missing `PGE_ACCOUNT_ID` or InfluxDB series when the run does not need them.
+
+### Security
+- **Every dependency advisory is fixed.** pypdf 6.19.0, which parses every
+  downloaded statement, fixes eight in 6.16.1, and urllib3 2.8.0 and multidict
+  6.9.1 four more. cryptography 50.0.1, installed by the `secrets` extra on
+  Linux, and PyJWT 2.15.1 were held back by Home Assistant's exact pins and
+  arrive with the move to its 2026.10 test stack, which retires the expired
+  audit exception for cryptography. CI now requires both dependency audits to
+  be clean unless an exception is declared.
 
 ## [0.10.0] - 2026-09-29
 
@@ -2115,7 +2129,8 @@ Initial release.
 - Holiday calendars are extracted per vintage from the source data rather than
   recomputed, because the vintage files disagree in far-future years.
 
-[Unreleased]: https://github.com/eman/tariffkit/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/eman/tariffkit/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/eman/tariffkit/releases/tag/v0.11.0
 [0.10.0]: https://github.com/eman/tariffkit/releases/tag/v0.10.0
 [0.9.0]: https://github.com/eman/tariffkit/releases/tag/v0.9.0
 [0.8.1]: https://github.com/eman/tariffkit/releases/tag/v0.8.1
