@@ -329,7 +329,7 @@ def _history_schema(defaults: dict[str, Any], *, effective: bool = False) -> vol
                 CONF_CCA_PCIA_RATE,
                 selector.NumberSelector(
                     selector.NumberSelectorConfig(
-                        min=-1, max=1, step=0.00001, mode=selector.NumberSelectorMode.BOX
+                        min=-1, max=1, step="any", mode=selector.NumberSelectorMode.BOX
                     )
                 ),
             ),
@@ -337,7 +337,7 @@ def _history_schema(defaults: dict[str, Any], *, effective: bool = False) -> vol
                 CONF_CCA_FRANCHISE_FEE,
                 selector.NumberSelector(
                     selector.NumberSelectorConfig(
-                        min=0, max=1, step=0.00001, mode=selector.NumberSelectorMode.BOX
+                        min=0, max=1, step="any", mode=selector.NumberSelectorMode.BOX
                     )
                 ),
             ),
@@ -345,7 +345,7 @@ def _history_schema(defaults: dict[str, Any], *, effective: bool = False) -> vol
                 CONF_CCA_EXPORT_RATE,
                 selector.NumberSelector(
                     selector.NumberSelectorConfig(
-                        min=0, max=5, step=0.00001, mode=selector.NumberSelectorMode.BOX
+                        min=0, max=5, step="any", mode=selector.NumberSelectorMode.BOX
                     )
                 ),
             ),
@@ -364,7 +364,7 @@ def _history_schema(defaults: dict[str, Any], *, effective: bool = False) -> vol
             )
         ] = selector.NumberSelector(
             selector.NumberSelectorConfig(
-                min=0, max=5, step=0.00001, mode=selector.NumberSelectorMode.BOX
+                min=0, max=5, step="any", mode=selector.NumberSelectorMode.BOX
             )
         )
     return vol.Schema(fields)

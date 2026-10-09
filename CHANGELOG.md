@@ -5,6 +5,18 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+- **Adding or editing an account epoch in Home Assistant works.** The history
+  forms built their rate fields with a step of 0.00001, below the 0.001 floor
+  Home Assistant's number selector enforces, so both forms failed with a bare
+  "400: Bad Request" for every account. They now accept any precision.
+- **Implausible meter hours are one warning, not hundreds.** Each discarded
+  hour was a warning of its own on every read, and a counter whose statistics
+  restart now and then logged hundreds per hour until Home Assistant flagged
+  the module for logging too frequently. Each read now names, once per
+  counter, how many new hours were discarded and when; the hours themselves
+  are logged at debug.
+
 ### Changed
 - **The Home Assistant integration requires Home Assistant 2026.10.0.** That
   release replaced voluptuous with probatio, and the config flow, options,
