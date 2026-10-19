@@ -569,28 +569,41 @@ async def test_emhass_response_has_positional_arrays(
 @pytest.mark.parametrize("action", [SERVICE_GET_RATES, SERVICE_GET_EMHASS_FORECAST])
 async def test_rate_actions_price_off_the_event_loop(
     hass: HomeAssistant,
-    entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
     monkeypatch: pytest.MonkeyPatch,
     action: str,
 ) -> None:
     """A window under an epoch nothing has priced yet builds a new engine.
 
     That reads the vendored tariff and export data from disk, so the whole
-    pricing pass has to run in the executor rather than on the loop.
+    pricing pass has to run in the executor rather than on the loop. Setup
+    prices today, under the second epoch, so the window asked for here falls
+    under the first and its engine is built by the action itself.
     """
+    from tariffkit.account import rates
+
+    freezer.move_to("2026-09-15T12:00:00-07:00")
+    entry = _entry(profile=_profile_data("E-ELEC", ("EV2-A", date(2026, 9, 1))))
     await _setup_entry(hass, entry)
     engine = entry.runtime_data.engine
     loop_thread = threading.get_ident()
-    seen: list[int] = []
+    priced: list[int] = []
+    built: list[int] = []
 
-    for name in ("forecast", "describe"):
-        real = getattr(engine, name)
+    real_engine_at = engine._engine_at
 
-        def recording(*args: object, _real: Any = real, **kwargs: object) -> object:
-            seen.append(threading.get_ident())
-            return _real(*args, **kwargs)
+    def recording_engine_at(*args: object, **kwargs: object) -> object:
+        priced.append(threading.get_ident())
+        return real_engine_at(*args, **kwargs)
 
-        monkeypatch.setattr(engine, name, recording)
+    real_rate_engine = rates.RateEngine
+
+    def recording_rate_engine(*args: object, **kwargs: object) -> object:
+        built.append(threading.get_ident())
+        return real_rate_engine(*args, **kwargs)
+
+    monkeypatch.setattr(engine, "_engine_at", recording_engine_at)
+    monkeypatch.setattr(rates, "RateEngine", recording_rate_engine)
 
     result = await hass.services.async_call(
         DOMAIN,
@@ -600,8 +613,31 @@ async def test_rate_actions_price_off_the_event_loop(
         return_response=True,
     )
     assert result is not None
-    assert seen, "the action never priced anything"
-    assert loop_thread not in seen, "the action priced on the event loop"
+    assert built, "the action reused an engine instead of building the first epoch's"
+    assert priced, "the action never priced anything"
+    assert loop_thread not in built, "the action built an engine on the event loop"
+    assert loop_thread not in priced, "the action priced on the event loop"
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+@pytest.mark.parametrize("action", [SERVICE_GET_RATES, SERVICE_GET_EMHASS_FORECAST])
+async def test_rate_actions_report_pricing_errors_from_the_executor(
+    hass: HomeAssistant, entry: MockConfigEntry, action: str
+) -> None:
+    """A window the engine refuses reaches the caller as a validation error.
+
+    The refusal is raised in the executor, not by the checks on the loop, so
+    this is the path that shows it still crosses back to the caller intact.
+    """
+    await _setup_entry(hass, entry)
+    with pytest.raises(HomeAssistantError, match="before the first account epoch"):
+        await hass.services.async_call(
+            DOMAIN,
+            action,
+            {"config_entry": entry.entry_id, "date": "1960-01-01", "horizon": 2},
+            blocking=True,
+            return_response=True,
+        )
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
