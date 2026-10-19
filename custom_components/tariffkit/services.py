@@ -296,13 +296,15 @@ def _coordinator(hass: HomeAssistant, entry_id: str) -> TariffKitCoordinator:
 async def _get_rates(hass: HomeAssistant, call: ServiceCall) -> ServiceResponse:
     coordinator = _coordinator(hass, call.data[CONF_CONFIG_ENTRY])
     start, end, resolution = _window(call.data)
-    return _rates_response(coordinator, start, end, resolution)
+    # In the executor: a window under an epoch nothing has priced yet builds
+    # that epoch's engine, which reads the vendored tariff and export data.
+    return await hass.async_add_executor_job(_rates_response, coordinator, start, end, resolution)
 
 
 async def _get_emhass_forecast(hass: HomeAssistant, call: ServiceCall) -> ServiceResponse:
     coordinator = _coordinator(hass, call.data[CONF_CONFIG_ENTRY])
     start, end, resolution = _window(call.data)
-    return _emhass_response(coordinator, start, end, resolution)
+    return await hass.async_add_executor_job(_emhass_response, coordinator, start, end, resolution)
 
 
 _BACKFILL_SCHEMA = vol.Schema(
