@@ -566,6 +566,45 @@ async def test_emhass_response_has_positional_arrays(
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
+@pytest.mark.parametrize("action", [SERVICE_GET_RATES, SERVICE_GET_EMHASS_FORECAST])
+async def test_rate_actions_price_off_the_event_loop(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    """A window under an epoch nothing has priced yet builds a new engine.
+
+    That reads the vendored tariff and export data from disk, so the whole
+    pricing pass has to run in the executor rather than on the loop.
+    """
+    await _setup_entry(hass, entry)
+    engine = entry.runtime_data.engine
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+
+    for name in ("forecast", "describe"):
+        real = getattr(engine, name)
+
+        def recording(*args: object, _real: Any = real, **kwargs: object) -> object:
+            seen.append(threading.get_ident())
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(engine, name, recording)
+
+    result = await hass.services.async_call(
+        DOMAIN,
+        action,
+        {"config_entry": entry.entry_id, "date": "2026-08-15", "horizon": 2},
+        blocking=True,
+        return_response=True,
+    )
+    assert result is not None
+    assert seen, "the action never priced anything"
+    assert loop_thread not in seen, "the action priced on the event loop"
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_actions_reject_unloaded_entries(hass: HomeAssistant, entry: MockConfigEntry) -> None:
     entry.add_to_hass(hass)
     await async_setup(hass, {})

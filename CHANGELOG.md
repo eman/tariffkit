@@ -5,6 +5,15 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-19
+
+### Fixed
+- **`get_rates` and `get_emhass_forecast` no longer block Home Assistant's
+  event loop.** A window under an account epoch nothing had priced yet built
+  that epoch's rate engine on the loop, reading the vendored tariff files and
+  decompressing the export price matrix there. Both actions now price in the
+  executor, as the sensors already did.
+
 ## [0.11.0] - 2026-10-09
 
 ### Added
@@ -2129,7 +2138,8 @@ Initial release.
 - Holiday calendars are extracted per vintage from the source data rather than
   recomputed, because the vintage files disagree in far-future years.
 
-[Unreleased]: https://github.com/eman/tariffkit/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/eman/tariffkit/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/eman/tariffkit/releases/tag/v0.11.1
 [0.11.0]: https://github.com/eman/tariffkit/releases/tag/v0.11.0
 [0.10.0]: https://github.com/eman/tariffkit/releases/tag/v0.10.0
 [0.9.0]: https://github.com/eman/tariffkit/releases/tag/v0.9.0
