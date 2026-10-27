@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from time import sleep
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from ..billing import BillingPeriod, IntervalReading
@@ -419,6 +419,41 @@ def _has_empty_bill_list(node: Any, depth: int = 0) -> bool:
     return False
 
 
+def _rejections(node: Any, depth: int = 0) -> list[str]:
+    """The messages of an error the Integration Procedure answered with.
+
+    A request the service refuses still comes back as a successful Aura action,
+    with the refusal two decodes down as ``errorMessage.errors``. Without
+    reading it, a bad filter value looks exactly like a reply the parser does
+    not understand.
+    """
+    if depth > 10:
+        return []
+    if isinstance(node, str) and node[:1] in "{[":
+        try:
+            return _rejections(json.loads(node), depth + 1)
+        except ValueError:
+            return []
+    if isinstance(node, Mapping):
+        errors = node.get("errors")
+        if isinstance(errors, list):
+            found = [
+                str(e["message"]) for e in errors if isinstance(e, Mapping) and e.get("message")
+            ]
+            if found:
+                return found
+        for value in node.values():
+            found = _rejections(value, depth + 1)
+            if found:
+                return found
+    elif isinstance(node, list):
+        for value in node:
+            found = _rejections(value, depth + 1)
+            if found:
+                return found
+    return []
+
+
 def _bill_rows(payload: Any) -> list[dict[str, Any]]:
     """Pull the statement rows out of an Integration Procedure's reply.
 
@@ -471,6 +506,12 @@ def _bill_rows(payload: Any) -> list[dict[str, Any]]:
         return None
 
     rows = walk(payload)
+    if rows is None and (rejected := _rejections(payload)):
+        # Checked before the empty-list test so a refusal can never read as an
+        # account with no bills.
+        raise BillHistoryError(
+            "the portal refused the bill history request: " + "; ".join(rejected)
+        )
     if rows is None and _has_empty_bill_list(payload):
         # An account that genuinely has no bills answers with the container
         # present and empty. `walk` recognises a bill list by the keys of its
@@ -801,8 +842,15 @@ class PgeSession:
             )
             return _unwrap(retry, known)
 
-    def bill_history(self, history_filter: str = "BILL") -> list[dict[str, Any]]:
-        """Every statement and payment the portal will list.
+    def bill_history(
+        self, history_filter: Literal["BILL", "PAYMENT", "ALL"] = "BILL"
+    ) -> list[dict[str, Any]]:
+        """Every statement, payment, or both, that the portal will list.
+
+        ``BILL`` rows carry ``billdate`` and ``billAmount``; ``PAYMENT`` rows
+        carry ``paydate``, ``paymentAmount`` and a numeric ``totalAmount``.
+        ``ALL`` interleaves the two, newest first, told apart by
+        ``transactionType``.
 
         Dispatched through OmniStudio rather than a plain Apex controller, which
         is why searching the page's JavaScript for a bill-list class finds
@@ -830,9 +878,10 @@ class PgeSession:
                         # the key.
                         #
                         # The value is an enum whose members are nothing like
-                        # the labels the page shows. "Bill Charges" in the UI
-                        # is `BILL` on the wire; `Payments` is `PAYMENTS`, and
-                        # there is no member for "All Activity" at all.
+                        # the labels the page shows: "All Activity" is `ALL`,
+                        # "Bill Charges" is `BILL`, and "Payments" is
+                        # `PAYMENT`, singular. `PAYMENTS` is refused as "not a
+                        # valid enum value".
                         "HistoryFilter": history_filter,
                     }
                 ),

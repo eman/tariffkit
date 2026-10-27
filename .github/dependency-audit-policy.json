@@ -1,0 +1,61 @@
+{
+  "expires": "2026-12-01",
+  "package": {
+    "name": "pillow",
+    "version": "12.3.0"
+  },
+  "advisories": [
+    "CVE-2026-112390",
+    "CVE-2026-112391",
+    "CVE-2026-112393",
+    "CVE-2026-112395",
+    "CVE-2026-112397",
+    "CVE-2026-112398",
+    "CVE-2026-112399",
+    "CVE-2026-112400",
+    "CVE-2026-112401",
+    "CVE-2026-112402",
+    "CVE-2026-112404",
+    "CVE-2026-112405",
+    "CVE-2026-112406",
+    "CVE-2026-112891",
+    "CVE-2026-112892",
+    "CVE-2026-112893",
+    "CVE-2026-112894",
+    "CVE-2026-112895",
+    "CVE-2026-112896",
+    "CVE-2026-112897",
+    "CVE-2026-112899",
+    "CVE-2026-112900",
+    "CVE-2026-112901",
+    "CVE-2026-114501",
+    "CVE-2026-96636",
+    "CVE-2026-96637",
+    "CVE-2026-96638",
+    "CVE-2026-96639",
+    "CVE-2026-96640",
+    "CVE-2026-96641",
+    "CVE-2026-96642",
+    "CVE-2026-96643",
+    "CVE-2026-96644",
+    "CVE-2026-96778",
+    "GHSA-78g4-xqwv-q3g8",
+    "PYSEC-2026-4326",
+    "PYSEC-2026-4327",
+    "PYSEC-2026-4328"
+  ],
+  "audits": ["development"],
+  "dependency_paths": {
+    "development": [
+      "dev dependency group",
+      "pytest-homeassistant-custom-component==0.13.375",
+      "homeassistant==2026.10.4",
+      "pillow==12.3.0"
+    ]
+  },
+  "reachability": "Pillow reaches only the development graph, through the Home Assistant test stack, which pins it exactly through 2026.10.4; the fixes are in 13.0.0. TariffKit and its tests never import PIL or decode an image, and the production extras do not include Pillow.",
+  "tracking": [
+    "https://pypi.org/project/homeassistant/",
+    "https://pypi.org/project/pytest-homeassistant-custom-component/"
+  ]
+}
