@@ -30,12 +30,15 @@ finding rather than hiding policy exceptions.
 Both audits must come back clean. An advisory that cannot be fixed yet -- one
 pinned by an upstream dependency, say -- may be accepted temporarily by adding
 `.github/dependency-audit-policy.json`, naming the package, version and exact
-advisories, why they are not reachable from TariffKit, and an expiry date. CI
-then requires both audits to report exactly those package, version and
-advisory tuples, so a missing or additional finding fails, and the policy
-expires automatically, forcing review even if upstream has not released fixed
-pins. None is in force: the last one, for `cryptography==48.0.1` as pinned by
-Home Assistant 2026.8.2, was retired by moving to Home Assistant 2026.10.0,
-whose pins are fixed releases.
+advisories, why they are not reachable from TariffKit, and an expiry date. An
+`audits` list limits it to `production` or `development`; without one it
+covers both. CI then requires each covered audit to report exactly those
+package, version and advisory tuples, and every other audit to come back
+clean, so a missing or additional finding fails, and the policy expires
+automatically, forcing review even if upstream has not released fixed pins.
+
+One is in force, for the development audit only: `pillow==12.3.0`, which
+Home Assistant pins exactly through 2026.10.4 and which reaches TariffKit only
+through the Home Assistant test stack. It expires on 2026-12-01.
 
 [report]: https://github.com/eman/tariffkit/security/advisories/new
