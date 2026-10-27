@@ -106,13 +106,15 @@ vlocity_cmt.BusinessProcessDisplayController.GenericInvoke2NoCont
   input, options: JSON strings        → ~37 KB response
 ```
 
-Calling it from Python currently fails with `Invalid value '' for query
-parameter historyFilter. is not a valid enum value`. The *value* is not the
-problem — the input **key** that feeds `historyFilter` is still unknown, so the
-parameter arrives empty. `All Activity`, `Bill Charges` and `Payments` are the
-three enum values the UI offers.
+The input key that feeds `historyFilter` is `HistoryFilter`, capital H; any
+other spelling arrives empty and is refused with `Invalid value '' for query
+parameter historyFilter. is not a valid enum value`. The UI's three filters
+map to `ALL` ("All Activity"), `BILL` ("Bill Charges") and `PAYMENT`
+("Payments", singular -- `PAYMENTS` is refused the same way), verified
+2026-10-26. A refusal arrives as a successful Aura action with the error at
+`IPResult.result.errorMessage.errors`, which `_bill_rows` reports as such.
 
-Two things make capturing that key harder than it looks, both verified
+Two things made capturing that key harder than it looked, both verified
 2026-08-12:
 
 1. **The call only fires on a full page load.** The account picker and the

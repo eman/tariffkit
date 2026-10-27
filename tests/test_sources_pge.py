@@ -21,9 +21,11 @@ from tariffkit.errors import ConfigError
 from tariffkit.sources.pge import (
     APEX_ACTION,
     ENDPOINTS,
+    BillHistoryError,
     PgeSession,
     PgeSettings,
     PortalError,
+    _bill_rows,
     _export_config,
     _unzip_csv,
     parse_green_button,
@@ -250,6 +252,68 @@ class TestEndpointRegistry:
         login = ENDPOINTS["login"]
         assert login.classname == "MyAcct_customLoginLWCController"
         assert "not Salesforce's stock" in login.note
+
+
+def _history_reply(ip_result: dict[str, Any]) -> dict[str, Any]:
+    """An Integration Procedure reply: the result is a JSON string, not an object."""
+    return {"returnValue": json.dumps({"IPResult": ip_result})}
+
+
+BILL_ROW = {"billdate": "2026-10-05", "billAmount": "$4.25", "transactionType": "Bill"}
+PAYMENT_ROW = {
+    "paydate": "2026-10-26",
+    "paymentAmount": "$4.25",
+    "totalAmount": 4.25,
+    "transactionType": "Payment",
+}
+
+
+class TestBillRows:
+    def test_payment_rows_are_recognised(self) -> None:
+        # The PAYMENT filter's rows share no key with a bill row but "amount".
+        assert _bill_rows(_history_reply({"history": [PAYMENT_ROW]})) == [PAYMENT_ROW]
+
+    def test_all_activity_keeps_bills_and_payments_together(self) -> None:
+        rows = _bill_rows(_history_reply({"history": [PAYMENT_ROW, BILL_ROW]}))
+        assert [r["transactionType"] for r in rows] == ["Payment", "Bill"]
+
+    def test_a_refusal_reports_the_portals_own_message(self) -> None:
+        # What `PAYMENTS` actually got back: a successful action carrying an
+        # error, which used to be reported as "the portal changed".
+        refused = _history_reply(
+            {
+                "result": {
+                    "errorMessage": {
+                        "errors": [
+                            {
+                                "message": "Invalid value 'PAYMENTS' for query parameter "
+                                "historyFilter. PAYMENTS is not a valid enum value",
+                                "reason": "APIKIT:BAD_REQUEST",
+                                "code": 400,
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+        with pytest.raises(BillHistoryError, match=r"refused.*PAYMENTS is not a valid enum"):
+            _bill_rows(refused)
+
+    def test_a_refusal_is_never_an_empty_history(self) -> None:
+        # An empty bill list beside the error must not turn a refusal into
+        # "this account has no bills".
+        refused = _history_reply(
+            {"billHistory": [], "result": {"errorMessage": {"errors": [{"message": "no"}]}}}
+        )
+        with pytest.raises(BillHistoryError, match="refused"):
+            _bill_rows(refused)
+
+    def test_an_account_with_no_bills_is_an_empty_list(self) -> None:
+        assert _bill_rows(_history_reply({"billHistory": []})) == []
+
+    def test_an_unrecognised_reply_still_says_the_portal_changed(self) -> None:
+        with pytest.raises(BillHistoryError, match="portal changed"):
+            _bill_rows(_history_reply({"something": [{"else": 1}]}))
 
 
 class TestGreenButton:

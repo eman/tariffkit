@@ -5,6 +5,13 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+- **A refused bill history request says why.** When the portal rejected the
+  request -- a bad `history_filter`, most often -- `PgeSession.bill_history`
+  reported that the portal had changed, hiding the portal's own message. It now
+  raises `BillHistoryError` with that message. The filter values are documented
+  correctly: `BILL`, `PAYMENT` (singular) and `ALL`.
+
 ## [0.11.1] - 2026-10-19
 
 ### Fixed
