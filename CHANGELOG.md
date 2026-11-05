@@ -5,6 +5,12 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+- **`audit run` keeps the statements it downloads.** They stay in
+  `.cache/pge/statements/`, so a later run reads them from disk instead of
+  downloading them again. `--keep-statements` is gone; `--discard-statements`
+  deletes them after the run, matching `tariffkit account sync`.
+
 ### Fixed
 - **InfluxDB readings put a gap's energy where it arrived.** An advance across
   a sample gap was spread evenly over the gap. Home Assistant writes a counter

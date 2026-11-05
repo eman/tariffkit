@@ -7,12 +7,14 @@ the dispatch happens to return.
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import pytest
 
 from audit import __version__
 from audit.cli import EXIT_ERROR, EXIT_MISMATCH, EXIT_OK, build_parser, main
+from audit.run import BillRef, downloaded
 
 
 class TestExitCodes:
@@ -43,6 +45,10 @@ class TestParser:
     ) -> None:
         assert main([]) == EXIT_OK
         assert "Reconcile computed bills" in capsys.readouterr().out
+
+    def test_a_run_keeps_its_statements_unless_told_otherwise(self) -> None:
+        assert build_parser().parse_args(["run"]).discard_statements is False
+        assert build_parser().parse_args(["run", "--discard-statements"]).discard_statements
 
     def test_an_unknown_flag_is_a_usage_error(self) -> None:
         with pytest.raises(SystemExit) as caught:
@@ -83,3 +89,29 @@ def test_the_cycle_is_priced_from_netted_meter_registers() -> None:
 
     source = inspect.getsource(cli._reconcile)
     assert "compute_segments(segments, readings, netted=True)" in source
+
+
+class _Portal:
+    def __init__(self) -> None:
+        self.downloads = 0
+
+    def download_bill(self, bill_id: str) -> bytes:
+        self.downloads += 1
+        return b"%PDF-1.4 stand-in"
+
+
+class TestDownloadedStatements:
+    REF = BillRef(bill_id="b1", statement_date=date(2026, 10, 5), printed_amount=62.39)
+
+    def test_a_statement_stays_on_disk_and_is_not_fetched_twice(self, tmp_path: Path) -> None:
+        portal = _Portal()
+        for _ in range(2):
+            with downloaded(portal, self.REF, cache=tmp_path, keep=True) as path:
+                assert path.is_file()
+        assert (tmp_path / "PGE_20261005.pdf").is_file()
+        assert portal.downloads == 1
+
+    def test_discarding_removes_it_after_the_run(self, tmp_path: Path) -> None:
+        with downloaded(_Portal(), self.REF, cache=tmp_path, keep=False) as path:
+            assert path.is_file()
+        assert not path.exists()

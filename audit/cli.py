@@ -108,10 +108,10 @@ def build_parser() -> argparse.ArgumentParser:
         "fetches an independent record from the utility",
     )
     run.add_argument(
-        "--keep-statements",
+        "--discard-statements",
         action="store_true",
-        help="leave the downloaded PDFs on disk; they carry the account number and "
-        "service address, so they are deleted by default",
+        help="delete each downloaded PDF after the run instead of keeping it in "
+        ".cache/pge/statements/",
     )
 
     doctor = sub.add_parser(
@@ -160,7 +160,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 as_json=args.json,
                 green_button=args.green_button,
                 readings_from=args.readings,
-                keep=args.keep_statements,
+                keep=not args.discard_statements,
             )
         if args.command == "doctor":
             return _doctor(since=args.since, offline=args.offline)

@@ -111,13 +111,11 @@ one row per cycle. Useful flags:
 | `--verbose` | show agreeing lines too, not just failures |
 | `--json` | machine-readable output instead of the report |
 | `--green-button` | also compare PG&E's own interval export, from `~/.cache/tariffkit/pge/green-button/` or downloaded once |
-| `--keep-statements` | leave the downloaded PDFs in `.cache/pge/statements/` |
+| `--discard-statements` | delete the downloaded PDFs after the run instead of keeping them |
 | `--read-hour N` | move the cycle boundary off midnight |
 
-Statements are deleted after the run unless `--keep-statements`. One carries the
-service address, the account number, and a remittance scanline with the account
-embedded, so keeping a pile of them is not a side effect a billing check should
-have without being asked.
+Downloaded statements stay in `.cache/pge/statements/`, and a later run reads
+them from there instead of fetching them again.
 
 Exit codes are load-bearing: `0` all reconciled, `1` a real disagreement, `2`
 the check could not be performed.

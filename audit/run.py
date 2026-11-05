@@ -4,10 +4,10 @@ The single-statement path takes PDFs someone already downloaded. This one asks
 the portal what exists and works through it, which is the difference between a
 check that gets run once and a check that gets run.
 
-Statements are written to a cache directory and, by default, deleted again. A
-PG&E statement carries the service address, the account number and a remittance
-scanline that embeds it; keeping a pile of them around as a side effect of a
-billing check is not a trade this tool should make on the user's behalf.
+Statements are written to a cache directory and kept there, so a later run
+reads them from disk instead of downloading them again. `--discard-statements`
+deletes each one after the run, as `tariffkit account sync` does with the same
+flag.
 """
 
 from __future__ import annotations
