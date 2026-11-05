@@ -391,6 +391,57 @@ class TestCcaRateCard:
     def extract(self) -> tuple[dict, list[str]]:
         return cca.extract_generation([sheet(MCE_CARD)], ALIASES)
 
+    def test_regenerating_a_vintage_preserves_its_non_rate_terms(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import tomllib
+
+        from tools.regen import emit
+
+        data_dir = tmp_path / "data"
+        card_dir = data_dir / "cca" / "mce"
+        card_dir.mkdir(parents=True)
+        target = card_dir / "2026-04-01.toml"
+        target.write_text(
+            """effective = "2026-04-01"
+
+[cost_relief_credit]
+rate = -0.0062
+through = "2026-12-31"
+
+[export]
+export_credit_basis = "acc_generation"
+export_credit_verified = true
+credits_acc_plus = true
+""",
+            encoding="utf-8",
+        )
+        pdf = tmp_path / "card.pdf"
+        pdf.write_bytes(b"rate card")
+
+        monkeypatch.setattr(cca, "DATA_DIR", data_dir)
+        monkeypatch.setattr(emit, "DATA_DIR", data_dir)
+        monkeypatch.setattr(
+            cca,
+            "read_pages",
+            lambda _: [sheets.Page(index=1, text=MCE_CARD, effective=date(2026, 4, 1))],
+        )
+        monkeypatch.setattr(cca, "parity_note", lambda *_: [])
+
+        result = cca.regenerate(providers.MCE, pdf, check=False)
+
+        assert not result.failed, result.messages
+        regenerated = tomllib.loads(target.read_text(encoding="utf-8"))
+        assert regenerated["cost_relief_credit"] == {
+            "rate": -0.0062,
+            "through": "2026-12-31",
+        }
+        assert regenerated["export"] == {
+            "export_credit_basis": "acc_generation",
+            "export_credit_verified": True,
+            "credits_acc_plus": True,
+        }
+
     def test_periods_are_read_per_schedule_and_season(self) -> None:
         generation, _ = self.extract()
         assert generation["eelec"]["summer"] == {
