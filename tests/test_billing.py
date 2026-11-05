@@ -567,9 +567,7 @@ class TestEnergyCommissionTax:
             IntervalReading(start + timedelta(days=1, hours=19), 50.0, 0.0, timedelta(hours=1)),
         ]
         config = Config(pto_date=date(2026, 6, 3))
-        charge, uncovered = BillEngine(RateEngine(config))._energy_surcharge(
-            readings, BillingPeriod(date(2026, 9, 1), date(2026, 9, 2))
-        )
+        charge, uncovered = BillEngine(RateEngine(config))._energy_surcharge(readings)
         assert charge == pytest.approx(20 * 0.0003), "50 imported less 30 exported"
         assert uncovered == []
 
@@ -581,9 +579,7 @@ class TestEnergyCommissionTax:
             IntervalReading(start + timedelta(days=1, hours=19), 10.0, 0.0, timedelta(hours=1)),
         ]
         config = Config(pto_date=date(2026, 6, 3))
-        charge, _ = BillEngine(RateEngine(config))._energy_surcharge(
-            readings, BillingPeriod(date(2026, 9, 1), date(2026, 9, 2))
-        )
+        charge, _ = BillEngine(RateEngine(config))._energy_surcharge(readings)
         assert charge == 0.0
 
     def test_segments_net_together_as_one_cycle(self) -> None:
@@ -650,9 +646,7 @@ class TestEnergyCommissionTax:
             )
             for h in range(24)
         ]
-        charge, uncovered = engine()._energy_surcharge(
-            readings, BillingPeriod(date(2020, 1, 5), date(2020, 1, 5))
-        )
+        charge, uncovered = engine()._energy_surcharge(readings)
         assert charge == 0.0
         assert uncovered == [date(2020, 1, 5)]
 

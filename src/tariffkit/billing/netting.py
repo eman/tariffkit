@@ -185,8 +185,9 @@ def check_coverage(
         yield (
             f"{len(guessed)} interval(s) covering {hours:.1f}h were reconstructed across gaps "
             f"in the source, carrying {shifted:.1f} kWh whose time-of-use split is a guess even "
-            f"though the cycle total is not. Spreading a long gap evenly gives peak hours their "
-            f"share of the clock rather than their share of the load"
+            f"though the cycle total is not. Where a long gap's energy fell is inferred from the "
+            f"samples either side of it rather than measured, and peak hours are where a "
+            f"misplaced kilowatt-hour costs most"
         )
     elif shifted >= MATERIAL_SMEAR:
         # No gaps, and still enough energy moved between measured intervals to

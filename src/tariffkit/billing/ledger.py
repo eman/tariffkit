@@ -131,6 +131,15 @@ CHARGE_BUCKETS: dict[str, CreditBucket] = {
     "generation": CreditBucket.GENERATION,
     "cca_generation": CreditBucket.GENERATION,
     "cca_cost_relief_credit": CreditBucket.GENERATION,
+    # Levied on the generation supplier's sales and printed on its page, and
+    # offset by its export credit like the energy charges above it. The
+    # 2026-10-05 statement is the first since PTO to owe any: MCE's "Net
+    # Charges" are 18.68, it applies 18.70 of export credit, and the 0.02 tax
+    # printed beneath is what closes the section at $0.00. With no bucket it
+    # fell to the non-offsettable default and was charged in cash beside a bank
+    # of $92.62. Confirmed on a CCA statement only; a bundled account's tax is
+    # put with its generation charges for the same reason, unconfirmed.
+    "energy_commission_tax": CreditBucket.GENERATION,
     # Delivery. The statement bills these as its "Energy Delivered" block.
     "distribution": CreditBucket.DELIVERY,
     "transmission": CreditBucket.DELIVERY,

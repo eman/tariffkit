@@ -556,6 +556,107 @@ def test_only_an_approximate_hour_leaves_the_totals_whole() -> None:
     assert split_only(f"2026-07-01..2026-07-01 (E-ELEC): {reconstructed[0]}")
 
 
+class TestWhereAGapsEnergyArrived:
+    """A gap is usually a counter standing still, not energy arriving evenly.
+
+    Home Assistant publishes a counter when it changes, so across the
+    2026-08-28 cycle gaps of twelve minutes or more advanced a median of one
+    watt-hour. Spreading the advance that ends one evenly across it put a
+    battery's 19:00 export into the 18:00 hour on almost every evening, where
+    PG&E's own 15-minute data has none -- most of that cycle's $0.53 shortfall
+    in MCE export credit.
+    """
+
+    #: Real samples from 2026-09-07, in Pacific time: a few watt-hours, a quiet
+    #: half hour, then a battery exporting at about 2.6 kW from 19:00.
+    STEP = (
+        ((18, 25, 26), 1516.611),
+        ((18, 30, 4), 1516.623),
+        ((18, 35, 13), 1516.626),
+        ((19, 5, 3), 1516.834),
+        ((19, 10, 12), 1517.054),
+        ((19, 15, 20), 1517.245),
+    )
+
+    @staticmethod
+    def _at(rows: tuple[tuple[tuple[int, int, int], float], ...]) -> list[tuple[datetime, float]]:
+        from tariffkit.timeutil import PACIFIC
+
+        return [(datetime(2026, 9, 7, *hms, tzinfo=PACIFIC), value) for hms, value in rows]
+
+    @staticmethod
+    def _hours(samples: list[tuple[datetime, float]], first: int = 18) -> dict[int, float]:
+        from tariffkit.sources.influx import _per_interval
+        from tariffkit.timeutil import PACIFIC
+
+        start = datetime(2026, 9, 7, first, tzinfo=PACIFIC)
+        totals, _ = _per_interval(samples, start, start + timedelta(hours=2), timedelta(hours=1))
+        return {edge.astimezone(PACIFIC).hour: kwh for edge, kwh in totals.items()}
+
+    def test_the_energy_that_ends_a_quiet_gap_arrived_at_its_end(self) -> None:
+        hours = self._hours(self._at(self.STEP))
+        # 18:25 to 18:35 is the only energy before 19:00: 0.015 kWh, as sampled.
+        assert hours[18] == pytest.approx(0.015, abs=0.002)
+        # Spreading 0.208 kWh over 18:35-19:05 put 0.17 of it here.
+        assert hours[19] == pytest.approx(0.208 + 0.220 + 0.191, abs=0.002)
+
+    def test_energy_that_kept_flowing_into_an_outage_finishes_inside_it(self) -> None:
+        """Real samples from 2026-09-14: exporting at 2.4 kW, then 35 silent minutes.
+
+        The rate after the gap is a few watts, far too low to have carried
+        0.627 kWh, so the source was away and the export ran on at its earlier
+        rate -- finishing near 19:50, not spread across the hour after it.
+        """
+        samples = self._at(
+            (
+                ((19, 25, 6), 1534.813),
+                ((19, 30, 15), 1534.990),
+                ((19, 35, 25), 1535.200),
+                ((20, 10, 3), 1535.827),
+                ((20, 15, 13), 1535.829),
+                ((20, 20, 23), 1535.830),
+            )
+        )
+        hours = self._hours(samples, first=19)
+        assert hours[19] == pytest.approx(0.387 + 0.627, abs=0.01)
+        assert hours[20] < 0.01
+
+    def test_with_nothing_either_side_it_is_spread_as_before(self) -> None:
+        """No rate to read is no evidence, and evenly is what is left."""
+        samples = self._at((((18, 30, 0), 100.0), ((19, 30, 0), 101.0)))
+        hours = self._hours(samples)
+        assert hours[18] == pytest.approx(0.5)
+        assert hours[19] == pytest.approx(0.5)
+
+    def test_the_ordinary_cadence_is_still_pro_rata(self) -> None:
+        samples = self._at((((18, 55, 0), 100.0), ((19, 5, 0), 100.1), ((19, 10, 0), 100.4)))
+        hours = self._hours(samples)
+        assert hours[18] == pytest.approx(0.05)
+        assert hours[19] == pytest.approx(0.35)
+
+    def test_a_gap_is_still_doubted_however_narrowly_it_is_placed(self) -> None:
+        """Placing a gap's energy is an inference, and stays marked as one."""
+        from tariffkit.sources.influx import _per_interval
+        from tariffkit.timeutil import PACIFIC
+
+        samples = self._at((((16, 0, 0), 100.0), ((19, 5, 0), 100.2), ((19, 10, 0), 100.4)))
+        start = datetime(2026, 9, 7, 18, tzinfo=PACIFIC)
+        totals, smeared = _per_interval(
+            samples, start, start + timedelta(hours=2), timedelta(hours=1)
+        )
+        assert sum(totals.values()) == pytest.approx(0.4)
+        assert sum(smeared.values()) == pytest.approx(0.2)
+
+    def test_the_total_is_the_counters_whatever_the_placement(self) -> None:
+        from tariffkit.sources.influx import _per_interval
+        from tariffkit.timeutil import PACIFIC
+
+        samples = self._at(self.STEP)
+        start = datetime(2026, 9, 7, 18, tzinfo=PACIFIC)
+        totals, _ = _per_interval(samples, start, start + timedelta(hours=2), timedelta(minutes=5))
+        assert sum(totals.values()) == pytest.approx(samples[-1][1] - samples[0][1])
+
+
 class TestOptionalEntities:
     """Naming the series is optional; reading them without is an error."""
 

@@ -14,8 +14,9 @@ rounds every interval to two decimals and loses about 2% of a low-import month.
 **Distribution across intervals is only as good as the sampling.** A sample
 reports an advance since the previous one, not an instant, so energy is spread
 pro rata over the span it accrued across (see :func:`_per_interval` for why
-crediting it to the later sample instead is materially wrong at TOU boundaries).
-Spacing on this data has a median of five minutes but a 90th percentile of
+crediting it to the later sample instead is materially wrong at TOU boundaries),
+except across a gap, where the rates either side say where it arrived (see
+:func:`_accrual`). Spacing on this data has a median of five minutes but a 90th percentile of
 three quarters of an hour, so hourly is the honest default; anything finer is
 interpolation, and should be checked against the density for that period.
 
@@ -29,6 +30,7 @@ from __future__ import annotations
 
 import re
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -283,6 +285,105 @@ SMEARED_GAP = timedelta(hours=1)
 SMEARED_FLOOR = 0.01
 
 
+#: Spacing up to this is the source's ordinary cadence, and an advance across
+#: it is spread pro rata. Home Assistant publishes these counters about every
+#: five minutes while they move, with a few minutes' jitter either side.
+REGULAR_SPACING = timedelta(minutes=10)
+
+#: How much ordinary sampling a rate is read from, on either side of a gap.
+#: About one cadence: enough to step over the occasional sample that lands
+#: seconds after another -- one 31-second pair after an outage implied 26 kW --
+#: and short enough to still be the rate at the gap's edge.
+RATE_WINDOW = timedelta(minutes=4)
+
+#: The least sampling a rate is read from at all.
+MIN_RATE_SPAN = timedelta(minutes=1)
+
+
+def _edge_rate(
+    points: Sequence[tuple[datetime, float]], index: int, direction: int
+) -> float | None:
+    """kWh per second over the ordinary sampling beside a gap, or None.
+
+    ``index`` is the sample at the gap's edge, and ``direction`` is -1 to read
+    the samples before it or +1 for those after. Stops at the next pair wider
+    than :data:`REGULAR_SPACING`, because a second gap is not a rate.
+    """
+    advance = 0.0
+    span = 0.0
+    while span < RATE_WINDOW.total_seconds():
+        other = index + direction
+        if other < 0 or other >= len(points):
+            break
+        early, late = sorted((index, other))
+        seconds = (points[late][0] - points[early][0]).total_seconds()
+        if seconds > REGULAR_SPACING.total_seconds():
+            break
+        advance += points[late][1] - points[early][1]
+        span += seconds
+        index = other
+    return advance / span if span >= MIN_RATE_SPAN.total_seconds() else None
+
+
+def _accrual(
+    was_at: datetime,
+    instant: datetime,
+    advance: float,
+    before: float | None,
+    after: float | None,
+) -> list[tuple[datetime, datetime, float]]:
+    """Where in ``[was_at, instant]`` an advance across a gap arrived.
+
+    Pieces of ``(start, end, kWh)``, each spread pro rata over its own span.
+
+    Spreading the whole advance evenly across a gap treats every minute of it
+    as equally likely to have carried the energy, and that is the least likely
+    reading there is. Home Assistant publishes a counter's state when it
+    changes, so a gap is usually a counter standing still: across the
+    2026-08-28 cycle, gaps of twelve minutes or more advanced a median of one
+    watt-hour. The energy that ends one arrived at its end -- and its end is
+    often a step change. A battery set to export from 19:00 last published at
+    18:35 and next at 19:05, +0.208 kWh, and spreading that put 0.17 kWh in the
+    18:00 hour where PG&E's own 15-minute data has none. It happened on almost
+    every evening of the cycle, at an hourly export value that falls from about
+    $0.97 to $0.59 across the boundary, and accounted for most of the cycle's
+    $0.53 shortfall in MCE export credit.
+
+    So two readings are tried, in order of how much the samples support them:
+
+    1. **The counter stood still, then moved at the rate it moved at after the
+       gap.** That is the only history consistent with a live source publishing
+       nothing, and it places the advance in the stretch just before ``instant``.
+    2. **The source was away, and the energy kept flowing.** When the rate after
+       the gap is too low to account for the advance inside it, nothing was
+       publishing for at least part of the gap. The rate before the gap is taken
+       to have continued, switching to the rate after at the one instant that
+       makes the advance add up. A battery exporting at 2.4 kW when the samples
+       stopped for 35 minutes, and idle when they resumed, finished its export
+       inside the gap rather than spread across the hour after it.
+
+    Neither fits -- no rate either side, or an advance no switch between them
+    explains -- and the advance is spread evenly, which is what was done for
+    every gap before. On every cycle with PG&E's 15-minute data to check it
+    against, this moved the hourly split closer to that data, or held it
+    within 0.6 kWh.
+    """
+    span = (instant - was_at).total_seconds()
+    if span > REGULAR_SPACING.total_seconds():
+        if after:
+            needed = advance / after
+            if needed <= span:
+                return [(instant - timedelta(seconds=needed), instant, advance)]
+        if before is not None and after is not None and before != after:
+            # before * x + after * (span - x) = advance, for the seconds x the
+            # earlier rate ran before the later one took over.
+            ran = (advance - after * span) / (before - after)
+            if 0.0 <= ran <= span:
+                switch = was_at + timedelta(seconds=ran)
+                return [(was_at, switch, before * ran), (switch, instant, advance - before * ran)]
+    return [(was_at, instant, advance)]
+
+
 def _per_interval(
     samples: list[tuple[datetime, float]], start: datetime, end: datetime, step: timedelta
 ) -> tuple[dict[datetime, float], dict[datetime, float]]:
@@ -297,6 +398,10 @@ def _per_interval(
     export in peak where PG&E's own 15-minute data has 52.08; spreading pro rata
     gives 52.62. Median sample spacing is five minutes, but the 90th percentile
     is three quarters of an hour, so the error is not marginal.
+
+    Pro rata is right across the ordinary cadence, and wrong across a gap, where
+    the energy almost never arrived evenly; :func:`_accrual` decides where it
+    did.
 
     Advance that accrued before ``start`` is clipped rather than counted, so a
     baseline sample reaching back days does not dump its whole span into the
@@ -319,32 +424,47 @@ def _per_interval(
     # merely whether one touched it. A boolean overstated the doubt enormously:
     # an hour taking 0.001 kWh from a wide gap and 5 kWh from dense samples was
     # flagged the same as one that was entirely guesswork.
+    #
+    # Still judged by the gap, not by how narrowly `_accrual` placed what it
+    # carried. Placing it is an inference from the rates either side, and an
+    # inference about where energy fell across an hour is exactly what this
+    # records; narrowing the placement does not make it measured.
     smeared: dict[datetime, float] = {}
-    previous: tuple[datetime, float] | None = None
-    for moment, value in samples:
-        instant = moment.astimezone(UTC)
-        if previous is None:
-            previous = (instant, value)
-            continue
-        was_at, was = previous
-        previous = (instant, value)
+    points = [(moment.astimezone(UTC), value) for moment, value in samples]
+    for position in range(1, len(points)):
+        was_at, was = points[position - 1]
+        instant, value = points[position]
         advance = value - was
-        span = (instant - was_at).total_seconds()
-        if advance <= 0 or span <= 0 or instant <= edges[0]:
+        span = instant - was_at
+        if advance <= 0 or span <= timedelta(0) or instant <= edges[0]:
             continue
-        # Walk only the intervals the advance actually touches. Indices are
-        # arithmetic because intervals are uniform in absolute time.
-        lower = max(was_at, edges[0])
-        while lower < instant:
-            index = int((lower - edges[0]) // step)
-            if index >= len(edges):
-                break
-            upper = min(instant, edges[index] + step)
-            share = advance * (upper - lower).total_seconds() / span
-            totals[edges[index]] += share
-            if instant - was_at > SMEARED_GAP:
-                smeared[edges[index]] = smeared.get(edges[index], 0.0) + share
-            lower = upper
+        if span > REGULAR_SPACING:
+            pieces = _accrual(
+                was_at,
+                instant,
+                advance,
+                _edge_rate(points, position - 1, -1),
+                _edge_rate(points, position, +1),
+            )
+        else:
+            pieces = [(was_at, instant, advance)]
+        for begins, ends, energy in pieces:
+            length = (ends - begins).total_seconds()
+            if energy <= 0 or length <= 0:
+                continue
+            # Walk only the intervals the piece actually touches. Indices are
+            # arithmetic because intervals are uniform in absolute time.
+            lower = max(begins, edges[0])
+            while lower < ends:
+                index = int((lower - edges[0]) // step)
+                if index >= len(edges):
+                    break
+                upper = min(ends, edges[index] + step)
+                share = energy * (upper - lower).total_seconds() / length
+                totals[edges[index]] += share
+                if span > SMEARED_GAP:
+                    smeared[edges[index]] = smeared.get(edges[index], 0.0) + share
+                lower = upper
     return totals, smeared
 
 

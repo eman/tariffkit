@@ -6,6 +6,27 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Fixed
+- **InfluxDB readings put a gap's energy where it arrived.** An advance across
+  a sample gap was spread evenly over the gap. Home Assistant writes a counter
+  when it changes, so a gap is usually the counter standing still, and its
+  energy came at the end. On the cycle ending 2026-09-28 a battery exporting
+  from 19:00 had about 0.2 kWh an evening put in the 18:00 hour, where PG&E's
+  15-minute data has none, and MCE's export credit came out $0.53 low. An
+  advance across a gap of more than ten minutes is now placed from the rates
+  sampled either side of it, and spread evenly only when neither explains it.
+  Against PG&E's own interval data the hourly split moved closer on eleven of
+  twelve cycles. That cycle now computes $62.40 against a billed $62.39, where
+  it was $62.50. Energy from a gap over an hour is still reported as
+  reconstructed.
+- **Export credit pays the Energy Commission Tax.** The tax had no credit
+  bucket, so it was charged in cash even with credit in the bank. The
+  2026-10-05 statement applies $18.70 of MCE credit against $18.68 of Net
+  Charges and the $0.02 tax, closing at $0.00. The tax is now offset with
+  the generation charges. The share charged before Permission To Operate
+  stays beyond credit's reach, as the rest of that agreement's charges do.
+- `audit run` no longer reports "the rates reproduce this line" on an Energy
+  Export Credits Applied line. That line is made only of figures the
+  statement printed, so the check only ever read it back.
 - **A refused bill history request says why.** When the portal rejected the
   request -- a bad `history_filter`, most often -- `PgeSession.bill_history`
   reported that the portal had changed, hiding the portal's own message. It now

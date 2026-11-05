@@ -168,3 +168,24 @@ one so long as the reason is stated. Substituting better inputs until the
 numbers agree would make the agreement worthless. (Measured, as a diagnostic
 only: taking the meter's own 15-minute registers for the reconstructed hours
 moves two cycles from -0.149 to +0.088 and -0.164 to +0.018.)
+
+That is not the same as fixing how the meter record is *read*, which the
+library owes every user of `tariffkit bill`. The 2026-10-05 statement found a
+reading defect: an advance across a sample gap was spread evenly, when Home
+Assistant's write-on-change means the energy almost always arrived at the gap's
+end -- a battery exporting from 19:00 had about 0.2 kWh a day put in the 18:00
+hour, worth most of the cycle's $0.53 shortfall in MCE export credit. The InfluxDB
+reader now places each such advance from the rates either side of the gap (see
+`tariffkit.sources.influx._accrual`). Its inputs are the same samples as before;
+Green Button only judged the result, moving closer to it on eleven cycles of
+twelve and within 0.6 kWh on the other.
+
+Over the cycles from 2025-09-29 to 2026-09-28 that left **12 cycles, 9
+reconciled clean** (8 before), and a computed total $0.10 under the billed
+$2,311.83 (+$0.24 before). 2026-10-05 is $0.01 out where it was $0.11. The
+remaining three mismatches are 2026-03's Distribution (+0.15, which the rates
+reproduce from the statement's own kWh), 2026-09's Solar Bonus Credit (-0.03),
+and 2026-10's Generation (+0.02, reproduced from the statement's own kWh), which
+the Energy Export Credits Applied line beside it carries (-0.03). An applied
+line carries no "priced from the statement's own kWh" note, because it is made
+only of figures the statement printed and that note only ever read it back.
