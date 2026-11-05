@@ -316,13 +316,20 @@ def regenerate(provider: Cca, pdf: Path, *, check: bool, source_url: str = "") -
     # disk only when it does not.
     newest = max((str(v["effective"]) for v in vintages), default=date.today().isoformat())
     effective = next((p.effective for p in pages if p.effective), date.fromisoformat(newest))
-    # Carry non-rate sections forward from the past only. Inheriting from a
-    # later card gave the 2023 vintage a cost relief credit that did not exist
-    # until 2026 -- the card does not mention one and the December 2025
-    # statement does not charge one, so it was $5.97 of invented credit.
+    # Keep a vintage's own non-rate terms when refreshing it; otherwise carry
+    # them forward from an earlier card. Inheriting from a later card gave the
+    # 2023 vintage a cost relief credit that did not exist until 2026 -- the card
+    # does not mention one and the December 2025 statement does not charge one,
+    # so it was $5.97 of invented credit.
+    target = directory / f"{effective.isoformat()}.toml"
     earlier = [v for v in vintages if str(v.get("effective", "")) < effective.isoformat()]
-    previous = max(earlier, key=lambda v: str(v["effective"])) if earlier else {}
-    if vintages and not earlier:
+    if target.exists():
+        # A re-read of an existing card cannot reconstruct its non-rate terms;
+        # keep those terms from the vintage being refreshed.
+        previous = tomllib.loads(target.read_text(encoding="utf-8"))
+    else:
+        previous = max(earlier, key=lambda v: str(v["effective"])) if earlier else {}
+    if vintages and not target.exists() and not earlier:
         messages.append(
             "oldest vintage: no earlier card to carry terms from, so the cost relief "
             "credit and export sections are omitted. Add what this card states."
@@ -334,7 +341,6 @@ def regenerate(provider: Cca, pdf: Path, *, check: bool, source_url: str = "") -
     # provider points at today. A historical `--pdf` has no URL of its own, so
     # the vintage it rewrites keeps the one already recorded against that same
     # digest; only a genuinely new document falls back to the live URL.
-    target = directory / f"{effective.isoformat()}.toml"
     if not source_url and target.exists():
         recorded = tomllib.loads(target.read_text(encoding="utf-8"))
         if str(recorded.get("source_sha256", "")) == digest:
