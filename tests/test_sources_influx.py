@@ -342,6 +342,17 @@ class TestReadCounters:
         # 23:59 to midnight is a minute of the 0.220 kWh accruing over 00:04.
         assert to_midnight[1].exported == pytest.approx(0.208 + 0.220 / 5, abs=1e-6)
 
+    def test_a_window_ending_inside_its_last_interval_counts_nothing_after_it(
+        self, settings: influx.InfluxSettings, patch_post: Any
+    ) -> None:
+        # 00:00 to 00:30 at hourly resolution, the counter advancing 1 kWh an
+        # hour all the way to 01:00. The samples past 00:30 are lookahead; the
+        # hour's second half is outside the window and must not be counted.
+        steady = [(at(m / 60), 10.0 + m / 60) for m in range(0, 65, 5)]
+        patch_post({IMPORT_ID: steady, EXPORT_ID: []})
+        got = influx.read_counters(settings, at(0), at(0.5))
+        assert [r.imported for r in got] == pytest.approx([0.5])
+
     def test_the_token_travels_as_a_bearer_header(
         self, settings: influx.InfluxSettings, patch_post: Any
     ) -> None:

@@ -473,13 +473,17 @@ def _per_interval(
             if energy <= 0 or length <= 0:
                 continue
             # Walk only the intervals the piece actually touches. Indices are
-            # arithmetic because intervals are uniform in absolute time.
+            # arithmetic because intervals are uniform in absolute time. Capped
+            # at `limit` as well as at the last interval: a window that is not
+            # a whole number of steps ends inside its last interval, and the
+            # lookahead samples past it must not fill the rest.
             lower = max(begins, edges[0])
-            while lower < ends:
+            stop = min(ends, limit)
+            while lower < stop:
                 index = int((lower - edges[0]) // step)
                 if index >= len(edges):
                     break
-                upper = min(ends, edges[index] + step)
+                upper = min(stop, edges[index] + step)
                 share = energy * (upper - lower).total_seconds() / length
                 totals[edges[index]] += share
                 if span > SMEARED_GAP:
