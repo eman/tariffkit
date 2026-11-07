@@ -196,6 +196,51 @@ class TestMceBank:
         assert second.closing.total == pytest.approx(12.63 - 5.00)
 
 
+class TestTheEnergyCommissionTax:
+    """The 2026-10-05 statement: MCE's export credit pays its tax too.
+
+    "Net Charges" are 23.94 of generation less 1.24 of cost relief and 4.02 of
+    solar bonus, 18.68. MCE applies 18.70 of export credit, and the 0.02 Energy
+    Commission Tax printed beneath it is what closes the section at $0.00. With
+    no bucket the tax was charged in cash beside a $92.62 bank.
+    """
+
+    BILL = Bill(
+        period=BillingPeriod(date(2026, 8, 28), date(2026, 9, 28)),
+        import_components={
+            "cca_generation": 23.94,
+            "cca_cost_relief_credit": -1.24,
+            "energy_commission_tax": 0.02,
+        },
+        export_components={"cca_generation": -40.23, "cca_solar_bonus": -4.02},
+    )
+
+    def test_the_export_credit_reaches_it(self) -> None:
+        entry = apply_credits(self.BILL, CreditBalances(generation=92.62))
+        assert entry.applied.generation == pytest.approx(18.70)
+        assert entry.non_offsettable == pytest.approx(0.0)
+        assert entry.cash_due == pytest.approx(0.0)
+
+    def test_before_pto_it_is_still_owed(self) -> None:
+        """A closed agreement's tax is beyond any later credit, as its energy is."""
+        from dataclasses import replace
+
+        before = replace(self.BILL, pre_pto_charges={"energy_commission_tax": 0.02})
+        entry = apply_credits(before, CreditBalances(generation=92.62))
+        assert entry.applied.generation == pytest.approx(18.68)
+        assert entry.cash_due == pytest.approx(0.02)
+
+    def test_what_the_engine_held_out_of_reach_is_paid_in_cash(self) -> None:
+        """A bundled cycle's tax: see `Bill.uncreditable_charges`."""
+        from dataclasses import replace
+
+        held = replace(self.BILL, uncreditable_charges={"energy_commission_tax": 0.02})
+        entry = apply_credits(held, CreditBalances(generation=92.62))
+        assert entry.applied.generation == pytest.approx(18.68)
+        assert entry.non_offsettable == pytest.approx(0.02)
+        assert entry.cash_due == pytest.approx(0.02)
+
+
 class TestThePublishedTermsReconcile:
     """What a consumer adds up has to reach the state.
 

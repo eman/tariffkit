@@ -108,10 +108,10 @@ def build_parser() -> argparse.ArgumentParser:
         "fetches an independent record from the utility",
     )
     run.add_argument(
-        "--keep-statements",
+        "--discard-statements",
         action="store_true",
-        help="leave the downloaded PDFs on disk; they carry the account number and "
-        "service address, so they are deleted by default",
+        help="delete each downloaded PDF after the run instead of keeping it, "
+        "owner-only, under .cache/pge/statements/",
     )
 
     doctor = sub.add_parser(
@@ -160,7 +160,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 as_json=args.json,
                 green_button=args.green_button,
                 readings_from=args.readings,
-                keep=args.keep_statements,
+                keep=not args.discard_statements,
             )
         if args.command == "doctor":
             return _doctor(since=args.since, offline=args.offline)
@@ -188,7 +188,7 @@ def _run(
 
     from tariffkit.sources.pge import PgeSession, PgeSettings
 
-    from .run import DEFAULT_CACHE, downloaded, fetch_refs, select
+    from .run import DEFAULT_CACHE, downloaded, fetch_refs, select, statement_cache, statement_names
 
     settings = PgeSettings.load()
     with PgeSession(settings) as session:
@@ -205,13 +205,14 @@ def _run(
         # Downloaded together so the portal work is done and the session can be
         # dropped before any pricing starts -- a slow reconciliation should not
         # be holding an authenticated session open.
+        cache = statement_cache(DEFAULT_CACHE, f"{settings.username}|{settings.account_id}")
         with ExitStack() as stack:
             paths = []
-            for ref in refs:
+            for ref, (name, reuse) in zip(refs, statement_names(refs), strict=True):
                 try:
                     paths.append(
                         stack.enter_context(
-                            downloaded(session, ref, cache=DEFAULT_CACHE, keep=keep)
+                            downloaded(session, ref, cache=cache, keep=keep, name=name, reuse=reuse)
                         )
                     )
                 except (AuditError, TariffKitError) as exc:

@@ -155,6 +155,26 @@ covers, giving 52.62. Home Assistant's statistics are pre-aggregated by Home
 Assistant using the forward-crediting rule, which is why its credit components
 sit further from the statement despite identical totals.
 
+Pro rata is right across the ordinary five-minute cadence and wrong across a
+gap. Home Assistant writes a counter when it changes, so a gap is usually the
+counter standing still, and the energy that ends it arrived at its end. On the
+September 2026 cycle a battery exporting from 19:00 sampled at 18:35 and next at
+19:05, and spreading that put about 0.2 kWh an evening into the 18:00 hour,
+where PG&E's data has none. Each advance across a gap of more than ten minutes
+is now placed by the rates either side of it: first as a counter that stood
+still and then moved at the rate seen after the gap; failing that, as a source
+that went away while the rate seen before the gap carried on until it switched
+to the rate after; failing both, evenly, as before. On that cycle MCE's export
+credit went from 39.71 to 40.15 against a billed 40.23. Energy from a gap over
+an hour is still marked as reconstructed, however narrowly it is placed.
+
+The rate after a gap is read past the end of the requested window, up to three
+days, so an hour near the end of a window prices the same however far past it
+the window runs. That also counts a gap straddling the window's end: its share
+inside the window used to be dropped, which left each cycle a few cents low.
+Samples past the window only decide where energy fell; what they carry after
+`end` is not counted.
+
 Sampling density still bounds how fine an interval is meaningful. On this data
 the median gap is five minutes but the 90th percentile is three quarters of an
 hour, so hourly is the default; `--influx-resolution 15` is interpolation, not
@@ -554,6 +574,13 @@ is no Net Billing arrangement to offset against, and the statement bills those
 days on a separate, closed agreement. A cycle priced across PTO is one `Bill`
 here, so it records those charges as `pre_pto_charges` and the ledger keeps
 credit off them.
+
+Export credit pays the Energy Commission Tax only on a cycle supplied wholly by
+a CCA. The 2026-10-05 MCE statement shows MCE's credit paying it, and no
+bundled statement has shown PG&E's doing the same. On any other cycle,
+including one that changes supplier partway, the engine records the tax in
+`uncreditable_charges` and it is paid in cash. A cycle's tax is rated once over
+the whole cycle, so it can't be split by supplier.
 
 An account epoch that records no PTO — an import-only history before solar —
 is priced against the account's PTO, as is one recording a different date: PTO

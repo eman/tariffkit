@@ -410,3 +410,44 @@ def test_a_meter_that_disagrees_with_the_statement_about_export_is_flagged() -> 
     flagged = against(30.0)
     assert flagged.significant is True
     assert flagged.exported_delta == pytest.approx(10.0)
+
+
+def test_a_line_read_off_the_statement_gets_no_verdict_about_the_rates() -> None:
+    """An applied-credit line is the statement's own figure, not a priced one.
+
+    "Energy Export Credits Applied" is made only of credits the statement says
+    it applied, so pricing it "from the statement" read the printed line back
+    and found it reproduced, on every mismatch -- a verdict about rates on a
+    line no rate went into. The 2026-10-05 statement printed it that way.
+    """
+    from tariffkit.providers.pge.statements.model import StatementLine, StatementSection
+
+    section = Section.CCA_GENERATION
+    statement = Statement(
+        statement_date=date(2026, 10, 5),
+        period=PERIOD,
+        amount_due=0.0,
+        sections=(
+            StatementSection(
+                section,
+                (StatementLine("Energy Export Credits Applied", -18.70, section, 5),),
+            ),
+        ),
+    )
+    bill = Bill(
+        period=PERIOD,
+        import_components={"cca_generation": 18.75},
+        export_components={"cca_generation": -40.0},
+    )
+
+    (line,) = [
+        c
+        for c in reconcile(statement, bill, CONFIG).comparisons
+        if c.label == "Energy Export Credits Applied"
+    ]
+    assert line.outcome is Outcome.MISMATCH
+    assert line.from_statement is None
+    assert line.rates_agree is None
+    assert "priced from the statement" not in render(
+        reconcile(statement, bill, CONFIG), verbose=False
+    )

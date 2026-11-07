@@ -111,13 +111,14 @@ one row per cycle. Useful flags:
 | `--verbose` | show agreeing lines too, not just failures |
 | `--json` | machine-readable output instead of the report |
 | `--green-button` | also compare PG&E's own interval export, from `~/.cache/tariffkit/pge/green-button/` or downloaded once |
-| `--keep-statements` | leave the downloaded PDFs in `.cache/pge/statements/` |
+| `--discard-statements` | delete the downloaded PDFs after the run instead of keeping them |
 | `--read-hour N` | move the cycle boundary off midnight |
 
-Statements are deleted after the run unless `--keep-statements`. One carries the
-service address, the account number, and a remittance scanline with the account
-embedded, so keeping a pile of them is not a side effect a billing check should
-have without being asked.
+Downloaded statements stay under `.cache/pge/statements/`, and a later run reads
+them from there instead of fetching them again. The directory is owner-only, and
+each login gets a subdirectory of its own, so two accounts billed on the same day
+never share a file. A file is named by its issue date and the amount the portal
+lists, so a corrected statement replacing the original is downloaded afresh.
 
 Exit codes are load-bearing: `0` all reconciled, `1` a real disagreement, `2`
 the check could not be performed.
@@ -168,3 +169,38 @@ one so long as the reason is stated. Substituting better inputs until the
 numbers agree would make the agreement worthless. (Measured, as a diagnostic
 only: taking the meter's own 15-minute registers for the reconstructed hours
 moves two cycles from -0.149 to +0.088 and -0.164 to +0.018.)
+
+That is not the same as fixing how the meter record is *read*, which the
+library owes every user of `tariffkit bill`. The 2026-10-05 statement found a
+reading defect: an advance across a sample gap was spread evenly, when Home
+Assistant's write-on-change means the energy almost always arrived at the gap's
+end -- a battery exporting from 19:00 had about 0.2 kWh a day put in the 18:00
+hour, worth most of the cycle's $0.53 shortfall in MCE export credit. The InfluxDB
+reader now places each such advance from the rates either side of the gap (see
+`tariffkit.sources.influx._accrual`). Its inputs are the same samples as before;
+Green Button only judged the result, moving closer to it on eleven cycles of
+twelve and within 0.6 kWh on the other.
+
+The reader also used to stop at the window's end, so a gap just before it was
+placed without the rate after it, and the part of a gap straddling the end that
+fell inside the window was dropped. It now reads up to three days past the end
+to place energy, and counts nothing after it.
+
+Over the cycles from 2025-09-29 to 2026-10-27 that leaves **13 cycles, 10
+reconciled clean**, with every cycle's metered kWh within 0.01 of the statement
+except where the statement prints usage for only one of its service
+agreements. The computed total is $0.15 over the billed $2,386.58. The cycles
+no longer cancel each other out: across the twelve to 2026-09-28 the per-cycle
+differences sum to $0.41 in absolute terms, down from $0.60, while their net
+went from -$0.10 to +$0.11. The 2026-10-05 statement is $0.01 out where it was
+$0.11, and 2026-11-04 reconciles clean at +$0.01.
+
+The remaining three mismatches:
+- 2026-03's Distribution, +0.16. The rates reproduce it from the statement's
+  own kWh.
+- 2026-09's Solar Bonus Credit, -0.03.
+- 2026-10's Generation, +0.02. The rates reproduce it from the statement's own
+  kWh, and the Energy Export Credits Applied line beside it carries it (-0.03).
+
+An applied line carries no "priced from the statement's own kWh" note. It is
+made only of figures the statement printed, so that note only ever read it back.

@@ -567,9 +567,7 @@ class TestEnergyCommissionTax:
             IntervalReading(start + timedelta(days=1, hours=19), 50.0, 0.0, timedelta(hours=1)),
         ]
         config = Config(pto_date=date(2026, 6, 3))
-        charge, uncovered = BillEngine(RateEngine(config))._energy_surcharge(
-            readings, BillingPeriod(date(2026, 9, 1), date(2026, 9, 2))
-        )
+        charge, uncovered = BillEngine(RateEngine(config))._energy_surcharge(readings)
         assert charge == pytest.approx(20 * 0.0003), "50 imported less 30 exported"
         assert uncovered == []
 
@@ -581,9 +579,7 @@ class TestEnergyCommissionTax:
             IntervalReading(start + timedelta(days=1, hours=19), 10.0, 0.0, timedelta(hours=1)),
         ]
         config = Config(pto_date=date(2026, 6, 3))
-        charge, _ = BillEngine(RateEngine(config))._energy_surcharge(
-            readings, BillingPeriod(date(2026, 9, 1), date(2026, 9, 2))
-        )
+        charge, _ = BillEngine(RateEngine(config))._energy_surcharge(readings)
         assert charge == 0.0
 
     def test_segments_net_together_as_one_cycle(self) -> None:
@@ -620,6 +616,73 @@ class TestEnergyCommissionTax:
         )
         assert bill.import_components["energy_commission_tax"] == pytest.approx(10 * 0.0003)
 
+    TAXED = (
+        IntervalReading(datetime(2026, 9, 1, 12, tzinfo=PACIFIC), 0.0, 30.0),
+        IntervalReading(datetime(2026, 9, 2, 19, tzinfo=PACIFIC), 50.0, 0.0),
+    )
+
+    def test_only_a_cca_bill_lets_credit_reach_it(self) -> None:
+        """MCE's page shows its credit paying the tax; no bundled page has."""
+        period = BillingPeriod(date(2026, 9, 1), date(2026, 9, 2))
+        cca = replace(mce_config(), pto_date=date(2026, 6, 3))
+        bundled = Config(pto_date=date(2026, 6, 3))
+        on_cca = BillEngine(RateEngine(cca)).compute(list(self.TAXED), period, check=False)
+        on_bundled = BillEngine(RateEngine(bundled)).compute(list(self.TAXED), period, check=False)
+        assert on_cca.uncreditable_charges == {}
+        assert on_bundled.uncreditable_charges == {
+            "energy_commission_tax": pytest.approx(20 * 0.0003)
+        }
+
+    def test_a_cycle_that_changes_supplier_pays_it_in_cash(self) -> None:
+        """Rated once over the cycle, so it cannot be split by supplier.
+
+        A merged bill carries CCA generation from the CCA days, and judging
+        the whole tax creditable from that let credit reach the bundled days'
+        share too.
+        """
+        cca = replace(mce_config(), pto_date=date(2026, 6, 3))
+        bundled = Config(pto_date=date(2026, 6, 3))
+        bill = compute_segments(
+            [
+                Segment(bundled, BillingPeriod(date(2026, 9, 1), date(2026, 9, 1))),
+                Segment(cca, BillingPeriod(date(2026, 9, 2), date(2026, 9, 2))),
+            ],
+            list(self.TAXED),
+            check=False,
+        )
+        assert "cca_generation" in bill.import_components
+        assert bill.uncreditable_charges == {
+            "energy_commission_tax": pytest.approx(bill.import_components["energy_commission_tax"])
+        }
+
+    def test_a_cycle_wholly_from_a_cca_keeps_it_creditable(self) -> None:
+        cca = replace(mce_config(), pto_date=date(2026, 6, 3))
+        bill = compute_segments(
+            [
+                Segment(cca, BillingPeriod(date(2026, 9, 1), date(2026, 9, 1))),
+                Segment(cca, BillingPeriod(date(2026, 9, 2), date(2026, 9, 2))),
+            ],
+            list(self.TAXED),
+            check=False,
+        )
+        assert bill.uncreditable_charges == {}
+
+    def test_a_bundled_tax_before_pto_is_not_held_out_twice(self) -> None:
+        bundled = Config(pto_date=date(2026, 9, 2))
+        readings = [
+            IntervalReading(datetime(2026, 9, 1, 19, tzinfo=PACIFIC), 10.0, 0.0),
+            IntervalReading(datetime(2026, 9, 2, 19, tzinfo=PACIFIC), 40.0, 0.0),
+        ]
+        bill = BillEngine(RateEngine(bundled)).compute(
+            readings, BillingPeriod(date(2026, 9, 1), date(2026, 9, 2)), check=False
+        )
+        tax = bill.import_components["energy_commission_tax"]
+        held = (
+            bill.pre_pto_charges["energy_commission_tax"]
+            + bill.uncreditable_charges["energy_commission_tax"]
+        )
+        assert held == pytest.approx(tax)
+
     def test_a_cycle_that_owes_none_still_prints_the_line(self) -> None:
         """2026-08-04 and 2026-09-03 print "Energy Commission Tax 0.00"."""
         start = datetime(2026, 9, 1, 12, tzinfo=PACIFIC)
@@ -650,9 +713,7 @@ class TestEnergyCommissionTax:
             )
             for h in range(24)
         ]
-        charge, uncovered = engine()._energy_surcharge(
-            readings, BillingPeriod(date(2020, 1, 5), date(2020, 1, 5))
-        )
+        charge, uncovered = engine()._energy_surcharge(readings)
         assert charge == 0.0
         assert uncovered == [date(2020, 1, 5)]
 
