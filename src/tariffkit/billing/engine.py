@@ -20,7 +20,7 @@ from ..cca import load_rate_card
 from ..config import Config
 from ..engine import RateEngine
 from ..errors import DataError
-from ..models import ImportPrice, Season, TouPeriod
+from ..models import ImportPrice, Season, Supplier, TouPeriod
 from ..tariff.retail import load_program
 from ..timeutil import PACIFIC, hour_floor, to_pacific
 from .models import Bill, BillingPeriod, IntervalReading, UsageBucket
@@ -89,6 +89,7 @@ class BillEngine:
         uncompensated = 0.0
         pre_pto_imported = 0.0
         pre_pto_charges: dict[str, float] = {}
+        uncreditable: dict[str, float] = {}
         import_components: dict[str, float] = {}
         export_components: dict[str, float] = {}
         complete = True
@@ -153,16 +154,18 @@ class BillEngine:
         if in_period:
             import_components["energy_commission_tax"] = tax
             # The closed agreement's share, which no later credit may reach any
-            # more than its energy. On a CCA bill export credit pays this tax
-            # from PTO (see `ledger.CCA_ONLY_OFFSETS`), and without this line it would reach
-            # the pre-PTO days' tax too. Rated alone because those days are
-            # charged as consumed and never netted, so their share of the
-            # cycle's tax is exactly this.
+            # more than its energy. Export credit pays this tax from PTO on a
+            # CCA bill (see `ledger.CHARGE_BUCKETS`), and without this line it
+            # would reach the pre-PTO days' tax too. Rated alone because those
+            # days are charged as consumed and never netted, so their share of
+            # the cycle's tax is exactly this.
             pre_pto_tax, _ = rate_surcharge(self._tax_base(in_period)[0], {})
             if pre_pto_tax:
                 pre_pto_charges["energy_commission_tax"] = (
                     pre_pto_charges.get("energy_commission_tax", 0.0) + pre_pto_tax
                 )
+            if self.rates.config.supplier is not Supplier.CCA:
+                uncreditable["energy_commission_tax"] = _tax_beyond_pto(tax, pre_pto_charges)
         if untaxed_days:
             complete = False
             warnings.append(
@@ -193,6 +196,7 @@ class BillEngine:
             uncompensated_kwh=uncompensated,
             pre_pto_imported_kwh=pre_pto_imported,
             pre_pto_charges=pre_pto_charges,
+            uncreditable_charges=uncreditable,
             warnings=tuple(warnings),
             # Pricing confidence only. Coverage problems travel separately in
             # `warnings`: they say the meter data is patchy, not that the rates
@@ -615,6 +619,17 @@ def compute_segments(
                     days[day] = days.get(day, 0.0) + net
         imports["energy_commission_tax"], _ = rate_surcharge(before, after)
 
+    # The cycle's tax is rated once, so it cannot be split by supplier, and
+    # only a statement wholly from a CCA has shown export credit paying it. A
+    # cycle with any other supplier's days pays all of it in cash.
+    uncreditable: dict[str, float] = {}
+    if "energy_commission_tax" in imports and any(
+        segment.config.supplier is not Supplier.CCA for segment in ordered
+    ):
+        uncreditable["energy_commission_tax"] = _tax_beyond_pto(
+            imports["energy_commission_tax"], pre_pto_charges
+        )
+
     return Bill(
         period=whole,
         buckets=tuple(buckets.values()),
@@ -624,6 +639,12 @@ def compute_segments(
         uncompensated_kwh=uncompensated,
         pre_pto_imported_kwh=pre_pto_imported,
         pre_pto_charges=pre_pto_charges,
+        uncreditable_charges=uncreditable,
         warnings=tuple(warnings),
         complete=complete,
     )
+
+
+def _tax_beyond_pto(tax: float, pre_pto_charges: dict[str, float]) -> float:
+    """The part of a cycle's tax not already held out of reach as pre-PTO."""
+    return max(tax - pre_pto_charges.get("energy_commission_tax", 0.0), 0.0)

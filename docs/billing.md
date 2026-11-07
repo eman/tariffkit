@@ -575,6 +575,13 @@ days on a separate, closed agreement. A cycle priced across PTO is one `Bill`
 here, so it records those charges as `pre_pto_charges` and the ledger keeps
 credit off them.
 
+Export credit pays the Energy Commission Tax only on a cycle supplied wholly by
+a CCA. The 2026-10-05 MCE statement shows MCE's credit paying it, and no
+bundled statement has shown PG&E's doing the same. On any other cycle,
+including one that changes supplier partway, the engine records the tax in
+`uncreditable_charges` and it is paid in cash. A cycle's tax is rated once over
+the whole cycle, so it can't be split by supplier.
+
 An account epoch that records no PTO — an import-only history before solar —
 is priced against the account's PTO, as is one recording a different date: PTO
 belongs to the interconnection, not to a tariff.

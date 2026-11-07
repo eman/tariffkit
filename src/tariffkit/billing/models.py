@@ -273,6 +273,15 @@ class Bill:
     #: credit reach the two pre-PTO EV2-A days as well and applied $3.13, and
     #: the $0.95 difference stayed missing from the bank from then on.
     pre_pto_charges: dict[str, float] = field(default_factory=dict)
+    #: The part of ``import_components`` no export credit may reach for a
+    #: reason other than PTO, by component, and not already in
+    #: ``pre_pto_charges``. Billed, and in ``total``. Decided where the
+    #: supplier is known: the engine prices each configuration separately, and
+    #: a merged bill no longer says which supplier charged what.
+    #:
+    #: Holds the Energy Commission Tax on any cycle not wholly supplied by a
+    #: CCA. Only a CCA statement has shown export credit paying the tax.
+    uncreditable_charges: dict[str, float] = field(default_factory=dict)
 
     @property
     def imported_kwh(self) -> float:
@@ -414,5 +423,6 @@ class Bill:
             "uncompensated_kwh": round(self.uncompensated_kwh, 3),
             "pre_pto_imported_kwh": round(self.pre_pto_imported_kwh, 3),
             "pre_pto_charges": {k: round(v, 4) for k, v in self.pre_pto_charges.items()},
+            "uncreditable_charges": {k: round(v, 4) for k, v in self.uncreditable_charges.items()},
             "warnings": list(self.warnings),
         }

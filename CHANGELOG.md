@@ -49,8 +49,10 @@ All notable changes to this project are documented here. This project follows
   bucket, so it was charged in cash even with credit in the bank. The
   2026-10-05 statement applies $18.70 of MCE credit against $18.68 of Net
   Charges and the $0.02 tax, closing at $0.00. The tax is now offset with
-  the generation charges on a CCA bill. A bundled bill still pays it in
-  cash, since no bundled statement has yet shown PG&E offsetting it. The
+  the generation charges on a cycle supplied wholly by a CCA. Any other
+  cycle, including one that changes supplier partway, still pays it in cash,
+  since no bundled statement has yet shown PG&E offsetting it. The engine
+  records that in the new `Bill.uncreditable_charges`. The
   share charged before Permission To Operate stays beyond credit's reach, as
   the rest of that agreement's charges do.
 - `audit run` no longer reports "the rates reproduce this line" on an Energy
