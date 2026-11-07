@@ -117,7 +117,8 @@ one row per cycle. Useful flags:
 Downloaded statements stay under `.cache/pge/statements/`, and a later run reads
 them from there instead of fetching them again. The directory is owner-only, and
 each login gets a subdirectory of its own, so two accounts billed on the same day
-never share a file.
+never share a file. A file is named by its issue date and the amount the portal
+lists, so a corrected statement replacing the original is downloaded afresh.
 
 Exit codes are load-bearing: `0` all reconciled, `1` a real disagreement, `2`
 the check could not be performed.

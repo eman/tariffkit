@@ -12,8 +12,10 @@ All notable changes to this project are documented here. This project follows
   deletes them after the run, matching `tariffkit account sync`. The
   directory is owner-only, each file is `0600`, and each login has a
   subdirectory of its own, so two accounts billed the same day never share a
-  file. Two statements issued the same day each get their own file and are
-  downloaded fresh.
+  file. A file is named by the statement's issue date and listed amount, so a
+  corrected statement that replaces the original is downloaded rather than
+  read from the old copy. Two statements listed with the same date and amount
+  each get their own file and are downloaded fresh.
 
 ### Fixed
 - **InfluxDB readings put a gap's energy where it arrived.** An advance across

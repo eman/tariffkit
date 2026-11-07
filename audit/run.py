@@ -99,24 +99,35 @@ def statement_cache(root: Path, owner: str) -> Path:
     return path
 
 
+def statement_name(ref: BillRef) -> str:
+    """A cached statement's file name: its issue date and the amount listed.
+
+    The amount is in the name because the date alone does not identify a
+    statement. A corrected bill can replace the original under the same date
+    between one run and the next, and a name keyed only on the date reused the
+    original's copy and reconciled an amount the utility had withdrawn.
+    """
+    return f"PGE_{ref.statement_date:%Y%m%d}_{ref.printed_amount:.2f}.pdf"
+
+
 def statement_names(refs: Sequence[BillRef]) -> list[tuple[str, bool]]:
     """A file name for each statement, and whether a cached copy can be trusted.
 
-    Named by issue date. Two statements issued the same day -- a corrected
-    bill beside the original -- each get a name of their own, and both are
-    fetched afresh: the bill id is minted per session, so nothing stable says
-    which cached copy is which.
+    Two statements listed with the same date and amount each get a name of
+    their own, and both are fetched afresh: the bill id is minted per session,
+    so nothing stable says which cached copy is which.
     """
-    issued = Counter(ref.statement_date for ref in refs)
-    seen: Counter[date] = Counter()
+    listed = Counter((ref.statement_date, ref.printed_amount) for ref in refs)
+    seen: Counter[tuple[date, float]] = Counter()
     names: list[tuple[str, bool]] = []
     for ref in refs:
-        stem = f"PGE_{ref.statement_date:%Y%m%d}"
-        if issued[ref.statement_date] == 1:
-            names.append((f"{stem}.pdf", True))
+        key = (ref.statement_date, ref.printed_amount)
+        name = statement_name(ref)
+        if listed[key] == 1:
+            names.append((name, True))
             continue
-        seen[ref.statement_date] += 1
-        names.append((f"{stem}-{seen[ref.statement_date]}.pdf", False))
+        seen[key] += 1
+        names.append((name.replace(".pdf", f"-{seen[key]}.pdf"), False))
     return names
 
 
@@ -135,7 +146,7 @@ def downloaded(
     ``reuse=False`` downloads it again even when a copy with that name exists.
     """
     cache.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path = cache / (name or f"PGE_{ref.statement_date:%Y%m%d}.pdf")
+    path = cache / (name or statement_name(ref))
     if not (reuse and path.exists()):
         try:
             pdf = session.download_bill(ref.bill_id)  # type: ignore[attr-defined]

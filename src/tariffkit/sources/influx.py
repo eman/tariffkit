@@ -524,8 +524,11 @@ def read_counters(
     export_samples = monotonic(_samples(settings, export_entity, lookback, lookahead))
     # Test the samples, not the bucketed result: bucketing always yields an
     # entry per interval, so an empty window is indistinguishable from a quiet
-    # one once it has been through _per_interval.
-    if not import_samples and not export_samples:
+    # one once it has been through _per_interval. Lookahead samples do not
+    # count: with nothing at or before `end`, the window has no reading to
+    # measure from, and samples after it would otherwise pass it off as a
+    # measured zero.
+    if not any(moment <= end for moment, _ in (*import_samples, *export_samples)):
         raise DataError(
             f"no samples for {import_entity} / {export_entity} "
             f"between {start.isoformat()} and {end.isoformat()}"

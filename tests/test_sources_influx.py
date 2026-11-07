@@ -406,6 +406,15 @@ class TestReadCounters:
         assert got[0].start.astimezone(UTC).hour == 7
         assert sum(r.imported for r in got) == pytest.approx(1.0)
 
+    def test_samples_only_after_the_window_are_no_samples(
+        self, settings: influx.InfluxSettings, patch_post: Any
+    ) -> None:
+        # Read only to place energy near the end. Alone, they would bill the
+        # window as a measured zero.
+        patch_post({IMPORT_ID: [(at(2), 10.0), (at(2 + 5 / 60), 10.1)], EXPORT_ID: []})
+        with pytest.raises(DataError, match="no samples"):
+            influx.read_counters(settings, at(0), at(1))
+
     def test_no_samples_names_the_entities(
         self, settings: influx.InfluxSettings, patch_post: Any
     ) -> None:
