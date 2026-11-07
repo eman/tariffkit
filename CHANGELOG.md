@@ -37,6 +37,10 @@ All notable changes to this project are documented here. This project follows
   three days past `end` to place energy, and still counts nothing after
   `end`. The four cycles from 2025-09-29 to 2026-01-29 moved from $0.04–$0.13
   under their bills to $0.01–$0.02 under.
+- **InfluxDB's last reading of a window covers only the window.** A window
+  that ended partway through an interval returned a last reading claiming
+  the whole interval, which overstated coverage and overlapped the next
+  window. Its duration now ends at `end`.
 - **An unreachable InfluxDB is reported, not raised as a traceback.** A
   timeout or refused connection escaped as the HTTP client's own exception,
   and `audit run` exited 1, the code for a billing discrepancy. It is now a

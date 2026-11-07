@@ -352,6 +352,20 @@ class TestReadCounters:
         patch_post({IMPORT_ID: steady, EXPORT_ID: []})
         got = influx.read_counters(settings, at(0), at(0.5))
         assert [r.imported for r in got] == pytest.approx([0.5])
+        # And it covers the half hour it measured, not the hour it began.
+        assert [r.duration for r in got] == [timedelta(minutes=30)]
+
+    def test_only_the_last_interval_of_a_ragged_window_is_short(
+        self, settings: influx.InfluxSettings, patch_post: Any
+    ) -> None:
+        patch_post({IMPORT_ID: [(at(0), 10.0), (at(3), 13.0)], EXPORT_ID: []})
+        got = influx.read_counters(settings, at(0), at(2.25))
+        assert [r.duration for r in got] == [
+            timedelta(hours=1),
+            timedelta(hours=1),
+            timedelta(minutes=15),
+        ]
+        assert got[-1].start + got[-1].duration == at(2.25)
 
     def test_the_token_travels_as_a_bearer_header(
         self, settings: influx.InfluxSettings, patch_post: Any

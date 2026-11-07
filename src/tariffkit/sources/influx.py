@@ -548,7 +548,11 @@ def read_counters(
             start=to_pacific(edge),
             imported=max(imported.get(edge, 0.0), 0.0),
             exported=max(exported.get(edge, 0.0), 0.0),
-            duration=resolution,
+            # A window that is not a whole number of steps ends inside its
+            # last interval, and that reading covers only the part inside it.
+            # Claiming the full step overstated coverage and overlapped
+            # whatever window came next.
+            duration=min(resolution, end - edge),
             estimated=spread(edge) >= SMEARED_FLOOR,
             # Recorded whatever its size. The floor decides whether *this*
             # interval is worth calling reconstructed; it must not decide
