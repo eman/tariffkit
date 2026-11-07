@@ -114,8 +114,10 @@ one row per cycle. Useful flags:
 | `--discard-statements` | delete the downloaded PDFs after the run instead of keeping them |
 | `--read-hour N` | move the cycle boundary off midnight |
 
-Downloaded statements stay in `.cache/pge/statements/`, and a later run reads
-them from there instead of fetching them again.
+Downloaded statements stay under `.cache/pge/statements/`, and a later run reads
+them from there instead of fetching them again. The directory is owner-only, and
+each login gets a subdirectory of its own, so two accounts billed on the same day
+never share a file.
 
 Exit codes are load-bearing: `0` all reconciled, `1` a real disagreement, `2`
 the check could not be performed.
@@ -178,12 +180,26 @@ reader now places each such advance from the rates either side of the gap (see
 Green Button only judged the result, moving closer to it on eleven cycles of
 twelve and within 0.6 kWh on the other.
 
-Over the cycles from 2025-09-29 to 2026-09-28 that left **12 cycles, 9
-reconciled clean** (8 before), and a computed total $0.10 under the billed
-$2,311.83 (+$0.24 before). 2026-10-05 is $0.01 out where it was $0.11. The
-remaining three mismatches are 2026-03's Distribution (+0.15, which the rates
-reproduce from the statement's own kWh), 2026-09's Solar Bonus Credit (-0.03),
-and 2026-10's Generation (+0.02, reproduced from the statement's own kWh), which
-the Energy Export Credits Applied line beside it carries (-0.03). An applied
-line carries no "priced from the statement's own kWh" note, because it is made
-only of figures the statement printed and that note only ever read it back.
+The reader also used to stop at the window's end, so a gap just before it was
+placed without the rate after it, and the part of a gap straddling the end that
+fell inside the window was dropped. It now reads up to three days past the end
+to place energy, and counts nothing after it.
+
+Over the cycles from 2025-09-29 to 2026-10-27 that leaves **13 cycles, 10
+reconciled clean**, with every cycle's metered kWh within 0.01 of the statement
+except where the statement prints usage for only one of its service
+agreements. The computed total is $0.15 over the billed $2,386.58. The cycles
+no longer cancel each other out: across the twelve to 2026-09-28 the per-cycle
+differences sum to $0.41 in absolute terms, down from $0.60, while their net
+went from -$0.10 to +$0.11. The 2026-10-05 statement is $0.01 out where it was
+$0.11, and 2026-11-04 reconciles clean at +$0.01.
+
+The remaining three mismatches:
+- 2026-03's Distribution, +0.16. The rates reproduce it from the statement's
+  own kWh.
+- 2026-09's Solar Bonus Credit, -0.03.
+- 2026-10's Generation, +0.02. The rates reproduce it from the statement's own
+  kWh, and the Energy Export Credits Applied line beside it carries it (-0.03).
+
+An applied line carries no "priced from the statement's own kWh" note. It is
+made only of figures the statement printed, so that note only ever read it back.

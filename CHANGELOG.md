@@ -6,10 +6,14 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Changed
-- **`audit run` keeps the statements it downloads.** They stay in
+- **`audit run` keeps the statements it downloads.** They stay under
   `.cache/pge/statements/`, so a later run reads them from disk instead of
   downloading them again. `--keep-statements` is gone; `--discard-statements`
-  deletes them after the run, matching `tariffkit account sync`.
+  deletes them after the run, matching `tariffkit account sync`. The
+  directory is owner-only, each file is `0600`, and each login has a
+  subdirectory of its own, so two accounts billed the same day never share a
+  file. Two statements issued the same day each get their own file and are
+  downloaded fresh.
 
 ### Fixed
 - **InfluxDB readings put a gap's energy where it arrived.** An advance across
@@ -24,6 +28,17 @@ All notable changes to this project are documented here. This project follows
   twelve cycles. That cycle now computes $62.40 against a billed $62.39, where
   it was $62.50. Energy from a gap over an hour is still reported as
   reconstructed.
+- **InfluxDB readings no longer depend on how far past them the window runs.**
+  Samples were read only up to the window's end, so a gap just before it was
+  placed without the rate after it, and the share of a gap straddling the end
+  that fell inside the window was dropped. `read_counters` now reads up to
+  three days past `end` to place energy, and still counts nothing after
+  `end`. The four cycles from 2025-09-29 to 2026-01-29 moved from $0.04–$0.13
+  under their bills to $0.01–$0.02 under.
+- **An unreachable InfluxDB is reported, not raised as a traceback.** A
+  timeout or refused connection escaped as the HTTP client's own exception,
+  and `audit run` exited 1, the code for a billing discrepancy. It is now a
+  `DataError` naming the host, and the audit exits 2.
 - **Export credit pays the Energy Commission Tax.** The tax had no credit
   bucket, so it was charged in cash even with credit in the bank. The
   2026-10-05 statement applies $18.70 of MCE credit against $18.68 of Net

@@ -8,6 +8,7 @@ that keeps a sparse sample from shoving energy forward over a TOU boundary.
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -39,7 +40,11 @@ class FakeResponse:
 
 
 class FakePost:
-    """Answers each query from ``series``, keyed by the entity id in the SQL."""
+    """Answers each query from ``series``, keyed by the entity id in the SQL.
+
+    Only samples inside the query's time bounds come back, as from the real
+    database: a window that did not ask for a sample must not see it.
+    """
 
     def __init__(
         self,
@@ -57,9 +62,12 @@ class FakePost:
         if self.payload is not None or self.status_code != 200:
             return FakeResponse(self.payload, self.status_code)
         sql = kwargs["json"]["q"]
+        bounds = re.search(r"time >= '([^']+)' AND time <= '([^']+)'", sql)
+        assert bounds, sql
+        lower, upper = (datetime.fromisoformat(b.replace("Z", "+00:00")) for b in bounds.groups())
         rows = next(
             (
-                [{"time": t.isoformat(), "value": v} for t, v in s]
+                [{"time": t.isoformat(), "value": v} for t, v in s if lower <= t <= upper]
                 for e, s in self.series.items()
                 if f"'{e}'" in sql
             ),
@@ -289,6 +297,50 @@ class TestReadCounters:
         influx.read_counters(settings, at(0), at(1))
         lower = (at(0) - influx.BASELINE_LOOKBACK).astimezone(UTC)
         assert f"{lower:%Y-%m-%dT%H:%M:%SZ}" in fake.calls[0]["json"]["q"]
+
+    def test_an_unreachable_database_is_a_data_error(
+        self, settings: influx.InfluxSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import httpx
+
+        def timeout(url: str, **kwargs: Any) -> FakeResponse:
+            raise httpx.ReadTimeout("The read operation timed out")
+
+        monkeypatch.setattr(httpx, "post", timeout)
+        with pytest.raises(DataError, match=r"could not query InfluxDB.*ReadTimeout"):
+            influx.read_counters(settings, at(0), at(1))
+
+    def test_a_window_query_reads_past_its_end(
+        self, settings: influx.InfluxSettings, patch_post: Any
+    ) -> None:
+        fake = patch_post({IMPORT_ID: [(at(0), 10.0), (at(1), 11.0)], EXPORT_ID: []})
+        influx.read_counters(settings, at(0), at(1))
+        upper = (at(1) + influx.ACCRUAL_LOOKAHEAD).astimezone(UTC)
+        assert f"{upper:%Y-%m-%dT%H:%M:%SZ}" in fake.calls[0]["json"]["q"]
+
+    def test_an_hour_prices_the_same_however_far_past_it_the_window_runs(
+        self, settings: influx.InfluxSettings, patch_post: Any
+    ) -> None:
+        # A quiet counter from 22:00, then 0.208 kWh at 23:59 and exporting at
+        # 0.220 kWh per five minutes after midnight. The rate after the gap says
+        # the 0.208 arrived in the last few minutes before 23:59. A window ending
+        # at midnight could not see that rate and spread it evenly from 22:35,
+        # putting 0.062 kWh in the 22:00 hour that a window to 01:00 did not.
+        quiet = [(at(22 + m / 60), 100.0) for m in range(0, 40, 5)]
+        flowing = [
+            (at(23 + 59 / 60), 100.208),
+            (at(24 + 4 / 60), 100.428),
+            (at(24 + 9 / 60), 100.648),
+        ]
+        patch_post({IMPORT_ID: [], EXPORT_ID: quiet + flowing})
+        to_midnight = influx.read_counters(settings, at(22), at(24))
+        to_one = influx.read_counters(settings, at(22), at(25))
+        assert [r.exported for r in to_midnight] == pytest.approx(
+            [r.exported for r in to_one[:2]], abs=1e-9
+        )
+        assert to_midnight[0].exported == pytest.approx(0.0, abs=1e-9)
+        # 23:59 to midnight is a minute of the 0.220 kWh accruing over 00:04.
+        assert to_midnight[1].exported == pytest.approx(0.208 + 0.220 / 5, abs=1e-6)
 
     def test_the_token_travels_as_a_bearer_header(
         self, settings: influx.InfluxSettings, patch_post: Any

@@ -64,6 +64,14 @@ DEFAULT_TABLE = "sensor_numeric"
 #: baseline the first interval would silently start from zero.
 BASELINE_LOOKBACK = timedelta(days=3)
 
+#: How far past the window to read, for the same reason in the other direction.
+#: Where :func:`_accrual` puts a gap's energy depends on the rate just after the
+#: gap, and a window ending before that rate was sampled read it as unknown: an
+#: hour near the end priced differently depending on how far past it the window
+#: ran. Samples past the window inform placement only; what they accrue beyond
+#: ``end`` is clipped, as the baseline's span before ``start`` is.
+ACCRUAL_LOOKAHEAD = BASELINE_LOOKBACK
+
 #: Entity ids and the table name are interpolated into SQL, so they are
 #: constrained rather than quoted: anything outside this is rejected instead of
 #: escaped.
@@ -211,12 +219,24 @@ def _query(settings: InfluxSettings, sql: str) -> list[dict[str, Any]]:
             "the InfluxDB source requires the 'influx' extra: pip install 'tariffkit[influx]'"
         ) from exc
 
-    response = httpx.post(
-        settings.query_url,
-        headers={"Authorization": f"Bearer {settings.token}", "Content-Type": "application/json"},
-        json={"db": settings.database, "q": sql, "format": "json"},
-        timeout=120,
-    )
+    try:
+        response = httpx.post(
+            settings.query_url,
+            headers={
+                "Authorization": f"Bearer {settings.token}",
+                "Content-Type": "application/json",
+            },
+            json={"db": settings.database, "q": sql, "format": "json"},
+            timeout=120,
+        )
+    except httpx.HTTPError as exc:
+        # A timeout or a refused connection is the database being unreachable,
+        # not a programming error. Left as httpx's own exception it escaped
+        # every caller's handler as a traceback, and `audit run` exited 1 --
+        # the code for a billing discrepancy -- when nothing had been compared.
+        raise DataError(
+            f"could not query InfluxDB at {settings.host}: {type(exc).__name__}: {exc}"
+        ) from exc
     if response.status_code != 200:
         raise DataError(
             f"InfluxDB refused the query ({response.status_code}): {response.text[:200]}"
@@ -403,9 +423,9 @@ def _per_interval(
     the energy almost never arrived evenly; :func:`_accrual` decides where it
     did.
 
-    Advance that accrued before ``start`` is clipped rather than counted, so a
-    baseline sample reaching back days does not dump its whole span into the
-    first interval.
+    Advance that accrued before ``start`` or after ``end`` is clipped rather
+    than counted, so a baseline sample reaching back days does not dump its
+    whole span into the first interval, nor a lookahead sample into the last.
 
     Intervals are stepped in absolute time so the two DST transitions produce
     23 and 25 hour days rather than being assumed 24.
@@ -489,11 +509,15 @@ def read_counters(
         raise ConfigError(f"resolution must be positive, got {resolution}")
 
     # Reach back before the window so the first interval has something to
-    # subtract from; otherwise it would silently start from zero.
+    # subtract from; otherwise it would silently start from zero. Reach past it
+    # so a gap near the end is placed from the rate after it, and so a gap
+    # straddling the end contributes its share inside the window rather than
+    # none of it.
     lookback = start - BASELINE_LOOKBACK
+    lookahead = end + ACCRUAL_LOOKAHEAD
     import_entity, export_entity = settings.require_entities()
-    import_samples = monotonic(_samples(settings, import_entity, lookback, end))
-    export_samples = monotonic(_samples(settings, export_entity, lookback, end))
+    import_samples = monotonic(_samples(settings, import_entity, lookback, lookahead))
+    export_samples = monotonic(_samples(settings, export_entity, lookback, lookahead))
     # Test the samples, not the bucketed result: bucketing always yields an
     # entry per interval, so an empty window is indistinguishable from a quiet
     # one once it has been through _per_interval.

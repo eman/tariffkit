@@ -110,8 +110,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--discard-statements",
         action="store_true",
-        help="delete each downloaded PDF after the run instead of keeping it in "
-        ".cache/pge/statements/",
+        help="delete each downloaded PDF after the run instead of keeping it, "
+        "owner-only, under .cache/pge/statements/",
     )
 
     doctor = sub.add_parser(
@@ -188,7 +188,7 @@ def _run(
 
     from tariffkit.sources.pge import PgeSession, PgeSettings
 
-    from .run import DEFAULT_CACHE, downloaded, fetch_refs, select
+    from .run import DEFAULT_CACHE, downloaded, fetch_refs, select, statement_cache, statement_names
 
     settings = PgeSettings.load()
     with PgeSession(settings) as session:
@@ -205,13 +205,14 @@ def _run(
         # Downloaded together so the portal work is done and the session can be
         # dropped before any pricing starts -- a slow reconciliation should not
         # be holding an authenticated session open.
+        cache = statement_cache(DEFAULT_CACHE, f"{settings.username}|{settings.account_id}")
         with ExitStack() as stack:
             paths = []
-            for ref in refs:
+            for ref, (name, reuse) in zip(refs, statement_names(refs), strict=True):
                 try:
                     paths.append(
                         stack.enter_context(
-                            downloaded(session, ref, cache=DEFAULT_CACHE, keep=keep)
+                            downloaded(session, ref, cache=cache, keep=keep, name=name, reuse=reuse)
                         )
                     )
                 except (AuditError, TariffKitError) as exc:

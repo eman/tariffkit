@@ -8,11 +8,18 @@ Statements are written to a cache directory and kept there, so a later run
 reads them from disk instead of downloading them again. `--discard-statements`
 deletes each one after the run, as `tariffkit account sync` does with the same
 flag.
+
+The cache is owner-only, and each login keeps its statements in a directory of
+its own. A file is named by its issue date, and two accounts can be billed on
+the same day; sharing one directory would reconcile one account's meter against
+the other's statement.
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
+from collections import Counter
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -21,7 +28,8 @@ from pathlib import Path
 
 from .errors import AuditError, PortalError
 
-#: Downloaded statements land here. Under `.cache/`, which is already ignored.
+#: Downloaded statements land under here, one directory per login. Under
+#: `.cache/`, which is already ignored.
 DEFAULT_CACHE = Path(".cache/pge/statements")
 
 BILL_DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
@@ -78,6 +86,40 @@ def select(refs: Sequence[BillRef], *, since: date | None, until: date | None) -
     return sorted(chosen, key=lambda r: r.statement_date)
 
 
+def statement_cache(root: Path, owner: str) -> Path:
+    """The directory one login's statements are kept in, readable only by you.
+
+    ``owner`` is whatever identifies the login -- its username and account id.
+    It is hashed, so the directory name does not carry it.
+    """
+    path = root / hashlib.sha256(owner.encode()).hexdigest()[:12]
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for directory in (root, path):
+        directory.chmod(0o700)
+    return path
+
+
+def statement_names(refs: Sequence[BillRef]) -> list[tuple[str, bool]]:
+    """A file name for each statement, and whether a cached copy can be trusted.
+
+    Named by issue date. Two statements issued the same day -- a corrected
+    bill beside the original -- each get a name of their own, and both are
+    fetched afresh: the bill id is minted per session, so nothing stable says
+    which cached copy is which.
+    """
+    issued = Counter(ref.statement_date for ref in refs)
+    seen: Counter[date] = Counter()
+    names: list[tuple[str, bool]] = []
+    for ref in refs:
+        stem = f"PGE_{ref.statement_date:%Y%m%d}"
+        if issued[ref.statement_date] == 1:
+            names.append((f"{stem}.pdf", True))
+            continue
+        seen[ref.statement_date] += 1
+        names.append((f"{stem}-{seen[ref.statement_date]}.pdf", False))
+    return names
+
+
 @contextmanager
 def downloaded(
     session: object,
@@ -85,11 +127,16 @@ def downloaded(
     *,
     cache: Path,
     keep: bool,
+    name: str | None = None,
+    reuse: bool = True,
 ) -> Iterator[Path]:
-    """A statement on disk, removed afterwards unless asked to keep it."""
-    cache.mkdir(parents=True, exist_ok=True)
-    path = cache / f"PGE_{ref.statement_date:%Y%m%d}.pdf"
-    if not path.exists():
+    """A statement on disk, owner-only, removed afterwards unless kept.
+
+    ``reuse=False`` downloads it again even when a copy with that name exists.
+    """
+    cache.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = cache / (name or f"PGE_{ref.statement_date:%Y%m%d}.pdf")
+    if not (reuse and path.exists()):
         try:
             pdf = session.download_bill(ref.bill_id)  # type: ignore[attr-defined]
         except AuditError:
@@ -100,6 +147,9 @@ def downloaded(
             # reporting a portal failure as a billing discrepancy.
             raise PortalError(f"could not download this statement: {exc}") from exc
         path.write_bytes(pdf)
+    # On a reused copy too: one written before the cache was private keeps
+    # whatever the umask gave it.
+    path.chmod(0o600)
     try:
         yield path
     finally:

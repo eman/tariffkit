@@ -168,6 +168,13 @@ to the rate after; failing both, evenly, as before. On that cycle MCE's export
 credit went from 39.71 to 40.15 against a billed 40.23. Energy from a gap over
 an hour is still marked as reconstructed, however narrowly it is placed.
 
+The rate after a gap is read past the end of the requested window, up to three
+days, so an hour near the end of a window prices the same however far past it
+the window runs. That also counts a gap straddling the window's end: its share
+inside the window used to be dropped, which left each cycle a few cents low.
+Samples past the window only decide where energy fell; what they carry after
+`end` is not counted.
+
 Sampling density still bounds how fine an interval is meaningful. On this data
 the median gap is five minutes but the 90th percentile is three quarters of an
 hour, so hourly is the default; `--influx-resolution 15` is interpolation, not
