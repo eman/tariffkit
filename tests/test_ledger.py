@@ -230,6 +230,31 @@ class TestTheEnergyCommissionTax:
         assert entry.applied.generation == pytest.approx(18.68)
         assert entry.cash_due == pytest.approx(0.02)
 
+    def test_a_bundled_bill_still_pays_it_in_cash(self) -> None:
+        """Only a CCA statement has shown the tax offset; bundled stays cash."""
+        bundled = Bill(
+            period=self.BILL.period,
+            import_components={"generation": 23.94, "energy_commission_tax": 0.02},
+            export_components={"generation": -40.23},
+        )
+        entry = apply_credits(bundled, CreditBalances(generation=92.62))
+        assert entry.applied.generation == pytest.approx(23.94)
+        assert entry.non_offsettable == pytest.approx(0.02)
+        assert entry.cash_due == pytest.approx(0.02)
+
+    def test_a_bundled_bills_pre_pto_tax_is_counted_once(self) -> None:
+        from dataclasses import replace
+
+        bundled = Bill(
+            period=self.BILL.period,
+            import_components={"generation": 23.94, "energy_commission_tax": 0.02},
+            export_components={"generation": -40.23},
+        )
+        before = replace(bundled, pre_pto_charges={"energy_commission_tax": 0.02})
+        entry = apply_credits(before, CreditBalances(generation=92.62))
+        assert entry.non_offsettable == pytest.approx(0.02)
+        assert entry.cash_due == pytest.approx(0.02)
+
 
 class TestThePublishedTermsReconcile:
     """What a consumer adds up has to reach the state.

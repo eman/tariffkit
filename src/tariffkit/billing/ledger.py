@@ -137,8 +137,8 @@ CHARGE_BUCKETS: dict[str, CreditBucket] = {
     # Charges" are 18.68, it applies 18.70 of export credit, and the 0.02 tax
     # printed beneath is what closes the section at $0.00. With no bucket it
     # fell to the non-offsettable default and was charged in cash beside a bank
-    # of $92.62. Confirmed on a CCA statement only; a bundled account's tax is
-    # put with its generation charges for the same reason, unconfirmed.
+    # of $92.62. Confirmed on a CCA statement only, so a bundled bill's tax
+    # stays payable in cash: see CCA_ONLY_OFFSETS.
     "energy_commission_tax": CreditBucket.GENERATION,
     # Delivery. The statement bills these as its "Energy Delivered" block.
     "distribution": CreditBucket.DELIVERY,
@@ -204,6 +204,23 @@ CHARGE_BUCKETS: dict[str, CreditBucket] = {
 #: charge is payable in cash rather than silently creditable. That default is
 #: the safety property this set used to provide.
 NON_OFFSETTABLE = frozenset({"baseline_credit"})
+
+#: Offsettable on a CCA's bill only. The Energy Commission Tax is offset by
+#: MCE's export credit on its page, and no bundled statement has shown PG&E
+#: doing the same with its own; until one does, a bundled bill pays it in cash,
+#: as any component without evidence does. A bill is a CCA's when it carries
+#: CCA generation, which the engine prices for every CCA cycle it bills.
+CCA_ONLY_OFFSETS = frozenset({"energy_commission_tax"})
+
+
+def _reach(bill: Bill, name: str) -> CreditBucket | None:
+    """The bucket that may offset ``name`` on this bill, or ``None`` for cash."""
+    if name in NON_OFFSETTABLE:
+        return None
+    if name in CCA_ONLY_OFFSETS and "cca_generation" not in bill.import_components:
+        return None
+    return CHARGE_BUCKETS.get(name)
+
 
 #: False while the classification above is only partly reconciled.
 #:
@@ -403,8 +420,8 @@ def charges_by_bucket(bill: Bill) -> tuple[dict[CreditBucket, float], float]:
     offsettable[CreditBucket.BONUS] += sum(bill.fixed_components.values())
 
     for name, value in bill.import_components.items():
-        bucket = CHARGE_BUCKETS.get(name)
-        if bucket is None or name in NON_OFFSETTABLE:
+        bucket = _reach(bill, name)
+        if bucket is None:
             non_offsettable += value
         else:
             offsettable[bucket] += value
@@ -413,8 +430,8 @@ def charges_by_bucket(bill: Bill) -> tuple[dict[CreditBucket, float], float]:
     # bucket that would otherwise have let a later credit offset it. A charge
     # with no bucket is already out of reach and stays where it is.
     for name, value in bill.pre_pto_charges.items():
-        reach = CreditBucket.BONUS if name in bill.fixed_components else CHARGE_BUCKETS.get(name)
-        if reach is None or name in NON_OFFSETTABLE:
+        reach = CreditBucket.BONUS if name in bill.fixed_components else _reach(bill, name)
+        if reach is None:
             continue
         offsettable[reach] -= value
         non_offsettable += value

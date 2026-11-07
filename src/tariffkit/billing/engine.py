@@ -153,8 +153,8 @@ class BillEngine:
         if in_period:
             import_components["energy_commission_tax"] = tax
             # The closed agreement's share, which no later credit may reach any
-            # more than its energy. Export credit pays this tax from PTO (see
-            # `ledger.CHARGE_BUCKETS`), and without this line it would reach
+            # more than its energy. On a CCA bill export credit pays this tax
+            # from PTO (see `ledger.CCA_ONLY_OFFSETS`), and without this line it would reach
             # the pre-PTO days' tax too. Rated alone because those days are
             # charged as consumed and never netted, so their share of the
             # cycle's tax is exactly this.
