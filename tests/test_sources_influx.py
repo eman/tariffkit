@@ -8,6 +8,7 @@ that keeps a sparse sample from shoving energy forward over a TOU boundary.
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -39,7 +40,11 @@ class FakeResponse:
 
 
 class FakePost:
-    """Answers each query from ``series``, keyed by the entity id in the SQL."""
+    """Answers each query from ``series``, keyed by the entity id in the SQL.
+
+    Only samples inside the query's time bounds come back, as from the real
+    database: a window that did not ask for a sample must not see it.
+    """
 
     def __init__(
         self,
@@ -57,9 +62,12 @@ class FakePost:
         if self.payload is not None or self.status_code != 200:
             return FakeResponse(self.payload, self.status_code)
         sql = kwargs["json"]["q"]
+        bounds = re.search(r"time >= '([^']+)' AND time <= '([^']+)'", sql)
+        assert bounds, sql
+        lower, upper = (datetime.fromisoformat(b.replace("Z", "+00:00")) for b in bounds.groups())
         rows = next(
             (
-                [{"time": t.isoformat(), "value": v} for t, v in s]
+                [{"time": t.isoformat(), "value": v} for t, v in s if lower <= t <= upper]
                 for e, s in self.series.items()
                 if f"'{e}'" in sql
             ),
@@ -290,6 +298,75 @@ class TestReadCounters:
         lower = (at(0) - influx.BASELINE_LOOKBACK).astimezone(UTC)
         assert f"{lower:%Y-%m-%dT%H:%M:%SZ}" in fake.calls[0]["json"]["q"]
 
+    def test_an_unreachable_database_is_a_data_error(
+        self, settings: influx.InfluxSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import httpx
+
+        def timeout(url: str, **kwargs: Any) -> FakeResponse:
+            raise httpx.ReadTimeout("The read operation timed out")
+
+        monkeypatch.setattr(httpx, "post", timeout)
+        with pytest.raises(DataError, match=r"could not query InfluxDB.*ReadTimeout"):
+            influx.read_counters(settings, at(0), at(1))
+
+    def test_a_window_query_reads_past_its_end(
+        self, settings: influx.InfluxSettings, patch_post: Any
+    ) -> None:
+        fake = patch_post({IMPORT_ID: [(at(0), 10.0), (at(1), 11.0)], EXPORT_ID: []})
+        influx.read_counters(settings, at(0), at(1))
+        upper = (at(1) + influx.ACCRUAL_LOOKAHEAD).astimezone(UTC)
+        assert f"{upper:%Y-%m-%dT%H:%M:%SZ}" in fake.calls[0]["json"]["q"]
+
+    def test_an_hour_prices_the_same_however_far_past_it_the_window_runs(
+        self, settings: influx.InfluxSettings, patch_post: Any
+    ) -> None:
+        # A quiet counter from 22:00, then 0.208 kWh at 23:59 and exporting at
+        # 0.220 kWh per five minutes after midnight. The rate after the gap says
+        # the 0.208 arrived in the last few minutes before 23:59. A window ending
+        # at midnight could not see that rate and spread it evenly from 22:35,
+        # putting 0.062 kWh in the 22:00 hour that a window to 01:00 did not.
+        quiet = [(at(22 + m / 60), 100.0) for m in range(0, 40, 5)]
+        flowing = [
+            (at(23 + 59 / 60), 100.208),
+            (at(24 + 4 / 60), 100.428),
+            (at(24 + 9 / 60), 100.648),
+        ]
+        patch_post({IMPORT_ID: [], EXPORT_ID: quiet + flowing})
+        to_midnight = influx.read_counters(settings, at(22), at(24))
+        to_one = influx.read_counters(settings, at(22), at(25))
+        assert [r.exported for r in to_midnight] == pytest.approx(
+            [r.exported for r in to_one[:2]], abs=1e-9
+        )
+        assert to_midnight[0].exported == pytest.approx(0.0, abs=1e-9)
+        # 23:59 to midnight is a minute of the 0.220 kWh accruing over 00:04.
+        assert to_midnight[1].exported == pytest.approx(0.208 + 0.220 / 5, abs=1e-6)
+
+    def test_a_window_ending_inside_its_last_interval_counts_nothing_after_it(
+        self, settings: influx.InfluxSettings, patch_post: Any
+    ) -> None:
+        # 00:00 to 00:30 at hourly resolution, the counter advancing 1 kWh an
+        # hour all the way to 01:00. The samples past 00:30 are lookahead; the
+        # hour's second half is outside the window and must not be counted.
+        steady = [(at(m / 60), 10.0 + m / 60) for m in range(0, 65, 5)]
+        patch_post({IMPORT_ID: steady, EXPORT_ID: []})
+        got = influx.read_counters(settings, at(0), at(0.5))
+        assert [r.imported for r in got] == pytest.approx([0.5])
+        # And it covers the half hour it measured, not the hour it began.
+        assert [r.duration for r in got] == [timedelta(minutes=30)]
+
+    def test_only_the_last_interval_of_a_ragged_window_is_short(
+        self, settings: influx.InfluxSettings, patch_post: Any
+    ) -> None:
+        patch_post({IMPORT_ID: [(at(0), 10.0), (at(3), 13.0)], EXPORT_ID: []})
+        got = influx.read_counters(settings, at(0), at(2.25))
+        assert [r.duration for r in got] == [
+            timedelta(hours=1),
+            timedelta(hours=1),
+            timedelta(minutes=15),
+        ]
+        assert got[-1].start + got[-1].duration == at(2.25)
+
     def test_the_token_travels_as_a_bearer_header(
         self, settings: influx.InfluxSettings, patch_post: Any
     ) -> None:
@@ -342,6 +419,15 @@ class TestReadCounters:
         got = influx.read_counters(settings, at(0), at(1))
         assert got[0].start.astimezone(UTC).hour == 7
         assert sum(r.imported for r in got) == pytest.approx(1.0)
+
+    def test_samples_only_after_the_window_are_no_samples(
+        self, settings: influx.InfluxSettings, patch_post: Any
+    ) -> None:
+        # Read only to place energy near the end. Alone, they would bill the
+        # window as a measured zero.
+        patch_post({IMPORT_ID: [(at(2), 10.0), (at(2 + 5 / 60), 10.1)], EXPORT_ID: []})
+        with pytest.raises(DataError, match="no samples"):
+            influx.read_counters(settings, at(0), at(1))
 
     def test_no_samples_names_the_entities(
         self, settings: influx.InfluxSettings, patch_post: Any
@@ -554,6 +640,107 @@ def test_only_an_approximate_hour_leaves_the_totals_whole() -> None:
     assert missing and not any(split_only(w) for w in missing), missing
     # As a segmented bill quotes it, behind the segment's own label.
     assert split_only(f"2026-07-01..2026-07-01 (E-ELEC): {reconstructed[0]}")
+
+
+class TestWhereAGapsEnergyArrived:
+    """A gap is usually a counter standing still, not energy arriving evenly.
+
+    Home Assistant publishes a counter when it changes, so across the
+    2026-08-28 cycle gaps of twelve minutes or more advanced a median of one
+    watt-hour. Spreading the advance that ends one evenly across it put a
+    battery's 19:00 export into the 18:00 hour on almost every evening, where
+    PG&E's own 15-minute data has none -- most of that cycle's $0.53 shortfall
+    in MCE export credit.
+    """
+
+    #: Real samples from 2026-09-07, in Pacific time: a few watt-hours, a quiet
+    #: half hour, then a battery exporting at about 2.6 kW from 19:00.
+    STEP = (
+        ((18, 25, 26), 1516.611),
+        ((18, 30, 4), 1516.623),
+        ((18, 35, 13), 1516.626),
+        ((19, 5, 3), 1516.834),
+        ((19, 10, 12), 1517.054),
+        ((19, 15, 20), 1517.245),
+    )
+
+    @staticmethod
+    def _at(rows: tuple[tuple[tuple[int, int, int], float], ...]) -> list[tuple[datetime, float]]:
+        from tariffkit.timeutil import PACIFIC
+
+        return [(datetime(2026, 9, 7, *hms, tzinfo=PACIFIC), value) for hms, value in rows]
+
+    @staticmethod
+    def _hours(samples: list[tuple[datetime, float]], first: int = 18) -> dict[int, float]:
+        from tariffkit.sources.influx import _per_interval
+        from tariffkit.timeutil import PACIFIC
+
+        start = datetime(2026, 9, 7, first, tzinfo=PACIFIC)
+        totals, _ = _per_interval(samples, start, start + timedelta(hours=2), timedelta(hours=1))
+        return {edge.astimezone(PACIFIC).hour: kwh for edge, kwh in totals.items()}
+
+    def test_the_energy_that_ends_a_quiet_gap_arrived_at_its_end(self) -> None:
+        hours = self._hours(self._at(self.STEP))
+        # 18:25 to 18:35 is the only energy before 19:00: 0.015 kWh, as sampled.
+        assert hours[18] == pytest.approx(0.015, abs=0.002)
+        # Spreading 0.208 kWh over 18:35-19:05 put 0.17 of it here.
+        assert hours[19] == pytest.approx(0.208 + 0.220 + 0.191, abs=0.002)
+
+    def test_energy_that_kept_flowing_into_an_outage_finishes_inside_it(self) -> None:
+        """Real samples from 2026-09-14: exporting at 2.4 kW, then 35 silent minutes.
+
+        The rate after the gap is a few watts, far too low to have carried
+        0.627 kWh, so the source was away and the export ran on at its earlier
+        rate -- finishing near 19:50, not spread across the hour after it.
+        """
+        samples = self._at(
+            (
+                ((19, 25, 6), 1534.813),
+                ((19, 30, 15), 1534.990),
+                ((19, 35, 25), 1535.200),
+                ((20, 10, 3), 1535.827),
+                ((20, 15, 13), 1535.829),
+                ((20, 20, 23), 1535.830),
+            )
+        )
+        hours = self._hours(samples, first=19)
+        assert hours[19] == pytest.approx(0.387 + 0.627, abs=0.01)
+        assert hours[20] < 0.01
+
+    def test_with_nothing_either_side_it_is_spread_as_before(self) -> None:
+        """No rate to read is no evidence, and evenly is what is left."""
+        samples = self._at((((18, 30, 0), 100.0), ((19, 30, 0), 101.0)))
+        hours = self._hours(samples)
+        assert hours[18] == pytest.approx(0.5)
+        assert hours[19] == pytest.approx(0.5)
+
+    def test_the_ordinary_cadence_is_still_pro_rata(self) -> None:
+        samples = self._at((((18, 55, 0), 100.0), ((19, 5, 0), 100.1), ((19, 10, 0), 100.4)))
+        hours = self._hours(samples)
+        assert hours[18] == pytest.approx(0.05)
+        assert hours[19] == pytest.approx(0.35)
+
+    def test_a_gap_is_still_doubted_however_narrowly_it_is_placed(self) -> None:
+        """Placing a gap's energy is an inference, and stays marked as one."""
+        from tariffkit.sources.influx import _per_interval
+        from tariffkit.timeutil import PACIFIC
+
+        samples = self._at((((16, 0, 0), 100.0), ((19, 5, 0), 100.2), ((19, 10, 0), 100.4)))
+        start = datetime(2026, 9, 7, 18, tzinfo=PACIFIC)
+        totals, smeared = _per_interval(
+            samples, start, start + timedelta(hours=2), timedelta(hours=1)
+        )
+        assert sum(totals.values()) == pytest.approx(0.4)
+        assert sum(smeared.values()) == pytest.approx(0.2)
+
+    def test_the_total_is_the_counters_whatever_the_placement(self) -> None:
+        from tariffkit.sources.influx import _per_interval
+        from tariffkit.timeutil import PACIFIC
+
+        samples = self._at(self.STEP)
+        start = datetime(2026, 9, 7, 18, tzinfo=PACIFIC)
+        totals, _ = _per_interval(samples, start, start + timedelta(hours=2), timedelta(minutes=5))
+        assert sum(totals.values()) == pytest.approx(samples[-1][1] - samples[0][1])
 
 
 class TestOptionalEntities:

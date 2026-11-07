@@ -217,10 +217,18 @@ def _from_metered(rule: LineRule, metered: Mapping[str, float]) -> float | None:
                 continue
             return None
         total += metered[lookup] * (-1.0 if side is Side.EXPORT else 1.0)
-        priced += 1
+        # Only a per-kWh component is *priced*. An applied credit or a fixed
+        # charge is read off the statement, which is right beside priced
+        # components -- it takes the ledger out of the question -- and
+        # meaningless on its own: "Energy Export Credits Applied" is made of
+        # nothing else, so its figure was the printed line read back, and it
+        # reported "the rates reproduce this line" on every mismatch it ever had.
+        if side in (Side.IMPORT, Side.EXPORT):
+            priced += 1
     # Nothing was actually priced, so there is no answer -- only components that
-    # were absent because they were never billed. Returning 0.0 here would be
-    # reported as a confident "the rates do not reproduce this line".
+    # were absent because they were never billed, or read straight off the
+    # statement. Returning a figure here would report a verdict about the rates
+    # on a line no rate went into.
     return total if priced else None
 
 

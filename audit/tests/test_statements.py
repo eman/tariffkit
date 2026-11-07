@@ -252,11 +252,18 @@ class TestRealStatements:
 
     @staticmethod
     def _pdfs() -> list[Path]:
-        configured = os.environ.get("TARIFFKIT_STATEMENT_DIR")
-        root = Path(configured) if configured else Path(".cache/pge/statements")
+        from audit.run import DEFAULT_CACHE
+
         # Only PG&E's own naming. The directory may be somewhere general like a
         # desktop, and everything else in it is somebody else's PDF.
-        return sorted(root.glob("PGE_*.pdf")) if root.is_dir() else []
+        configured = os.environ.get("TARIFFKIT_STATEMENT_DIR")
+        if configured:
+            root = Path(configured)
+            return sorted(root.glob("PGE_*.pdf")) if root.is_dir() else []
+        # `audit run` keeps each login's statements in a subdirectory of its
+        # own. Looking only at the top level found none of them, and this
+        # skipped as though no statement had ever been downloaded.
+        return sorted({*DEFAULT_CACHE.glob("PGE_*.pdf"), *DEFAULT_CACHE.glob("*/PGE_*.pdf")})
 
     def test_each_one_parses_and_self_checks_clean(self) -> None:
         pdfs = self._pdfs()

@@ -5,7 +5,59 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+- **`audit run` keeps the statements it downloads.** They stay under
+  `.cache/pge/statements/`, so a later run reads them from disk instead of
+  downloading them again. `--keep-statements` is gone; `--discard-statements`
+  deletes them after the run, matching `tariffkit account sync`. The
+  directory is owner-only, each file is `0600`, and each login has a
+  subdirectory of its own, so two accounts billed the same day never share a
+  file. A file is named by the statement's issue date and listed amount, so a
+  corrected statement that replaces the original is downloaded rather than
+  read from the old copy. Two statements listed with the same date and amount
+  each get their own file and are downloaded fresh.
+
 ### Fixed
+- **InfluxDB readings put a gap's energy where it arrived.** An advance across
+  a sample gap was spread evenly over the gap. Home Assistant writes a counter
+  when it changes, so a gap is usually the counter standing still, and its
+  energy came at the end. On the cycle ending 2026-09-28 a battery exporting
+  from 19:00 had about 0.2 kWh an evening put in the 18:00 hour, where PG&E's
+  15-minute data has none, and MCE's export credit came out $0.53 low. An
+  advance across a gap of more than ten minutes is now placed from the rates
+  sampled either side of it, and spread evenly only when neither explains it.
+  Against PG&E's own interval data the hourly split moved closer on eleven of
+  twelve cycles. That cycle now computes $62.40 against a billed $62.39, where
+  it was $62.50. Energy from a gap over an hour is still reported as
+  reconstructed.
+- **InfluxDB readings no longer depend on how far past them the window runs.**
+  Samples were read only up to the window's end, so a gap just before it was
+  placed without the rate after it, and the share of a gap straddling the end
+  that fell inside the window was dropped. `read_counters` now reads up to
+  three days past `end` to place energy, and still counts nothing after
+  `end`. The four cycles from 2025-09-29 to 2026-01-29 moved from $0.04–$0.13
+  under their bills to $0.01–$0.02 under.
+- **InfluxDB's last reading of a window covers only the window.** A window
+  that ended partway through an interval returned a last reading claiming
+  the whole interval, which overstated coverage and overlapped the next
+  window. Its duration now ends at `end`.
+- **An unreachable InfluxDB is reported, not raised as a traceback.** A
+  timeout or refused connection escaped as the HTTP client's own exception,
+  and `audit run` exited 1, the code for a billing discrepancy. It is now a
+  `DataError` naming the host, and the audit exits 2.
+- **Export credit pays the Energy Commission Tax.** The tax had no credit
+  bucket, so it was charged in cash even with credit in the bank. The
+  2026-10-05 statement applies $18.70 of MCE credit against $18.68 of Net
+  Charges and the $0.02 tax, closing at $0.00. The tax is now offset with
+  the generation charges on a cycle supplied wholly by a CCA. Any other
+  cycle, including one that changes supplier partway, still pays it in cash,
+  since no bundled statement has yet shown PG&E offsetting it. The engine
+  records that in the new `Bill.uncreditable_charges`. The
+  share charged before Permission To Operate stays beyond credit's reach, as
+  the rest of that agreement's charges do.
+- `audit run` no longer reports "the rates reproduce this line" on an Energy
+  Export Credits Applied line. That line is made only of figures the
+  statement printed, so the check only ever read it back.
 - **A refused bill history request says why.** When the portal rejected the
   request -- a bad `history_filter`, most often -- `PgeSession.bill_history`
   reported that the portal had changed, hiding the portal's own message. It now

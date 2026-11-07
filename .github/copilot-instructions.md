@@ -149,10 +149,11 @@ uv run python -m audit run --since 2025-11-01 --until 2026-08-31
 - **Three residuals are reported separately and never merged**: an unmapped
   printed line, an unmapped computed component, and a genuine mismatch.
 - **Secrets and statements stay out of the repo.** `audit/account.toml` (from
-  `account.example.toml`) is gitignored, `*.pdf` is gitignored, statements are
-  deleted after a run unless `--keep-statements`, and interval data comes from
-  InfluxDB via `INFLUXDB3_*` in `.env`. `TARIFFKIT_STATEMENT_DIR` points at
-  existing statements instead of downloading.
+  `account.example.toml`) is gitignored, `*.pdf` is gitignored, downloaded
+  statements are kept in `.cache/pge/statements/` unless
+  `--discard-statements`, and interval data comes from InfluxDB via
+  `INFLUXDB3_*` in `.env`. `TARIFFKIT_STATEMENT_DIR` points at existing
+  statements instead of downloading.
 - **A cycle spanning an account change is refused, not guessed.** `account.toml`
   dates the account's schedule, supplier, baseline territory, and PCIA vintage,
   because `Config` describes one moment.
