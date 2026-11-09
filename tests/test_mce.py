@@ -56,16 +56,52 @@ def test_cost_relief_credit_matches_the_bill() -> None:
     assert price.components["cca_cost_relief_credit"] == pytest.approx(-0.00620)
 
 
-def test_cost_relief_credit_expires_at_the_end_of_2026() -> None:
-    """It is explicitly time-limited; leaving it on would understate 2027."""
-    card = load_rate_card("mce", CARD_DATE)
-    assert card.cost_relief_credit(date(2026, 12, 31)) == pytest.approx(-0.00620)
-    assert card.cost_relief_credit(date(2027, 1, 1)) == 0.0
+@pytest.mark.parametrize(
+    ("on", "credit"),
+    [
+        (date(2026, 4, 1), -0.00620),
+        (date(2026, 10, 31), -0.00620),
+        # MCE's November reissue of the April card: same rates, new credit.
+        (date(2026, 11, 1), -0.03725),
+        (date(2027, 3, 31), -0.03725),
+        (date(2027, 4, 1), 0.0),
+    ],
+)
+def test_cost_relief_credit_follows_its_windows(on: date, credit: float) -> None:
+    """Dated windows, so each stops on its own; leaving one on misprices the next."""
+    assert load_rate_card("mce", CARD_DATE).cost_relief_credit(on) == pytest.approx(credit)
 
+
+def test_cost_relief_credit_lapses_in_2027() -> None:
     assert (
         "cca_cost_relief_credit"
         not in RetailTariff(config()).price_at(datetime(2027, 7, 29, 12, tzinfo=PACIFIC)).components
     )
+
+
+def test_november_is_priced_with_the_reissued_credit() -> None:
+    price = RetailTariff(config()).price_at(datetime(2026, 11, 16, 12, tzinfo=PACIFIC))
+    assert price.components["cca_cost_relief_credit"] == pytest.approx(-0.03725)
+
+
+@pytest.mark.parametrize(
+    ("windows", "match"),
+    [
+        ({"rate": -0.01}, "array of tables"),
+        (
+            [{"rate": -0.01, "through": "2026-11-30"}, {"rate": -0.02, "from": "2026-11-01"}],
+            "overlap",
+        ),
+        ([{"rate": -0.01}, {"rate": -0.02, "from": "2026-11-01"}], "overlap"),
+        ([{"rate": -0.01, "from": "2026-12-01", "through": "2026-11-01"}], "before"),
+        ([{"through": "2026-11-01"}], "malformed"),
+    ],
+)
+def test_malformed_credit_windows_are_refused(windows: object, match: str) -> None:
+    from tariffkit.cca import credit_windows
+
+    with pytest.raises(DataError, match=match):
+        credit_windows("MCE", {"cost_relief_credit": windows})
 
 
 def test_rate_card_uses_canonical_utility_identifier() -> None:

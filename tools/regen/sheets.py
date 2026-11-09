@@ -125,6 +125,10 @@ ADVICE = re.compile(r"Advice\s+(\d+-E)", re.I)
 EFFECTIVE = re.compile(r"Effective\s+([A-Z][a-z]+ \d{1,2}, \d{4})")
 #: How a CCA rate card dates itself, e.g. "(Rates effective 1.1.23)".
 EFFECTIVE_SHORT = re.compile(r"[Rr]ates effective\s+(\d{1,2})\.(\d{1,2})\.(\d{2,4})")
+#: The spelled-out form MCE switched to in 2026, "(Rates effective April 1,
+#: 2026)". EFFECTIVE misses it on the lower-case "effective", and without a date
+#: the card was filed under whichever vintage happened to be newest on disk.
+EFFECTIVE_SPELLED = re.compile(r"[Rr]ates effective\s+([A-Z][a-z]+ \d{1,2}, \d{4})")
 
 
 class ExtractionError(DataError):
@@ -249,7 +253,7 @@ def parse_effective(text: str) -> date | None:
     single such page in a 250-page filing must not take down a whole index --
     the page simply does not contribute a date.
     """
-    if match := EFFECTIVE.search(text):
+    if match := EFFECTIVE.search(text) or EFFECTIVE_SPELLED.search(text):
         try:
             return datetime.strptime(match.group(1), "%B %d, %Y").date()
         except ValueError:
