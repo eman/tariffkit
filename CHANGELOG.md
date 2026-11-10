@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-11-10
+
 ### Changed
 - **`audit run` keeps the statements it downloads.** They stay under
   `.cache/pge/statements/`, so a later run reads them from disk instead of
@@ -2214,7 +2216,8 @@ Initial release.
 - Holiday calendars are extracted per vintage from the source data rather than
   recomputed, because the vintage files disagree in far-future years.
 
-[Unreleased]: https://github.com/eman/tariffkit/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/eman/tariffkit/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/eman/tariffkit/releases/tag/v0.11.2
 [0.11.1]: https://github.com/eman/tariffkit/releases/tag/v0.11.1
 [0.11.0]: https://github.com/eman/tariffkit/releases/tag/v0.11.0
 [0.10.0]: https://github.com/eman/tariffkit/releases/tag/v0.10.0
