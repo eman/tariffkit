@@ -44,6 +44,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from tariffkit.errors import ConfigError, DataError
+
 from .emit import DATA_DIR, Result, fmt, write_or_check
 from .providers import Cca, utility
 from .sheets import ExtractionError, Page, cells, read_pages
@@ -556,8 +558,54 @@ def regenerate(provider: Cca, pdf: Path, *, check: bool, source_url: str = "") -
     # Dated from the card's own statement of when it took force, so a historical
     # card lands beside the current one rather than overwriting it.
     return write_or_check(
-        f"{provider.key} {effective}", target, body, check=check, messages=messages
+        f"{provider.key} {effective}",
+        target,
+        body,
+        check=check,
+        verify=lambda text: verify_against_library(provider, text),
+        messages=messages,
     )
+
+
+def verify_against_library(provider: Cca, text: str) -> list[str]:
+    """Problems the library would have reading ``text``, before it is written.
+
+    The card is put through the loader's own validation, then every rate is
+    read back and every credit window priced at both ends. A card that printed
+    "from November 1, 2026 through March 31, 2026" used to extract and merge
+    cleanly, then be written as a file the loader refuses -- taking down MCE
+    pricing rather than the regeneration that caused it.
+    """
+    from tariffkit.cca import parse_rate_card
+
+    try:
+        card = parse_rate_card(provider.key.upper(), tomllib.loads(text))
+    except (DataError, tomllib.TOMLDecodeError) as exc:
+        return [str(exc)]
+    problems: list[str] = []
+    for slug, seasons in card.raw.get("generation", {}).items():
+        for season, periods in seasons.items():
+            for period, rate in periods.items():
+                try:
+                    read = card.generation(slug, season, period)
+                except (ConfigError, DataError) as exc:
+                    # ConfigError is a missing [options] table: the card did
+                    # not state Deep Green, so even Light Green cannot price.
+                    problems.append(str(exc))
+                    continue
+                if abs(read - float(rate)) > 1e-9:
+                    problems.append(f"{slug} {season} {period}: wrote {rate}, read back {read}")
+    for window in card.raw.get("cost_relief_credit", []):
+        for key in ("from", "through"):
+            if key not in window:
+                continue
+            on = date.fromisoformat(str(window[key]))
+            read = card.cost_relief_credit(on)
+            if abs(read - float(window["rate"])) > 1e-9:
+                problems.append(
+                    f"cost relief credit on {on}: wrote {window['rate']}, read back {read}"
+                )
+    return problems
 
 
 def _watch_by_checksum(

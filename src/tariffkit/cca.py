@@ -195,9 +195,18 @@ def load_rate_card(provider: str, on: date) -> CcaRateCard:
             f"no vendored rate card for CCA {provider!r}; supply rates via "
             f"CcaConfig(generation_rates=..., franchise_fee_surcharge=...)"
         ) from exc
-    if version.raw.get("schema") != 1:
-        raise DataError(f"{provider}: unsupported rate card schema {version.raw.get('schema')}")
-    raw = dict(version.raw)
+    return parse_rate_card(provider, version.raw)
+
+
+def parse_rate_card(provider: str, raw: dict[str, Any]) -> CcaRateCard:
+    """Validate a rate card's contents, as :func:`load_rate_card` does on load.
+
+    Separate so regeneration can put a rendered card through exactly the
+    checks it will face at runtime before writing it.
+    """
+    if raw.get("schema") != 1:
+        raise DataError(f"{provider}: unsupported rate card schema {raw.get('schema')}")
+    raw = dict(raw)
     try:
         raw["utility"] = Utility(raw["utility"]).value
     except (KeyError, ValueError) as exc:
@@ -205,7 +214,7 @@ def load_rate_card(provider: str, on: date) -> CcaRateCard:
     # Checked on load so a malformed window fails when the card is chosen,
     # not partway through pricing a cycle.
     credit_windows(provider, raw)
-    return CcaRateCard(provider=str(raw["provider"]), raw=raw)
+    return CcaRateCard(provider=str(raw.get("provider", provider)), raw=raw)
 
 
 def available_rate_cards() -> tuple[str, ...]:

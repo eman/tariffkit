@@ -392,6 +392,8 @@ ALIASES = {"ELEC": "eelec", "ETOUC": "etouc", "EV2": "ev2a"}
 CREDIT_NOVEMBER = (
     "MCE Cost Relief Credit    (-$0.03725)/kWh *Runs from November 1, 2026 through March 31, 2027\n"
 )
+# Every MCE card prints this; without it a card has no options and cannot price.
+DEEP_GREEN_LINE = "MCE Deep Green Premium All Usage* as above plus $0.0125/kWh\n"
 # The April 2026 original, which had no start date.
 CREDIT_APRIL = "MCE Cost Relief Credit (-$0.0062)/kWh *Runs through December 31, 2026\n"
 
@@ -424,7 +426,9 @@ class TestCcaRateCard:
         monkeypatch.setattr(
             cca,
             "read_pages",
-            lambda _: [sheets.Page(index=1, text=card, effective=date(2026, 4, 1))],
+            lambda _: [
+                sheets.Page(index=1, text=card + DEEP_GREEN_LINE, effective=date(2026, 4, 1))
+            ],
         )
         monkeypatch.setattr(cca, "parity_note", lambda *_: [])
         return cca.regenerate(providers.MCE, pdf, check=False), target
@@ -585,6 +589,38 @@ through = "2999-03-31"
         assert result.failed
         assert "Cost Relief Credit" in result.messages[0]
 
+    def test_a_window_the_loader_would_refuse_is_not_written(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A misprinted year extracts and merges cleanly; the library still refuses it.
+
+        Written anyway, it took MCE pricing down at load rather than failing the
+        regeneration that caused it.
+        """
+        existing = 'effective = "2026-04-01"\n'
+        result, target = self.regenerate(
+            monkeypatch,
+            tmp_path,
+            existing,
+            CREDIT_NOVEMBER.replace("March 31, 2027", "March 31, 2026") + MCE_CARD,
+        )
+        assert result.failed
+        assert any("ends 2026-03-31 before 2026-11-01" in m for m in result.messages)
+        assert target.read_text(encoding="utf-8") == existing
+
+    def test_a_card_without_options_is_not_written(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """No Deep Green line means no [options], and then nothing can be priced."""
+        monkeypatch.setattr(cca, "extract_options", lambda _: {})
+        result, _ = self.regenerate(monkeypatch, tmp_path, 'effective = "2026-04-01"\n', MCE_CARD)
+        assert result.failed
+        assert any("unknown product option" in m for m in result.messages)
+
+    def test_the_vendored_card_survives_its_own_verification(self) -> None:
+        text = (cca.DATA_DIR / "cca" / "mce" / "2026-04-01.toml").read_text(encoding="utf-8")
+        assert cca.verify_against_library(providers.MCE, text) == []
+
     def test_a_credit_starting_on_the_same_day_supersedes(self) -> None:
         recorded = [{"rate": -0.03, "from": "2026-11-01", "through": "2027-03-31"}]
         stated = {"rate": -0.03725, "from": "2026-11-01", "through": "2027-03-31"}
@@ -680,7 +716,9 @@ through = "2999-03-31"
         pdf.write_bytes(b"rate card")
         monkeypatch.setattr(cca, "DATA_DIR", tmp_path / "data")
         monkeypatch.setattr(emit, "DATA_DIR", tmp_path / "data")
-        monkeypatch.setattr(cca, "read_pages", lambda _: [sheets.Page(index=1, text=MCE_CARD)])
+        monkeypatch.setattr(
+            cca, "read_pages", lambda _: [sheets.Page(index=1, text=MCE_CARD + DEEP_GREEN_LINE)]
+        )
         monkeypatch.setattr(cca, "parity_note", lambda *_: [])
         result = cca.regenerate(providers.MCE, pdf, check=True)
         assert any("no effective date" in m and "2026-04-01" in m for m in result.messages)
