@@ -440,7 +440,7 @@ One rate card is vendored:
 
 | Provider | `rate_card` | Covers |
 |---|---|---|
-| MCE (Marin Clean Energy) | `"mce"` | ELEC generation by season/period, Cost Relief Credit (expires 2026-12-31), Deep Green premium, 10% Solar Bonus Credit, its own ACC Plus adder banked as the EEBC |
+| MCE (Marin Clean Energy) | `"mce"` | ELEC generation by season/period, Cost Relief Credit (-$0.0062/kWh through 2026-10-31, then -$0.03725/kWh through 2027-03-31; none after), Deep Green premium, 10% Solar Bonus Credit, its own ACC Plus adder banked as the EEBC |
 
 For any other CCA, supply rates directly:
 
