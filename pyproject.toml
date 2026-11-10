@@ -100,6 +100,16 @@ exclude = [
     "/tests/test_release.py",
 ]
 
+[tool.uv]
+# Pillow reaches the lock only through the Home Assistant test stack:
+# pytest-homeassistant-custom-component 0.13.375 pins homeassistant==2026.10.4,
+# which pins Pillow==12.3.0 -- 41 advisories, all fixed in 13.0.0. TariffKit
+# never imports PIL, and the production extras do not include it, so this only
+# lifts the dev graph past an exact pin that HA itself dropped in 2026.11.
+# Remove once a pytest-homeassistant-custom-component release pins
+# homeassistant>=2026.11, which requires Pillow 13 on its own.
+override-dependencies = ["pillow>=13.0.0"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py314"
