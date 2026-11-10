@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from functools import lru_cache
+from itertools import pairwise
 from typing import Any
 
 from .data import versioned
@@ -70,18 +71,18 @@ class CcaRateCard:
         return base + float(premium)
 
     def cost_relief_credit(self, on: date) -> float:
-        """A time-limited per-kWh credit, or zero once it lapses.
+        """The per-kWh credit in force on ``on``, or zero outside every window.
 
         Dated rather than folded into the rates so it stops applying on its own
-        instead of quietly understating prices in later years.
+        instead of quietly understating prices in later years. A card can carry
+        more than one window because MCE reissues the credit without repricing:
+        the April 2026 card's -0.0062 gave way on 2026-11-01 to -0.03725, and
+        the generation rates either side of that date are identical.
         """
-        credit = self.raw.get("cost_relief_credit")
-        if not credit:
-            return 0.0
-        through = credit.get("through")
-        if through and on > date.fromisoformat(through):
-            return 0.0
-        return float(credit["rate"])
+        for start, end, rate in credit_windows(self.provider, self.raw):
+            if (start is None or on >= start) and (end is None or on <= end):
+                return rate
+        return 0.0
 
     @property
     def solar_bonus_fraction(self) -> float:
@@ -127,6 +128,48 @@ class CcaRateCard:
         return rate
 
 
+#: One cost relief credit window: first day, last day, $/kWh. An open start
+#: means from the card's own effective date.
+CreditWindow = tuple[date | None, date | None, float]
+
+
+def credit_windows(provider: str, raw: dict[str, Any]) -> tuple[CreditWindow, ...]:
+    """The card's ``[[cost_relief_credit]]`` windows, in order, checked disjoint.
+
+    Overlapping windows are refused rather than resolved: two credits claiming
+    the same day means the card was misread or a replacement was not ended,
+    and picking either one would hide which.
+    """
+    entries = raw.get("cost_relief_credit") or []
+    if not isinstance(entries, list):
+        raise DataError(
+            f"{provider}: cost_relief_credit must be an array of tables "
+            f"([[cost_relief_credit]]), one per dated window"
+        )
+
+    def day(entry: dict[str, Any], key: str) -> date | None:
+        value = entry.get(key)
+        return None if value is None else date.fromisoformat(str(value))
+
+    try:
+        windows = sorted(
+            ((day(e, "from"), day(e, "through"), float(e["rate"])) for e in entries),
+            key=lambda w: w[0] or date.min,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise DataError(f"{provider}: malformed cost_relief_credit window: {exc}") from exc
+    for start, end, _ in windows:
+        if start is not None and end is not None and start > end:
+            raise DataError(f"{provider}: cost_relief_credit window ends {end} before {start}")
+    for (_, end, _), (start, _, _) in pairwise(windows):
+        if end is None or start is None or start <= end:
+            raise DataError(
+                f"{provider}: cost_relief_credit windows overlap "
+                f"(one ends {end or 'never'}, the next starts {start or 'at the card'})"
+            )
+    return tuple(windows)
+
+
 @lru_cache(maxsize=8)
 def load_rate_card(provider: str, on: date) -> CcaRateCard:
     """The provider's rate card in force on ``on``.
@@ -152,14 +195,26 @@ def load_rate_card(provider: str, on: date) -> CcaRateCard:
             f"no vendored rate card for CCA {provider!r}; supply rates via "
             f"CcaConfig(generation_rates=..., franchise_fee_surcharge=...)"
         ) from exc
-    if version.raw.get("schema") != 1:
-        raise DataError(f"{provider}: unsupported rate card schema {version.raw.get('schema')}")
-    raw = dict(version.raw)
+    return parse_rate_card(provider, version.raw)
+
+
+def parse_rate_card(provider: str, raw: dict[str, Any]) -> CcaRateCard:
+    """Validate a rate card's contents, as :func:`load_rate_card` does on load.
+
+    Separate so regeneration can put a rendered card through exactly the
+    checks it will face at runtime before writing it.
+    """
+    if raw.get("schema") != 1:
+        raise DataError(f"{provider}: unsupported rate card schema {raw.get('schema')}")
+    raw = dict(raw)
     try:
         raw["utility"] = Utility(raw["utility"]).value
     except (KeyError, ValueError) as exc:
         raise DataError(f"{provider}: invalid utility identifier") from exc
-    return CcaRateCard(provider=str(raw["provider"]), raw=raw)
+    # Checked on load so a malformed window fails when the card is chosen,
+    # not partway through pricing a cycle.
+    credit_windows(provider, raw)
+    return CcaRateCard(provider=str(raw.get("provider", provider)), raw=raw)
 
 
 def available_rate_cards() -> tuple[str, ...]:

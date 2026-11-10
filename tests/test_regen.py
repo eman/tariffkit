@@ -9,6 +9,7 @@ parser written against one sheet gets wrong on the next.
 
 from __future__ import annotations
 
+import importlib
 from datetime import date
 from pathlib import Path
 
@@ -18,6 +19,7 @@ pytest.importorskip("pypdf")
 
 from tools.regen import accplus, cca, franchise, nsc, program, providers, sheets, tax
 from tools.regen import tariff as rt
+from tools.regen.emit import Result
 from tools.regen.sheets import ExtractionError
 
 # Verbatim from Schedule E-ELEC Sheet 3.
@@ -386,26 +388,62 @@ Off Peak $0.888/kWh All other hours
 
 ALIASES = {"ELEC": "eelec", "ETOUC": "etouc", "EV2": "ev2a"}
 
+# Verbatim from MCE's November 2026 reissue of its April card, as pypdf reads it.
+CREDIT_NOVEMBER = (
+    "MCE Cost Relief Credit    (-$0.03725)/kWh *Runs from November 1, 2026 through March 31, 2027\n"
+)
+# Every MCE card prints this; without it a card has no options and cannot price.
+DEEP_GREEN_LINE = "MCE Deep Green Premium All Usage* as above plus $0.0125/kWh\n"
+# The April 2026 original, which had no start date.
+CREDIT_APRIL = "MCE Cost Relief Credit (-$0.0062)/kWh *Runs through December 31, 2026\n"
+
 
 class TestCcaRateCard:
     def extract(self) -> tuple[dict, list[str]]:
         return cca.extract_generation([sheet(MCE_CARD)], ALIASES)
 
-    def test_regenerating_a_vintage_preserves_its_non_rate_terms(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        import tomllib
-
+    def regenerate(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        existing: str,
+        card: str,
+        pdf_bytes: bytes = b"rate card",
+    ) -> tuple[Result, Path]:
+        """Regenerate a 2026-04-01 vintage holding ``existing`` from ``card``."""
         from tools.regen import emit
 
         data_dir = tmp_path / "data"
         card_dir = data_dir / "cca" / "mce"
         card_dir.mkdir(parents=True)
         target = card_dir / "2026-04-01.toml"
-        target.write_text(
+        target.write_text(existing, encoding="utf-8")
+        pdf = tmp_path / "card.pdf"
+        pdf.write_bytes(pdf_bytes)
+
+        monkeypatch.setattr(cca, "DATA_DIR", data_dir)
+        monkeypatch.setattr(emit, "DATA_DIR", data_dir)
+        monkeypatch.setattr(
+            cca,
+            "read_pages",
+            lambda _: [
+                sheets.Page(index=1, text=card + DEEP_GREEN_LINE, effective=date(2026, 4, 1))
+            ],
+        )
+        monkeypatch.setattr(cca, "parity_note", lambda *_: [])
+        return cca.regenerate(providers.MCE, pdf, check=False), target
+
+    def test_regenerating_a_vintage_preserves_its_non_rate_terms(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import tomllib
+
+        result, target = self.regenerate(
+            monkeypatch,
+            tmp_path,
             """effective = "2026-04-01"
 
-[cost_relief_credit]
+[[cost_relief_credit]]
 rate = -0.0062
 through = "2026-12-31"
 
@@ -414,33 +452,196 @@ export_credit_basis = "acc_generation"
 export_credit_verified = true
 credits_acc_plus = true
 """,
-            encoding="utf-8",
+            CREDIT_APRIL + MCE_CARD,
         )
-        pdf = tmp_path / "card.pdf"
-        pdf.write_bytes(b"rate card")
-
-        monkeypatch.setattr(cca, "DATA_DIR", data_dir)
-        monkeypatch.setattr(emit, "DATA_DIR", data_dir)
-        monkeypatch.setattr(
-            cca,
-            "read_pages",
-            lambda _: [sheets.Page(index=1, text=MCE_CARD, effective=date(2026, 4, 1))],
-        )
-        monkeypatch.setattr(cca, "parity_note", lambda *_: [])
-
-        result = cca.regenerate(providers.MCE, pdf, check=False)
 
         assert not result.failed, result.messages
         regenerated = tomllib.loads(target.read_text(encoding="utf-8"))
-        assert regenerated["cost_relief_credit"] == {
-            "rate": -0.0062,
-            "through": "2026-12-31",
-        }
+        assert regenerated["cost_relief_credit"] == [{"rate": -0.0062, "through": "2026-12-31"}]
         assert regenerated["export"] == {
             "export_credit_basis": "acc_generation",
             "export_credit_verified": True,
             "credits_acc_plus": True,
         }
+
+    def test_a_reissued_credit_replaces_the_running_one(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The November 2026 reissue, as it reached the scheduled check.
+
+        Carrying the April card's credit forward produced a file that passed
+        every test and priced November at -0.0062 instead of -0.03725.
+        """
+        import tomllib
+
+        result, target = self.regenerate(
+            monkeypatch,
+            tmp_path,
+            """effective = "2026-04-01"
+source_sha256 = "old"
+source_read_on = "2026-08-12"
+
+[cost_relief_credit]
+rate = -0.0062
+through = "2026-12-31"
+""",
+            CREDIT_NOVEMBER + MCE_CARD,
+        )
+
+        assert not result.failed, result.messages
+        regenerated = tomllib.loads(target.read_text(encoding="utf-8"))
+        assert regenerated["cost_relief_credit"] == [
+            {"rate": -0.0062, "through": "2026-10-31"},
+            {"rate": -0.03725, "from": "2026-11-01", "through": "2027-03-31"},
+        ]
+        # A document the file had not recorded was read today, not in August.
+        assert regenerated["source_read_on"] == date.today().isoformat()
+
+    def test_an_unchanged_card_keeps_its_read_date(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import hashlib
+        import tomllib
+
+        digest = hashlib.sha256(b"rate card").hexdigest()
+        result, target = self.regenerate(
+            monkeypatch,
+            tmp_path,
+            f'effective = "2026-04-01"\nsource_sha256 = "{digest}"\n'
+            'source_read_on = "2026-08-12"\n',
+            MCE_CARD,
+        )
+        assert not result.failed, result.messages
+        assert tomllib.loads(target.read_text(encoding="utf-8"))["source_read_on"] == "2026-08-12"
+
+    def test_a_card_that_drops_a_running_credit_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Silence on the card is not evidence the credit ended, or when."""
+        existing = """effective = "2026-04-01"
+
+[[cost_relief_credit]]
+rate = -0.03725
+from = "2026-11-01"
+through = "2999-03-31"
+"""
+        result, target = self.regenerate(monkeypatch, tmp_path, existing, MCE_CARD)
+        assert result.failed
+        assert any("still running" in m for m in result.messages)
+        assert target.read_text(encoding="utf-8") == existing
+
+    def test_notes_above_the_generated_header_survive(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        notes = "# NOTES -- confirmed against the July statement.\n#\n"
+        result, target = self.regenerate(
+            monkeypatch,
+            tmp_path,
+            notes + cca.title(providers.MCE) + '\neffective = "2026-04-01"\n',
+            MCE_CARD,
+        )
+        assert not result.failed, result.messages
+        body = target.read_text(encoding="utf-8")
+        assert body.startswith(notes + cca.title(providers.MCE) + "\n")
+        assert body.count(cca.title(providers.MCE)) == 1
+
+    def test_a_hand_written_files_comments_are_kept_and_said_so(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        result, target = self.regenerate(
+            monkeypatch,
+            tmp_path,
+            '# Read from the rendered page.\n\neffective = "2026-04-01"\n',
+            MCE_CARD,
+        )
+        assert not result.failed, result.messages
+        assert target.read_text(encoding="utf-8").startswith(
+            "# Read from the rendered page.\n#\n" + cca.title(providers.MCE)
+        )
+        assert any("written by hand" in m for m in result.messages)
+
+    def test_the_credit_window_is_read_off_the_card(self) -> None:
+        assert cca.extract_cost_relief_credit([sheet(CREDIT_NOVEMBER)]) == {
+            "rate": -0.03725,
+            "from": "2026-11-01",
+            "through": "2027-03-31",
+        }
+        assert cca.extract_cost_relief_credit([sheet(CREDIT_APRIL)]) == {
+            "rate": -0.0062,
+            "through": "2026-12-31",
+        }
+        assert cca.extract_cost_relief_credit([sheet(MCE_CARD)]) is None
+
+    def test_a_credit_it_cannot_read_raises_rather_than_reading_as_none(self) -> None:
+        with pytest.raises(ExtractionError, match="Cost Relief Credit"):
+            cca.extract_cost_relief_credit([sheet("MCE Cost Relief Credit: see website\n")])
+
+    def test_an_unreadable_credit_fails_rather_than_being_watched(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Rates that parse beside a credit that does not mean the reader broke."""
+        result, _ = self.regenerate(
+            monkeypatch,
+            tmp_path,
+            'effective = "2026-04-01"\n',
+            "MCE Cost Relief Credit: see website\n" + MCE_CARD,
+        )
+        assert result.failed
+        assert "Cost Relief Credit" in result.messages[0]
+
+    def test_a_window_the_loader_would_refuse_is_not_written(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A misprinted year extracts and merges cleanly; the library still refuses it.
+
+        Written anyway, it took MCE pricing down at load rather than failing the
+        regeneration that caused it.
+        """
+        existing = 'effective = "2026-04-01"\n'
+        result, target = self.regenerate(
+            monkeypatch,
+            tmp_path,
+            existing,
+            CREDIT_NOVEMBER.replace("March 31, 2027", "March 31, 2026") + MCE_CARD,
+        )
+        assert result.failed
+        assert any("ends 2026-03-31 before 2026-11-01" in m for m in result.messages)
+        assert target.read_text(encoding="utf-8") == existing
+
+    def test_a_card_without_options_is_not_written(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """No Deep Green line means no [options], and then nothing can be priced."""
+        monkeypatch.setattr(cca, "extract_options", lambda _: {})
+        result, _ = self.regenerate(monkeypatch, tmp_path, 'effective = "2026-04-01"\n', MCE_CARD)
+        assert result.failed
+        assert any("unknown product option" in m for m in result.messages)
+
+    def test_the_vendored_card_survives_its_own_verification(self) -> None:
+        text = (cca.DATA_DIR / "cca" / "mce" / "2026-04-01.toml").read_text(encoding="utf-8")
+        assert cca.verify_against_library(providers.MCE, text) == []
+
+    def test_a_credit_starting_on_the_same_day_supersedes(self) -> None:
+        recorded = [{"rate": -0.03, "from": "2026-11-01", "through": "2027-03-31"}]
+        stated = {"rate": -0.03725, "from": "2026-11-01", "through": "2027-03-31"}
+        windows, _, problems = cca.merge_credit_windows(
+            recorded, stated, date(2026, 4, 1), date(2026, 11, 9)
+        )
+        assert windows == [stated] and not problems
+
+    def test_windows_ended_before_the_vintage_are_not_carried(self) -> None:
+        recorded = [{"rate": -0.01, "through": "2026-03-31"}]
+        windows, _, problems = cca.merge_credit_windows(
+            recorded, None, date(2026, 4, 1), date(2026, 11, 9)
+        )
+        assert windows == [] and not problems
+
+    def test_an_ended_credit_the_card_no_longer_names_is_not_a_problem(self) -> None:
+        recorded = [{"rate": -0.0062, "through": "2026-10-31"}]
+        windows, _, problems = cca.merge_credit_windows(
+            recorded, None, date(2026, 4, 1), date(2026, 11, 9)
+        )
+        assert windows == recorded and not problems
 
     def test_periods_are_read_per_schedule_and_season(self) -> None:
         generation, _ = self.extract()
@@ -498,6 +699,29 @@ credits_acc_plus = true
 
     def test_the_card_dates_itself(self) -> None:
         assert sheets.parse_effective(MCE_CARD) == date(2023, 1, 1)
+
+    def test_the_spelled_out_date_is_read_too(self) -> None:
+        """MCE's 2026 cards; missing it filed them under the newest vintage."""
+        assert sheets.parse_effective("(Rates effective April 1, 2026)") == date(2026, 4, 1)
+
+    def test_an_undated_card_says_where_it_was_filed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from tools.regen import emit
+
+        card_dir = tmp_path / "data" / "cca" / "mce"
+        card_dir.mkdir(parents=True)
+        (card_dir / "2026-04-01.toml").write_text('effective = "2026-04-01"\n')
+        pdf = tmp_path / "card.pdf"
+        pdf.write_bytes(b"rate card")
+        monkeypatch.setattr(cca, "DATA_DIR", tmp_path / "data")
+        monkeypatch.setattr(emit, "DATA_DIR", tmp_path / "data")
+        monkeypatch.setattr(
+            cca, "read_pages", lambda _: [sheets.Page(index=1, text=MCE_CARD + DEEP_GREEN_LINE)]
+        )
+        monkeypatch.setattr(cca, "parity_note", lambda *_: [])
+        result = cca.regenerate(providers.MCE, pdf, check=True)
+        assert any("no effective date" in m and "2026-04-01" in m for m in result.messages)
 
 
 # Verbatim from PG&E Schedule NBT, ACC Plus table.
@@ -1077,3 +1301,66 @@ class TestRegistryOmissions:
 
     def test_a_registered_tax_still_resolves_its_latest(self) -> None:
         assert providers.CA_ENERGY_RESOURCES.latest_notice == "L-1020"
+
+
+class TestFetch:
+    """What a failed download says, which decides where a person looks next."""
+
+    def source(self) -> providers.Source:
+        return providers.Source(
+            "https://example.com/card.pdf", listed_on="https://example.com/rates/"
+        )
+
+    def test_a_document_httpx_cannot_find_is_reported_as_moved(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Not as a bot block, which is what urllib's answer used to say."""
+        fetch = importlib.import_module("tools.regen.fetch")
+
+        monkeypatch.setattr(fetch, "_get_with_httpx", lambda _: (None, 404))
+
+        def urlopen(*_: object, **__: object) -> None:
+            raise AssertionError("urllib's answer must not replace httpx's 404")
+
+        monkeypatch.setattr(fetch.urllib.request, "urlopen", urlopen)
+        with pytest.raises(ExtractionError) as raised:
+            fetch.fetch(self.source(), tmp_path / "card.pdf")
+        message = str(raised.value)
+        assert "HTTP 404" in message and "no longer there" in message
+        assert "https://example.com/rates/" in message
+        assert "blocks scripted" not in message
+
+    def test_a_refusal_from_httpx_still_tries_urllib(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import urllib.error
+
+        fetch = importlib.import_module("tools.regen.fetch")
+
+        monkeypatch.setattr(fetch, "_get_with_httpx", lambda _: (None, 403))
+        tried: list[str] = []
+
+        def urlopen(request: object, **_: object) -> None:
+            tried.append("urllib")
+            raise urllib.error.HTTPError("https://example.com/card.pdf", 403, "no", {}, None)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(fetch.urllib.request, "urlopen", urlopen)
+        with pytest.raises(ExtractionError, match="blocks scripted"):
+            fetch.fetch(self.source(), tmp_path / "card.pdf")
+        assert tried == ["urllib"]
+
+    def test_a_404_from_urllib_is_reported_as_moved_too(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import urllib.error
+
+        fetch = importlib.import_module("tools.regen.fetch")
+
+        monkeypatch.setattr(fetch, "_get_with_httpx", lambda _: (None, None))
+
+        def urlopen(*_: object, **__: object) -> None:
+            raise urllib.error.HTTPError("https://example.com/card.pdf", 404, "gone", {}, None)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(fetch.urllib.request, "urlopen", urlopen)
+        with pytest.raises(ExtractionError, match="no longer there"):
+            fetch.fetch(self.source(), tmp_path / "card.pdf")

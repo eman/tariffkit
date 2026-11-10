@@ -24,11 +24,12 @@ Schedules a card lists but the library does not vendor -- MCE publishes ETOUD,
 E1 and a block of closed schedules -- are skipped rather than guessed at, and
 named in the run's output so a newly relevant one is noticed.
 
-**A card with no text layer is still watched.** MCE currently publishes a
+**A card with no text layer is still watched.** MCE's April 2026 card was a
 print-to-PDF export whose figures are glyph ids with no characters behind them,
-so nothing can parse it and the values are read from the rendered page instead.
-That stops the *extraction* being automatic; it does not stop the *detection*,
-which was always the more valuable half. The vendored file records a checksum of
+so nothing could parse it and the values were read from the rendered page
+instead. (Its November reissue has text again, and is extracted.) That stops the
+*extraction* being automatic; it does not stop the *detection*, which was always
+the more valuable half. The vendored file records a checksum of
 the document it was read from, so a scheduled run downloads the card, compares
 bytes, and says whether a human needs to go and look. Silence then means the
 publisher has not moved, rather than meaning nobody checked.
@@ -39,8 +40,11 @@ from __future__ import annotations
 import hashlib
 import re
 import tomllib
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Any
+
+from tariffkit.errors import ConfigError, DataError
 
 from .emit import DATA_DIR, Result, fmt, write_or_check
 from .providers import Cca, utility
@@ -153,6 +157,151 @@ def extract_options(pages: list[Page]) -> dict[str, float]:
     return {"light_green": 0.0, "deep_green": float(match.group(1))}
 
 
+#: "MCE Cost Relief Credit (-$0.03725)/kWh *Runs from November 1, 2026 through
+#: March 31, 2027". The April 2026 print had no start, only "Runs through
+#: December 31, 2026", so the start is optional.
+_SPELLED_DATE = r"[A-Z][a-z]+ \d{1,2}, \d{4}"
+COST_RELIEF = re.compile(
+    r"Cost Relief Credit[\s(]*-?\s*\$\s*([0-9.]+)\s*\)?\s*/\s*kWh.{0,120}?"
+    rf"Runs\s+(?:from\s+({_SPELLED_DATE})\s+)?through\s+({_SPELLED_DATE})",
+    re.I | re.S,
+)
+
+
+def _spelled(text: str) -> str:
+    return datetime.strptime(text, "%B %d, %Y").date().isoformat()
+
+
+def extract_cost_relief_credit(pages: list[Page]) -> dict[str, Any] | None:
+    """The credit window the card states, or None when it states none.
+
+    Read rather than carried forward, for the same reason as the Deep Green
+    premium: in November 2026 MCE reissued its April card with a credit six
+    times the size from 2026-11-01, under the same "Rates effective April 1,
+    2026" heading and with every rate unchanged. Carrying the old credit
+    forward regenerates a file that passes every test and prices every
+    November kWh with the wrong one.
+
+    A card that names the credit in a form this does not read raises rather
+    than returning None: "no credit" and "could not read the credit" must not
+    look the same.
+    """
+    text = " ".join(page.text for page in pages)
+    if "cost relief credit" not in text.lower():
+        return None
+    match = COST_RELIEF.search(text)
+    if not match:
+        start = text.lower().index("cost relief credit")
+        raise ExtractionError(
+            "the card names a Cost Relief Credit but not in a form this reads: "
+            f"{' '.join(text[start : start + 160].split())!r}"
+        )
+    rate, start_text, end_text = match.groups()
+    window: dict[str, Any] = {"rate": -abs(float(rate))}
+    try:
+        if start_text:
+            window["from"] = _spelled(start_text)
+        window["through"] = _spelled(end_text)
+    except ValueError as exc:
+        raise ExtractionError(f"cost relief credit window is not a real date: {exc}") from exc
+    return window
+
+
+def _day(value: object) -> date | None:
+    return None if value is None else date.fromisoformat(str(value))
+
+
+def merge_credit_windows(
+    recorded: object, stated: dict[str, Any] | None, effective: date, today: date
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    """``(windows, messages, problems)`` for the vintage being written.
+
+    A card states only the credit running now, so the history lives in the
+    vendored file: windows that ended before the stated one began are kept, a
+    window still open when the stated one begins is ended the day before (the
+    card lists one credit, so the new one replaced it rather than stacking),
+    and one starting on or after it is superseded. Windows that ended before
+    this vintage took force are dropped, since they can never apply to it.
+
+    A card that states no credit while the file has one still running is a
+    problem rather than a carry-forward: either the credit ended early or the
+    card was misread, and only a person can say which.
+    """
+    if isinstance(recorded, dict):
+        recorded = [recorded]
+    windows = [
+        dict(w)
+        for w in (recorded if isinstance(recorded, list) else [])
+        if (end := _day(w.get("through"))) is None or end >= effective
+    ]
+    if stated is None:
+        running = [w for w in windows if (end := _day(w.get("through"))) is None or end >= today]
+        if running:
+            spans = ", ".join(
+                f"{fmt(w['rate'])} through {w.get('through', 'open')}" for w in running
+            )
+            return (
+                windows,
+                [],
+                [
+                    f"the card states no cost relief credit, but the vendored file has "
+                    f"one still running ({spans}); confirm when it ended and record that"
+                ],
+            )
+        return windows, [], []
+    if stated in windows:
+        return windows, [], []
+
+    start = _day(stated.get("from"))
+    kept: list[dict[str, Any]] = []
+    messages: list[str] = []
+    for window in windows:
+        window_start = _day(window.get("from"))
+        if start is None or (window_start is not None and window_start >= start):
+            messages.append(
+                f"cost relief credit {fmt(window['rate'])} through "
+                f"{window.get('through', 'open')} superseded by {fmt(stated['rate'])}"
+            )
+            continue
+        end = _day(window.get("through"))
+        if end is None or end >= start:
+            window["through"] = (start - timedelta(days=1)).isoformat()
+            messages.append(
+                f"cost relief credit {fmt(window['rate'])} now ends {window['through']}: "
+                f"the card replaces it with {fmt(stated['rate'])} from {stated['from']}"
+            )
+        kept.append(window)
+    kept.append(stated)
+    messages.append(
+        f"cost relief credit {fmt(stated['rate'])} "
+        f"{'from ' + stated['from'] + ' ' if 'from' in stated else ''}"
+        f"through {stated['through']}"
+    )
+    return kept, messages, []
+
+
+def preamble(existing: str, title: str) -> tuple[list[str], bool]:
+    """Hand-written notes above a vintage's generated header, and whether found.
+
+    Regeneration rewrites the file, and the notes are where a vintage records
+    what the card alone does not prove -- which rates a statement confirmed,
+    how the export basis was measured. They sit above the generated title and
+    are kept verbatim. A file with no generated title was written by hand, so
+    its whole leading comment block is kept instead, and the caller says so.
+    """
+    lines = existing.splitlines()
+    if title in lines:
+        return lines[: lines.index(title)], True
+    block: list[str] = []
+    for line in lines:
+        if line.strip() and not line.startswith("#"):
+            break
+        block.append(line)
+    while block and not block[-1].strip():
+        block.pop()
+    return ([*block, "#"] if block else []), False
+
+
 def verify(generation: dict[str, dict[str, dict[str, float]]]) -> list[str]:
     """Both seasons for every schedule, and a period set that agrees between them."""
     problems: list[str] = []
@@ -207,6 +356,11 @@ def parity_note(generation: dict[str, dict[str, dict[str, float]]], utility_key:
     return notes
 
 
+def title(provider: Cca) -> str:
+    """The generated header's first line; everything above it is hand-written."""
+    return f"# {provider.name} ({provider.key.upper()}) residential generation rates."
+
+
 def render(
     provider: Cca,
     generation: dict[str, dict[str, dict[str, float]]],
@@ -216,9 +370,13 @@ def render(
     digest: str = "",
     source_url: str = "",
     options: dict[str, float] | None = None,
+    credit_windows: list[dict[str, Any]] | None = None,
+    notes: list[str] | None = None,
+    read_on: str = "",
 ) -> str:
     lines = [
-        f"# {provider.name} ({provider.key.upper()}) residential generation rates.",
+        *(notes or []),
+        title(provider),
         "#",
         f"# Source: {source_url or provider.rate_card.url}",
     ]
@@ -253,23 +411,26 @@ def render(
         "# compares it so a republished card is noticed even when it cannot be",
         "# parsed -- detection does not need a text layer, only bytes.",
         f'source_sha256 = "{digest or previous.get("source_sha256", "")}"',
-        f'source_read_on = "{previous.get("source_read_on", date.today().isoformat())}"',
+        f'source_read_on = "{read_on or previous.get("source_read_on", date.today().isoformat())}"',
     ]
-    # Everything a card states outside the rate table -- the cost relief credit,
-    # the service options, the export terms -- comes from the CCA's tariff rather
-    # than this table, so it is carried forward rather than dropped. Regenerating
-    # the rates must not silently discard the rest of the card.
+    # The service options and the cost relief credit are read off the card; the
+    # export terms come from the CCA's tariff rather than this table, so they are
+    # carried forward. Regenerating the rates must not silently discard them.
     options = options or {}
     if options:
         lines.append("\n[options]")
         for key, value in options.items():
             lines.append(f"{key} = {fmt(value)}")
-    for section in ("cost_relief_credit", "export"):
-        block = previous.get(section)
-        if isinstance(block, dict):
-            lines.append(f"\n[{section}]")
-            for key, value in block.items():
-                lines.append(f"{key} = {fmt(value)}")
+    for window in credit_windows or []:
+        lines.append("\n[[cost_relief_credit]]")
+        for key in ("rate", "from", "through"):
+            if key in window:
+                lines.append(f"{key} = {fmt(window[key])}")
+    export = previous.get("export")
+    if isinstance(export, dict):
+        lines.append("\n[export]")
+        for key, value in export.items():
+            lines.append(f"{key} = {fmt(value)}")
 
     for slug in sorted(generation):
         for season in ("summer", "winter"):
@@ -296,6 +457,12 @@ def regenerate(provider: Cca, pdf: Path, *, check: bool, source_url: str = "") -
     except ExtractionError as exc:
         newest_raw = max(vintages, key=lambda v: str(v["effective"])) if vintages else {}
         return _watch_by_checksum(provider, digest, newest_raw, exc)
+    # Outside the fallback above: a card whose rates parse but whose credit does
+    # not is a reader that needs fixing, not a card that can only be watched.
+    try:
+        stated_credit = extract_cost_relief_credit(pages)
+    except ExtractionError as exc:
+        return Result(provider.key, changed=False, failed=True, messages=(str(exc),))
     problems = verify(generation)
 
     messages: list[str] = []
@@ -315,7 +482,12 @@ def regenerate(provider: Cca, pdf: Path, *, check: bool, source_url: str = "") -
     # The card states when it took force; fall back to the newest vintage on
     # disk only when it does not.
     newest = max((str(v["effective"]) for v in vintages), default=date.today().isoformat())
-    effective = next((p.effective for p in pages if p.effective), date.fromisoformat(newest))
+    effective = next((p.effective for p in pages if p.effective), None)
+    if effective is None:
+        effective = date.fromisoformat(newest)
+        # Said out loud: a repriced card that stopped dating itself would
+        # otherwise overwrite the newest vintage with no sign of having guessed.
+        messages.append(f"the card states no effective date; filed under {newest}, the newest")
     # Keep a vintage's own non-rate terms when refreshing it; otherwise carry
     # them forward from an earlier card. Inheriting from a later card gave the
     # 2023 vintage a cost relief credit that did not exist until 2026 -- the card
@@ -334,6 +506,28 @@ def regenerate(provider: Cca, pdf: Path, *, check: bool, source_url: str = "") -
             "oldest vintage: no earlier card to carry terms from, so the cost relief "
             "credit and export sections are omitted. Add what this card states."
         )
+
+    today = date.today()
+    windows, credit_messages, credit_problems = merge_credit_windows(
+        previous.get("cost_relief_credit"), stated_credit, effective, today
+    )
+    messages += credit_messages
+    if credit_problems:
+        return Result(
+            provider.key,
+            changed=False,
+            failed=True,
+            messages=(*messages, "REFUSING to write:", *[f"    {p}" for p in credit_problems]),
+        )
+
+    notes: list[str] = []
+    if target.exists():
+        notes, generated = preamble(target.read_text(encoding="utf-8"), title(provider))
+        if notes and not generated:
+            messages.append(
+                f"{target.name} was written by hand; its leading comments are kept as "
+                f"notes above the generated header, but comments inside its tables are not"
+            )
 
     from .providers import utility as get_utility
 
@@ -355,12 +549,63 @@ def regenerate(provider: Cca, pdf: Path, *, check: bool, source_url: str = "") -
         digest=digest,
         source_url=source_url,
         options=extract_options(pages),
+        credit_windows=windows,
+        notes=notes,
+        # A document the file has not recorded was read today; keeping the old
+        # date dated a November card's reading to August.
+        read_on=("" if str(previous.get("source_sha256", "")) == digest else today.isoformat()),
     )
     # Dated from the card's own statement of when it took force, so a historical
     # card lands beside the current one rather than overwriting it.
     return write_or_check(
-        f"{provider.key} {effective}", target, body, check=check, messages=messages
+        f"{provider.key} {effective}",
+        target,
+        body,
+        check=check,
+        verify=lambda text: verify_against_library(provider, text),
+        messages=messages,
     )
+
+
+def verify_against_library(provider: Cca, text: str) -> list[str]:
+    """Problems the library would have reading ``text``, before it is written.
+
+    The card is put through the loader's own validation, then every rate is
+    read back and every credit window priced at both ends. A card that printed
+    "from November 1, 2026 through March 31, 2026" used to extract and merge
+    cleanly, then be written as a file the loader refuses -- taking down MCE
+    pricing rather than the regeneration that caused it.
+    """
+    from tariffkit.cca import parse_rate_card
+
+    try:
+        card = parse_rate_card(provider.key.upper(), tomllib.loads(text))
+    except (DataError, tomllib.TOMLDecodeError) as exc:
+        return [str(exc)]
+    problems: list[str] = []
+    for slug, seasons in card.raw.get("generation", {}).items():
+        for season, periods in seasons.items():
+            for period, rate in periods.items():
+                try:
+                    read = card.generation(slug, season, period)
+                except (ConfigError, DataError) as exc:
+                    # ConfigError is a missing [options] table: the card did
+                    # not state Deep Green, so even Light Green cannot price.
+                    problems.append(str(exc))
+                    continue
+                if abs(read - float(rate)) > 1e-9:
+                    problems.append(f"{slug} {season} {period}: wrote {rate}, read back {read}")
+    for window in card.raw.get("cost_relief_credit", []):
+        for key in ("from", "through"):
+            if key not in window:
+                continue
+            on = date.fromisoformat(str(window[key]))
+            read = card.cost_relief_credit(on)
+            if abs(read - float(window["rate"])) > 1e-9:
+                problems.append(
+                    f"cost relief credit on {on}: wrote {window['rate']}, read back {read}"
+                )
+    return problems
 
 
 def _watch_by_checksum(

@@ -115,7 +115,7 @@ Totals decompose, which is what makes a bill reconcilable:
 
 ```python
 point.import_price.components
-# {'cca_generation': 0.11878, 'cca_cost_relief_credit': -0.0062,
+# {'cca_generation': 0.11878, 'cca_cost_relief_credit': -0.03725,
 #  'distribution': 0.15764, 'pcia': 0.03476, ...}
 
 point.export_price.components

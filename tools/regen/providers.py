@@ -47,6 +47,9 @@ class Source:
     fetchable: bool = True
     #: Why it is not fetchable, shown to the user when they ask to download it.
     blocked_note: str = ""
+    #: The page that links to the document, for publishers that rename it on
+    #: reissue. A 404 then names where to find the new link.
+    listed_on: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,11 +180,14 @@ MCE = Cca(
     name="Marin Clean Energy",
     utility="pge",
     rate_card=Source(
-        "https://mcecleanenergy.org/wp-content/uploads/2025/09/"
-        "MCE-website-rate-table_RES_as-of-4.1.26.pdf",
+        "https://mcecleanenergy.org/wp-content/uploads/2026/09/"
+        "MCE-website-rate-table_RES_as-of-4.1.26_updated-Nov-1-credit.pdf",
         # Downloadable, but only by httpx: MCE's CDN answers urllib and curl
         # with 403 no matter what headers they send. See fetch._get_with_httpx.
         fetchable=True,
+        # MCE renames the file whenever it reissues the card -- the April 2026
+        # card became "..._updated-Nov-1-credit.pdf" -- and the old name 404s.
+        listed_on="https://mcecleanenergy.org/compare-rates-and-options/",
     ),
     schedule_aliases={"ELEC": "eelec", "ETOUC": "etouc", "EV2": "ev2a"},
     tariff_url=(

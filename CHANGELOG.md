@@ -18,6 +18,13 @@ All notable changes to this project are documented here. This project follows
   each get their own file and are downloaded fresh.
 
 ### Fixed
+- **MCE's cost relief credit follows its November reissue.** MCE reissued its
+  April 2026 residential card with the same rates and a new credit: -$0.03725
+  per kWh from 2026-11-01 through 2027-03-31, replacing -$0.0062. MCE
+  generation from November on was priced with the old credit, about 3.1 cents
+  per kWh too high. The card now carries both credits as dated windows, and
+  regeneration reads the credit off the card rather than carrying the last
+  one forward.
 - **InfluxDB readings put a gap's energy where it arrived.** An advance across
   a sample gap was spread evenly over the gap. Home Assistant writes a counter
   when it changes, so a gap is usually the counter standing still, and its
@@ -67,9 +74,12 @@ All notable changes to this project are documented here. This project follows
 ### Security
 - **Locked dependencies move past new advisories.** certifi 2026.10.23 and
   pypdf 6.21.3 in the production extras; filelock 4.2.4, uv 0.13.5 and Home
-  Assistant 2026.10.4 in the development graph. Pillow 12.3.0, which Home
-  Assistant still pins exactly, is accepted in the development audit only
-  until 2026-12-01; nothing in TariffKit imports it.
+  Assistant 2026.10.4 in the development graph.
+- **Pillow 13.0.0 in the development graph**, clearing 41 advisories in
+  12.3.0. Home Assistant 2026.10.4 pins 12.3.0 exactly, so the pin is
+  overridden rather than waited out, and the audit exception that accepted it
+  is gone: both audits now come back clean. Pillow reaches only the Home
+  Assistant test stack; nothing in TariffKit imports it.
 
 ## [0.11.1] - 2026-10-19
 

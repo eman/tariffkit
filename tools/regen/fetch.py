@@ -58,15 +58,21 @@ def fetch(source: Source, cache: Path, *, refresh: bool = False) -> Path:
         return cache
 
     cache.parent.mkdir(parents=True, exist_ok=True)
-    body = _get_with_httpx(source.url)
+    body, status = _get_with_httpx(source.url)
     if body is not None:
         return _store(source, cache, body)
+    if status in GONE:
+        # Decided here rather than by urllib, whose answer from a publisher that
+        # blocks it says nothing about the document.
+        raise ExtractionError(_gone(source, status))
 
     request = urllib.request.Request(source.url, headers=HEADERS)
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
             body = response.read()
     except urllib.error.HTTPError as exc:
+        if exc.code in GONE:
+            raise ExtractionError(_gone(source, exc.code)) from exc
         raise ExtractionError(
             f"{source.url} returned HTTP {exc.code}. If this publisher blocks scripted "
             f"requests, download it in a browser and pass it with --pdf."
@@ -77,29 +83,50 @@ def fetch(source: Source, cache: Path, *, refresh: bool = False) -> Path:
     return _store(source, cache, body)
 
 
-def _get_with_httpx(url: str) -> bytes | None:
+#: Statuses that mean the document is not there, as opposed to being withheld.
+GONE = frozenset({404, 410})
+
+
+def _gone(source: Source, status: int) -> str:
+    where = (
+        f"find its new link on {source.listed_on} and update the provider"
+        if source.listed_on
+        else "find where the publisher moved it and update the provider"
+    )
+    return (
+        f"{source.url} returned HTTP {status}: the document is no longer there, "
+        f"which usually means it was reissued under a new name -- {where}."
+    )
+
+
+def _get_with_httpx(url: str) -> tuple[bytes | None, int | None]:
     """Try httpx first, because some publishers reject urllib specifically.
 
     MCE's CDN answers urllib and curl with 403 no matter what headers they send,
     and answers httpx with 200 and the file. The difference is the client, not
     the request -- so this is worth trying before concluding a document cannot be
-    downloaded. Returns None when httpx is unavailable or does not succeed, and
-    the urllib path then runs and produces the error message.
+    downloaded.
+
+    Returns ``(body, status)``: the body on a 200, otherwise the status httpx
+    got, or None when httpx is unavailable or never got a response. The status
+    matters because the urllib fallback cannot be trusted to report it: a CDN
+    that blocks urllib answers 403 whether or not the document exists, so a
+    404 httpx had already been given would surface as a block.
     """
     try:
         import httpx
     except ImportError:
-        return None
+        return None, None
     try:
         with httpx.Client(
             follow_redirects=True, timeout=TIMEOUT_SECONDS, headers=HEADERS
         ) as client:
             response = client.get(url)
     except Exception:
-        return None
+        return None, None
     if response.status_code != 200:
-        return None
-    return bytes(response.content)
+        return None, response.status_code
+    return bytes(response.content), 200
 
 
 def _store(source: Source, cache: Path, body: bytes) -> Path:
