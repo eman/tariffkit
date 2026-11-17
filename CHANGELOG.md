@@ -24,6 +24,9 @@ All notable changes to this project are documented here. This project follows
   and `--refresh` fetches it again. It used to reuse a cached copy silently,
   so a working copy regenerated the old data and reported it current. An
   interrupted download no longer leaves a truncated archive in the cache.
+  Every vintage is now validated before anything is written, so a refusal
+  part-way through no longer leaves new matrices beside an old
+  `holidays.toml` and `sources.json`.
 
 ### Fixed
 - **Floating customers keep their 2025 and 2026 export prices.** PG&E's new

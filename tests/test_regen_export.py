@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -35,7 +36,13 @@ def _value(month: str, day_type: str, hour: int, component: str) -> str:
     return f"{base / 10_000 + (0.5 if component == 'generation' else 0):.5f}"
 
 
-def build_csv(years: tuple[int, int], fall_back_label: dict[int, int]) -> bytes:
+def build_csv(
+    years: tuple[int, int],
+    fall_back_label: dict[int, int],
+    *,
+    rate_name: str = "NBT00",
+    holidays: frozenset[date] = frozenset(),
+) -> bytes:
     """Hourly rows covering ``years`` in Pacific time, laid out as upstream does."""
     start = datetime(years[0], 1, 1, tzinfo=PACIFIC).astimezone(UTC)
     end = datetime(years[1] + 1, 1, 1, tzinfo=PACIFIC).astimezone(UTC)
@@ -44,7 +51,9 @@ def build_csv(years: tuple[int, int], fall_back_label: dict[int, int]) -> bytes:
     while moment < end:
         pacific = moment.astimezone(PACIFIC)
         hour = fall_back_label[pacific.year] if is_repeated_hour(pacific) else pacific.hour
-        day_type = "Weekend" if pacific.weekday() >= 5 else "Weekday"
+        holiday = pacific.date() in holidays
+        day_type = "Weekend" if pacific.weekday() >= 5 or holiday else "Weekday"
+        day_code = "8" if holiday else str(pacific.isoweekday())
         month = MONTHS[pacific.month - 1]
         stamp_date = f"{moment.month}/{moment.day}/{moment.year}"
         stamp_time = f"{moment.hour}:00:00"
@@ -53,13 +62,13 @@ def build_csv(years: tuple[int, int], fall_back_label: dict[int, int]) -> bytes:
                 ",".join(
                     [
                         rin,
-                        "NBT00",
+                        rate_name,
                         stamp_date,
                         stamp_time,
                         stamp_date,
                         f"{moment.hour}:59:59",
-                        str(pacific.isoweekday()),
-                        str(pacific.isoweekday()),
+                        day_code,
+                        day_code,
                         f"{month} {day_type} HS{hour}",
                         _value(month, day_type, hour, component),
                         "Export $/kWh",
@@ -227,3 +236,43 @@ def test_vendored_calendar_is_the_rule() -> None:
     shipped = tomllib.loads(read_data_text("holidays.toml"))["holidays"]
     for year, dates in shipped.items():
         assert {date.fromisoformat(d) for d in dates} == rule_holidays(int(year)), year
+
+
+def test_a_refusal_writes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every vintage is validated before any file is written.
+
+    The second vintage here normalizes cleanly but flags an incomplete holiday
+    list in a year it is verified exact, so the shared calendar is refused.
+    Files used to be written vintage by vintage, so the first one's new matrix
+    would already be installed beside the old holidays.toml and sources.json.
+    """
+    import zipfile
+
+    from tools.regen import export
+
+    data_dir = tmp_path / "data"
+    export_dir = data_dir / "export" / "pge"
+    export_dir.mkdir(parents=True)
+    (data_dir / "sources.json").write_text("old manifest\n")
+    monkeypatch.setattr(export, "DATA_DIR", data_dir)
+    monkeypatch.setattr(export, "EXPORT_DIR", export_dir)
+    monkeypatch.setattr(export, "REPO_ROOT", tmp_path)
+
+    archive = tmp_path / "archive.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("a.csv", build_csv((2027, 2028), {2027: 1, 2028: 1}, rate_name="NBT27"))
+        zf.writestr(
+            "b.csv",
+            build_csv(
+                (2027, 2028),
+                {2027: 1, 2028: 1},
+                rate_name="NBT28",
+                holidays=frozenset({date(2027, 7, 5)}),
+            ),
+        )
+
+    with pytest.raises(NormalizationError, match="NBT28 flags"):
+        export.main(["--zip", str(archive)])
+    assert sorted(p.name for p in export_dir.iterdir()) == []
+    assert not (data_dir / "holidays.toml").exists()
+    assert (data_dir / "sources.json").read_text() == "old manifest\n"
