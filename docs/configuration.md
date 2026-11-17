@@ -190,9 +190,9 @@ Bundled PG&E service needs no config file at all.
 |---|---|---|
 | `tariff` | `E-1`, `E-ELEC`, `E-TOU-C`, `E-TOU-D`, `EV2-A` | Defaults to `E-ELEC` |
 | `supplier` | `bundled`, `cca` | `cca` requires a `[cca]` table |
-| `interconnection_year` | 2023–2026 | Picks the NBT vintage and ACC Plus rate |
+| `interconnection_year` | 2023–2027 | Picks the NBT vintage and ACC Plus rate; later years float (`NBT00`) |
 | `pto_date` | ISO date | Starts the nine-year rate lock |
-| `vintage` | `NBT23`…`NBT26`, `NBT00` | Overrides `interconnection_year` |
+| `vintage` | `NBT23`…`NBT28`, `NBT00` | Overrides `interconnection_year` |
 | `acc_plus_segment` | `residential`, `residential_low_income`, `none` | |
 | `discount` | `none`, `care`, `fera` | Requires `acc_plus_segment = "residential_low_income"` |
 | `base_services_charge_tier` | 1, 2, 3 | $/day, reported separately from $/kWh |

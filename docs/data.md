@@ -13,7 +13,7 @@ python -m tools.regen                      # tariffs, export adders, CCA rate ca
 python -m tools.regen --check              # exit 1 if anything upstream has moved
 python -m tools.regen tariff --provider eelec
 python -m tools.regen cca --provider mce --pdf ~/Downloads/mce-rates.pdf
-python -m tools.regen.export --download   # the 843 MB export archive
+python -m tools.regen.export --download --refresh  # the 843 MB export archive
 ```
 
 | Dataset | Reads | Proven right by |
@@ -113,11 +113,12 @@ them instead.
 # Regenerate from a local copy of the archive
 python -m tools.regen.export --zip /path/to/PGE-Solar-Billing-Plan-Export-Rates.zip
 
-# Or download it directly
-python -m tools.regen.export --download
+# Or download it directly. A cached archive is reused, with its age printed;
+# --refresh fetches it again, which is what a check against upstream needs
+python -m tools.regen.export --download --refresh
 
 # CI-style check: exit 1 if upstream has moved, without writing anything
-python -m tools.regen.export --download --check
+python -m tools.regen.export --download --refresh --check
 ```
 
 The script converts each row from UTC to Pacific time before bucketing, and

@@ -46,7 +46,7 @@ PG&E publishes 20 years of hourly export rates per vintage, as CPUC Resolution
 E-5301 requires (roughly 40 MB of CSV per vintage). But that file is a lossless
 expansion of a 576-cell matrix per year (12 months × 2 day types × 24 hours) per
 component. `tariffkit` collapses it at build time, verifying losslessness cell by
-cell, so the entire five-vintage dataset ships inside the wheel at **268 KiB**
+cell, so the entire seven-vintage dataset ships inside the wheel at **391 KiB**
 and every lookup is a few list indexes.
 
 The retail side is similar: generated effective-dated tables hold every active
@@ -206,17 +206,24 @@ outside that file with `tariffkit setup` or `tariffkit credentials set`; see
 
 ### Edge cases in PG&E's published data
 
-Found by round-tripping the vendored matrices against all 1.75 million source
+Found by round-tripping the vendored matrices against all 2.45 million source
 rows. The library handles each; they are documented because they are surprising.
 
 - **The autumn DST hour.** The fall-back day has 25 real hours but only 24 rate
-  labels. PG&E gives the repeated 01:00 PST the `HS2` label, so it is priced as
-  2am. Pricing it by wall-clock hour returns the wrong value for that hour.
-- **Far-future drift.** From 2036 onward PG&E's own hour labels stop tracking
-  Pacific daylight time, and NBT25/26/00 duplicate some holidays onto the
-  following day. Each vintage records the last year verified exact; prices past
-  it are returned with `exact=False`. Every year inside a nine-year rate lock is
-  exact, and those years are already published as illustrative only.
+  labels, so the repeated 01:00 PST shares one. Which one has changed: the
+  earlier files label it `HS2`, priced as 2am, while the 2027 and 2028 vintages
+  and the floating file published with them label it `HS1`. Each vintage
+  records the label per year, and the lookup follows it.
+- **Far-future drift.** From about the eleventh year of a file (2036 in NBT25,
+  2038 in NBT27) PG&E's own hour labels stop tracking Pacific daylight time,
+  and NBT25/26/00 duplicate some holidays onto the following day. Each vintage
+  records the last year verified exact; prices past it are returned with
+  `exact=False`. Every year inside a nine-year rate lock is exact, and those
+  years are already published as illustrative only.
+- **The floating file drops the current year.** PG&E republishes NBT00 each
+  year starting from the next, so the November 2026 file begins at 2027. The
+  years it dropped are kept from the earlier copy, with the source they were
+  verified against, so a floating customer still has 2025 and 2026 prices.
 - **Vintages disagree about holidays** in those same late years, so the holiday
   calendar used for a lookup is the one embedded in that vintage's own file.
 - **Only the June 2026 tariff sheets are vendored**, for each of the three
@@ -262,7 +269,7 @@ Every vendored dataset is regenerated from the document that publishes it, by
 python -m tools.regen                              # rebuild every dataset
 python -m tools.regen --check                      # exit 1 if a publisher moved
 python -m tools.regen tariff --for-date 2025-12-15 # rebuild a superseded vintage
-python -m tools.regen.export --download            # the 843 MB export-rate archive
+python -m tools.regen.export --download --refresh  # the 843 MB export-rate archive
 ```
 
 Export matrices come from PG&E's CSV archive, which is large enough to have its

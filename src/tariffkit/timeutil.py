@@ -88,19 +88,39 @@ def is_holiday(day: date) -> bool:
     return day in holidays(day.year)
 
 
-def export_hour(moment: datetime) -> int:
+#: The two labels PG&E has given the repeated 01:00 PST: ``HS2`` (priced as
+#: 2am) through the 2026 vintage's early years, ``HS1`` (priced as the 1am it
+#: is) in every year of the 2027 and 2028 vintages and the floating file
+#: published with them, and in the far-future years of the 2025 and 2026
+#: vintages.
+FALL_BACK_LABELS = (1, 2)
+
+
+def is_repeated_hour(moment: datetime) -> bool:
+    """Whether ``moment`` is in the second pass through the fall-back 01:00.
+
+    ``fold`` alone is not enough: ``zoneinfo`` ignores it on an unambiguous
+    time, so a caller can set it anywhere without moving the instant.
+    """
+    return bool(moment.fold) and moment.utcoffset() != moment.replace(fold=0).utcoffset()
+
+
+def export_hour(moment: datetime, fall_back_hour: int = 2) -> int:
     """The hour index (``HS0``-``HS23``) upstream assigns to this instant.
 
     Almost always the wall-clock hour, but the fall-back day has 25 real hours
-    and only 24 labels. PG&E resolves that by giving the repeated 01:00 PST the
-    ``HS2`` label, so the second 1am is priced as 2am and the rest of the day
-    stays aligned. ``fold`` is 1 only during that ambiguous hour, so adding it
-    reproduces the published labelling exactly.
+    and only 24 labels, so one of them covers two hours. Which one is a choice
+    PG&E has made both ways (see :data:`FALL_BACK_LABELS`): ``fall_back_hour``
+    is the label the repeated 01:00 PST carries in the year being priced,
+    which each vintage file records per year. The default is the ``HS2``
+    reading the earlier files use.
 
     The spring-forward day needs no special case: 02:00 simply does not exist,
     and upstream correspondingly publishes no ``HS2`` row for it.
     """
-    return moment.hour + moment.fold
+    if is_repeated_hour(moment):
+        return fall_back_hour
+    return moment.hour
 
 
 def day_type(moment: datetime, calendar: frozenset[date] | None = None) -> DayType:

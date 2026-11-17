@@ -284,8 +284,8 @@ def _resolve_repeated_hour(rows: list[_Row]) -> list[_Row]:
 
     A naive timestamp on the autumn transition is genuinely ambiguous: 01:00
     happens twice. ``zoneinfo`` resolves both to ``fold=0``, the earlier PDT
-    hour, so an hour of readings prices at the wrong export rate -- PG&E labels
-    the repeat HS2 -- and coverage reports the file as overlapping itself.
+    hour, so an hour of readings prices at the wrong export rate -- PG&E gives
+    the repeat a label of its own -- and coverage reports the file as overlapping itself.
 
     Meter exports are chronological, which supplies the missing bit: if a row's
     instant does not advance, and setting ``fold=1`` makes it advance, then it

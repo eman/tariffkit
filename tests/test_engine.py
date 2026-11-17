@@ -77,6 +77,12 @@ class TestHolidays:
             (date(2028, 11, 10), True),  # Veterans Day is a Saturday
             (date(2026, 1, 19), False),  # MLK Day is not a tariff holiday
             (date(2026, 6, 19), False),  # nor is Juneteenth
+            # 2047 is covered by one export file alone, in its drift years,
+            # which flags Labor Day and Thanksgiving in the wrong weeks.
+            (date(2047, 9, 2), True),  # Labor Day: first Monday of September
+            (date(2047, 9, 5), False),
+            (date(2047, 11, 28), True),  # Thanksgiving: fourth Thursday
+            (date(2047, 11, 21), False),
         ],
     )
     def test_observed_dates(self, day: date, expected: bool) -> None:
@@ -155,13 +161,21 @@ class TestDaylightSaving:
         moment = pt(2026, 7, 15, hour)
         assert next_hour(moment).astimezone(UTC) - moment.astimezone(UTC) == timedelta(hours=1)
 
-    def test_repeated_hour_is_priced_as_hour_two(self) -> None:
-        """PG&E gives the second 01:00 the HS2 label, so it must price as 2am."""
+    def test_repeated_hour_takes_the_years_label(self) -> None:
+        """The second 01:00 is HS2 in the earlier files and HS1 in the newer."""
         first = datetime(2026, 11, 1, 1, tzinfo=PACIFIC, fold=0)
         second = datetime(2026, 11, 1, 1, tzinfo=PACIFIC, fold=1)
         assert export_hour(first) == 1
         assert export_hour(second) == 2
+        assert export_hour(first, fall_back_hour=1) == 1
+        assert export_hour(second, fall_back_hour=1) == 1
         assert first.utcoffset() != second.utcoffset()
+
+    def test_fold_on_an_unambiguous_hour_is_not_the_repeated_hour(self) -> None:
+        """``zoneinfo`` ignores ``fold`` off the transition, and so must we."""
+        moment = datetime(2026, 7, 15, 1, tzinfo=PACIFIC, fold=1)
+        assert export_hour(moment) == 1
+        assert export_hour(moment, fall_back_hour=1) == 1
 
     def test_forecast_steps_in_absolute_time(self, engine: RateEngine) -> None:
         curve = engine.forecast(hours=26, start=pt(2026, 11, 1, 0))
@@ -194,7 +208,14 @@ class TestLockWindow:
 class TestVintageResolution:
     @pytest.mark.parametrize(
         ("year", "expected"),
-        [(2023, "NBT23"), (2024, "NBT24"), (2025, "NBT25"), (2026, "NBT26"), (2022, "NBT00")],
+        [
+            (2023, "NBT23"),
+            (2024, "NBT24"),
+            (2025, "NBT25"),
+            (2026, "NBT26"),
+            (2027, "NBT27"),
+            (2022, "NBT00"),
+        ],
     )
     def test_from_interconnection_year(self, year: int, expected: str) -> None:
         assert Config(interconnection_year=year, pto_date=None).resolved_vintage == expected
@@ -213,13 +234,20 @@ class TestVintageResolution:
         assert config.lock_end is None
         assert NbtExportRates(config).acc_plus == pytest.approx(0.0)
 
-    def test_an_unvendored_year_inside_the_locked_window_is_refused(self) -> None:
-        """2027 is promised a lock the vendored data cannot supply.
+    def test_an_unvendored_year_inside_the_locked_window_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A year promised a lock the vendored data cannot supply is refused.
 
         Answering with the floating vintage would price it against the wrong
         values while still resolving that year's ACC Plus row -- locked for the
         adder, floating for the energy, with `lock_end` reporting nothing.
+        Every year of the window is vendored now, so one is taken away to
+        keep the refusal under test.
         """
+        from tariffkit import config as config_module
+
+        monkeypatch.delitem(config_module.VINTAGE_BY_YEAR, 2027)
         config = Config(interconnection_year=2027, pto_date=None)
         with pytest.raises(ConfigError, match="inside NBT's locked window"):
             _ = config.resolved_vintage
