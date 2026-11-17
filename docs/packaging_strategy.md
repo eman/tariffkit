@@ -152,12 +152,20 @@ while only one distribution exists.
 
 ## Packaging baseline
 
-- Python 3.14.2 is the declared and tested floor. Home Assistant 2026.10.0 is
-  the integration floor: it is the first release to ship probatio, which
-  replaced voluptuous in Home Assistant and which the config flow and the
-  services build their schemas with. It is also the series the suite pins
-  (2026.10.0), and the first whose pins of `cryptography` and `PyJWT` clear
-  their advisories. Before it the floor was 2026.8.0, the first release carrying
+- Python 3.14.2 is the declared and tested floor. Home Assistant 2026.11.0 is
+  the integration floor: it is the oldest release the suite can test. The
+  suite runs on `pytest-homeassistant`, Home Assistant's own test harness,
+  whose first release is 2026.11 and each of which pins its matching
+  `homeassistant`. The community harness it replaced,
+  `pytest-homeassistant-custom-component`, stopped at 2026.10.4 and is
+  declared broken upstream, and the two cannot be installed together, so a
+  2026.10 floor would be declared but never run. 2026.11 is also the first
+  release with the Marketplace, and the first to require Pillow 13, which
+  retired the `override-dependencies` entry that had lifted the 2026.10 test
+  stack's exact Pillow 12.3.0 pin past its advisories. Before it the floor was
+  2026.10.0, the first release to ship probatio, which replaced voluptuous in
+  Home Assistant and which the config flow and the services build their
+  schemas with; before that 2026.8.0, the first release carrying
   `device_registry.async_get_device_by_identifier`, which the coordinator uses
   because `async_get_device(identifiers=...)` is deprecated; and before that
   2026.3.0, on the reasoning that it was the first release on this Python patch
@@ -179,8 +187,10 @@ while only one distribution exists.
   versions. The manual workflow stages the same artifacts on TestPyPI, waits
   for protected PyPI approval, and publishes an immutable GitHub release only
   after PyPI succeeds. See the [release runbook](releases.md).
-- The same build produces a deterministic HACS `tariffkit.zip` containing only
-  tracked integration files at archive root. It stays outside the PyPI upload
+- The same build produces a deterministic `tariffkit.zip` containing only
+  tracked integration files at archive root, which the Home Assistant
+  Marketplace installs (`zip_release` in `hacs.json`; HACS did the same before
+  Home Assistant 2026.11). It stays outside the PyPI upload
   directory, but is checksummed and attached before the GitHub release becomes
   immutable.
 
@@ -195,4 +205,5 @@ while only one distribution exists.
 - [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/)
 - [PyPI attestations](https://docs.pypi.org/attestations/)
 - [Home Assistant integration manifest](https://developers.home-assistant.io/docs/creating_integration_manifest/)
-- [HACS integration publishing](https://hacs.xyz/docs/publish/integration/)
+- [Home Assistant Marketplace publishing](https://contributors.home-assistant.io/marketplace/)
+- [`hacs.json` reference](https://contributors.home-assistant.io/marketplace/reference/hacs-json/)

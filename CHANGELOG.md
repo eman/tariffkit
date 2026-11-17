@@ -5,6 +5,28 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+- **The Home Assistant integration requires Home Assistant 2026.11.0.** The
+  integration is now tested on Home Assistant's own test harness,
+  `pytest-homeassistant`, which starts at 2026.11; the community harness it
+  replaces stopped at 2026.10.4 and is no longer maintained, so 2026.10 could
+  no longer be tested. Neither the Marketplace nor HACS offers this version
+  to an older Home Assistant; an installation there keeps the version it has.
+- **Install instructions follow Home Assistant's Marketplace.** Home Assistant
+  2026.11 built HACS in as the Marketplace, and TariffKit has been in its
+  catalog since 2026-10-19, so the README and the Home Assistant and Predbat
+  guides no longer ask you to add a custom repository. Install from
+  **Settings → Marketplace**; the "open in Home Assistant" badge uses the
+  Marketplace link. An installation made with HACS moves into the Marketplace
+  when Home Assistant is upgraded. Nothing about the package changes: the
+  Marketplace kept HACS's catalog, `hacs.json` and validation, and still
+  installs the release's `tariffkit.zip`.
+
+### Security
+- **The development lock no longer overrides Pillow.** Home Assistant 2026.11
+  requires Pillow 13 itself, so the override that lifted the 2026.10 test
+  stack past Pillow 12.3.0's advisories is gone. TariffKit never imports PIL.
+
 ## [0.11.3] - 2026-11-17
 
 ### Added

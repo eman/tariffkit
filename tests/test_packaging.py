@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 from homeassistant.helpers import device_registry as dr
+from packaging.version import Version
 
 import tariffkit
 
@@ -46,16 +47,24 @@ def test_project_identity_and_version_are_consistent() -> None:
     assert hacs["filename"] == "tariffkit.zip"
     assert hacs["hide_default_branch"] is True
     assert hacs["country"] == "US"
-    # The floor is set by the newest Home Assistant API the integration calls,
-    # not by the Python patch line -- it was 2026.3.0 on that older reasoning,
-    # which said nothing about whether anything ran there. HACS refuses the
-    # update below this version, which is the only thing standing between a
-    # older user and an ImportError. See docs/packaging_strategy.md.
-    assert hacs["homeassistant"] == "2026.10.0"
-    # The reasons for that number, asserted rather than remembered: 2026.10.0
-    # is the first release to ship probatio, which the config flow and the
-    # services build their schemas with, and the calls `coordinator.py` makes
-    # arrived earlier, in 2026.8.0.
+    # The floor is the oldest Home Assistant the suite can test, not the Python
+    # patch line -- it was 2026.3.0 on that older reasoning, which said nothing
+    # about whether anything ran there. The Marketplace refuses the update
+    # below this version, which is the only thing standing between an older
+    # user and an untested install. See docs/packaging_strategy.md.
+    assert hacs["homeassistant"] == "2026.11.0"
+    # The reasons for that number, asserted rather than remembered. 2026.11.0
+    # is the first release of pytest-homeassistant, Home Assistant's own test
+    # harness, which pins the matching homeassistant; the community harness
+    # before it stopped at 2026.10 and is not installed beside it.
+    harness = importlib.metadata.distribution("pytest-homeassistant")
+    assert Version(harness.version) >= Version(hacs["homeassistant"])
+    assert f"homeassistant=={harness.version}" in (harness.requires or [])
+    with pytest.raises(importlib.metadata.PackageNotFoundError):
+        importlib.metadata.distribution("pytest-homeassistant-custom-component")
+    # What the integration calls arrived earlier: probatio, which the config
+    # flow and the services build their schemas with, in 2026.10.0, and the
+    # device-registry lookup `coordinator.py` makes in 2026.8.0.
     distribution = importlib.metadata.distribution("homeassistant")
     assert any(r.startswith("probatio") for r in distribution.requires or [])
     assert hasattr(dr.DeviceRegistry, "async_get_device_by_identifier")
@@ -81,7 +90,7 @@ def test_home_assistant_does_not_vendor_the_library() -> None:
 
 
 def test_brand_assets_match_the_home_assistant_spec() -> None:
-    """HACS requires brand/icon.png; the brands CDN spec fixes the sizes.
+    """The catalog's validation requires brand/icon.png; the brands CDN spec fixes the sizes.
 
     Home Assistant only ever serves PNGs out of brand/ (see the ALLOWED_IMAGES
     allowlist in homeassistant.components.brands), so anything else in there is

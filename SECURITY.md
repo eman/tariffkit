@@ -38,9 +38,8 @@ clean, so a missing or additional finding fails, and the policy expires
 automatically, forcing review even if upstream has not released fixed pins.
 
 None is in force. The last, for `pillow==12.3.0` in the development audit, was
-retired by overriding Home Assistant's exact pin instead: `[tool.uv]
-override-dependencies` in `pyproject.toml` lifts Pillow to 13.0.0 in the
-development graph, which is the only place it appears. That override comes out
-once the Home Assistant test stack requires Pillow 13 itself.
+retired by overriding Home Assistant's exact pin with `[tool.uv]
+override-dependencies`, and the override itself is gone: the Home Assistant
+2026.11 test stack requires Pillow 13 on its own.
 
 [report]: https://github.com/eman/tariffkit/security/advisories/new

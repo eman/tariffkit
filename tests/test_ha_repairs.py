@@ -10,7 +10,7 @@ from homeassistant.helpers import issue_registry as ir
 from tests.test_ha_energy import _entry, _meter_options, _setup
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_an_entry_with_no_meters_raises_a_fixable_issue(hass: HomeAssistant) -> None:
     entry = _entry()
     await _setup(hass, entry)
@@ -22,7 +22,7 @@ async def test_an_entry_with_no_meters_raises_a_fixable_issue(hass: HomeAssistan
     assert issue.translation_key == ISSUE_NO_METERS
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_an_entry_with_meters_raises_nothing(hass: HomeAssistant) -> None:
     entry = _entry(_meter_options())
     await _setup(hass, entry)
@@ -31,7 +31,7 @@ async def test_an_entry_with_meters_raises_nothing(hass: HomeAssistant) -> None:
     assert registry.async_get_issue(DOMAIN, issue_id(entry.entry_id)) is None
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_the_fix_flow_names_the_counters_and_clears_the_issue(
     hass: HomeAssistant,
 ) -> None:
@@ -78,7 +78,7 @@ async def test_the_fix_flow_names_the_counters_and_clears_the_issue(
     assert entities.async_get_entity_id("sensor", DOMAIN, f"{entry.entry_id}_amount_due_cycle")
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_the_fix_flow_refuses_a_configuration_that_cannot_work(
     hass: HomeAssistant,
 ) -> None:
@@ -100,7 +100,7 @@ async def test_the_fix_flow_refuses_a_configuration_that_cannot_work(
     assert "both directions" in result["description_placeholders"]["detail"]
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_a_stale_issue_aborts_rather_than_raising(hass: HomeAssistant) -> None:
     """Home Assistant calls this from the Repairs panel.
 

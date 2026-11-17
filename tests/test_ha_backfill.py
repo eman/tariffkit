@@ -231,7 +231,7 @@ def _meta(entity: str) -> dict[str, object]:
     }
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_the_action_writes_external_statistics(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -251,8 +251,8 @@ async def test_the_action_writes_external_statistics(
         statistics_during_period,
     )
     from homeassistant.helpers.recorder import get_instance
-    from pytest_homeassistant_custom_component.common import MockConfigEntry
-    from pytest_homeassistant_custom_component.components.recorder.common import (
+    from pytest_homeassistant.common import MockConfigEntry
+    from pytest_homeassistant.components.recorder.common import (
         async_wait_recording_done,
     )
 
@@ -342,13 +342,13 @@ async def test_the_action_writes_external_statistics(
     assert len(rewritten[stat_id]) == 20, "a rerun must not duplicate days"
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_the_action_refuses_without_meters(hass: HomeAssistant) -> None:
     import json
 
     from custom_components.tariffkit.const import CONF_PROFILE, DOMAIN
     from homeassistant.exceptions import ServiceValidationError
-    from pytest_homeassistant_custom_component.common import MockConfigEntry
+    from pytest_homeassistant.common import MockConfigEntry
 
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -512,7 +512,7 @@ def test_interior_days_without_readings_are_not_billed_either() -> None:
     assert result.summary("probe")["complete"] is False
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_a_later_rerun_continues_the_sum_it_finds(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -537,8 +537,8 @@ async def test_a_later_rerun_continues_the_sum_it_finds(
         statistics_during_period,
     )
     from homeassistant.helpers.recorder import get_instance
-    from pytest_homeassistant_custom_component.common import MockConfigEntry
-    from pytest_homeassistant_custom_component.components.recorder.common import (
+    from pytest_homeassistant.common import MockConfigEntry
+    from pytest_homeassistant.components.recorder.common import (
         async_wait_recording_done,
     )
 
@@ -596,7 +596,7 @@ async def test_a_later_rerun_continues_the_sum_it_finds(
     assert sum(changes) == pytest.approx(wide["grid_import_kwh"], abs=0.01)
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_a_meter_with_no_history_is_reported_not_read_as_zero(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -617,8 +617,8 @@ async def test_a_meter_with_no_history_is_reported_not_read_as_zero(
         DOMAIN,
     )
     from homeassistant.components.recorder.statistics import async_import_statistics
-    from pytest_homeassistant_custom_component.common import MockConfigEntry
-    from pytest_homeassistant_custom_component.components.recorder.common import (
+    from pytest_homeassistant.common import MockConfigEntry
+    from pytest_homeassistant.components.recorder.common import (
         async_wait_recording_done,
     )
 

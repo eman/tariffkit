@@ -9,10 +9,10 @@ StringIO, so no fixture file is needed.
 from __future__ import annotations
 
 import io
+import logging
 import stat
 from datetime import UTC, date, timedelta
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -458,7 +458,7 @@ class TestExportCache:
         assert asked == [(date(2026, 8, 28), date(2026, 9, 9))]
 
     def test_an_export_that_answers_with_less_is_named_for_what_it_holds(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, captured_logs: Any
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         """The portal does not always honour the range it is given.
 
@@ -489,7 +489,7 @@ class TestExportCache:
             ),
         )
 
-        logs = captured_logs("tariffkit.sources.pge")
+        caplog.set_level(logging.DEBUG, logger="tariffkit.sources.pge")
         export = cached_green_button(
             self._settings(), date(2026, 4, 30), date(2026, 5, 31), directory=tmp_path
         )
@@ -497,7 +497,7 @@ class TestExportCache:
         assert export.covers == "2026-05-30..2026-05-31"
         assert export.path.name == "2026-05-30_2026-05-31.csv"
         assert any(
-            "the portal exported 2026-05-30..2026-05-31" in r.getMessage() for r in logs.records
+            "the portal exported 2026-05-30..2026-05-31" in r.getMessage() for r in caplog.records
         )
         # And it does not answer a later request for days it never held.
         assert _covering(tmp_path, date(2026, 5, 1), date(2026, 5, 15)) is None

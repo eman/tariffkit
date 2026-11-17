@@ -9,13 +9,12 @@ settings resolve across a config file, a .env and the environment.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
-
-from conftest import CaptureLogs
 
 # The source needs the 'ha' extra; skip rather than fail the whole module for a
 # contributor who installed without it.
@@ -253,7 +252,7 @@ class TestReadings:
         assert neither == {}
 
     def test_a_running_sum_restart_is_discarded(
-        self, settings: ha.HaSettings, captured_logs: CaptureLogs
+        self, settings: ha.HaSettings, caplog: pytest.LogCaptureFixture
     ) -> None:
         """The failure this filter exists for, taken from a real instance.
 
@@ -262,13 +261,8 @@ class TestReadings:
         ``change`` -- 543.663 kWh inside one five-minute slot, about 6,500 kW.
         Discarded rather than clamped: it is not a large reading, it is not a
         reading, and the hole it leaves is something coverage checking can report.
-
-        Uses ``captured_logs`` rather than ``caplog``: the Home Assistant test
-        plugin overrides that fixture by requesting it, which pytest 9 refuses
-        as a recursive dependency, and this test spent that whole window
-        uncollectable while looking like a passing suite.
         """
-        logs = captured_logs(ha.log)
+        caplog.set_level(logging.DEBUG, logger=ha.log.name)
         step = timedelta(minutes=5)
         start = datetime(2026, 8, 1, 4, 15, tzinfo=PACIFIC)
         series = {
@@ -278,7 +272,7 @@ class TestReadings:
         got = ha._readings_from(series, settings, step)
         assert len(got) == 1
         assert next(iter(got.values())).imported == 0.02
-        assert "could not be differenced either" in logs.text
+        assert "could not be differenced either" in caplog.text
 
     def test_one_meters_restart_does_not_discard_the_other_meters_energy(
         self, settings: ha.HaSettings
