@@ -148,7 +148,9 @@ class NbtExportRates:
         kind = day_type(moment, self._holidays)
         month_index = moment.month - 1
         day_index = 0 if kind is DayType.WEEKDAY else 1
-        hour = export_hour(moment)
+        # The repeated fall-back hour's label is the year's own: PG&E has
+        # published it as HS2 and as HS1, sometimes within one vintage file.
+        hour = export_hour(moment, int(self._payload["fall_back_hour"][year]))
 
         components, complete = self._components(data, month_index, day_index, hour, moment.date())
         return ExportPrice(

@@ -5,6 +5,37 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+- **NBT27 and NBT28 export rates**, from PG&E's November 2026 archive. A 2027
+  interconnection now resolves to NBT27 instead of being refused. 2028 still
+  floats, as Schedule NBT's lock covers applications through 2027 only;
+  NBT28 is available as an explicit `vintage`.
+
+### Changed
+- **Floating (NBT00) export rates from 2027 on follow PG&E's new file.** It is
+  forecast from the newer avoided cost calculator, and the split moves
+  sharply toward delivery: 2027 averages about $0.098/kWh delivery and
+  $0.065/kWh generation, against $0.006 and $0.094 before.
+- November 2026's Net Surplus Compensation rate, $0.02781/kWh.
+- `python -m tools.regen.export --download` prints the cached archive's age,
+  and `--refresh` fetches it again. It used to reuse a cached copy silently,
+  so a working copy regenerated the old data and reported it current. An
+  interrupted download no longer leaves a truncated archive in the cache.
+
+### Fixed
+- **Floating customers keep their 2025 and 2026 export prices.** PG&E's new
+  floating file starts at 2027, and taken as published it left every NBT00
+  account without an export price for the rest of 2026: the Home Assistant
+  entry stopped loading and past bills could not be priced. Years a newer file
+  drops are now kept from the vendored copy, along with the source they were
+  verified against.
+- **The repeated fall-back hour is priced from its own year's label.** The
+  2027 and 2028 vintages, and the new floating file, label the second 01:00
+  PST `HS1` where the earlier files used `HS2`. The label is now recorded per
+  year and followed, where it used to be assumed to be `HS2`. Regeneration
+  also refuses a vintage in which no year reproduces upstream's labels,
+  instead of writing it with every price marked inexact.
+
 ## [0.11.2] - 2026-11-10
 
 ### Changed

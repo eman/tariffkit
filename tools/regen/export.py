@@ -8,8 +8,9 @@ per component. This script collapses it back down, verifying losslessness as it
 goes, and emits one gzipped JSON per vintage plus the holiday calendar.
 
     python -m tools.regen.export --zip /path/to/PGE-Solar-Billing-Plan-Export-Rates.zip
-    python -m tools.regen.export --download
-    python -m tools.regen.export --download --check    # diff only, don't write
+    python -m tools.regen.export --download              # reuses a cached archive
+    python -m tools.regen.export --download --refresh    # fetches it again
+    python -m tools.regen.export --download --check      # diff only, don't write
 
 The upstream archive is not vendored (843 MB uncompressed); only the normalized
 outputs under src/tariffkit/data/ are committed.
@@ -28,7 +29,10 @@ import zipfile
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
+
+from tariffkit.timeutil import FALL_BACK_LABELS, is_repeated_hour
 
 from .emit import DATA_DIR, DEFAULT_CACHE, REPO_ROOT
 
@@ -112,6 +116,9 @@ def normalize_vintage(raw: bytes, member: str) -> dict[str, object]:
     # Years where our lookup rule reproduces upstream's own ValueName labels for
     # every row. See _exact_through for why this is not always all of them.
     label_agrees: dict[int, bool] = defaultdict(lambda: True)
+    # Pacific year -> the hour labels upstream gave the repeated 01:00 PST on
+    # the fall-back day. See FALL_BACK_LABELS for why this is read, not assumed.
+    fall_back_labels: dict[int, set[int]] = defaultdict(set)
     rins: dict[str, str] = {}
     rate_names: set[str] = set()
     units: set[str] = set()
@@ -153,7 +160,15 @@ def normalize_vintage(raw: bytes, member: str) -> dict[str, object]:
             if (pacific.weekday() >= 5 or row[C_DAY_START] == HOLIDAY_DAY_CODE)
             else "Weekday"
         )
-        derived = (MONTHS[pacific.month - 1], derived_day_type, pacific.hour + pacific.fold)
+        if is_repeated_hour(pacific):
+            # Which label the repeated hour carries is the file's convention
+            # rather than something derivable, so it is recorded here and
+            # checked once the whole year has been seen.
+            fall_back_labels[pacific.year].add(hour)
+            derived_hour = hour
+        else:
+            derived_hour = pacific.hour
+        derived = (MONTHS[pacific.month - 1], derived_day_type, derived_hour)
         if derived != (month_name, day_type, hour):
             label_agrees[pacific.year] = False
         # Parse as float: the same rate is written "0.00080" in one vintage file
@@ -192,12 +207,37 @@ def normalize_vintage(raw: bytes, member: str) -> dict[str, object]:
         }
 
     years = [int(y) for y in data]
+    fall_back_hour: dict[str, int] = {}
+    for year in years:
+        labels = fall_back_labels.get(year, set())
+        if len(labels) == 1 and (label := next(iter(labels))) in FALL_BACK_LABELS:
+            fall_back_hour[str(year)] = label
+        else:
+            # Neither convention, or the two components disagree: no rule
+            # reproduces that hour, so the year is not exact. The lookup falls
+            # back to the HS2 reading for it.
+            label_agrees[year] = False
+
+    exact_through = _exact_through(years, label_agrees)
+    if exact_through < years[0]:
+        # Not even the first year round-trips, so every price this vintage would
+        # return is unverified. That is a rule to fix, not data to ship -- the
+        # 2027 vintages arrived like this when PG&E changed how it labels the
+        # fall-back hour, and writing them anyway would have reported every
+        # price as inexact.
+        raise NormalizationError(
+            f"{member}: no year reproduces upstream's own labels, starting with {years[0]}"
+        )
+
     payload: dict[str, object] = {
         "schema": 1,
         "vintage": next(iter(rate_names)),
         "rins": rins,
         "unit": next(iter(units)),
-        "exact_through": _exact_through(years, label_agrees),
+        "exact_through": exact_through,
+        # Year -> the HS label of the repeated 01:00 PST on that year's
+        # fall-back day. Read from the file because PG&E has used both.
+        "fall_back_hour": fall_back_hour,
         # This vintage's own holiday flags. Kept per-vintage rather than pooled:
         # in far-future years the files disagree, with NBT25/26/00 duplicating
         # some holidays onto the following day. Using another vintage's calendar
@@ -223,11 +263,17 @@ def normalize_vintage(raw: bytes, member: str) -> dict[str, object]:
 def _exact_through(years: list[int], label_agrees: dict[int, bool]) -> int:
     """Last year whose rows all round-trip through our lookup rule.
 
-    Upstream's hour labels stop tracking Pacific daylight time from 2036 onward
-    -- the same absolute year in all five vintage files, so it is their
-    generator rather than a per-file offset. Those years sit far beyond any
-    nine-year rate lock and PG&E already publishes them for illustration only,
-    but we record the boundary rather than let it pass silently.
+    From some year on, upstream's hour labels stop tracking Pacific daylight
+    time: every daylight-time hour is labelled an hour off, starting with the
+    spring-forward day. It is not one absolute year -- 2036 in the 2025
+    vintage, 2037 in 2026, 2038 in 2027 and the November 2026 floating file,
+    2039 in 2028 -- and the 2023 and 2024 vintages never do it. Those years sit
+    beyond any nine-year rate lock and PG&E already publishes them for
+    illustration only, but we record the boundary rather than let it pass
+    silently.
+
+    The repeated fall-back hour is a separate matter and does not count
+    against a year: its label is recorded per year in ``fall_back_hour``.
     """
     exact = years[0] - 1
     for year in years:
@@ -235,6 +281,70 @@ def _exact_through(years: list[int], label_agrees: dict[int, bool]) -> int:
             break
         exact = year
     return exact
+
+
+def retain_dropped_years(
+    payload: dict[str, Any], previous: dict[str, Any] | None, member: str
+) -> list[int]:
+    """Carry forward the leading years a newer upstream file no longer covers.
+
+    The locked vintages are fixed 20-year series, but PG&E republishes the
+    floating one each year starting from the next, and the old file goes. In
+    November 2026 it began at 2027, which dropped 2025 and 2026 -- the two
+    years its own readme calls "actual effective rates" for NBT00. Shipping
+    that as published would have left every floating customer without an
+    export price for the rest of 2026, and without one for any bill before it.
+
+    Those years are taken from the vendored copy, with the source they were
+    verified against, rather than from the new file, which never had them.
+    Only years before the new file's first one are kept: a year upstream still
+    publishes is always upstream's, so a correction to it is not masked.
+    Returns the retained years, oldest first, after updating ``payload``.
+    """
+    if previous is None:
+        return []
+    years: list[int] = payload["years"]
+    retained = [y for y in previous["years"] if y < years[0]]
+    if not retained:
+        return []
+    if retained[-1] != years[0] - 1:
+        raise NormalizationError(
+            f"{member}: the vendored copy ends at {retained[-1]} and upstream now starts "
+            f"at {years[0]}; keeping the old years would leave a gap"
+        )
+    if retained[-1] > int(previous["exact_through"]):
+        # Not a case the data has produced; refuse rather than carry forward
+        # years nobody verified as though they had been.
+        raise NormalizationError(
+            f"{member}: the vendored copy's {retained[-1]} was not verified exact"
+        )
+
+    # Each retained year keeps the source it was read from: a year carried
+    # forward before keeps its original provenance, the rest came from the
+    # vendored copy's own source.
+    sources: dict[str, dict[str, Any]] = {}
+    for year in retained:
+        source = next(
+            (r["source"] for r in previous.get("retained", []) if year in r["years"]),
+            previous["source"],
+        )
+        entry = sources.setdefault(source["member_sha256"], {"source": source, "years": []})
+        entry["years"].append(year)
+
+    data, holidays = payload["data"], payload["holidays"]
+    fall_back_hour = payload["fall_back_hour"]
+    for year in retained:
+        key = str(year)
+        data[key] = previous["data"][key]
+        if key in previous["holidays"]:
+            holidays[key] = previous["holidays"][key]
+        # A copy vendored before the label was recorded predates the files
+        # that changed it, and verified exact under the HS2 reading.
+        fall_back_hour[key] = previous.get("fall_back_hour", {}).get(key, 2)
+    # No re-sorting needed: the payload is written with sort_keys.
+    payload["years"] = retained + years
+    payload["retained"] = list(sources.values())
+    return retained
 
 
 def _is_complete(matrix: list[list[list[float | None]]] | None) -> bool:
@@ -248,20 +358,29 @@ def _require_complete(matrix: list[list[list[float | None]]]) -> list[list[list[
     return [[[v for v in day if v is not None] for day in month] for month in matrix]
 
 
-def fetch_zip(cache: Path) -> Path:
+def fetch_zip(cache: Path, *, refresh: bool = False) -> Path:
     """Download the upstream archive, caching it outside the repo tree."""
     import httpx
 
+    from .fetch import _age_days
+
     cache.parent.mkdir(parents=True, exist_ok=True)
-    if cache.exists():
-        print(f"using cached archive {cache}")
+    if cache.exists() and not refresh:
+        # Said out loud, with its age: a cached archive from before PG&E's last
+        # publication regenerates the old data and reports it current. That is
+        # how the November 2026 vintages first looked from a working copy.
+        print(f"using cached archive {cache} ({_age_days(cache)}), --refresh to re-download")
         return cache
     print(f"downloading {SOURCE_URL}")
+    # Into a sibling and renamed once complete, so an interrupted download
+    # never leaves a truncated archive that the next run would take as cached.
+    partial = cache.with_name(cache.name + ".part")
     with httpx.stream("GET", SOURCE_URL, follow_redirects=True, timeout=300) as response:
         response.raise_for_status()
-        with cache.open("wb") as handle:
+        with partial.open("wb") as handle:
             for chunk in response.iter_bytes():
                 handle.write(chunk)
+    partial.replace(cache)
     return cache
 
 
@@ -357,13 +476,18 @@ def main(argv: list[str] | None = None) -> int:
         help="report whether the vendored data is stale without writing anything",
     )
     parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="with --download, fetch the archive even when a cached copy exists",
+    )
+    parser.add_argument(
         "--cache",
         type=Path,
         default=DEFAULT_CACHE / "PGE-Solar-Billing-Plan-Export-Rates.zip",
     )
     args = parser.parse_args(argv)
 
-    archive = fetch_zip(args.cache) if args.download else args.zip
+    archive = fetch_zip(args.cache, refresh=args.refresh) if args.download else args.zip
     if not archive.exists():
         parser.error(f"archive not found: {archive}")
 
@@ -388,7 +512,6 @@ def main(argv: list[str] | None = None) -> int:
             assert isinstance(holidays, set)
 
             rate_name = str(payload["vintage"])
-            holidays_by_vintage[rate_name] = holidays
             payload["source"] = {
                 "url": SOURCE_URL,
                 "member": member,
@@ -397,6 +520,15 @@ def main(argv: list[str] | None = None) -> int:
             }
             slug = vintage_slug(rate_name)
             target = EXPORT_DIR / f"{slug}.json.gz"
+            previous = json.loads(gzip.decompress(target.read_bytes())) if target.exists() else None
+            retained = retain_dropped_years(payload, previous, member)
+            if retained:
+                print(f"{member}: kept {retained[0]}-{retained[-1]} from the vendored copy")
+            holidays_by_vintage[rate_name] = holidays | {
+                date.fromisoformat(day)
+                for year in retained
+                for day in payload["holidays"].get(str(year), [])
+            }
             # mtime=0 so identical input always produces identical bytes, which
             # is what makes --check a meaningful diff.
             body = gzip.compress(
@@ -419,6 +551,8 @@ def main(argv: list[str] | None = None) -> int:
                 "years": [years[0], years[-1]],
                 "exact_through": exact_through,
             }
+            if retained:
+                manifest_vintages[rate_name]["retained_years"] = retained
 
             if args.check:
                 if not target.exists() or target.read_bytes() != body:

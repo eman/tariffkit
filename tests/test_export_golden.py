@@ -14,13 +14,20 @@ from pathlib import Path
 
 import pytest
 
-from tariffkit.config import Config
+from tariffkit.config import VINTAGE_BY_YEAR, Config
 from tariffkit.export.nbt import NbtExportRates
 from tariffkit.timeutil import PACIFIC, DayType, day_type, export_hour
 
 FIXTURE = Path(__file__).parent / "fixtures" / "nbt_golden_rows.jsonl"
 
-VINTAGE_TO_YEAR = {"NBT23": 2023, "NBT24": 2024, "NBT25": 2025, "NBT26": 2026}
+VINTAGE_TO_YEAR = {
+    "NBT23": 2023,
+    "NBT24": 2024,
+    "NBT25": 2025,
+    "NBT26": 2026,
+    "NBT27": 2027,
+    "NBT28": 2028,
+}
 
 
 def golden_rows() -> list[dict[str, str]]:
@@ -49,8 +56,47 @@ def test_fixture_covers_the_tricky_dates() -> None:
         parse_utc(r["date_start"], r["time_start"]).astimezone(PACIFIC).date().isoformat()
         for r in golden_rows()
     }
-    for required in ("2026-03-08", "2026-11-01", "2026-07-03", "2026-12-31", "2027-01-01"):
+    for required in (
+        "2026-03-08",
+        "2026-11-01",
+        "2026-07-03",
+        "2026-12-31",
+        "2027-01-01",
+        # The 2027 vintage's first fall-back day, labelled HS1 rather than HS2.
+        "2027-11-07",
+        "2028-11-05",
+    ):
         assert required in pacific_dates
+
+
+def test_fixture_covers_both_fall_back_labels() -> None:
+    """PG&E has labelled the repeated 01:00 both ways; both must stay tested."""
+    labels = {
+        (r["vintage"], r["value_name"].split()[2])
+        for r in golden_rows()
+        if (moment := parse_utc(r["date_start"], r["time_start"]).astimezone(PACIFIC)).fold
+        and moment.utcoffset() != moment.replace(fold=0).utcoffset()
+    }
+    assert ("NBT26", "HS2") in labels
+    assert ("NBT27", "HS1") in labels
+    # The floating file carries both: 2026 kept from the earlier copy, 2027 on.
+    assert {("NBT00", "HS2"), ("NBT00", "HS1")} <= labels
+
+
+@pytest.mark.parametrize(
+    ("vintage", "year", "label"),
+    [("NBT26", 2026, 2), ("NBT27", 2027, 1), ("NBT00", 2026, 2), ("NBT00", 2027, 1)],
+)
+def test_the_repeated_hour_prices_from_its_years_label(vintage: str, year: int, label: int) -> None:
+    """The second 01:00 reads the cell its own year's file says it does."""
+    from datetime import datetime as dt
+
+    rates = rates_for(vintage)
+    first_sunday = next(d for d in range(1, 8) if dt(year, 11, d).weekday() == 6)
+    repeated = dt(year, 11, first_sunday, 1, tzinfo=PACIFIC, fold=1)
+    assert repeated.utcoffset() != repeated.replace(fold=0).utcoffset()
+    expected = rates.month_curve(year, "Nov", DayType.WEEKEND)[label]
+    assert rates.price_at(repeated).total == pytest.approx(expected)
 
 
 @pytest.mark.parametrize("row", golden_rows(), ids=lambda r: f"{r['vintage']}-{r['value_name']}")
@@ -80,7 +126,8 @@ def test_day_type_and_hour_agree_with_upstream_labels(row: dict[str, str]) -> No
     month_name, upstream_day_type, hour_label = row["value_name"].split()
 
     assert pacific.strftime("%b") == month_name
-    assert export_hour(pacific) == int(hour_label.removeprefix("HS"))
+    fall_back_hour = rates._payload["fall_back_hour"].get(str(pacific.year), 2)
+    assert export_hour(pacific, fall_back_hour) == int(hour_label.removeprefix("HS"))
     assert str(day_type(pacific, rates._holidays)) == upstream_day_type
 
     # Upstream flags holidays as day 8; those must land in the Weekend column.
@@ -99,6 +146,22 @@ def test_lock_window_falls_inside_the_exactly_verified_range() -> None:
     lock_end = config.lock_end
     assert lock_end is not None
     assert lock_end.year <= rates.exact_through
+
+
+@pytest.mark.parametrize("year", sorted(VINTAGE_BY_YEAR))
+def test_every_vintage_is_exact_through_a_late_ptos_lock(year: int) -> None:
+    """The same, for each vintage an interconnection year selects.
+
+    PTO a full year after the application is late but not unusual, and pushes
+    the lock end as far as it goes. NBT27 arrived reporting nothing as exact,
+    which this would have caught for the vintage most new systems now get.
+    """
+    from datetime import date
+
+    config = Config(interconnection_year=year, pto_date=date(year + 1, 12, 31))
+    lock_end = config.lock_end
+    assert lock_end is not None
+    assert lock_end.year <= NbtExportRates(config).exact_through
 
 
 @pytest.mark.parametrize("supplier", ["bundled", "cca"])

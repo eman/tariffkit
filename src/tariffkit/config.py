@@ -25,6 +25,7 @@ VINTAGE_BY_YEAR = {
     2024: "NBT24",
     2025: "NBT25",
     2026: "NBT26",
+    2027: "NBT27",
 }
 FLOATING_VINTAGE = "NBT00"
 #: The interconnection-application years NBT grants a nine-year lock, from
