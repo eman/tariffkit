@@ -38,6 +38,14 @@ All notable changes to this project are documented here. This project follows
   year and followed, where it used to be assumed to be `HS2`. Regeneration
   also refuses a vintage in which no year reproduces upstream's labels,
   instead of writing it with every price marked inexact.
+- **2047's Labor Day and Thanksgiving are in the right weeks.** The shared
+  holiday calendar was the intersection of the export files' own flags, which
+  drift in each file's far-future years. 2047 is covered by NBT28 alone and
+  came through with 5 September and 21 November instead of 2 September and
+  28 November, so E-TOU-D would have charged its peak on both holidays and
+  off-peak on two ordinary evenings. The calendar is now derived from the
+  holiday rules, and regeneration refuses to write if any file's flags
+  disagree with them in a year that file is verified exact.
 
 ## [0.11.2] - 2026-11-10
 

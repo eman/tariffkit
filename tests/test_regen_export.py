@@ -10,7 +10,7 @@ from HS2 to HS1, and a floating file that no longer covers the current year.
 from __future__ import annotations
 
 import copy
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -22,6 +22,8 @@ from tools.regen.export import (
     NormalizationError,
     normalize_vintage,
     retain_dropped_years,
+    rule_holidays,
+    shared_holidays,
 )
 
 RINS = {"delivery": "USCA-PGXX-NB0-0000", "generation": "USCA-XXPG-NB0-0000"}
@@ -187,3 +189,41 @@ class TestRetainDroppedYears:
     def test_an_unverified_year_is_not_carried_forward(self) -> None:
         with pytest.raises(NormalizationError, match="not verified exact"):
             retain_dropped_years(_upstream([2027]), _vendored([2025, 2026], 2025), "m")
+
+
+class TestSharedHolidays:
+    def test_the_rule_observes_across_the_year_boundary(self) -> None:
+        """New Year's Day 2028 is a Saturday: 2027 observes nine, 2028 seven."""
+        assert date(2027, 12, 31) in rule_holidays(2027)
+        assert date(2027, 12, 24) in rule_holidays(2027)  # Christmas, a Saturday
+        assert len(rule_holidays(2027)) == 9
+        assert len(rule_holidays(2028)) == 7
+        assert date(2047, 9, 2) in rule_holidays(2047)
+        assert date(2047, 11, 28) in rule_holidays(2047)
+
+    def test_drift_past_exact_through_is_not_evidence(self) -> None:
+        """2047 came from NBT28 alone, flagged in the wrong weeks."""
+        drifted = (rule_holidays(2047) - {date(2047, 9, 2), date(2047, 11, 28)}) | {
+            date(2047, 9, 5),
+            date(2047, 11, 21),
+        }
+        calendar = shared_holidays({"NBT28": (rule_holidays(2038) | drifted, 2038)})
+        assert calendar[2047] == sorted(rule_holidays(2047))
+        assert calendar[2038] == sorted(rule_holidays(2038))
+
+    def test_a_verified_year_that_disagrees_is_refused(self) -> None:
+        """Inside exact_through the flags are evidence; a mismatch needs a person."""
+        flags = rule_holidays(2030) | {date(2030, 6, 19)}  # say, Juneteenth added
+        with pytest.raises(NormalizationError, match="NBT27 flags"):
+            shared_holidays({"NBT27": (flags, 2037)})
+
+
+def test_vendored_calendar_is_the_rule() -> None:
+    """Every year shipped in holidays.toml, not just the ones spot-checked."""
+    import tomllib
+
+    from tariffkit.data import read_data_text
+
+    shipped = tomllib.loads(read_data_text("holidays.toml"))["holidays"]
+    for year, dates in shipped.items():
+        assert {date.fromisoformat(d) for d in dates} == rule_holidays(int(year)), year

@@ -391,36 +391,79 @@ def vintage_slug(rate_name: str) -> str:
 _ONE_DAY = timedelta(days=1)
 
 
-def intersect_holidays(by_vintage: dict[str, set[date]]) -> dict[int, list[date]]:
-    """Per-year intersection across the vintages that cover that year.
+def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
+    """The ``n``-th ``weekday`` (Monday=0) of a month; ``n=-1`` is the last."""
+    first = date(year, month, 1)
+    days = [
+        first + timedelta(days=i)
+        for i in range(31)
+        if (first + timedelta(days=i)).month == month
+        and (first + timedelta(days=i)).weekday() == weekday
+    ]
+    return days[n]
 
-    Every vintage agrees on the canonical eight holidays through 2036. Later
-    years pick up per-file artifacts, and intersecting removes them -- but only
-    where two vintages actually disagree. 2044 is covered by NBT00/25/26 and
-    2045 by NBT26 alone, and each of them duplicates Memorial Day, Independence
-    Day and Labor Day onto the following day, so the intersection preserved the
-    duplicate and both years came out with eleven holidays instead of eight.
-    E-TOU-D prices its 5-8pm peak as off-peak on a holiday, so those six
-    weekday evenings were mispriced.
 
-    A holiday immediately following another is that artifact: PG&E's observed
-    rules move a holiday to the preceding Friday or the following Monday, and
-    never produce two consecutive dates. Where a year legitimately carries a
-    ninth entry -- 2027 and 2032 each observe both Christmas Eve and New
-    Year's Eve -- the dates are far apart and survive.
+def _observed(day: date) -> date:
+    """Saturday to the preceding Friday, Sunday to the following Monday."""
+    if day.weekday() == 5:
+        return day - _ONE_DAY
+    if day.weekday() == 6:
+        return day + _ONE_DAY
+    return day
+
+
+def rule_holidays(year: int) -> set[date]:
+    """The eight tariff holidays observed in ``year``, by rule.
+
+    Grouped by the observed date: New Year's Day on a Saturday is observed on
+    the preceding 31 December, so that year carries nine and the next seven.
     """
-    years: set[int] = {d.year for dates in by_vintage.values() for d in dates}
+    observed: set[date] = set()
+    for y in (year, year + 1):
+        for day in (
+            date(y, 1, 1),  # New Year's Day
+            _nth_weekday(y, 2, 0, 2),  # Presidents' Day
+            _nth_weekday(y, 5, 0, -1),  # Memorial Day
+            date(y, 7, 4),  # Independence Day
+            _nth_weekday(y, 9, 0, 0),  # Labor Day
+            date(y, 11, 11),  # Veterans Day
+            _nth_weekday(y, 11, 3, 3),  # Thanksgiving
+            date(y, 12, 25),  # Christmas
+        ):
+            moved = _observed(day)
+            if moved.year == year:
+                observed.add(moved)
+    return observed
+
+
+def shared_holidays(by_vintage: dict[str, tuple[set[date], int]]) -> dict[int, list[date]]:
+    """The shared calendar: derived by rule, checked against PG&E's own flags.
+
+    ``by_vintage`` maps each vintage to its flagged holidays and the last year
+    its file is verified exact. A vintage's flags are right in exactly those
+    years and drift in the same years its hour labels do, so only verified
+    years are evidence; there, every vintage must agree with the rule or
+    nothing is written.
+
+    This used to be the intersection of the vintages' flags, with a rule
+    dropping a holiday that immediately followed another. That cleaned the
+    drift only where two vintages disagreed about it. 2047 is covered by NBT28
+    alone, in its drift years, and came through with Labor Day on 5 September
+    and Thanksgiving on 21 November -- both wrong, so E-TOU-D would have
+    charged peak on the real holidays and off-peak on two ordinary evenings.
+    """
+    years = sorted({d.year for dates, _ in by_vintage.values() for d in dates})
     result: dict[int, list[date]] = {}
-    for year in sorted(years):
-        covering = [
-            {d for d in dates if d.year == year}
-            for dates in by_vintage.values()
-            if any(d.year == year for d in dates)
-        ]
-        common = set.intersection(*covering) if covering else set()
-        common -= {day for day in common if day - _ONE_DAY in common}
-        if common:
-            result[year] = sorted(common)
+    for year in years:
+        expected = rule_holidays(year)
+        for vintage, (dates, exact_through) in sorted(by_vintage.items()):
+            flagged = {d for d in dates if d.year == year}
+            if flagged and year <= exact_through and flagged != expected:
+                raise NormalizationError(
+                    f"{vintage} flags {sorted(map(str, flagged))} as {year}'s holidays, "
+                    f"where the tariff's rules give {sorted(map(str, expected))}"
+                )
+        result[year] = sorted(expected)
     return result
 
 
@@ -428,22 +471,19 @@ def write_holidays(holidays: dict[int, list[date]], check: bool) -> bool:
     lines = [
         "# Generated by `python -m tools.regen.export` -- do not edit by hand.",
         "#",
-        "# Extracted from the DayStart==8 rows of PG&E's NBT export-rate files, so",
-        "# the observed-date rules (Saturday -> preceding Friday, Sunday -> following",
-        "# Monday) come from the source rather than being reimplemented here.",
-        "# These holidays set the EXPORT day type, and also E-TOU-D's peak, which",
-        "# applies on weekdays only and prices a holiday as off-peak. E-ELEC,",
-        "# E-TOU-C and EV2-A make no weekday/weekend/holiday distinction.",
+        "# The eight tariff holidays by rule, observed Saturday -> preceding Friday",
+        "# and Sunday -> following Monday, for the years PG&E's NBT export-rate",
+        "# files cover. Regeneration checks them against those files' own holiday",
+        "# flags (DayStart==8) in every year a file is verified exact, and refuses",
+        "# to write on any disagreement. Later years are not evidence: each file's",
+        "# flags drift there along with its hour labels, and 2047, covered by one",
+        "# file alone, had Labor Day and Thanksgiving in the wrong weeks.",
         "#",
-        "# This is the INTERSECTION across the vintage files covering each year,",
-        "# less any date that immediately follows another. They agree through 2036;",
-        "# beyond that NBT25/26/00 duplicate some holidays onto the following day.",
-        "# Intersecting drops those wherever two vintages disagree, but 2044 is",
-        "# covered by three files and 2045 by one, all carrying the duplicate, so",
-        "# both years survived it at eleven holidays until the adjacency rule was",
-        "# added. PG&E's observed-date rules never produce consecutive dates.",
-        "# Export",
-        "# lookups use the per-vintage calendar embedded in each matrix instead.",
+        "# These holidays set E-TOU-D's peak, which applies on weekdays only and",
+        "# prices a holiday as off-peak. E-ELEC, E-TOU-C and EV2-A make no",
+        "# weekday/weekend/holiday distinction. Export lookups use the per-vintage",
+        "# calendar embedded in each matrix instead, drift included, because that",
+        "# is how upstream labelled the rows the matrix was built from.",
         "",
         "[holidays]",
     ]
@@ -494,7 +534,7 @@ def main(argv: list[str] | None = None) -> int:
     archive_sha = hashlib.sha256(archive.read_bytes()).hexdigest()
     print(f"archive sha256 {archive_sha}")
 
-    holidays_by_vintage: dict[str, set[date]] = {}
+    holidays_by_vintage: dict[str, tuple[set[date], int]] = {}
     manifest_vintages: dict[str, dict[str, object]] = {}
     stale = False
 
@@ -524,11 +564,15 @@ def main(argv: list[str] | None = None) -> int:
             retained = retain_dropped_years(payload, previous, member)
             if retained:
                 print(f"{member}: kept {retained[0]}-{retained[-1]} from the vendored copy")
-            holidays_by_vintage[rate_name] = holidays | {
-                date.fromisoformat(day)
-                for year in retained
-                for day in payload["holidays"].get(str(year), [])
-            }
+            holidays_by_vintage[rate_name] = (
+                holidays
+                | {
+                    date.fromisoformat(day)
+                    for year in retained
+                    for day in payload["holidays"].get(str(year), [])
+                },
+                int(payload["exact_through"]),
+            )
             # mtime=0 so identical input always produces identical bytes, which
             # is what makes --check a meaningful diff.
             body = gzip.compress(
@@ -562,7 +606,7 @@ def main(argv: list[str] | None = None) -> int:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(body)
 
-    stale |= write_holidays(intersect_holidays(holidays_by_vintage), args.check)
+    stale |= write_holidays(shared_holidays(holidays_by_vintage), args.check)
 
     manifest = {
         "source_url": SOURCE_URL,

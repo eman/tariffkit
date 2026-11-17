@@ -77,6 +77,12 @@ class TestHolidays:
             (date(2028, 11, 10), True),  # Veterans Day is a Saturday
             (date(2026, 1, 19), False),  # MLK Day is not a tariff holiday
             (date(2026, 6, 19), False),  # nor is Juneteenth
+            # 2047 is covered by one export file alone, in its drift years,
+            # which flags Labor Day and Thanksgiving in the wrong weeks.
+            (date(2047, 9, 2), True),  # Labor Day: first Monday of September
+            (date(2047, 9, 5), False),
+            (date(2047, 11, 28), True),  # Thanksgiving: fourth Thursday
+            (date(2047, 11, 21), False),
         ],
     )
     def test_observed_dates(self, day: date, expected: bool) -> None:
