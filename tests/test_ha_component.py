@@ -1407,3 +1407,29 @@ async def test_every_options_form_renders(hass: HomeAssistant) -> None:
     # And the add form, which the same fields made unreachable.
     names = {field["name"] for field in _rendered(await opened("history", "add_epoch"))}
     assert "effective" in names
+
+
+@pytest.mark.parametrize(
+    ("today", "expected"),
+    [
+        # NBT27 is vendored but has no 2026 rates; defaulting to it here left
+        # a setup that accepted the default unable to load.
+        ("2026-11-17", 2026),
+        ("2027-01-01", 2027),
+        ("2031-06-01", 2027),
+        ("2022-06-01", 2023),
+    ],
+)
+def test_default_interconnection_year_has_rates_for_today(
+    freezer: FrozenDateTimeFactory, today: str, expected: int
+) -> None:
+    from custom_components.tariffkit.config_flow import default_interconnection_year
+
+    from tariffkit.export.nbt import NbtExportRates
+
+    freezer.move_to(f"{today}T12:00:00-08:00")
+    year = default_interconnection_year()
+    assert year == expected
+    low, high = NbtExportRates(Config(interconnection_year=year, pto_date=None)).covered_years
+    if int(today[:4]) >= 2023:
+        assert low <= int(today[:4]) <= high

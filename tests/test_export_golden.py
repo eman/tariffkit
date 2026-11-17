@@ -197,3 +197,27 @@ def test_the_month_curve_is_the_price_it_plots(supplier: str) -> None:
         rates.price_at(datetime(2026, 7, 15, hour, tzinfo=PACIFIC)).total for hour in range(24)
     ]
     assert list(curve) == pytest.approx(hourly)
+
+
+def test_a_year_without_a_recorded_label_still_prices_inexactly() -> None:
+    """Regeneration omits the label for a year neither convention explains.
+
+    That year's matrix is still vendored, past ``exact_through``. Every hour
+    of it used to raise ``KeyError`` from the label lookup instead of
+    returning the ``exact=False`` price the year is documented to give.
+    """
+    import copy
+    from datetime import datetime as dt
+
+    rates = rates_for("NBT26")
+    year = rates.covered_years[1]
+    assert year > rates.exact_through
+    rates._payload = copy.deepcopy(rates._payload)
+    del rates._payload["fall_back_hour"][str(year)]
+
+    first_sunday = next(d for d in range(1, 8) if dt(year, 11, d).weekday() == 6)
+    repeated = dt(year, 11, first_sunday, 1, tzinfo=PACIFIC, fold=1)
+    for moment in (dt(year, 7, 15, 12, tzinfo=PACIFIC), repeated):
+        assert rates.price_at(moment).exact is False
+    hs2 = rates.month_curve(year, "Nov", DayType.WEEKEND)[2]
+    assert rates.price_at(repeated).total == pytest.approx(hs2)

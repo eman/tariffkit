@@ -75,6 +75,22 @@ from .profile import (
 )
 
 INTERCONNECTION_YEARS = [str(year) for year in sorted(VINTAGE_BY_YEAR)]
+
+
+def default_interconnection_year() -> int:
+    """This year's vintage, or the nearest vendored one, for an unanswered field.
+
+    Not simply the newest. A vintage's rates start in its own year, so NBT27
+    has none for 2026; defaulting to it from the moment it was vendored meant
+    a setup that accepted the default in November 2026 could not price
+    anything and the entry never loaded. A year past the newest takes the
+    newest, as before.
+    """
+    years = sorted(VINTAGE_BY_YEAR)
+    this_year = now_pacific().year
+    return max((y for y in years if y <= this_year), default=years[0])
+
+
 CCA_OPTIONS = ["light_green", "deep_green"]
 
 
@@ -133,7 +149,9 @@ def _delivery_schema(
         fields[
             vol.Required(
                 CONF_INTERCONNECTION_YEAR,
-                default=str(defaults.get(CONF_INTERCONNECTION_YEAR) or INTERCONNECTION_YEARS[-1]),
+                default=str(
+                    defaults.get(CONF_INTERCONNECTION_YEAR) or default_interconnection_year()
+                ),
             )
         ] = _select(INTERCONNECTION_YEARS)
         pto_date = defaults.get(CONF_PTO_DATE)
@@ -698,7 +716,7 @@ def _manual_config_data(
 ) -> dict[str, Any]:
     data = {**identity, **delivery, **(cca or {})}
     if data.get(CONF_EXPORT_ENABLED, True):
-        data.setdefault(CONF_INTERCONNECTION_YEAR, int(INTERCONNECTION_YEARS[-1]))
+        data.setdefault(CONF_INTERCONNECTION_YEAR, default_interconnection_year())
     else:
         # Import-only setup has no NBT choice to collect. NBT00 is the
         # provider's floating default and keeps the Config contract complete.

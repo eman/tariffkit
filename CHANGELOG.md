@@ -9,7 +9,10 @@ All notable changes to this project are documented here. This project follows
 - **NBT27 and NBT28 export rates**, from PG&E's November 2026 archive. A 2027
   interconnection now resolves to NBT27 instead of being refused. 2028 still
   floats, as Schedule NBT's lock covers applications through 2027 only;
-  NBT28 is available as an explicit `vintage`.
+  NBT28 is available as an explicit `vintage`. Home Assistant offers 2027,
+  but its setup defaults to the current year rather than the newest one:
+  NBT27 has no 2026 rates, so defaulting to it would leave a setup made this
+  year unable to load.
 
 ### Changed
 - **Floating (NBT00) export rates from 2027 on follow PG&E's new file.** It is
