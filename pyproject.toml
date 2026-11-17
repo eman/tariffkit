@@ -94,9 +94,12 @@ include = ["/src", "/tests", "/README.md", "/LICENSE", "/CHANGELOG.md"]
 # These exercise repository-only surfaces that are intentionally absent from
 # the sdist; keeping them would make its otherwise self-contained suite fail.
 exclude = [
-    "/tests/test_ha_component.py",
+    # The Home Assistant integration tests import custom_components, which the
+    # sdist does not carry; listing them one at a time missed five of six.
+    "/tests/test_ha_*.py",
     "/tests/test_packaging.py",
     "/tests/test_regen.py",
+    "/tests/test_regen_export.py",
     "/tests/test_release.py",
 ]
 
