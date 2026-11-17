@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-11-17
+
 ### Added
 - **NBT27 and NBT28 export rates**, from PG&E's November 2026 archive. A 2027
   interconnection now resolves to NBT27 instead of being refused. 2028 still
@@ -2261,7 +2263,8 @@ Initial release.
 - Holiday calendars are extracted per vintage from the source data rather than
   recomputed, because the vintage files disagree in far-future years.
 
-[Unreleased]: https://github.com/eman/tariffkit/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/eman/tariffkit/compare/v0.11.3...HEAD
+[0.11.3]: https://github.com/eman/tariffkit/releases/tag/v0.11.3
 [0.11.2]: https://github.com/eman/tariffkit/releases/tag/v0.11.2
 [0.11.1]: https://github.com/eman/tariffkit/releases/tag/v0.11.1
 [0.11.0]: https://github.com/eman/tariffkit/releases/tag/v0.11.0
