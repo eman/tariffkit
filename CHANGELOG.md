@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.11.4] - 2026-11-18
+
 ### Changed
 - **The Home Assistant integration requires Home Assistant 2026.11.0.** The
   integration is now tested on Home Assistant's own test harness,
@@ -2285,7 +2287,8 @@ Initial release.
 - Holiday calendars are extracted per vintage from the source data rather than
   recomputed, because the vintage files disagree in far-future years.
 
-[Unreleased]: https://github.com/eman/tariffkit/compare/v0.11.3...HEAD
+[Unreleased]: https://github.com/eman/tariffkit/compare/v0.11.4...HEAD
+[0.11.4]: https://github.com/eman/tariffkit/releases/tag/v0.11.4
 [0.11.3]: https://github.com/eman/tariffkit/releases/tag/v0.11.3
 [0.11.2]: https://github.com/eman/tariffkit/releases/tag/v0.11.2
 [0.11.1]: https://github.com/eman/tariffkit/releases/tag/v0.11.1
