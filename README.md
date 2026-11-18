@@ -109,22 +109,24 @@ pip install 'tariffkit[all]'
 Setting an account up from your latest bill wants `[pge,statements]` and, to
 keep the login out of a plain file, `[secrets]`.
 
-The Home Assistant integration has been
-[submitted to the default HACS store](https://github.com/hacs/default/pull/10019),
-but approval queues can take months. Until it is approved, install TariffKit as
-a custom repository:
+The Home Assistant integration is in the catalog of the
+[Home Assistant Marketplace](https://www.home-assistant.io/integrations/marketplace/),
+so there is no repository to add by hand:
 
-[![Open your Home Assistant instance and add the TariffKit repository to HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=eman&repository=tariffkit&category=integration)
+[![Open your Home Assistant instance and show TariffKit in the Marketplace](https://my.home-assistant.io/badges/marketplace_repository.svg)](https://my.home-assistant.io/redirect/marketplace_repository/?owner=eman&repository=tariffkit&category=integration)
 
-Or add it manually:
+Or find it yourself:
 
-1. Open **HACS** in Home Assistant.
-2. Select the **three-dot menu → Custom repositories**.
-3. Enter `https://github.com/eman/tariffkit`, choose **Integration**, and select
-   **Add**.
-4. Search HACS for **TariffKit**, open it, and select **Download**.
-5. Restart Home Assistant, then add TariffKit from
+1. Go to **Settings → Marketplace** and search for **TariffKit**. The first
+   visit asks you to accept the Marketplace's notice that community projects
+   are not reviewed by Home Assistant.
+2. Open TariffKit, select **Install**, review the version, and select
+   **Install** again.
+3. Complete the setup that follows, or add it later from
    **Settings → Devices & services → Add integration**.
+
+TariffKit requires Home Assistant 2026.11 or newer, the first release with the
+Marketplace.
 
 ## Getting started
 

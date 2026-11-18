@@ -197,7 +197,7 @@ uv run python -m audit run --since 2025-11-01 --until 2026-08-31
 - **Core package remains dependency-light**: optional features (`web`, `mqtt`) use extras and lazy imports with explicit runtime messages when extras are missing.
 - **Typing and linting are intentionally strict** in `src/tariffkit` (`mypy --strict`, broad Ruff rule set). Follow existing typing quality rather than introducing `Any`-heavy shortcuts.
 - **Home Assistant integration has deliberate lint exceptions** in Ruff config to match HA conventions; avoid “normalizing” HA files to core-package naming/signature patterns.
-- **Python 3.14.2 is the floor**, and CI runs exactly that one version rather than a matrix — a matrix that spanned versions nobody develops on could only catch regressions where they did not matter. The Home Assistant floor in `hacs.json` (currently 2026.10.0) is set separately, by the newest Home Assistant API the integration calls.
+- **Python 3.14.2 is the floor**, and CI runs exactly that one version rather than a matrix — a matrix that spanned versions nobody develops on could only catch regressions where they did not matter. The Home Assistant floor in `hacs.json` (currently 2026.11.0) is set separately: it is the oldest Home Assistant the suite can test, and the suite runs on `pytest-homeassistant`, Home Assistant's own harness, which starts at 2026.11 (`pytest-homeassistant-custom-component` is retired; never install it beside it).
 - **Comments explain why, not what.** Config files here carry the reasoning for non-obvious choices (why `audit` is in `known-first-party`, why the wheel check is pinned, why the rate-data job gates on step outcomes rather than `failure()`). Preserve those when editing, and add one when making a choice a reader would otherwise undo.
 
 ## Changelog and docs
@@ -219,7 +219,8 @@ Two workflows, in `.github/workflows/`:
   main suite with coverage, then `audit/tests`; a separate `build` job asserts
   the vendored data is inside the wheel and the audit harness is inside neither
   wheel nor sdist.
-- `home-assistant.yml` — HACS validation and hassfest on PRs, `main`, published
+- `home-assistant.yml` — HACS validation (`hacs/action`, the catalog checks the
+  Home Assistant Marketplace kept) and hassfest on PRs, `main`, published
   releases, a weekly schedule, and manual runs. Neither check permits ignores.
 - `rate-data-check.yml` — weekly and on demand. Runs both `--check`
   regenerators against live publishers and opens a single deduplicated

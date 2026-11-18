@@ -18,7 +18,7 @@ from freezegun.api import FrozenDateTimeFactory
 from homeassistant.components.recorder.models import StatisticMeanType
 from homeassistant.components.recorder.statistics import async_add_external_statistics
 from homeassistant.core import HomeAssistant
-from pytest_homeassistant_custom_component.components.recorder.common import (
+from pytest_homeassistant.components.recorder.common import (
     async_wait_recording_done,
 )
 from tests.test_ha_energy import NOW, _entry, _meter_options, _setup, _state
@@ -55,7 +55,7 @@ async def _record_external(
     await async_wait_recording_done(hass)
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_a_statistic_with_no_entity_behind_it_still_prices(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -110,7 +110,7 @@ def test_the_profile_carries_a_statistic_id_too() -> None:
     assert source.grid_import_entity == IMPORT_STAT
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_a_statistic_that_is_not_energy_is_refused(hass: HomeAssistant) -> None:
     """A picker that lists every statistic can offer a gas meter.
 
@@ -161,7 +161,7 @@ def test_a_statistic_id_is_refused_for_influxdb() -> None:
         MeterSources(influx=MeterSource(IMPORT_STAT, EXPORT_STAT))
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_a_statistic_with_no_running_sum_is_refused(hass: HomeAssistant) -> None:
     """The statistic equivalent of the state_class check.
 

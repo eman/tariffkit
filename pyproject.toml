@@ -72,7 +72,7 @@ dev = [
     { include-group = "security" },
     "fastapi>=0.110",
     "paho-mqtt>=2.0",
-    "pytest-homeassistant-custom-component>=0.13.316",
+    "pytest-homeassistant>=2026.11.2",
     "uvicorn[standard]>=0.29",
     "websockets>=12",
 ]
@@ -102,16 +102,6 @@ exclude = [
     "/tests/test_regen_export.py",
     "/tests/test_release.py",
 ]
-
-[tool.uv]
-# Pillow reaches the lock only through the Home Assistant test stack:
-# pytest-homeassistant-custom-component 0.13.375 pins homeassistant==2026.10.4,
-# which pins Pillow==12.3.0 -- 41 advisories, all fixed in 13.0.0. TariffKit
-# never imports PIL, and the production extras do not include it, so this only
-# lifts the dev graph past an exact pin that HA itself dropped in 2026.11.
-# Remove once a pytest-homeassistant-custom-component release pins
-# homeassistant>=2026.11, which requires Pillow 13 on its own.
-override-dependencies = ["pillow>=13.0.0"]
 
 [tool.ruff]
 line-length = 100
@@ -160,8 +150,11 @@ no_implicit_reexport = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-q --strict-markers"
+# respx's own plugin is off so Home Assistant can install its httpx alias
+# before respx is imported; pytest-homeassistant still uses respx directly.
+addopts = "-q --strict-markers -p no:respx"
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 markers = [
   "slowdata: requires the full upstream PG&E dataset",
   "statements: reads real statement PDFs, which are never committed",

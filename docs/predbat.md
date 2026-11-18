@@ -41,14 +41,12 @@ first using its own [installation guide](https://springfall2008.github.io/batpre
 
 ## 1. Install TariffKit
 
-Via HACS as a custom repository (it is
-[awaiting default-store inclusion](https://github.com/hacs/default/pull/10019)):
+From the Marketplace, which carries TariffKit in its catalog:
 
-1. **HACS → three-dot menu → Custom repositories**
-2. Add `https://github.com/eman/tariffkit`, category **Integration**
-3. Search HACS for **TariffKit**, open it, **Download**
-4. Restart Home Assistant
-5. **Settings → Devices & services → Add integration → TariffKit**
+1. **Settings → Marketplace**, search for **TariffKit**
+2. Open it, select **Install**, and review the version
+3. Complete the setup that follows, or later use
+   **Settings → Devices & services → Add integration → TariffKit**
 
 The config flow asks for your supplier, rate plan, interconnection year, and
 Permission-To-Operate date. [Home Assistant → Configure](home-assistant.md#configure)

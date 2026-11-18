@@ -23,17 +23,32 @@ that bind mounts both the component and Home Assistant configuration. See
 
 ## Install
 
-### HACS
+### Marketplace
 
-TariffKit is awaiting inclusion in the default HACS store. Until that review is
-complete, add it as a custom repository with category **Integration**:
+TariffKit is in the catalog of the
+[Home Assistant Marketplace](https://www.home-assistant.io/integrations/marketplace/),
+which is built into Home Assistant from 2026.11, the oldest release TariffKit
+supports:
 
-[![Open your Home Assistant instance and add the TariffKit repository to HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=eman&repository=tariffkit&category=integration)
+[![Open your Home Assistant instance and show TariffKit in the Marketplace](https://my.home-assistant.io/badges/marketplace_repository.svg)](https://my.home-assistant.io/redirect/marketplace_repository/?owner=eman&repository=tariffkit&category=integration)
 
-Select the newest release, install, and restart Home Assistant. HACS downloads
-the release's `tariffkit.zip`, which contains only the integration files. The
-default branch is deliberately not offered: it can temporarily refer to a
-Python package version that has not been published yet.
+Or go to **Settings → Marketplace**, search for **TariffKit**, open it, and
+select **Install**. The first visit to the Marketplace asks you to accept its
+notice that community projects are not reviewed by Home Assistant; nothing can
+be installed or updated until you do. The install continues straight into
+TariffKit's setup. If Home Assistant asks for a restart instead, a repair under
+**Settings → System → Repairs** offers one.
+
+The Marketplace installs the release's `tariffkit.zip`, which contains only the
+integration files. The default branch is deliberately not offered: it can
+temporarily refer to a Python package version that has not been published yet.
+Updates appear under **Settings → Updates** and need a restart, which a repair
+offers once the update is installed.
+
+An installation made with HACS on an earlier Home Assistant moves into the
+Marketplace on its own when Home Assistant is upgraded to 2026.11, and keeps
+receiving updates. On 2026.10 HACS keeps the TariffKit already installed but
+offers none of the releases that require 2026.11.
 
 ### Manual
 
@@ -50,9 +65,9 @@ Restart Home Assistant, then **Settings → Devices & Services → Add Integrati
 
 `manifest.json` declares an exact-pinned `tariffkit==0.11.3` requirement, which
 Home Assistant installs from PyPI on first setup. The requirement stays an
-exact version rather than a range so a HACS update to the integration and a
-package upgrade cannot drift apart: every GitHub integration release has one
-matching PyPI distribution.
+exact version rather than a range so a Marketplace update to the integration
+and a package upgrade cannot drift apart: every GitHub integration release has
+one matching PyPI distribution.
 
 The integration computes from local static data and does not sign in to PG&E,
 MQTT, InfluxDB, or another Home Assistant instance, so it deliberately does not
@@ -65,9 +80,13 @@ would increase exposure without enabling a feature.
 **Settings → Devices & Services → TariffKit → ⋮ → Delete** removes the
 config entry and every entity and device it created. Nothing about it lives
 outside that entry: there is no separate cache, database table, or file on
-disk to clean up afterward. If you installed manually, also delete
-`custom_components/tariffkit` (or remove the HACS custom repository) so a
-restart does not offer to set it up again.
+disk to clean up afterward.
+
+To remove the files as well, open TariffKit in **Settings → Marketplace**, then
+**⋮ → Uninstall**. While the integration is still set up, the Marketplace
+offers **Delete and uninstall**, which does both. If you installed manually,
+delete `custom_components/tariffkit` instead, so a restart does not offer to
+set it up again.
 
 ## Upgrading
 
@@ -1285,11 +1304,11 @@ draw the forecast as a line — only the native History path is limited that
 way; it is not a TariffKit restriction.
 
 **One continuous timeline with the [apexcharts-card](https://github.com/RomRider/apexcharts-card)
-HACS frontend card** (not shipped by TariffKit — install it separately, `v2.2.3`
-or later): one card can mix the Recorder's real history with a client-side
-`data_generator` series in the same chart, so the same three sensors' solid,
-*recorded* past extends into the forecast sensor's dashed, *future* half at a
-shared "now" marker:
+dashboard card** (not shipped by TariffKit — install it separately from the
+Marketplace, `v2.2.3` or later): one card can mix the Recorder's real history
+with a client-side `data_generator` series in the same chart, so the same
+three sensors' solid, *recorded* past extends into the forecast sensor's
+dashed, *future* half at a shared "now" marker:
 
 ```yaml
 type: custom:apexcharts-card

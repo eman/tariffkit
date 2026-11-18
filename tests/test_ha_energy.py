@@ -27,8 +27,8 @@ from homeassistant.config_entries import SOURCE_USER
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, State
 from homeassistant.helpers import entity_registry as er
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-from pytest_homeassistant_custom_component.components.recorder.common import (
+from pytest_homeassistant.common import MockConfigEntry
+from pytest_homeassistant.components.recorder.common import (
     async_wait_recording_done,
 )
 
@@ -141,7 +141,7 @@ def test_meter_settings_fall_back_to_an_imported_profile_mapping() -> None:
     assert cleared.export_entity == EXPORT_ENTITY
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_no_meters_configured_creates_no_usage_entities(hass: HomeAssistant) -> None:
     entry = _entry()
     await _setup(hass, entry)
@@ -182,7 +182,7 @@ def _assert_reconciles(hass: HomeAssistant, entry: MockConfigEntry, span: str) -
     assert float(state.state) == pytest.approx(reached, abs=1e-4), span
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_running_totals_price_metered_hours(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -263,7 +263,7 @@ async def test_running_totals_price_metered_hours(
     assert float(_state(hass, entry, "grid_import_cycle").state) == pytest.approx(6.5)
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_counter_restart_does_not_charge_for_a_whole_series(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -295,7 +295,7 @@ async def test_counter_restart_does_not_charge_for_a_whole_series(
     assert _entity_id(hass, entry, "amount_due_today") is not None
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_energy_recorded_in_watt_hours_is_converted(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -326,7 +326,7 @@ async def test_energy_recorded_in_watt_hours_is_converted(
     assert float(_state(hass, entry, "grid_import_today").state) == pytest.approx(3.0)
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_missing_statistics_are_reported_rather_than_priced(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -341,7 +341,7 @@ async def test_missing_statistics_are_reported_rather_than_priced(
     assert float(net.state) == pytest.approx(net.attributes["fixed_charges"], abs=1e-4)
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_options_flow_configures_and_clears_meters(hass: HomeAssistant) -> None:
     entry = _entry()
     await _setup(hass, entry)
@@ -376,7 +376,7 @@ async def test_options_flow_configures_and_clears_meters(hass: HomeAssistant) ->
     assert entry.runtime_data.meters.configured is False
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_the_hour_in_progress_tracks_the_counter_between_compiles(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -418,7 +418,7 @@ async def test_the_hour_in_progress_tracks_the_counter_between_compiles(
     assert float(_state(hass, entry, "grid_import_today").state) == pytest.approx(1.0)
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_money_entities_explain_themselves_without_bloating_the_recorder(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -452,7 +452,7 @@ async def test_money_entities_explain_themselves_without_bloating_the_recorder(
     assert _state(hass, entry, "amount_due_today").attributes["buckets"]
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_a_cycle_the_account_history_predates_says_why_it_is_unknown(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -486,7 +486,7 @@ async def test_a_cycle_the_account_history_predates_says_why_it_is_unknown(
     assert _state(hass, entry, "amount_due_today").state not in ("unknown", "unavailable")
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_setup_asks_about_meters_and_takes_no_for_an_answer(hass: HomeAssistant) -> None:
     """Setup offers the meters; skipping the step still finishes.
 
@@ -544,7 +544,7 @@ async def test_setup_asks_about_meters_and_takes_no_for_an_answer(hass: HomeAssi
     assert "meters" in result["menu_options"]
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_a_cycle_holding_pto_reports_what_it_earned_nothing_for(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -579,7 +579,7 @@ async def test_a_cycle_holding_pto_reports_what_it_earned_nothing_for(
     assert attributes["uncompensated_kwh"] <= attributes["exported_kwh"]
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_a_cycle_after_pto_carries_no_uncompensated_attribute(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -603,7 +603,7 @@ async def test_a_cycle_after_pto_carries_no_uncompensated_attribute(
     assert "uncompensated_kwh" not in _state(hass, entry, "amount_due_cycle").attributes
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_billing_periods_in_the_entry_beat_the_configured_read_day(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -630,7 +630,7 @@ async def test_billing_periods_in_the_entry_beat_the_configured_read_day(
     assert cycle.attributes["cycle_boundary"] == "statement"
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_the_cycle_entity_says_where_its_boundary_came_from(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -692,7 +692,7 @@ def test_a_measurement_sensor_is_rejected_as_a_counter() -> None:
     assert "state_class" in _meter_problem(_Hass(), {CONF_GRID_IMPORT_ENTITY: IMPORT_ENTITY})
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_narrowing_the_meters_removes_the_entities_it_no_longer_creates(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -719,7 +719,6 @@ async def test_narrowing_the_meters_removes_the_entities_it_no_longer_creates(
     assert _entity_id(hass, entry, "export_price") is not None
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_without_a_recorder_the_entities_say_so(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -736,7 +735,7 @@ async def test_without_a_recorder_the_entities_say_so(
     assert _state(hass, entry, "import_price").state not in ("unknown", "unavailable")
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_the_bank_entity_appears_only_with_an_export_meter(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -751,7 +750,7 @@ async def test_the_bank_entity_appears_only_with_an_export_meter(
     assert _entity_id(hass, both, "export_credit_bank") is not None
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_the_bank_says_why_it_has_no_figure_yet(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -771,7 +770,7 @@ async def test_the_bank_says_why_it_has_no_figure_yet(
     assert "device_class" not in state.attributes
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_amount_due_is_what_a_statement_would_charge_not_the_bill_total(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -888,7 +887,7 @@ def test_a_spoiled_hour_does_not_poison_the_next_one() -> None:
     assert _carry(good, 3600.0, 1461.0) == (3600.0, 1461.0)
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_the_credit_split_explains_what_capped_credit_applied(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -946,7 +945,7 @@ async def test_the_credit_split_explains_what_capped_credit_applied(
             )
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_an_untrustworthy_bank_does_not_quietly_set_the_amount_due(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -996,7 +995,7 @@ async def test_an_untrustworthy_bank_does_not_quietly_set_the_amount_due(
     assert any("not trustworthy" in w for w in cycle.attributes["warnings"])
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_an_untrustworthy_bank_is_declared_even_when_the_fold_succeeded(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -1052,7 +1051,7 @@ async def test_an_untrustworthy_bank_is_declared_even_when_the_fold_succeeded(
     assert any("could not be priced" in w for w in warnings), "the bank's own reason travels"
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_a_bank_not_folded_yet_is_declared_rather_than_assumed_absent(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -1084,7 +1083,7 @@ async def test_a_bank_not_folded_yet_is_declared_rather_than_assumed_absent(
     assert cycle.attributes["quality"]["complete"] is False
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_a_refused_earlier_span_is_not_reported_as_the_whole_cycle(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -1126,7 +1125,7 @@ async def test_a_refused_earlier_span_is_not_reported_as_the_whole_cycle(
     assert any("cannot price 2026-08-01" in w for w in today.attributes["warnings"])
 
 
-@pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
+@pytest.mark.usefixtures("recorder_mock")
 async def test_todays_buckets_decompose_todays_figure(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:

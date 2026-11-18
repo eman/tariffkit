@@ -3,8 +3,9 @@
 This runbook is for maintainers publishing the Python distribution and the
 matching Home Assistant integration version. TariffKit uses a reviewed release
 commit, one set of distribution files, PyPI Trusted Publishing, and curated
-release notes. The same build also produces the HACS integration artifact
-`tariffkit.zip`.
+release notes. The same build also produces `tariffkit.zip`, the integration
+archive that the Home Assistant Marketplace installs, as `hacs.json` declares. The Marketplace kept HACS's
+catalog, `hacs.json` and validation action, so those keep their names.
 
 ## Version and changelog policy
 
@@ -106,8 +107,9 @@ and comparison links. It validates release identity before it returns, and the
 release workflow revalidates identity and version availability, so no separate
 local check is required.
 
-Review every change, then open a release PR. The PR must pass normal CI, HACS
-validation, and hassfest. Merge it without creating a tag.
+Review every change, then open a release PR. The PR must pass normal CI, the
+`HACS validation` check (the catalog's own validation, which the Marketplace
+shares), and hassfest. Merge it without creating a tag.
 
 For a release candidate, use a version such as `0.11.3rc1` and follow the same
 process. A later candidate or stable release gets a new version; published
@@ -128,7 +130,7 @@ git push origin "v$VERSION"
 The tag starts the Release workflow, which verifies that the tagged commit is
 on `main`, that the tag matches the committed version, and that PyPI has no
 such version. It then runs the tests, artifact-boundary checks, clean
-installation, sdist reconstruction, and deterministic HACS ZIP construction,
+installation, sdist reconstruction, and deterministic integration ZIP construction,
 uploads the wheel and sdist to PyPI with attestations, and publishes the GitHub
 release with the wheel, sdist, `tariffkit.zip`, and `SHA256SUMS`.
 
@@ -160,7 +162,7 @@ uvx --from "tariffkit==$VERSION" \
 ```
 
 TestPyPI staging is optional: account or verification problems there must not
-block a production release. The HACS ZIP is never placed in the PyPI upload
+block a production release. The integration ZIP is never placed in the PyPI upload
 directory; it travels unchanged in the same Actions artifact and is attached
 only to GitHub.
 
@@ -191,9 +193,12 @@ uvx pypi-attestations verify pypi \
 
 Finally, confirm that the released
 `custom_components/tariffkit/manifest.json` has the same `version` and the
-single requirement `tariffkit==<version>`. Add the repository to HACS as an
-integration and install that release; Home Assistant must resolve the exact
-PyPI dependency and complete the config flow.
+single requirement `tariffkit==<version>`. Install that release from
+**Settings → Marketplace → TariffKit**; Home Assistant must resolve the exact
+PyPI dependency and complete the config flow. The Marketplace reads the catalog
+at startup and every six hours, so a new release can take that long to appear.
+A release candidate is offered only once the repository's **Pre-release**
+switch is on.
 
 ## Recover from a failed release
 

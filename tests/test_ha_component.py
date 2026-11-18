@@ -36,7 +36,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceRegistry
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 from tariffkit import Config
 from tariffkit.account import AccountEpoch, AccountProfile
@@ -113,7 +113,6 @@ async def _past_meters(hass: HomeAssistant, flow_id: str, result: Any) -> Any:
     return await hass.config_entries.flow.async_configure(flow_id, {})
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_setup_exposes_energy_price_entities_and_service_device(
     hass: HomeAssistant, entry: MockConfigEntry, device_registry: DeviceRegistry
 ) -> None:
@@ -143,7 +142,6 @@ async def test_setup_exposes_energy_price_entities_and_service_device(
     )
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_initial_flow_branches_to_manual_import_and_conditional_delivery(
     hass: HomeAssistant,
 ) -> None:
@@ -186,7 +184,6 @@ async def test_initial_flow_branches_to_manual_import_and_conditional_delivery(
     assert result["options"]["grid_export_entity"] == ""
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_manual_export_setup_allows_blank_pto_date(hass: HomeAssistant) -> None:
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
@@ -218,7 +215,6 @@ async def test_manual_export_setup_allows_blank_pto_date(hass: HomeAssistant) ->
     assert result["type"] == "create_entry"
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_manual_cca_rejects_schedule_absent_from_rate_card(
     hass: HomeAssistant,
 ) -> None:
@@ -258,7 +254,6 @@ async def test_manual_cca_rejects_schedule_absent_from_rate_card(
     )
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_initial_import_and_multiple_entries_are_supported(
     hass: HomeAssistant,
 ) -> None:
@@ -283,7 +278,6 @@ async def test_initial_import_and_multiple_entries_are_supported(
         assert result["title"] == name
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_duplicate_profile_name_is_rejected(hass: HomeAssistant) -> None:
     profile = AccountProfile(
         (AccountEpoch(date(2026, 1, 1), Config(tariff="E-ELEC")),),
@@ -307,7 +301,6 @@ async def test_duplicate_profile_name_is_rejected(hass: HomeAssistant) -> None:
         assert result["type"] == expected_type
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_forecast_entity_is_compact_and_unrecorded(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
@@ -330,7 +323,6 @@ async def test_forecast_entity_is_compact_and_unrecorded(
     assert "rates" in TariffKitSensor._unrecorded_attributes
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_forecast_carries_stackable_component_groups(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
@@ -346,7 +338,6 @@ async def test_forecast_carries_stackable_component_groups(
         assert sum(point["export_components"].values()) == pytest.approx(point["export"])
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_component_entities_stack_to_the_price(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
@@ -371,7 +362,6 @@ async def test_component_entities_stack_to_the_price(
     assert "generation" in generation.attributes["components"]
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_component_entities_carry_curves_that_stack_to_the_price(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
@@ -409,7 +399,6 @@ async def test_component_entities_carry_curves_that_stack_to_the_price(
                 assert total == pytest.approx(reference["rate"])
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_daily_fixed_charge_is_reported_per_day(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
@@ -424,7 +413,6 @@ async def test_daily_fixed_charge_is_reported_per_day(
     assert "USD/day" not in ENERGY_PRICE_UNITS
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_diagnostic_entities_explain_forecast_and_rate_data(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
@@ -456,7 +444,6 @@ async def test_diagnostic_entities_explain_forecast_and_rate_data(
     assert status.attributes["source_url"].startswith("https://")
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_energy_dashboard_accepts_both_price_entities(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
@@ -473,7 +460,6 @@ async def test_energy_dashboard_accepts_both_price_entities(
     assert issues.issues == {}
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_unload_removes_entities_but_keeps_integration_actions(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
@@ -488,7 +474,6 @@ async def test_unload_removes_entities_but_keeps_integration_actions(
     assert hass.services.has_service(DOMAIN, SERVICE_GET_RATES)
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_reload_recreates_current_entities(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
@@ -504,7 +489,6 @@ async def test_reload_recreates_current_entities(
     assert reloaded_state.state not in {"unknown", "unavailable"}
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_get_rates_response_supports_bounded_slots_and_rejects_naive_time(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
@@ -541,7 +525,6 @@ async def test_get_rates_response_supports_bounded_slots_and_rejects_naive_time(
         )
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_emhass_response_has_positional_arrays(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
@@ -565,7 +548,6 @@ async def test_emhass_response_has_positional_arrays(
     assert result["prediction_horizon"] == 2
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 @pytest.mark.parametrize("action", [SERVICE_GET_RATES, SERVICE_GET_EMHASS_FORECAST])
 async def test_rate_actions_price_off_the_event_loop(
     hass: HomeAssistant,
@@ -619,7 +601,6 @@ async def test_rate_actions_price_off_the_event_loop(
     assert loop_thread not in priced, "the action priced on the event loop"
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 @pytest.mark.parametrize("action", [SERVICE_GET_RATES, SERVICE_GET_EMHASS_FORECAST])
 async def test_rate_actions_report_pricing_errors_from_the_executor(
     hass: HomeAssistant, entry: MockConfigEntry, action: str
@@ -640,7 +621,6 @@ async def test_rate_actions_report_pricing_errors_from_the_executor(
         )
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_actions_reject_unloaded_entries(hass: HomeAssistant, entry: MockConfigEntry) -> None:
     entry.add_to_hass(hass)
     await async_setup(hass, {})
@@ -654,7 +634,6 @@ async def test_actions_reject_unloaded_entries(hass: HomeAssistant, entry: MockC
         )
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_predbat_is_opt_in_and_warns_for_non_pacific_hass(
     hass: HomeAssistant,
 ) -> None:
@@ -672,7 +651,6 @@ async def test_predbat_is_opt_in_and_warns_for_non_pacific_hass(
     assert ATTR_RAW_TODAY in export_state.attributes
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_predbat_payload_is_cached_by_day_and_epoch(hass: HomeAssistant) -> None:
     entry = _entry(options={CONF_PREDBAT_ENABLED: True})
     await _setup_entry(hass, entry)
@@ -694,7 +672,6 @@ def test_quality_aggregation_is_conservative() -> None:
     assert quality.to_dict() == {"complete": False, "exact": True, "locked": False}
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_diagnostics_are_sanitized(hass: HomeAssistant, entry: MockConfigEntry) -> None:
     await _setup_entry(hass, entry)
     from custom_components.tariffkit.diagnostics import async_get_config_entry_diagnostics
@@ -706,7 +683,6 @@ async def test_diagnostics_are_sanitized(hass: HomeAssistant, entry: MockConfigE
     assert "observations" not in str(result)
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_legacy_entry_migration_preserves_pricing(hass: HomeAssistant) -> None:
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -728,7 +704,6 @@ async def test_legacy_entry_migration_preserves_pricing(hass: HomeAssistant) -> 
     assert entry.options[CONF_FORECAST_HOURS] == 6
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_legacy_entry_migration_keeps_the_meters(hass: HomeAssistant) -> None:
     """Migration rebuilt options from a fixed list and dropped the meters.
 
@@ -760,7 +735,6 @@ async def test_legacy_entry_migration_keeps_the_meters(hass: HomeAssistant) -> N
     assert entry.options["billing_cycle_start_day"] == 15
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_migration_does_not_invent_empty_meter_keys(hass: HomeAssistant) -> None:
     """An entry that never named meters must not come out having refused them.
 
@@ -782,7 +756,6 @@ async def test_migration_does_not_invent_empty_meter_keys(hass: HomeAssistant) -
     assert "grid_export_entity" not in entry.options
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_options_menu_groups_account_history(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
@@ -802,7 +775,6 @@ async def test_options_menu_groups_account_history(
     }
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_settings_preserve_import_only_account(hass: HomeAssistant) -> None:
     profile = AccountProfile(
         (
@@ -838,7 +810,6 @@ async def test_settings_preserve_import_only_account(hass: HomeAssistant) -> Non
     assert saved.epochs[0].config.vintage == "NBT00"
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_settings_abort_for_future_only_profile(hass: HomeAssistant) -> None:
     future = AccountProfile(
         (AccountEpoch(date(2099, 1, 1), Config(tariff="E-ELEC")),),
@@ -854,7 +825,6 @@ async def test_settings_abort_for_future_only_profile(hass: HomeAssistant) -> No
     assert result["reason"] == "invalid_profile"
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_options_import_branch_replaces_profile(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
@@ -877,7 +847,6 @@ async def test_options_import_branch_replaces_profile(
     assert result["data"][CONF_PROFILE]["name"] is None
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_options_import_rejects_a_different_profile_name(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
@@ -900,7 +869,6 @@ async def test_options_import_rejects_a_different_profile_name(
     assert result["errors"] == {"base": "invalid_profile"}
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_transition_forecast_crosses_profile_epoch(
     hass: HomeAssistant,
 ) -> None:
@@ -932,7 +900,6 @@ async def test_transition_forecast_crosses_profile_epoch(
     assert segments[0]["end"] == segments[1]["start"]
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_dst_forecast_uses_absolute_hours(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
@@ -977,7 +944,6 @@ class TestGenerationSupplierOnDevice:
     runs the wires; the CCA belongs to the rate identity instead.
     """
 
-    @pytest.mark.usefixtures("enable_custom_integrations")
     async def test_bundled_account_names_no_generation_supplier(
         self, hass: HomeAssistant, device_registry: DeviceRegistry
     ) -> None:
@@ -992,7 +958,6 @@ class TestGenerationSupplierOnDevice:
         assert "·" not in device.model
         assert device.manufacturer == "Pacific Gas and Electric Company"
 
-    @pytest.mark.usefixtures("enable_custom_integrations")
     async def test_cca_account_names_the_cca_and_its_product(
         self, hass: HomeAssistant, device_registry: DeviceRegistry
     ) -> None:
@@ -1008,7 +973,6 @@ class TestGenerationSupplierOnDevice:
         # The utility still delivers, so it keeps the manufacturer slot.
         assert device.manufacturer == "Pacific Gas and Electric Company"
 
-    @pytest.mark.usefixtures("enable_custom_integrations")
     async def test_unnamed_cca_falls_back_to_the_rate_card(
         self, hass: HomeAssistant, device_registry: DeviceRegistry
     ) -> None:
@@ -1030,7 +994,6 @@ class TestGenerationSupplierInServiceProvenance:
     a caller reading that number needs to know whose card it was.
     """
 
-    @pytest.mark.usefixtures("enable_custom_integrations")
     async def test_cca_appears_in_the_response_provenance(self, hass: HomeAssistant) -> None:
         entry = _entry(profile=_cca_profile())
         await _setup_entry(hass, entry)
@@ -1050,7 +1013,6 @@ class TestGenerationSupplierInServiceProvenance:
         # The utility still delivers, so it is not displaced by the CCA.
         assert segment["utility"] == "pacific_gas_and_electric"
 
-    @pytest.mark.usefixtures("enable_custom_integrations")
     async def test_bundled_account_reports_no_cca(self, hass: HomeAssistant) -> None:
         entry = _entry()
         await _setup_entry(hass, entry)
@@ -1069,7 +1031,6 @@ class TestGenerationSupplierInServiceProvenance:
 class TestDeviceIdentityFollowsTheProfile:
     """DeviceInfo is read once at registration, so epoch changes need a sync."""
 
-    @pytest.mark.usefixtures("enable_custom_integrations")
     async def test_switching_to_a_cca_epoch_updates_the_device_model(
         self, hass: HomeAssistant, device_registry: DeviceRegistry, freezer: FrozenDateTimeFactory
     ) -> None:
@@ -1118,7 +1079,6 @@ class TestDeviceIdentityFollowsTheProfile:
 class TestPermissionToOperateSensors:
     """PTO and the lock end were attributes only; they get their own rows now."""
 
-    @pytest.mark.usefixtures("enable_custom_integrations")
     async def test_dates_are_published_as_diagnostic_sensors(self, hass: HomeAssistant) -> None:
         profile = profile_payload(
             AccountProfile(
@@ -1143,7 +1103,6 @@ class TestPermissionToOperateSensors:
         assert lock is not None
         assert lock.state == "2035-06-02"
 
-    @pytest.mark.usefixtures("enable_custom_integrations")
     async def test_missing_pto_leaves_both_dates_unknown(self, hass: HomeAssistant) -> None:
         """A system awaiting Permission To Operate has neither date to show."""
         profile = profile_payload(
@@ -1165,7 +1124,6 @@ class TestPermissionToOperateSensors:
         assert lock is not None and lock.state == "unknown"
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_cca_validation_loads_the_rate_card_off_the_event_loop(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
@@ -1223,7 +1181,6 @@ async def test_cca_validation_loads_the_rate_card_off_the_event_loop(
     assert loop_thread not in seen, "the rate card was loaded on the event loop"
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_options_reject_a_schedule_the_cca_card_does_not_cover(
     hass: HomeAssistant,
 ) -> None:
@@ -1265,7 +1222,6 @@ async def test_options_reject_a_schedule_the_cca_card_does_not_cover(
     assert "E-1" in result["description_placeholders"]["detail"]
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_a_care_setup_completes_without_touching_the_tier(
     hass: HomeAssistant,
 ) -> None:
@@ -1344,7 +1300,6 @@ def _rendered(result: Any) -> list[dict[str, Any]]:
     return probatio.to_field_list(result["data_schema"], custom_serializer=cv.custom_serializer)
 
 
-@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_every_options_form_renders(hass: HomeAssistant) -> None:
     """Each form the options menu leads to, with every optional field present.
 
