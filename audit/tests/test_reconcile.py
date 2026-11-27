@@ -9,6 +9,7 @@ until it stopped complaining.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, timedelta
 from typing import Any
 
@@ -451,3 +452,131 @@ def test_a_line_read_off_the_statement_gets_no_verdict_about_the_rates() -> None
     assert "priced from the statement" not in render(
         reconcile(statement, bill, CONFIG), verbose=False
     )
+
+
+class TestPricedFromGreenButton:
+    """The utility's export as the source a bill is priced from.
+
+    Its rounding then shows up from the other side: InfluxDB and the statement
+    read a little *high* against it, which is the same shortfall the
+    comparison already allows when Green Button is only the comparison.
+    """
+
+    @staticmethod
+    def _statement(billed_kwh: float | None = None) -> Statement:
+        return Statement(
+            statement_date=date(2026, 2, 1),
+            period=BillingPeriod(date(2026, 1, 1), date(2026, 1, 1)),
+            amount_due=0.0,
+            billed_kwh=billed_kwh,
+        )
+
+    @staticmethod
+    def _quarters(kwh_each: float, count: int = 96) -> list[IntervalReading]:
+        from datetime import datetime
+
+        from tariffkit.timeutil import PACIFIC
+
+        start = datetime(2026, 1, 1, tzinfo=PACIFIC)
+        return [
+            IntervalReading(
+                start=start + timedelta(minutes=15 * i),
+                imported=kwh_each,
+                duration=timedelta(minutes=15),
+            )
+            for i in range(count)
+        ]
+
+    def _against_influx(self, influx_kwh: float) -> Any:
+        from audit.sources import GREEN_BUTTON, compare_sources
+
+        # 96 quarter-hours of 0.10 kWh: 9.6 kWh, with up to 0.48 kWh of rounding.
+        (delta,) = [
+            d
+            for d in compare_sources(
+                {GREEN_BUTTON: self._quarters(0.10), "influx": [_hour(1, 12, influx_kwh)]},
+                self._statement(),
+                primary=GREEN_BUTTON,
+            )
+            if d.left == "influx"
+        ]
+        return delta
+
+    def test_another_source_reading_high_by_the_rounding_is_expected(self) -> None:
+        # 0.45 kWh is past the 0.35 floor, so only the rounding allowance passes it.
+        delta = self._against_influx(9.6 + 0.45)
+        assert delta.significant is False
+        assert "priced this bill" in delta.note
+
+    def test_another_source_reading_high_by_more_than_rounding_is_flagged(self) -> None:
+        assert self._against_influx(9.6 + 0.6).significant is True
+
+    def test_another_source_reading_low_gets_no_allowance(self) -> None:
+        # Rounding only loses energy, so a source *below* the export is not it.
+        delta = self._against_influx(9.6 - 0.45)
+        assert delta.significant is True
+        assert delta.note == ""
+
+    def test_the_statement_reading_high_by_the_rounding_is_expected(self) -> None:
+        from audit.sources import GREEN_BUTTON, compare_sources
+
+        def against(billed: float) -> Any:
+            (delta,) = [
+                d
+                for d in compare_sources(
+                    {GREEN_BUTTON: self._quarters(0.10)},
+                    self._statement(billed),
+                    primary=GREEN_BUTTON,
+                )
+                if d.left == "statement"
+            ]
+            return delta
+
+        assert against(9.6 + 0.45).significant is False
+        assert against(9.6 + 0.6).significant is True
+        assert against(9.6 - 0.45).significant is True
+
+    def test_the_statement_gets_no_rounding_allowance_against_influx(self) -> None:
+        from audit.sources import compare_sources
+
+        (delta,) = [
+            d
+            for d in compare_sources({"influx": self._quarters(0.10)}, self._statement(9.6 + 0.45))
+            if d.left == "statement"
+        ]
+        assert delta.significant is True
+
+
+def test_an_export_wider_than_the_cycle_is_clipped_to_it() -> None:
+    """A wider cached file serves a narrower cycle; its totals must not."""
+    from audit.sources import window, within
+
+    start, end = window(BillingPeriod(date(2026, 1, 2), date(2026, 1, 2)))
+    readings = [_hour(1, 23, 1.0), _hour(2, 0, 2.0), _hour(2, 23, 3.0), _hour(3, 0, 4.0)]
+    assert [r.imported for r in within(readings, start, end)] == [2.0, 3.0]
+
+
+class TestReshaped:
+    """The export's timing at another source's totals."""
+
+    @staticmethod
+    def _reading(hour: int, imported: float, exported: float) -> IntervalReading:
+        return replace(_hour(1, hour, imported), exported=exported)
+
+    def test_totals_come_from_the_reference_and_timing_from_the_shape(self) -> None:
+        from audit.sources import reshaped, totals
+
+        shape = [self._reading(12, 1.0, 3.0), self._reading(18, 3.0, 1.0)]
+        reference = [self._reading(0, 8.0, 2.0)]
+        result = reshaped(shape, reference)
+        assert totals(result) == pytest.approx((8.0, 2.0))
+        # Import and export scale independently, and each keeps its own split.
+        assert [r.imported for r in result] == pytest.approx([2.0, 6.0])
+        assert [r.exported for r in result] == pytest.approx([1.5, 0.5])
+        assert [r.start for r in result] == [r.start for r in shape]
+
+    def test_a_direction_the_shape_lacks_is_not_invented(self) -> None:
+        from audit.sources import reshaped, totals
+
+        result = reshaped([self._reading(12, 1.0, 0.0)], [self._reading(0, 2.0, 5.0)])
+        assert totals(result) == pytest.approx((2.0, 0.0))

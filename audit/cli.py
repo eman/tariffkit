@@ -38,6 +38,23 @@ EXIT_MISMATCH = 1
 EXIT_ERROR = 2
 
 
+#: Where the readings a bill is priced from can come from.
+READINGS = ("influx", "statistics", "green-button", "green-button-shaped")
+
+READINGS_HELP = (
+    "which record of the meter prices the bill: InfluxDB counter samples (default), "
+    "Home Assistant hourly statistics, or PG&E's own Green Button export. The first "
+    "two read the grid import and export entities named in your configuration, and "
+    "are the same physical meter through different pipelines, so agreement between "
+    "them says nothing about whether the meter is right. green-button prices from "
+    "the utility's own fifteen-minute reads, cached under "
+    "~/.cache/tariffkit/pge/green-button and downloaded only if absent, and keeps "
+    "InfluxDB, where configured, as the comparison. green-button-shaped is a "
+    "diagnostic: the export's timing scaled to InfluxDB's cycle totals, which "
+    "separates which hours the energy arrived in from the export's rounding"
+)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="audit",
@@ -72,14 +89,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     check.add_argument(
         "--readings",
-        choices=("influx", "statistics"),
+        choices=READINGS,
         default="influx",
-        help="which derivation of the meter prices the bill: InfluxDB counter samples "
-        "(default), or Home Assistant hourly statistics -- both read the grid import "
-        "and export entities named in your configuration. Both are the same physical "
-        "meter through different pipelines, so agreement between them says nothing "
-        "about whether the meter is right -- for that, use --green-button, which "
-        "fetches an independent record from the utility",
+        help=READINGS_HELP,
     )
 
     run = sub.add_parser("run", help="download every statement the portal lists and reconcile it")
@@ -98,14 +110,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--readings",
-        choices=("influx", "statistics"),
+        choices=READINGS,
         default="influx",
-        help="which derivation of the meter prices the bill: InfluxDB counter samples "
-        "(default), or Home Assistant hourly statistics -- both read the grid import "
-        "and export entities named in your configuration. Both are the same physical "
-        "meter through different pipelines, so agreement between them says nothing "
-        "about whether the meter is right -- for that, use --green-button, which "
-        "fetches an independent record from the utility",
+        help=READINGS_HELP,
     )
     run.add_argument(
         "--discard-statements",
@@ -346,7 +353,14 @@ def _reconcile(
     from .errors import AccountError
     from .reconcile import reconcile, render_all, render_summary
     from .reconcile.account import check_against_statement
-    from .sources import compare_sources, window
+    from .sources import (
+        GREEN_BUTTON,
+        GREEN_BUTTON_SHAPED,
+        compare_sources,
+        reshaped,
+        window,
+        within,
+    )
 
     try:
         profile = AccountStore().load()
@@ -466,18 +480,18 @@ def _reconcile(
             ha = HaSettings.load(profile_source=profile.meter_sources.home_assistant)
             primary = f"statistics:{ha.export_entity}"
             sources[primary] = read_statistics(ha, start, end)
-        if not primary:
-            raise AccountError(
-                f"no readings source is configured for --readings {readings_from}; "
-                "name the grid counters with `tariffkit account source set`"
-            )
-        readings = sources[primary]
 
-        if green_button:
+        if green_button or readings_from in ("green-button", "green-button-shaped"):
             # The utility's own record of the same period. Worth the extra
             # request because one meter cannot tell you it is incomplete: PG&E's
             # export was once missing a whole day, and only a second source
             # showed it.
+            #
+            # And worth pricing from, because it is the one record that is not
+            # ours. InfluxDB reconstructs the hours its samples missed, and a
+            # line a cent or two off can come from where that guess put the
+            # energy; pricing the same cycle from the utility's own reads is
+            # how to find out, rather than argue it.
             from tariffkit.sources import read_green_button
             from tariffkit.sources.pge import PgeSettings, cached_green_button
 
@@ -487,7 +501,27 @@ def _reconcile(
             export = cached_green_button(
                 PgeSettings.load(), statement.period.start, statement.period.end
             )
-            sources["green_button"] = read_green_button(export.path)
+            sources[GREEN_BUTTON] = within(read_green_button(export.path), start, end)
+            if readings_from == "green-button":
+                primary = GREEN_BUTTON
+            elif readings_from == "green-button-shaped":
+                # Needs InfluxDB's totals to scale to; without them there is
+                # nothing to separate the timing from, so it is refused rather
+                # than quietly priced from the rounded export.
+                if not primary:
+                    raise AccountError(
+                        "--readings green-button-shaped scales the export to InfluxDB's "
+                        "cycle totals, and no InfluxDB readings were available"
+                    )
+                sources[GREEN_BUTTON_SHAPED] = reshaped(sources[GREEN_BUTTON], sources[primary])
+                primary = GREEN_BUTTON_SHAPED
+
+        if not primary:
+            raise AccountError(
+                f"no readings source is configured for --readings {readings_from}; "
+                "name the grid counters with `tariffkit account source set`"
+            )
+        readings = sources[primary]
 
         # One bill for the cycle, credits and all. Credit used to be applied
         # per segment here, because a cycle priced across Permission To Operate

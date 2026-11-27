@@ -50,6 +50,14 @@ class TestParser:
         assert build_parser().parse_args(["run"]).discard_statements is False
         assert build_parser().parse_args(["run", "--discard-statements"]).discard_statements
 
+    @pytest.mark.parametrize("command", ["reconcile", "run"])
+    @pytest.mark.parametrize("source", ["green-button", "green-button-shaped"])
+    def test_green_button_can_price_the_bill(self, command: str, source: str) -> None:
+        extra = ["x.pdf"] if command == "reconcile" else []
+        args = build_parser().parse_args([command, *extra, "--readings", source])
+        assert args.readings == source
+        assert build_parser().parse_args([command, *extra]).readings == "influx"
+
     def test_an_unknown_flag_is_a_usage_error(self) -> None:
         with pytest.raises(SystemExit) as caught:
             build_parser().parse_args(["--nonsense"])

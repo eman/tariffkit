@@ -15,6 +15,7 @@ disagreeing with the total the statement itself prints, is a real signal.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import datetime, time, timedelta
 
 from tariffkit.billing import BillingPeriod, IntervalReading
@@ -26,6 +27,63 @@ from .reconcile import SourceDelta, Tolerance
 #: Most a two-decimal reading can lose per interval. The utility's own export
 #: rounds each one, so a long cycle accumulates a predictable shortfall.
 ROUNDING_PER_INTERVAL = 0.005
+
+#: The key the utility's own export is filed under, whether it is a comparison
+#: or the source the bill was priced from.
+GREEN_BUTTON = "green_button"
+
+#: The export's timing at InfluxDB's totals. See :func:`reshaped`.
+GREEN_BUTTON_SHAPED = "green_button:shaped"
+
+
+def within(
+    readings: Sequence[IntervalReading], start: datetime, end: datetime
+) -> list[IntervalReading]:
+    """The readings that start inside ``[start, end)``.
+
+    The export cache answers a narrow request with a wider file when it has
+    one, and pricing ignores readings outside the cycle -- but a comparison of
+    totals does not, so an unclipped year-long file would be reported as a
+    meter hundreds of kilowatt-hours adrift.
+    """
+    return [r for r in readings if start <= r.start < end]
+
+
+def reshaped(
+    shape: Sequence[IntervalReading], totals_from: Sequence[IntervalReading]
+) -> list[IntervalReading]:
+    """``shape``'s timing at ``totals_from``'s totals, import and export each.
+
+    Separates the two things a meter record can get wrong. The utility's export
+    says which hours the energy arrived in but rounds every read, so it comes up
+    short over a cycle; InfluxDB's cycle totals match what the statement bills,
+    but its hours are partly reconstructed across sample gaps. Pricing one at
+    the other's totals asks what the bill would be if the timing were the
+    utility's and the quantity ours -- so a line that reconciles here and not
+    from InfluxDB alone is a timing problem, and one that fails both is not.
+
+    Proportional, which assumes the rounding loss falls in proportion to the
+    energy. It need not, which is why this is a diagnostic and not a default.
+    A direction the shape has no energy in is left at zero rather than invented.
+    """
+    shape_import, shape_export = totals(shape)
+    target_import, target_export = totals(totals_from)
+    scale_import = target_import / shape_import if shape_import else 0.0
+    scale_export = target_export / shape_export if shape_export else 0.0
+    return [
+        replace(r, imported=r.imported * scale_import, exported=r.exported * scale_export)
+        for r in shape
+    ]
+
+
+def rounding_shortfall(low: float, high: float, intervals: int) -> bool:
+    """Whether ``low`` trails ``high`` by no more than two-decimal rounding can lose.
+
+    Bounded, because an unbounded allowance would excuse a missing day as
+    readily as a rounding error -- and a missing day is what the comparison
+    exists to catch.
+    """
+    return 0.0 <= high - low <= ROUNDING_PER_INTERVAL * intervals
 
 
 def window(period: BillingPeriod, *, read_hour: int = 0) -> tuple[datetime, datetime]:
@@ -83,27 +141,38 @@ def compare_sources(
         if name == primary:
             continue
         other_import, other_export = totals(series)
-        low = other_import <= base_import
         # Two-decimal rounding can only lose so much: at most half a hundredth
         # per interval, so 2,880 quarter-hours caps out near 14 kWh. Bounding
         # the exemption matters -- unbounded, "Green Button reads low" would
         # excuse a shortfall of any size, including a genuinely missing day,
         # which is the exact failure this comparison exists to catch.
-        budget = ROUNDING_PER_INTERVAL * len(series)
-        expected_low = name == "green_button" and low and (base_import - other_import) <= budget
+        #
+        # Either way round. When the export is what the bill was priced from,
+        # its shortfall shows up as the *other* source reading a little high,
+        # and that is the same rounding seen from the other side.
+        note = ""
+        expected = False
+        if name == GREEN_BUTTON:
+            expected = rounding_shortfall(other_import, base_import, len(series))
+            note = (
+                "Green Button rounds each interval to two decimals, so reading "
+                "a little low is the export's own behaviour"
+            )
+        elif primary == GREEN_BUTTON:
+            expected = rounding_shortfall(base_import, other_import, len(readings[primary]))
+            note = (
+                "Green Button, which priced this bill, rounds each interval to two "
+                "decimals, so another source reading a little high is the export's "
+                "own behaviour"
+            )
         deltas.append(
             SourceDelta(
                 left=name,
                 right=primary,
                 imported_delta=other_import - base_import,
                 exported_delta=other_export - base_export,
-                note=(
-                    "Green Button rounds each interval to two decimals, so reading "
-                    "a little low is the export's own behaviour"
-                    if expected_low
-                    else ""
-                ),
-                significant=not expected_low and not allowed.kwh_ok(other_import, base_import),
+                note=note if expected else "",
+                significant=not expected and not allowed.kwh_ok(other_import, base_import),
             )
         )
 
@@ -142,22 +211,37 @@ def compare_sources(
         # side every credit is priced from -- passed it.
         exported = statement.billed_export_kwh
         exported_delta = 0.0 if exported is None else exported - base_export
+
+        # The statement totals unrounded reads, so when the bill was priced
+        # from the rounded export the statement reads a little *high* -- the
+        # export's shortfall again, not a disagreement about what was billed.
+        intervals = len(readings[primary])
+        rounded = primary == GREEN_BUTTON
+
+        def agrees(printed: float, measured: float) -> bool:
+            if allowed.kwh_ok(printed, measured):
+                return True
+            return rounded and rounding_shortfall(measured, printed, intervals)
+
+        note = (
+            "what the utility says it billed"
+            if whole_cycle
+            else f"usage printed for one of {statement.service_agreements} service "
+            f"agreements, so it does not describe the whole cycle"
+        )
+        if rounded:
+            note += "; Green Button rounds each interval, so it reads a little low"
         deltas.append(
             SourceDelta(
                 left="statement",
                 right=primary,
                 imported_delta=statement.billed_kwh - base_import,
                 exported_delta=exported_delta,
-                note=(
-                    "what the utility says it billed"
-                    if whole_cycle
-                    else f"usage printed for one of {statement.service_agreements} service "
-                    f"agreements, so it does not describe the whole cycle"
-                ),
+                note=note,
                 significant=whole_cycle
                 and not (
-                    allowed.kwh_ok(statement.billed_kwh, base_import)
-                    and (exported is None or allowed.kwh_ok(exported, base_export))
+                    agrees(statement.billed_kwh, base_import)
+                    and (exported is None or agrees(exported, base_export))
                 ),
             )
         )
