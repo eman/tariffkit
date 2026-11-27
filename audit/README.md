@@ -111,6 +111,8 @@ one row per cycle. Useful flags:
 | `--verbose` | show agreeing lines too, not just failures |
 | `--json` | machine-readable output instead of the report |
 | `--green-button` | also compare PG&E's own interval export, from `~/.cache/tariffkit/pge/green-button/` or downloaded once |
+| `--readings green-button` | price the bill from PG&E's own interval export instead of InfluxDB, which becomes the comparison. The export rounds each read to two decimals and so reads a few tenths of a kWh low over a cycle; expect computed lines a few cents under the statement |
+| `--readings green-button-shaped` | diagnostic: PG&E's export's timing scaled to InfluxDB's cycle totals, import and export separately. A line that reconciles here and not from InfluxDB alone points at which hours InfluxDB put the energy in; one that fails both does not. Needs InfluxDB |
 | `--discard-statements` | delete the downloaded PDFs after the run instead of keeping them |
 | `--read-hour N` | move the cycle boundary off midnight |
 

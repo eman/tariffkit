@@ -5,6 +5,34 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+- **The audit can price a bill from PG&E's own interval export.**
+  `audit reconcile --readings green-button` (and `audit run`) prices each
+  cycle from the cached Green Button export instead of InfluxDB, which
+  becomes the comparison. The export's two-decimal rounding is allowed for
+  in either direction: InfluxDB or the statement reading a little high
+  against it is reported as expected rather than as a disagreement.
+  `--readings green-button-shaped` is a diagnostic beside it: the export's
+  timing scaled to InfluxDB's cycle totals, which separates which hours the
+  energy arrived in from the export's rounding.
+
+### Fixed
+- **A Green Button export wider than the cycle no longer skews the audit's
+  meter comparison.** The cache answers a narrow request with a wider file
+  when it has one; pricing ignored the extra readings, but the totals
+  comparison counted them. Readings are now clipped to the cycle first.
+- **The audit's meter comparison checks export as well as import.** Two
+  sources were judged on import alone, so one that had lost its exported
+  energy -- the side every credit is priced from -- passed as long as its
+  import agreed. The peak-hours comparison now gets the same bounded
+  allowance for Green Button's rounding as the totals, counted over peak
+  intervals only.
+- **The Green Button export is requested for every date a cycle reaches.**
+  With `--read-hour`, a cycle ends partway into the day after its last date,
+  and those hours were missing from the export. A statement whose export
+  still falls short is skipped, rather than priced or compared on part of
+  the cycle.
+
 ## [0.11.4] - 2026-11-18
 
 ### Changed
