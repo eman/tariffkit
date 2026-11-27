@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 
 from tariffkit.billing import BillingPeriod, IntervalReading
 from tariffkit.providers.pge.statements import Statement
@@ -34,6 +34,15 @@ GREEN_BUTTON = "green_button"
 
 #: The export's timing at InfluxDB's totals. See :func:`reshaped`.
 GREEN_BUTTON_SHAPED = "green_button:shaped"
+
+
+def days_touched(start: datetime, end: datetime) -> tuple[date, date]:
+    """The first and last calendar dates, in Pacific time, that ``[start, end)`` reaches.
+
+    What to ask a date-bounded export for. A window ending at midnight ends on
+    the date before; one ending at 14:00 reaches into that day.
+    """
+    return to_pacific(start).date(), to_pacific(end - timedelta(microseconds=1)).date()
 
 
 def within(
@@ -113,6 +122,13 @@ def peak_share(
     )
 
 
+def peak_intervals(
+    readings: Sequence[IntervalReading], classify: Callable[[datetime], object]
+) -> int:
+    """How many intervals the tariff prices at its peak rate."""
+    return sum(1 for r in readings if str(classify(hour_floor(to_pacific(r.start)))) == "peak")
+
+
 def compare_sources(
     readings: Mapping[str, Sequence[IntervalReading]],
     statement: Statement,
@@ -137,42 +153,63 @@ def compare_sources(
 
     base_import, base_export = totals(readings[primary])
 
+    def judge(name: str, other: float, base: float, rounded_intervals: int) -> tuple[bool, bool]:
+        """Whether ``other`` agrees with ``base``, and whether rounding is why.
+
+        Two-decimal rounding can only lose so much: at most half a hundredth
+        per interval, so 2,880 quarter-hours caps out near 14 kWh. Bounding the
+        exemption matters -- unbounded, "Green Button reads low" would excuse a
+        shortfall of any size, including a genuinely missing day, which is the
+        exact failure this comparison exists to catch.
+
+        Either way round. When the export is what the bill was priced from, its
+        shortfall shows up as the *other* source reading a little high, and that
+        is the same rounding seen from the other side. Only that direction:
+        rounding loses energy, so it never explains the export reading high.
+        """
+        if name == GREEN_BUTTON:
+            rounded = rounding_shortfall(other, base, rounded_intervals)
+        elif primary == GREEN_BUTTON:
+            rounded = rounding_shortfall(base, other, rounded_intervals)
+        else:
+            rounded = False
+        return rounded or allowed.kwh_ok(other, base), rounded
+
+    def rounding_note(name: str) -> str:
+        if name == GREEN_BUTTON:
+            return (
+                "Green Button rounds each interval to two decimals, so reading "
+                "a little low is the export's own behaviour"
+            )
+        return (
+            "Green Button, which priced this bill, rounds each interval to two "
+            "decimals, so another source reading a little high is the export's "
+            "own behaviour"
+        )
+
+    def export_side(name: str, series: Sequence[IntervalReading]) -> Sequence[IntervalReading]:
+        """The Green Button series of a pair, whose intervals bound its rounding."""
+        return series if name == GREEN_BUTTON else readings[primary]
+
     for name, series in readings.items():
         if name == primary:
             continue
         other_import, other_export = totals(series)
-        # Two-decimal rounding can only lose so much: at most half a hundredth
-        # per interval, so 2,880 quarter-hours caps out near 14 kWh. Bounding
-        # the exemption matters -- unbounded, "Green Button reads low" would
-        # excuse a shortfall of any size, including a genuinely missing day,
-        # which is the exact failure this comparison exists to catch.
-        #
-        # Either way round. When the export is what the bill was priced from,
-        # its shortfall shows up as the *other* source reading a little high,
-        # and that is the same rounding seen from the other side.
-        note = ""
-        expected = False
-        if name == GREEN_BUTTON:
-            expected = rounding_shortfall(other_import, base_import, len(series))
-            note = (
-                "Green Button rounds each interval to two decimals, so reading "
-                "a little low is the export's own behaviour"
-            )
-        elif primary == GREEN_BUTTON:
-            expected = rounding_shortfall(base_import, other_import, len(readings[primary]))
-            note = (
-                "Green Button, which priced this bill, rounds each interval to two "
-                "decimals, so another source reading a little high is the export's "
-                "own behaviour"
-            )
+        intervals = len(export_side(name, series))
+        # Both directions. Judging import alone let a source that had lost
+        # every exported kilowatt-hour pass -- export being the side every
+        # credit is priced from -- so long as its import agreed.
+        import_ok, import_rounded = judge(name, other_import, base_import, intervals)
+        export_ok, export_rounded = judge(name, other_export, base_export, intervals)
+        agreed = import_ok and export_ok
         deltas.append(
             SourceDelta(
                 left=name,
                 right=primary,
                 imported_delta=other_import - base_import,
                 exported_delta=other_export - base_export,
-                note=note if expected else "",
-                significant=not expected and not allowed.kwh_ok(other_import, base_import),
+                note=rounding_note(name) if agreed and (import_rounded or export_rounded) else "",
+                significant=not agreed,
             )
         )
 
@@ -185,15 +222,25 @@ def compare_sources(
             other_peak = peak_share(series, classify)
             # Judged against the same allowance as a total, because the money
             # rides on the difference between the two rates, not on the size of
-            # either bucket.
+            # either bucket -- and with the same rounding allowance, bounded by
+            # the export's *peak* intervals alone, since those are the only ones
+            # whose rounding can reach the peak figure. Without it a cycle whose
+            # totals were accepted as rounding failed on the peak share of that
+            # same rounding.
+            peak_ok, peak_rounded = judge(
+                name, other_peak, base_peak, peak_intervals(export_side(name, series), classify)
+            )
+            note = "which hours the energy arrived in, where the two rates differ"
+            if peak_ok and peak_rounded:
+                note += "; within what the export's rounding of peak hours can lose"
             deltas.append(
                 SourceDelta(
                     left=f"{name} peak",
                     right=f"{primary} peak",
                     imported_delta=other_peak - base_peak,
                     exported_delta=0.0,
-                    note="which hours the energy arrived in, where the two rates differ",
-                    significant=not allowed.kwh_ok(other_peak, base_peak),
+                    note=note,
+                    significant=not peak_ok,
                 )
             )
 

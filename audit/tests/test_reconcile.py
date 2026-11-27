@@ -580,3 +580,120 @@ class TestReshaped:
 
         result = reshaped([self._reading(12, 1.0, 0.0)], [self._reading(0, 2.0, 5.0)])
         assert totals(result) == pytest.approx((2.0, 0.0))
+
+
+class TestReviewFindings:
+    """The rounding allowance is bounded in every direction it is applied."""
+
+    @staticmethod
+    def _statement() -> Statement:
+        return Statement(
+            statement_date=date(2026, 2, 1),
+            period=BillingPeriod(date(2026, 1, 1), date(2026, 1, 5)),
+            amount_due=0.0,
+        )
+
+    @staticmethod
+    def _quarters(
+        hours: range, kwh_each: float, days: int = 5, exported: float = 0.0
+    ) -> list[IntervalReading]:
+        from datetime import datetime
+
+        from tariffkit.timeutil import PACIFIC
+
+        return [
+            IntervalReading(
+                start=datetime(2026, 1, 1 + day, hour, 15 * q, tzinfo=PACIFIC),
+                imported=kwh_each,
+                exported=exported,
+                duration=timedelta(minutes=15),
+            )
+            for day in range(days)
+            for hour in hours
+            for q in range(4)
+        ]
+
+    def test_a_source_that_lost_its_export_is_flagged_despite_agreeing_on_import(self) -> None:
+        from audit.sources import GREEN_BUTTON, compare_sources
+
+        exporting = self._quarters(range(0, 24), 0.0, days=1, exported=0.2)
+        priced = [replace(r, imported=0.10) for r in exporting]
+        # Import within the rounding allowance, every exported kWh missing.
+        lost = [replace(r, imported=0.10 + 0.45 / 96, exported=0.0) for r in exporting]
+        (delta,) = [
+            d
+            for d in compare_sources(
+                {GREEN_BUTTON: priced, "influx": lost}, self._statement(), primary=GREEN_BUTTON
+            )
+            if d.left == "influx"
+        ]
+        assert delta.significant is True
+        assert delta.note == ""
+
+    @staticmethod
+    def _peak(moment: Any) -> str:
+        return "peak" if 16 <= moment.hour < 21 else "off_peak"
+
+    def _peak_delta(self, influx_peak_each: float, off_peak_hours: range) -> Any:
+        from audit.sources import GREEN_BUTTON, compare_sources
+
+        # 100 peak quarter-hours at 0.10 kWh: 10 kWh, up to 0.5 kWh of rounding.
+        export = self._quarters(range(16, 21), 0.10) + self._quarters(off_peak_hours, 0.10)
+        influx = self._quarters(range(16, 21), influx_peak_each) + self._quarters(
+            off_peak_hours, 0.10
+        )
+        (delta,) = [
+            d
+            for d in compare_sources(
+                {GREEN_BUTTON: export, "influx": influx},
+                self._statement(),
+                primary=GREEN_BUTTON,
+                classify=self._peak,
+            )
+            if d.left == "influx peak"
+        ]
+        return delta
+
+    def test_peak_rounding_accepted_by_the_totals_is_accepted_for_peak(self) -> None:
+        # 0.4 kWh: past the 0.35 floor, inside 100 peak intervals' rounding.
+        delta = self._peak_delta(0.104, range(0))
+        assert delta.significant is False
+        assert "rounding of peak hours" in delta.note
+
+    def test_peak_beyond_rounding_is_still_flagged(self) -> None:
+        assert self._peak_delta(0.106, range(0)).significant is True
+
+    def test_only_peak_intervals_count_toward_the_peak_allowance(self) -> None:
+        from audit.sources import GREEN_BUTTON, compare_sources
+
+        # 20 peak quarter-hours can lose 0.1 kWh; 380 off-peak ones must not
+        # widen that to cover a 0.4 kWh peak difference.
+        export = self._quarters(range(16, 21), 0.10, days=1) + self._quarters(
+            range(0, 16), 0.10, days=5
+        )
+        influx = self._quarters(range(16, 21), 0.12, days=1) + self._quarters(
+            range(0, 16), 0.10, days=5
+        )
+        (delta,) = [
+            d
+            for d in compare_sources(
+                {GREEN_BUTTON: export, "influx": influx},
+                self._statement(),
+                primary=GREEN_BUTTON,
+                classify=self._peak,
+            )
+            if d.left == "influx peak"
+        ]
+        assert delta.significant is True
+
+
+@pytest.mark.parametrize(
+    ("read_hour", "last"),
+    [(0, date(2026, 1, 5)), (14, date(2026, 1, 6))],
+)
+def test_the_export_is_asked_for_every_date_the_cycle_reaches(read_hour: int, last: date) -> None:
+    """A meter read at 14:00 ends the cycle partway into the next day."""
+    from audit.sources import days_touched, window
+
+    start, end = window(BillingPeriod(date(2026, 1, 1), date(2026, 1, 5)), read_hour=read_hour)
+    assert days_touched(start, end) == (date(2026, 1, 1), last)

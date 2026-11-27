@@ -357,6 +357,7 @@ def _reconcile(
         GREEN_BUTTON,
         GREEN_BUTTON_SHAPED,
         compare_sources,
+        days_touched,
         reshaped,
         window,
         within,
@@ -498,10 +499,31 @@ def _reconcile(
             # Cached, because a run reconciles a statement at a time and the
             # portal generates each export on demand -- twenty-one cycles was
             # twenty-one jobs for data that had not changed since it closed.
-            export = cached_green_button(
-                PgeSettings.load(), statement.period.start, statement.period.end
-            )
-            sources[GREEN_BUTTON] = within(read_green_button(export.path), start, end)
+            #
+            # Every date the window touches, not the statement's own dates: a
+            # meter read at 14:00 ends the cycle partway into the day after
+            # its last date, and an export stopping at that date leaves those
+            # hours unpriced -- and, shaped, scales a short export up to
+            # whole-cycle totals.
+            first_day, last_day = days_touched(start, end)
+            export = cached_green_button(PgeSettings.load(), first_day, last_day)
+            if export.start > first_day or export.end < last_day:
+                short = (
+                    f"{statement.source or 'statement'}: the Green Button export covers "
+                    f"{export.covers}, short of the {first_day}..{last_day} this cycle needs"
+                )
+                if readings_from in ("green-button", "green-button-shaped"):
+                    # The source being priced from: a short one would be
+                    # reported as a billing disagreement, which it is not.
+                    print(short)
+                    skipped.append(short)
+                    worst = EXIT_ERROR
+                    continue
+                # Only the comparison: not made, and said so, rather than
+                # reported as a meter that lost the missing hours.
+                skipped.append(short)
+            else:
+                sources[GREEN_BUTTON] = within(read_green_button(export.path), start, end)
             if readings_from == "green-button":
                 primary = GREEN_BUTTON
             elif readings_from == "green-button-shaped":
